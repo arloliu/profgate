@@ -896,7 +896,7 @@ type Deps struct {
 func New(d Deps) http.Handler
 ```
 
-- [ ] **Write the errors and realm tests**
+- [x] **Write the errors and realm tests**
 
 `errors_test.go`: `writeError(w, 404, "service_not_found", "service x not found in namespace y")` yields
 `Content-Type: application/json`, `Cache-Control: no-store`, no `X-Pprof-Target-*`,
@@ -904,7 +904,7 @@ body exactly `{"error":"service x not found in namespace y","code":"service_not_
 `realm_test.go`: a table over `(realm lists, namespace, service, profile, endpoint)` → allowed or denied,
 covering `*`, exact match, mismatch on each of the three lists, and that `profiles` is ignored for the targets endpoint.
 
-- [ ] **Write the handler tests**
+- [x] **Write the handler tests**
 
 A `fakeDiscovery` implementing `k8s.Discovery` with fields `targets []k8s.Target`, `err error`, `synced bool`,
 `confirmErr error`, an optional `onTargets func()` hook, and call counters;
@@ -964,9 +964,9 @@ and that no response byte contains `10.0.0.5` or `6060`.
 | no-store | every response | `Cache-Control: no-store` |
 | json content type | every gateway body | `application/json` |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 One `http.HandlerFunc` registered at `/` does the whole algorithm, so route validation always precedes the method check
 (Go's `ServeMux` method patterns would invert that order and also treat `HEAD` as `GET`).
@@ -988,7 +988,7 @@ the handler records audit and metrics (the deferred calls run first) and then `p
 which makes `net/http` drop the connection without a stack trace instead of finishing the chunked body cleanly;
 the client observes a transport-level truncation, as the spec's *Failure Scenarios* requires.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/
