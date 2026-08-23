@@ -910,9 +910,9 @@ so it cannot produce real EndpointSlices or reachable Pods.
   image: "kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5"
 ```
 
-- `image` is a repository path with a digest; the registry host comes from `PROFGATE_E2E_REGISTRY`
+- `image` is a repository path with a digest; the registry prefix comes from `PROFGATE_E2E_REGISTRY`
   (default `docker.io`).
-  CI sets it to the mirror under the project's control; the digest is identical after mirroring.
+  CI sets it to the project's GHCR mirror, `ghcr.io/arloliu`, where the images are copied digest-for-digest.
 - `frozen: true` lanes are never upgraded, only removed.
   `current` tracks the kind default image and is bumped in its own commit.
 - The harness has two kinds of Pod access.
@@ -1006,7 +1006,9 @@ GitHub Actions in this repository:
 - pushes to `main`: all three lanes.
 
 There is no scheduled run.
-Mirror-registry pull credentials live in repository secrets.
+The GHCR mirror is public, so no pull credentials are needed;
+the workflow logs in with the `GITHUB_TOKEN` GitHub Actions provides automatically,
+only in case the packages ever go private.
 Production deployment runs on a private GitLab and is configured separately.
 
 ---

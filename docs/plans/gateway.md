@@ -1433,21 +1433,24 @@ jobs:
   e2e:
     needs: lanes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
         lane: ${{ fromJSON(needs.lanes.outputs.lanes) }}
     env:
-      PROFGATE_E2E_REGISTRY: ${{ secrets.E2E_REGISTRY }}
+      PROFGATE_E2E_REGISTRY: ghcr.io/${{ github.repository_owner }}
       PROFGATE_E2E_LANE: ${{ matrix.lane }}
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
       - uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.E2E_REGISTRY }}
-          username: ${{ secrets.E2E_REGISTRY_USER }}
-          password: ${{ secrets.E2E_REGISTRY_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - run: mise run test:e2e
 ```
 - [x] **Validate and commit**

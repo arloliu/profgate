@@ -210,7 +210,8 @@ func laneFromEnv() (Lane, error) {
 	return Lane{}, fmt.Errorf("PROFGATE_E2E_LANE=%q is not one of %v", name, LaneNames(lanes, false))
 }
 
-// registry is the host the lane image is pulled from: PROFGATE_E2E_REGISTRY, or docker.io.
+// registry is the prefix the lane image is pulled from: PROFGATE_E2E_REGISTRY
+// (for example "ghcr.io/arloliu"), or "docker.io" by default.
 func registry() string {
 	if r := os.Getenv("PROFGATE_E2E_REGISTRY"); r != "" {
 		return r
