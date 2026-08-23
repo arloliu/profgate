@@ -116,14 +116,14 @@ test/e2e/overlays/{default,reduced-no-watch,reduced-no-get,api-outage}/
 
 **Produces:** `mise run build|test|lint|test:e2e|check`; a `go.mod` with every direct dependency pinned.
 
-- [ ] **Initialize the module and pin the directive**
+- [x] **Initialize the module and pin the directive**
 
 ```bash
 mise exec -- go mod init github.com/arloliu/profgate
 sed -i 's/^go .*/go 1.26.0/' go.mod
 ```
 
-- [ ] **Add the dependencies at exact versions**
+- [x] **Add the dependencies at exact versions**
 
 ```bash
 mise exec -- go get \
@@ -142,7 +142,7 @@ Do not run `go mod tidy` in this task: nothing imports these modules yet and tid
 Each later task that first imports a module repeats that module's `go get` line, then runs `go mod tidy` and stages `go.mod` and `go.sum`;
 tidy keeps what is imported, so the task that first uses a module is the one that re-adds its pin.
 
-- [ ] **Replace the `[tools]` table in `mise.toml` and add tasks**
+- [x] **Replace the `[tools]` table in `mise.toml` and add tasks**
 
 Edit the existing `[tools]` table in place (do not append a second one):
 
@@ -174,7 +174,7 @@ run = "go test -tags e2e -count=1 -timeout 40m ./test/e2e/..."
 
 Run `mise install` and `mise x kind@0.22.0 -- kind version`; expected output starts with `kind v0.22.0`.
 
-- [ ] **Write `.golangci.yml`** (golangci-lint v2 schema)
+- [x] **Write `.golangci.yml`** (golangci-lint v2 schema)
 
 ```yaml
 version: "2"
@@ -188,7 +188,7 @@ formatters:
   enable: [gofmt, goimports]
 ```
 
-- [ ] **Write `.ko.yaml`**
+- [x] **Write `.ko.yaml`**
 
 ```yaml
 defaultBaseImage: cgr.dev/chainguard/static:latest
@@ -203,7 +203,7 @@ builds:
 
 `VERSION` is exported by CI from the git tag and by the harness as `e2e`.
 
-- [ ] **Extend `scripts/check-repo.py`**
+- [x] **Extend `scripts/check-repo.py`**
 
 Add three functions and register them where the existing checks are collected:
 
@@ -238,7 +238,7 @@ def check_no_nats(root):
 
 Run `mise run check`; expected: `repository invariants hold`.
 
-- [ ] **Write the three rule files and retire the "no code" text**
+- [x] **Write the three rule files and retire the "no code" text**
 
 Load the `writing-for-agents` skill first.
 `200-coding-standards.md`: gofmt and goimports; `log/slog` only; wrap errors with `%w` and match with `errors.Is`;
@@ -252,7 +252,7 @@ a fresh fixture per subtest.
 Add the three files to the trigger index in `.agents/rules/AGENTS.md`.
 Delete the "This Repository Has No Code Yet" section from `AGENTS.md` and the "no Go code yet" sentence from `100-project-map.md`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise run build && mise run lint && mise run test && mise run check

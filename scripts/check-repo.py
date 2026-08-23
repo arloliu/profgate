@@ -8,10 +8,14 @@
   (.agents/rules/900-design-and-review-loops.md).
 - go.mod declares the module language version the project map commits to
   (.agents/rules/100-project-map.md).
+- Only internal/k8s imports k8s.io/client-go outside tests and test/
+  (.agents/rules/800-security-invariant.md).
+- k8s.io/client-go, k8s.io/api, and k8s.io/apimachinery share one minor version.
+- go.mod never requires github.com/nats-io/nats.go; the gateway uses no NATS.
 
 Checks whose subject does not exist yet stay silent rather than failing.
-The Kubernetes seam grep and the golden ClusterRole test
-(.agents/rules/800-security-invariant.md) join this script once Go code exists.
+The golden ClusterRole test (.agents/rules/800-security-invariant.md) lives in
+deploy/ as a Go test rather than here.
 
 Run via: mise run check
 
@@ -23,6 +27,7 @@ import glob
 import os
 import re
 import sys
+from pathlib import Path
 
 SPEC_STATUS = ("Draft", "Accepted", "Superseded")
 PLAN_STATUS = ("Draft", "Approved", "In Progress", "Done", "Abandoned", "Superseded")
@@ -106,11 +111,45 @@ def check_go_directive(errors):
         )
 
 
+def check_clientgo_importers(root):
+    bad = []
+    for path in root.rglob("*.go"):
+        rel = path.relative_to(root).as_posix()
+        if rel.endswith("_test.go") or rel.startswith("test/") or rel.startswith("internal/k8s/"):
+            continue
+        if '"k8s.io/client-go' in path.read_text():
+            bad.append(f"{rel}: imports k8s.io/client-go outside internal/k8s")
+    return bad
+
+
+def check_k8s_minor_alignment(root):
+    gomod = (root / "go.mod").read_text() if (root / "go.mod").exists() else ""
+    minors = {}
+    for mod in ("k8s.io/client-go", "k8s.io/api", "k8s.io/apimachinery"):
+        m = re.search(rf"^\s*{re.escape(mod)} v0\.(\d+)\.", gomod, re.M)
+        if m:
+            minors[mod] = m.group(1)
+    if len(set(minors.values())) > 1:
+        return [f"go.mod: Kubernetes modules on different minors: {minors}"]
+    return []
+
+
+def check_no_nats(root):
+    gomod = (root / "go.mod").read_text() if (root / "go.mod").exists() else ""
+    if "github.com/nats-io/nats.go" in gomod:
+        return ["go.mod: github.com/nats-io/nats.go is not allowed in the gateway"]
+    return []
+
+
 def main():
     errors = []
     check_links(errors)
     check_status(errors)
     check_go_directive(errors)
+    root = Path(".")
+    errors.extend(check_clientgo_importers(root))
+    errors.extend(check_k8s_minor_alignment(root))
+    errors.extend(check_no_nats(root))
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

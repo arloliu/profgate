@@ -5,16 +5,11 @@ Read `000-agent-contract.md` for every task, then the files whose triggers
 match the work.
 If in doubt, read the file rather than guess its contents.
 
-Five rules exist because five things are true today.
-Coding standards, testing, and validation rules arrive when `go.mod`, the test
-framework, and `.golangci.yml` land.
-`mise.toml` pins Go and golangci-lint, but the linter has no configuration and
-there is nothing yet to lint.
-
 ## Default Load
 
 - Discussing or revising the design: `000`, `900`.
 - Writing or executing an implementation plan: `000`, `100`, `900`.
+- Writing Go code or tests: add `200`, `300`, `500`.
 - Anything touching Kubernetes access, NATS access, RBAC, or authentication:
   add `800`.
 - Commits, branches, PRs: add `600`.
@@ -30,6 +25,19 @@ there is nothing yet to lint.
 - **[100-project-map.md](100-project-map.md)** — identity, module path,
   planned package layout, and the single Kubernetes seam that carries both the
   1.23 compatibility baseline and the permission boundary.
+
+- **[200-coding-standards.md](200-coding-standards.md)** —
+  formatting, `log/slog`, error wrapping, no `init()`, context first, and the only package-level mutable state allowed.
+
+## Before Writing or Running Tests
+
+- **[300-testing.md](300-testing.md)** —
+  the unit and end-to-end layers, `-race`, table tests, `httptest`, the fake clientset, and a fresh fixture per subtest.
+
+## Before Every Commit or PR
+
+- **[500-validation-and-workflow.md](500-validation-and-workflow.md)** —
+  the validation block, `semlf check` on prose, and when the end-to-end suite must run before a PR.
 
 ## For Kubernetes Access, NATS Access, RBAC, or Auth
 

@@ -1,0 +1,8 @@
+defaultBaseImage: cgr.dev/chainguard/static:latest
+builds:
+  - id: profgate
+    main: ./cmd/profgate
+    ldflags:
+      - -s -w -X main.version={{.Env.VERSION}}
+  - id: testapp
+    main: ./test/e2e/testapp

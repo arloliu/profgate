@@ -81,7 +81,7 @@ Empty output is the passing state.
 The end-to-end harness under `test/` drives the cluster with the tester's
 kubeconfig, not the gateway's ServiceAccount; its client-go use is test
 tooling, which is why the grep excludes that tree.
-Wire this as a test or CI step once Go code exists.
+`mise run check` runs this grep through `scripts/check-repo.py`.
 
 ### Golden ClusterRole
 

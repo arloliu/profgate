@@ -37,7 +37,7 @@ Lifecycle details and the full `Status:` vocabulary:
 - Stop when confused. Name what is unclear before proceeding.
 - Say what is unverified and why, when verification is impossible or too
   expensive.
-- This repository is nearly empty, which makes guessing cheap and wrong.
+- This repository is small, which makes guessing cheap and wrong.
   A path, package, command, or Makefile target you have not confirmed with
   `ls`, `cat`, or `grep` does not exist.
 

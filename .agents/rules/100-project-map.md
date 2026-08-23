@@ -1,7 +1,6 @@
 # 100 - Project Map
 
 Navigation aid, not ground truth.
-This repository has no Go code yet — only a pinned toolchain.
 Everything below is **planned** structure
 drawn from the accepted gateway design,
 [`docs/specs/gateway.md`](../../docs/specs/gateway.md).
@@ -17,15 +16,14 @@ on it ([000](000-agent-contract.md)).
   Run tools through `mise exec --` or an activated mise shell.
   `GOTOOLCHAIN=local` turns a `go.mod` that outruns the pinned toolchain into
   a loud failure instead of a silent download.
-- **Module language version:** when `go.mod` lands it declares `go 1.26.0` —
+- **Module language version:** `go.mod` declares `go 1.26.0` —
   the oldest toolchain that can build Profgate, so consumers are not forced to
   upgrade in step with this repo.
   The pinned toolchain stays in the same minor series, which keeps the two
   effectively aligned: Go adds standard library API in minor releases, not
   patch releases, so a symbol that builds here builds for anyone on 1.26.
   Raising the pin to a newer minor reopens that gap, and `go vet`'s
-  `stdversion` analyzer is what would close it — keep it enabled when
-  `.golangci.yml` lands.
+  `stdversion` analyzer, enabled in `.golangci.yml`, is what closes it.
   `mise run check` holds the `go` directive itself at `1.26.0`, which
   `go mod init` and `go mod tidy` would otherwise rewrite to the running
   toolchain's version.
@@ -68,11 +66,10 @@ internal/config/       // fuda-loaded Config and validation
 internal/metrics/      // Recorder interface, Prometheus implementation
 deploy/                // kustomize base: RBAC, Deployment, NetworkPolicy
 test/e2e/              // kind harness, versions.yaml, testapp, overlays
-scripts/               // repository checks; check-repo.py exists today
+scripts/               // repository checks; check-repo.py
 docs/                  // see docs/README.md
 ```
 
-Only `scripts/` and `docs/` exist.
 `internal/pgo/` and `internal/natskv/` arrive with the PGO design
 ([`docs/specs/pgo.md`](../../docs/specs/pgo.md)) and not before.
 

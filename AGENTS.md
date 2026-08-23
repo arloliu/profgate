@@ -13,16 +13,6 @@ Kubernetes 1.23 is the compatibility baseline.
 The gateway alone is stateless and uses no NATS;
 PGO collection, when it arrives, adds NATS JetStream KV for control-plane state while profile bytes stay ephemeral.
 
-## This Repository Has No Code Yet
-
-`mise.toml` pins the toolchain and defines `mise run check`, which verifies
-the repository invariants that need no build.
-There is no Go source, no `go.mod`, and no linter configuration.
-Every structural claim in
-[`100-project-map.md`](.agents/rules/100-project-map.md) describes **planned**
-layout drawn from the accepted gateway design, not what `ls` shows.
-Confirm any path, package, or command against reality before relying on it.
-
 ## Two Specs, One Accepted
 
 [`docs/specs/gateway.md`](docs/specs/gateway.md) is `Accepted`:
