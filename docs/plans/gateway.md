@@ -798,7 +798,7 @@ func New(opts Options) *Proxy
 func (p *Proxy) Do(ctx context.Context, w http.ResponseWriter, req Request) Outcome
 ```
 
-- [ ] **Write the failing tests**
+- [x] **Write the failing tests**
 
 Each subtest starts its own `httptest.Server` (or a listener it closes for "refused") and calls `New(Options{}).Do` with
 `Target{PodIP: host, Port: port}` parsed from the server URL, and a `ctx` with a stated deadline.
@@ -831,18 +831,21 @@ Rows that shorten the header deadline construct `New(Options{HeaderDeadline: …
 | body closed | every forwarded, redirected, and failed-stream row, using a transport wrapper that counts `Body.Close` | exactly one close per response |
 | no leak | every non-2xx and error row | — | no header value or written byte contains the upstream host or port |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 URL: `"http://" + net.JoinHostPort(t.PodIP, strconv.Itoa(int(t.Port))) + req.Path` plus `?seconds=N` when `Seconds > 0`.
 `p.headerDeadline(seconds)` = `seconds+10` seconds, or 30s when `seconds == 0`, unless injected;
 the request context must not carry the header deadline, because Go applies a request's context to body reads as well:
 `reqCtx, cancelReq := context.WithCancelCause(ctx)`;
-run `p.client.Do(httpReq.WithContext(reqCtx))` in a goroutine that sends `(resp, err)` on a buffered channel `done`;
-then `select { case r := <-done: …; case <-time.After(p.headerDeadline(req.Seconds)): cancelReq(errHeaderDeadline); r := <-done; … }`.
-The cancellation happens only on the timeout branch of the `select`, so headers that arrive first can never be followed by a late cancel,
-and the body is then read under `reqCtx`, which expires only with the overall budget `ctx`.
+a `time.AfterFunc(p.headerDeadline(req.Seconds), func() { cancelReq(errHeaderDeadline) })` starts before
+`p.client.Do(httpReq)` runs synchronously,
+and `timer.Stop()`'s return value settles the race with no goroutine and no channel:
+`true` means the timer never fired and never will, so headers that arrived can never be followed by a late cancel,
+and the body then streams under `reqCtx`, which expires only with the overall budget `ctx`;
+`false` means the deadline fired, so the outcome is `upstream_timeout` with `!Committed`,
+and any response that slipped through is closed unread.
 Classification of `err` before headers:
 `errors.Is(context.Cause(reqCtx), errHeaderDeadline)` or `errors.Is(ctx.Err(), context.DeadlineExceeded)` → `upstream_timeout`;
 `errors.Is(ctx.Err(), context.Canceled)` → `client_gone`; anything else → `upstream_unreachable`.
@@ -854,7 +857,7 @@ a copy error → `upstream_stream_failed` unless `errors.Is(ctx.Err(), context.C
 `Code` for 2xx is `ok`; for 4xx/5xx `fmt.Sprintf("upstream_%d", status)`.
 `defer resp.Body.Close()` immediately after a non-nil response on every path, including redirect and copy failure.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/proxy/
