@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: profgate-no-get
+data:
+  config.yaml: |
+    server:
+      listen: ":8080"
+      opsListen: ":9090"
+    discovery:
+      versionLabel: app.kubernetes.io/version
+      pprof:
+        port: 6060
+    limits:
+      cpuSeconds: 60
+      traceSeconds: 60
+      maxConcurrentProfiles: 16
+    auth:
+      mode: disabled
+      anonymousRealm: developer
+    realms:
+      developer:
+        namespaces: ["*"]
+        services: ["*"]
+        profiles: ["*"]

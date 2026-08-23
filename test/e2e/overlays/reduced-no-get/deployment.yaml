@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: profgate-no-get
+  labels:
+    app.kubernetes.io/name: profgate-no-get
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: profgate-no-get
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: profgate-no-get
+    spec:
+      serviceAccountName: profgate-no-get
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: profgate
+          image: ko.local/profgate:e2e
+          args:
+            - serve
+            - --config
+            - /etc/profgate/config.yaml
+          ports:
+            - name: api
+              containerPort: 8080
+            - name: ops
+              containerPort: 9090
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ops
+          volumeMounts:
+            - name: config
+              mountPath: /etc/profgate
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: profgate-no-get

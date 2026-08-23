@@ -1177,7 +1177,7 @@ var scenarios = [...]Scenario{
     {Name: "version filter"},
     {Name: "rbac"},
     {Name: "replicas agree", NeedsPodReach: true},
-    {Name: "api outage", NeedsNetworkPolicy: true},
+    {Name: "api outage", NeedsPodReach: true, NeedsNetworkPolicy: true},
 }
 func (s Scenario) Skips(l Lane) (bool, string) // the reason names the scenario and the missing capability
 ```
@@ -1223,17 +1223,17 @@ func (h *Harness) WatchPods(t *testing.T, ns string) <-chan watch.Event
 var harness *Harness
 ```
 
-- [ ] **Write `versions.yaml`** exactly as the spec's *Cluster matrix*.
+- [x] **Write `versions.yaml`** exactly as the spec's *Cluster matrix*.
 
-- [ ] **Write `lanes_test.go`** (no build tag): `LoadLanes` on the real file succeeds; `LaneNames` rows for both flag values;
+- [x] **Write `lanes_test.go`** (no build tag): `LoadLanes` on the real file succeeds; `LaneNames` rows for both flag values;
   synthetic inputs fail for a registry-prefixed image, a non-64-hex digest, an unknown kind version,
   `degraded` on a non-frozen lane, and no lane with `networkPolicy: true`;
   `Scenarios()` contains a scenario named `convergence on ready` with `NeedsPodReach`;
   every scenario name is unique;
-  for `Lane{Degraded: true}` the skipped names are exactly `ineligible pods`, `convergence on ready`, `profiles parse`, `replicas agree`;
+  for `Lane{Degraded: true}` the skipped names are exactly `ineligible pods`, `convergence on ready`, `profiles parse`, `replicas agree`, `api outage`;
   for `Lane{NetworkPolicy: false}` exactly `api outage`.
 
-- [ ] **Write the test application**
+- [x] **Write the test application**
 
 `main.go`: `net/http/pprof` on `:6060`; `/healthz` returns 200 or 503 from an `atomic.Bool` (initially true);
 `POST /healthz/fail` sets false, `POST /healthz/pass` sets true;
@@ -1242,7 +1242,7 @@ so the API-outage scenario can prove no profile request arrived.
 `deployment.yaml`: label `app.kubernetes.io/version=1.0.0`, readiness probe `/healthz` with `periodSeconds: 1`, `failureThreshold: 1`,
 `terminationGracePeriodSeconds: 60`, `preStop` `sleep 30`, container port `pprof` 6060/TCP, a Service `testapp` selecting it.
 
-- [ ] **Write the overlays**
+- [x] **Write the overlays**
 
 `default`: `resources: [../../../../deploy/base]`, `images: [{name: ghcr.io/arloliu/profgate, newName: ko.local/profgate, newTag: e2e}]`,
 and a patch setting both namespace selectors in the gateway NetworkPolicy to the harness namespace.
@@ -1253,7 +1253,7 @@ so both can exist at once.
 egress allowed to the test-app namespace on 6060/TCP and to `kube-system` on 53 UDP and TCP;
 nothing else, so the `kubernetes` Service and the control-plane node are unreachable while the test app stays reachable.
 
-- [ ] **Write `TestMain`**
+- [x] **Write `TestMain`**
 
 ```go
 func TestMain(m *testing.M) {
@@ -1284,7 +1284,7 @@ func TestMain(m *testing.M) {
 `registry()` returns `PROFGATE_E2E_REGISTRY` or `docker.io`.
 Port-forwards use `k8s.io/client-go/tools/portforward` with the tester's kubeconfig.
 
-- [ ] **Write `TestScenarios`** in `harness_test.go` (it never calls `t.Parallel`, because it sets the current scenario):
+- [x] **Write `TestScenarios`** in `harness_test.go` (it never calls `t.Parallel`, because it sets the current scenario):
 
 ```go
 func TestScenarios(t *testing.T) {
@@ -1307,7 +1307,7 @@ func TestScenarios(t *testing.T) {
 }
 ```
 
-- [ ] **Run the harness with placeholder runners**
+- [x] **Run the harness with placeholder runners**
 
 ```bash
 PROFGATE_E2E_LANE=current PROFGATE_E2E_KEEP=1 mise run test:e2e
@@ -1315,7 +1315,7 @@ PROFGATE_E2E_LANE=current PROFGATE_E2E_KEEP=1 mise run test:e2e
 
 Expected: cluster created, both images loaded, two gateway Pods ready, `TestScenarios` reports every subtest as skipped with `runner not written`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go vet -tags e2e ./test/e2e/... && mise exec -- go mod tidy
@@ -1337,21 +1337,21 @@ wired into `runners()` in place of `notWritten`;
 the capability flags already live in `Scenarios()`.
 Every scenario creates its namespace with `h.Namespace(t)` and applies the test app unless stated.
 
-- [ ] **`dedupe and wrong-address slice`**: create a manual EndpointSlice (`endpointslice.kubernetes.io/managed-by: profgate-e2e`,
+- [x] **`dedupe and wrong-address slice`**: create a manual EndpointSlice (`endpointslice.kubernetes.io/managed-by: profgate-e2e`,
   label `kubernetes.io/service-name: testapp`) duplicating the controller's endpoint,
   and a second one with address `10.255.255.255` and the real `targetRef`;
   `targets` lists each Pod exactly once; `profiles/heap` succeeds on both gateways.
-- [ ] **`ineligible pods`** (`NeedsPodReach`): `ForwardTestApp` + `POST /healthz/fail` → the Pod leaves `targets` within 10s;
+- [x] **`ineligible pods`** (`NeedsPodReach`): `ForwardTestApp` + `POST /healthz/fail` → the Pod leaves `targets` within 10s;
   delete a Pod → it is absent from `targets` while `Terminating`;
   a Service with `publishNotReadyAddresses: true` over a failing Pod → empty `targets`.
-- [ ] **`convergence on delete`**: expected set = current minus one Pod; `WatchPods` until the `DELETED` event;
+- [x] **`convergence on delete`**: expected set = current minus one Pod; `WatchPods` until the `DELETED` event;
   poll both gateways every 500ms until both equal the expected set three times in a row, all within 10s.
-- [ ] **`convergence on ready`** (`NeedsPodReach`): `fail` a Pod, wait for `targets` to drop it, compute expected = current plus that Pod,
+- [x] **`convergence on ready`** (`NeedsPodReach`): `fail` a Pod, wait for `targets` to drop it, compute expected = current plus that Pod,
   `pass`, watch until the Pod's `Ready` condition is `True`, then the same poll rule.
-- [ ] **`profiles parse`** (`NeedsPodReach`): for each of the eight profiles fetch through gateway 0;
+- [x] **`profiles parse`** (`NeedsPodReach`): for each of the eight profiles fetch through gateway 0;
   `profile.Parse` succeeds for all but `trace`; the `trace` body starts with `go 1.`; `cpu?seconds=2` takes between 2s and 5s;
   every response carries the three `X-Pprof-Target-*` headers and `Cache-Control: no-store`.
-- [ ] **`errors`**: the shared gateways run the wildcard realm and cannot be reconfigured live,
+- [x] **`errors`**: the shared gateways run the wildcard realm and cannot be reconfigured live,
   so this scenario deploys its own gateway: apply the `default` overlay into the scenario namespace
   with a ConfigMap whose realm lists `namespaces: ["<scenario ns>"]`, wait for its Pod, port-forward to it,
   and run every assertion below against that gateway.
@@ -1359,18 +1359,20 @@ Every scenario creates its namespace with `h.Namespace(t)` and applies the test 
   `other/testapp` (exists) and `other/missing` → both 403 with identical bodies;
   `<ns>/missing` → 404 `service_not_found`; a selectorless Service with a manual Pod-backed slice → 422;
   `?pod=<pod of another Service>` → 404 `pod_not_found`.
-- [ ] **`version filter`**: two test-app Deployments with versions `1.0.0` and `2.0.0` and one without the label, one Service over all three;
+- [x] **`version filter`**: two test-app Deployments with versions `1.0.0` and `2.0.0` and one without the label, one Service over all three;
   100 requests with `?version=2.0.0` all report `X-Pprof-Target-Version: 2.0.0`; `?version=3.0.0` → 503 `no_targets`.
-- [ ] **`rbac`**: the main gateway Pods are ready; apply `reduced-no-watch` and `reduced-no-get` together;
+- [x] **`rbac`**: the main gateway Pods are ready; apply `reduced-no-watch` and `reduced-no-get` together;
   the `profgate-no-watch` Pod and the `profgate-no-get` Pod each reach `CrashLoopBackOff`,
   and their logs contain `"resource":"pods"` with `"verb":"watch"` and `"verb":"get"` respectively;
   on lane `1.24`, no Secret of type `kubernetes.io/service-account-token` references the gateway ServiceAccount.
-- [ ] **`replicas agree`** (`NeedsPodReach`): sorted `targets` from both gateways are equal; `?pod=<x>` to each returns identical `X-Pprof-Target-*`.
-- [ ] **`api outage`** (`NeedsNetworkPolicy`): read `/hits` from the test app; apply `overlays/api-outage`;
+- [x] **`replicas agree`** (`NeedsPodReach`): sorted `targets` from both gateways are equal; `?pod=<x>` to each returns identical `X-Pprof-Target-*`.
+- [x] **`api outage`** (`NeedsPodReach`, `NeedsNetworkPolicy`): read `/hits` from the test app;
+  apply `overlays/api-outage` and flush the node's conntrack entries for the gateway Pods,
+  because kind's enforcer leaves admitted connections alone;
   on both gateways `/readyz` (through a port-forward to 9090) is 200, `targets` returns the cached list,
   `profiles/heap` → 503 `discovery_unavailable`; `/hits` unchanged; delete the policy; `profiles/heap` → 200 within 30s.
 
-- [ ] **Run all lanes locally once**
+- [x] **Run all lanes locally once**
 
 ```bash
 PROFGATE_E2E_LANE=current mise run test:e2e
@@ -1381,7 +1383,7 @@ PROFGATE_E2E_LANE=1.24 mise run test:e2e
 Expected: every scenario passes on `current`;
 on `1.23` and `1.24` the `api outage` scenario is skipped with its logged reason and everything else passes.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go get github.com/google/pprof@v0.0.0-20260802141513-ef3492d7dac3
@@ -1477,6 +1479,6 @@ git commit -m "ci: run checks on push and lanes on main"
   the exact fixture for the spec's rate-limited relist proof
   (a shared `flowcontrol.RateLimiter` between informer and confirmation calls, and a forced watch close that triggers a relist)
   belongs to the *HTTP API* admission test and is designed when that test is written;
-  the `errors` scenario's gateway is an `errors-gateway` overlay with a namespace transform,
+  the `errors` scenario's gateway is the `errors-gateway` overlay with a namespace transform,
   resources renamed `profgate-errors` (ServiceAccount, ClusterRoleBinding, one-replica Deployment),
-  and its own ConfigMap, written when that scenario is implemented.
+  and its own ConfigMap whose realm namespace the scenario patches to the one it created.

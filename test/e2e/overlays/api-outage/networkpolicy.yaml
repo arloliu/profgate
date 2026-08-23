@@ -1,0 +1,31 @@
+# Egress from the gateway Pods is limited to the pprof port of the namespaces the
+# harness creates (it labels each one profgate-e2e/test-app=true) and to DNS in
+# kube-system. The kubernetes Service and the control-plane node are not listed,
+# so the API server is unreachable for as long as this policy exists.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: profgate-api-outage
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: profgate
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              profgate-e2e/test-app: "true"
+      ports:
+        - protocol: TCP
+          port: 6060
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

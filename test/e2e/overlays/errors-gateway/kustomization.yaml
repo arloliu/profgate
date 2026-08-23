@@ -1,0 +1,12 @@
+# A one-replica gateway the errors scenario owns, so it can run a realm limited
+# to the scenario namespace while the shared gateways keep the wildcard realm.
+# Everything is named profgate-errors; the ClusterRoleBinding reuses the shipped
+# ClusterRole. The scenario wraps this overlay in a kustomization that sets the
+# namespace and patches the realm's namespace list to the one it created.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - clusterrolebinding.yaml
+  - configmap.yaml
+  - deployment.yaml

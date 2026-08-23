@@ -1,0 +1,27 @@
+# The realm's namespace list is a placeholder the errors scenario patches to its
+# own namespace before applying.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: profgate-errors
+data:
+  config.yaml: |
+    server:
+      listen: ":8080"
+      opsListen: ":9090"
+    discovery:
+      versionLabel: app.kubernetes.io/version
+      pprof:
+        port: 6060
+    limits:
+      cpuSeconds: 60
+      traceSeconds: 60
+      maxConcurrentProfiles: 16
+    auth:
+      mode: disabled
+      anonymousRealm: developer
+    realms:
+      developer:
+        namespaces: ["placeholder"]
+        services: ["*"]
+        profiles: ["*"]

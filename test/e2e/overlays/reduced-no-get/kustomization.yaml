@@ -1,0 +1,11 @@
+# A second gateway whose ClusterRole lacks get on Pods. Everything is named
+# profgate-no-get so it can run beside the main gateway and the other reduced
+# variant without touching their RBAC.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - clusterrole.yaml
+  - clusterrolebinding.yaml
+  - configmap.yaml
+  - deployment.yaml

@@ -1,0 +1,22 @@
+# The shipped base with the image the harness loads into kind, and the gateway
+# NetworkPolicy opened to the harness namespace instead of the ingress and
+# monitoring namespaces a production cluster has.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../deploy/base
+images:
+  - name: ghcr.io/arloliu/profgate
+    newName: ko.local/profgate
+    newTag: e2e
+patches:
+  - target:
+      kind: NetworkPolicy
+      name: profgate
+    patch: |-
+      - op: replace
+        path: /spec/ingress/0/from/0/namespaceSelector/matchLabels/kubernetes.io~1metadata.name
+        value: profgate
+      - op: replace
+        path: /spec/ingress/1/from/0/namespaceSelector/matchLabels/kubernetes.io~1metadata.name
+        value: profgate
