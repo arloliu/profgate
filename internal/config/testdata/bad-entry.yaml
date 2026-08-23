@@ -1,0 +1,7 @@
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["Bad_Name"]
+    services: ["*"]
+    profiles: ["*"]

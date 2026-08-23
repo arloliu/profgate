@@ -1,0 +1,10 @@
+server:
+  listen: ":8080"
+  opsListen: ":8080"
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

@@ -1,0 +1,10 @@
+discovery:
+  pprof:
+    portName: pprof
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

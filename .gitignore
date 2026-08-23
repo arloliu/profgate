@@ -4,3 +4,6 @@
 # machine-local mise overrides
 /mise.local.toml
 /.mise.local.toml
+
+# python bytecode from scripts/check-repo.py
+__pycache__/

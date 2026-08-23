@@ -19,7 +19,7 @@ and the unit and end-to-end layers that prove it.
 `test/e2e/` is a plain `go test` harness over a kind lane matrix.
 
 **Tech Stack:** Go 1.26 (module directive `go 1.26.0`), `k8s.io/{client-go,api,apimachinery} v0.36.4`,
-`github.com/arloliu/fuda v1.6.0`, `github.com/go-playground/validator/v10 v10.30.1` (fuda's own validator, for YAML error paths),
+`github.com/arloliu/fuda v1.6.1`, `github.com/go-playground/validator/v10 v10.30.1` (fuda's own validator, for YAML error paths),
 `github.com/prometheus/client_golang v1.24.1`, `gopkg.in/yaml.v3 v3.0.1`,
 `sigs.k8s.io/yaml v1.6.0` (tests), `github.com/google/pprof` (tests), kind 0.32.0 and 0.22.0, ko 0.19.1, kubectl 1.36.4.
 
@@ -128,7 +128,7 @@ sed -i 's/^go .*/go 1.26.0/' go.mod
 ```bash
 mise exec -- go get \
   k8s.io/client-go@v0.36.4 k8s.io/api@v0.36.4 k8s.io/apimachinery@v0.36.4 \
-  github.com/arloliu/fuda@v1.6.0 github.com/go-playground/validator/v10@v10.30.1 \
+  github.com/arloliu/fuda@v1.6.1 github.com/go-playground/validator/v10@v10.30.1 \
   github.com/prometheus/client_golang@v1.24.1 \
   gopkg.in/yaml.v3@v3.0.1 \
   sigs.k8s.io/yaml@v1.6.0 \
@@ -326,7 +326,7 @@ func (c *Config) RequiredGracePeriod() time.Duration
 fuda tag names used: `default`, `env` (with `WithEnvPrefix("PROFGATE_")` so `env:"LISTEN"` reads `PROFGATE_LISTEN`), `validate`.
 These are the names in `fuda/docs/tag-spec.md`.
 
-- [ ] **Write the failing tests**
+- [x] **Write the failing tests**
 
 One subtest per row; each loads its own testdata file (fresh `t.Setenv` where env is involved)
 and asserts the exact field value or that `err.Error()` contains the quoted text.
@@ -355,14 +355,14 @@ and asserts the exact field value or that `err.Error()` contains the quoted text
 | env overrides | every `PROFGATE_*` variable from the spec's configuration table set | each lands on its field |
 | grace period | cpu 60, trace 90 | `RequiredGracePeriod() == 150*time.Second` |
 
-- [ ] **Add the modules this package imports, then run the tests and watch them fail to compile**
+- [x] **Add the modules this package imports, then run the tests and watch them fail to compile**
 
 ```bash
-mise exec -- go get github.com/arloliu/fuda@v1.6.0 github.com/go-playground/validator/v10@v10.30.1 gopkg.in/yaml.v3@v3.0.1 k8s.io/apimachinery@v0.36.4
+mise exec -- go get github.com/arloliu/fuda@v1.6.1 github.com/go-playground/validator/v10@v10.30.1 gopkg.in/yaml.v3@v3.0.1 k8s.io/apimachinery@v0.36.4
 mise exec -- go test ./internal/config/
 ```
 
-- [ ] **Implement `Load`**
+- [x] **Implement `Load`**
 
 1. `b, err := os.ReadFile(path)`.
 2. Unknown keys: `dec := yaml.NewDecoder(bytes.NewReader(b)); dec.KnownFields(true); var probe Config; err := dec.Decode(&probe)`;
@@ -387,7 +387,7 @@ mise exec -- go test ./internal/config/
    every realm list entry is `"*"` or passes `validation.IsDNS1123Label` (namespaces, services)
    or satisfies `IsProfile` (profiles).
 
-- [ ] **Run the tests until they pass, then validate and commit**
+- [x] **Run the tests until they pass, then validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/config/ && mise exec -- go mod tidy

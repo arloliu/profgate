@@ -1,0 +1,11 @@
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
+  ops:
+    namespaces: ["kube-system"]
+    services: ["*"]
+    profiles: ["cpu", "heap"]
