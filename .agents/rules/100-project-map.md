@@ -35,12 +35,13 @@ on it ([000](000-agent-contract.md)).
 - **Kubernetes baseline:** 1.23, using only stable API fields available at
   that release. 1.23 and 1.24 are first-class integration-test targets.
 - **Runtime dependencies:** the Kubernetes API only.
-  No NATS until PGO collection lands, no database, cache, PVC, or object
-  storage, no Kubernetes CRDs and no operator.
+  No NATS until PGO collection lands;
+  no database, cache, PVC, or object storage;
+  no Kubernetes CRDs and no operator.
 
 ## The Kubernetes Seam
 
-**Exactly one package imports `k8s.io/client-go`.**
+**Exactly one non-test package imports `k8s.io/client-go`.**
 Everything else reaches Kubernetes through that package's interface.
 
 The seam carries two invariants at once, which is why it is worth its cost:
@@ -60,7 +61,7 @@ where the cost is visible.
 
 ```
 cmd/profgate/          // CLI entrypoint: serve, config validate, version
-internal/k8s/          // the Kubernetes seam; sole importer of client-go
+internal/k8s/          // the Kubernetes seam; sole non-test importer of client-go
 internal/proxy/        // upstream HTTP to PodIP:port, timeouts, error mapping
 internal/httpapi/      // routing, realm checks, handlers, audit log
 internal/config/       // fuda-loaded Config and validation
@@ -81,9 +82,12 @@ Resource-oriented and product-neutral.
 The name `profgate` does not appear in versioned API paths:
 
 ```
+/v1/namespaces/{namespace}/services/{service}/targets
 /v1/namespaces/{namespace}/services/{service}/profiles/{profile}
-/v1/namespaces/{namespace}/services/{service}/collections
 ```
+
+`.../collections` and `.../pgo` belong to the PGO draft
+([`docs/specs/pgo.md`](../../docs/specs/pgo.md)) and do not exist until it is accepted.
 
 ## Documentation
 

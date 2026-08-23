@@ -22,11 +22,20 @@ existing.
 
 | API group | Resource | Verbs |
 |---|---|---|
-| core (`""`) | `services` | `get`, `list`, `watch` |
+| core (`""`) | `services` | `list`, `watch` |
 | core (`""`) | `pods` | `get`, `list`, `watch` |
-| `discovery.k8s.io` | `endpointslices` | `get`, `list`, `watch` |
+| `discovery.k8s.io` | `endpointslices` | `list`, `watch` |
 
-Three resources, three read verbs.
+Three resources, seven read tuples.
+`list` and `watch` feed the informer caches every selection reads from;
+the single `get`, on Pods, reads one named Pod in two places:
+the startup preflight, and the confirmation read issued right before a proxy connection.
+That read verifies the selected Pod's identity and address against the API server;
+Service membership is still decided from the cache and is as old as the cache,
+which the gateway spec states as its contract rather than hiding.
+A startup preflight exercises exactly these seven tuples and exits on a `403`,
+so an under-privileged ClusterRole is a crash rather than a silent retry;
+`authorization.k8s.io` review resources are not used for this.
 Profiling reaches applications over ordinary HTTP to their pprof ports, so
 `pods/exec`, `pods/log`, and `pods/portforward` stay out, along with
 `secrets`, `configmaps`, `nodes`, every `apps/*` workload resource, and every
@@ -47,7 +56,10 @@ cluster; Profgate uses stores that already exist.
 ### Container
 
 Non-root, no Linux capabilities, no privilege escalation, read-only root
-filesystem, writable data confined to an `emptyDir`.
+filesystem.
+The gateway has no writable volume at all;
+if the PGO draft is accepted, its ephemeral profile bytes are confined to an
+`emptyDir` and nothing else becomes writable.
 Host namespaces, host paths, and `SYS_PTRACE` stay out — Profgate talks HTTP
 to applications rather than attaching to their processes.
 
@@ -57,14 +69,18 @@ Prose does not hold a boundary. These do.
 
 ### One Importer of client-go
 
-The package named in [100](100-project-map.md) is the only importer of
-`k8s.io/client-go`. That makes the invariant greppable:
+The package named in [100](100-project-map.md) is the only non-test importer of `k8s.io/client-go`.
+That makes the invariant greppable:
 
 ```bash
-grep -rl 'k8s.io/client-go' --include='*.go' . | grep -v '^./internal/k8s/'
+grep -rl 'k8s.io/client-go' --include='*.go' --exclude='*_test.go' . \
+  | grep -v '^./internal/k8s/' | grep -v '^./test/'
 ```
 
 Empty output is the passing state.
+The end-to-end harness under `test/` drives the cluster with the tester's
+kubeconfig, not the gateway's ServiceAccount; its client-go use is test
+tooling, which is why the grep excludes that tree.
 Wire this as a test or CI step once Go code exists.
 
 ### Golden ClusterRole

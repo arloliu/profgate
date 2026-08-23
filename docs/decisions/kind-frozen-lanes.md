@@ -35,6 +35,7 @@ and `kindest/node:v1.24.17@sha256:bad10f9b98d54586cba05a7eaa1b61c6b90bfc4ee174fd
   the harness and CI matrix both read it.
 - The kind binary is installed per lane through mise (`mise x kind@<version>`).
 - A frozen lane may break on a future Docker or containerd change that nobody upstream will fix.
-  The accepted response is to mark the lane degraded and skip proxy-level tests on it,
-  not to block the pipeline; the harness reserves a field for this and does not yet implement it.
+  The accepted response is to set `degraded: true` on the lane,
+  which skips the scenarios that need a reachable Pod and reports the lane as passed with a warning;
+  the gateway spec defines the field.
 - Frozen lanes run only on pushes to `main`; pull requests run the `current` lane.
