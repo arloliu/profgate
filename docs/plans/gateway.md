@@ -1406,7 +1406,7 @@ git commit -m "test(e2e): prove discovery, proxying, and RBAC"
 **Files:**
 - Create: `.github/workflows/check.yml`, `.github/workflows/e2e.yml`
 
-- [x] **`check.yml`**: `on: push`; `jdx/mise-action@v2`; `mise run check && mise run lint && mise run test`.
+- [x] **`check.yml`**: `on: push`; `jdx/mise-action@v4`; `mise run check && mise run lint && mise run test`.
 - [x] **Lane printer**: `test/e2e/cmd/lanes/main.go` (untagged) calls `LoadLanes` and `LaneNames` from the `e2e` package
   and prints the JSON list, taking `-unfrozen` as its only flag.
   `LaneNames` and its tests already exist from the harness task.
@@ -1416,16 +1416,30 @@ git commit -m "test(e2e): prove discovery, proxying, and RBAC"
 name: e2e
 on:
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - ".agents/**"
+      - "**/*.md"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "LICENSE"
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - ".agents/**"
+      - "**/*.md"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "LICENSE"
 jobs:
   lanes:
     runs-on: ubuntu-latest
     outputs:
       lanes: ${{ steps.list.outputs.lanes }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
       - id: list
         run: |
           FLAG=""
@@ -1445,9 +1459,9 @@ jobs:
       PROFGATE_E2E_REGISTRY: ghcr.io/${{ github.repository_owner }}
       PROFGATE_E2E_LANE: ${{ matrix.lane }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

@@ -1,16 +1,30 @@
 name: e2e
 on:
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - ".agents/**"
+      - "**/*.md"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "LICENSE"
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - ".agents/**"
+      - "**/*.md"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "LICENSE"
 jobs:
   lanes:
     runs-on: ubuntu-latest
     outputs:
       lanes: ${{ steps.list.outputs.lanes }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
       - id: list
         run: |
           FLAG=""
@@ -30,9 +44,9 @@ jobs:
       PROFGATE_E2E_REGISTRY: ghcr.io/${{ github.repository_owner }}
       PROFGATE_E2E_LANE: ${{ matrix.lane }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

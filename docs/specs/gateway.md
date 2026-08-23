@@ -1003,7 +1003,7 @@ GitHub Actions in this repository:
 
 - every push: `mise run check`, lint, unit tests;
 - pull requests: the `current` lane;
-- pushes to `main`: all three lanes.
+- pushes to `main`: all three lanes, except documentation-only changes, which skip the lanes.
 
 There is no scheduled run.
 The GHCR mirror is public, so no pull credentials are needed;
