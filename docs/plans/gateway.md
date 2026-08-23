@@ -1,6 +1,7 @@
 # Gateway Implementation Plan
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** commit 32cb1b3 on main; CI passed check and all three e2e lanes.
 
 > **For agentic workers:** implement this plan one task at a time, in order; each task is written test-first and ends with its own validation block and commit.
 > Run a task inline or hand it to a subagent, whichever fits its size.
@@ -1465,9 +1466,9 @@ git commit -m "ci: run checks on push and lanes on main"
 
 ## Finish the plan
 
-- [ ] Confirm the `main` run passed every lane.
-- [ ] In the same change: set line 3 of this file to `**Status:** Done` and add line 4 `**Outcome:** <tag or commit that shipped the gateway>`.
-- [ ] `mise run lint && mise run test && mise run check`;
+- [x] Confirm the `main` run passed every lane.
+- [x] In the same change: set line 3 of this file to `**Status:** Done` and add line 4 `**Outcome:** <tag or commit that shipped the gateway>`.
+- [x] `mise run lint && mise run test && mise run check`;
   `git add docs/plans/gateway.md`; `git commit -m "docs: mark the gateway plan done"`.
 
 ---
