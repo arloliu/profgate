@@ -2,20 +2,20 @@ package e2e
 
 import "fmt"
 
-// Scenario is the metadata of one end-to-end scenario: its name and the lane
-// capabilities it needs. Runners live in the tagged files, so this registry
-// compiles and is unit-tested without a cluster.
+// Scenario is the metadata of one end-to-end scenario: its name and the lane capabilities it needs.
+// Runners live in the tagged files, so this registry compiles and is unit-tested without a cluster.
 type Scenario struct {
 	Name string
-	// NeedsPodReach marks a scenario that port-forwards to a test-app Pod or needs
-	// the gateway to complete a proxy to one; a degraded lane skips it.
+	// NeedsPodReach marks a scenario that port-forwards to a test-app Pod or needs the gateway to complete a proxy to one;
+	// a degraded lane skips it.
 	NeedsPodReach bool
 	// NeedsNetworkPolicy marks a scenario that relies on NetworkPolicy enforcement;
 	// a lane whose CNI does not enforce it skips the scenario.
 	NeedsNetworkPolicy bool
 }
 
-// scenarios is the complete, ordered registry. Scenarios returns a copy.
+// scenarios is the complete, ordered registry.
+// Scenarios returns a copy.
 var scenarios = [...]Scenario{
 	{Name: "dedupe and wrong-address slice"},
 	{Name: "ineligible pods", NeedsPodReach: true},

@@ -225,8 +225,8 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// trap is an httptest.Server that counts every connection it receives; rows that must not dial
-// use its address as the target's PodIP and Port.
+// trap is an httptest.Server that counts every connection it receives;
+// rows that must not dial use its address as the target's PodIP and Port.
 type trap struct {
 	server *httptest.Server
 	hits   atomic.Int32

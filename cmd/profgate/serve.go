@@ -168,8 +168,8 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	}
 }
 
-// preflight retries rt.Preflight with a doubling backoff until it passes, a tuple is
-// forbidden, or ctx ends; the returned error is nil, the ErrForbidden, or ctx.Err().
+// preflight retries rt.Preflight with a doubling backoff until it passes, a tuple is forbidden, or ctx ends;
+// the returned error is nil, the ErrForbidden, or ctx.Err().
 func preflight(ctx context.Context, rt k8s.Runtime, logger *slog.Logger) error {
 	backoff := preflightBackoffFirst
 	for {

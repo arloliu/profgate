@@ -1,6 +1,5 @@
-// Package deploy_test pins the shapes of the kustomize base manifests in deploy/base
-// to what docs/specs/gateway.md requires: the golden ClusterRole, the hardened
-// Deployment, and the NetworkPolicy and ConfigMap shapes the spec describes.
+// Package deploy_test pins the shapes of the kustomize base manifests in deploy/base to what docs/specs/gateway.md requires:
+// the golden ClusterRole, the hardened Deployment, and the NetworkPolicy and ConfigMap shapes the spec describes.
 package deploy_test
 
 import (
@@ -25,10 +24,9 @@ const baseDir = "base"
 // ptr returns a pointer to v, for the pointer-typed fields k8s.io/api uses.
 func ptr[T any](v T) *T { return &v }
 
-// decode reads name from deploy/base and unmarshals it into a T through
-// sigs.k8s.io/yaml, which converts YAML to JSON before decoding into the
-// typed Kubernetes object so struct tags and defaulting behave the same way
-// the API server sees them.
+// decode reads name from deploy/base and unmarshals it into a T through sigs.k8s.io/yaml,
+// which converts YAML to JSON before decoding into the typed Kubernetes object
+// so struct tags and defaulting behave the same way the API server sees them.
 func decode[T any](t *testing.T, name string) T {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(baseDir, name)) //nolint:gosec // name is a fixed literal from each test, not external input

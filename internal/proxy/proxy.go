@@ -1,7 +1,6 @@
-// Package proxy forwards one pprof request to a confirmed Pod over plain HTTP
-// through a pinned transport, streams the upstream response to the client,
-// and classifies every outcome by its cause so the HTTP layer can record it
-// and, when nothing was forwarded, write the matching error envelope.
+// Package proxy forwards one pprof request to a confirmed Pod over plain HTTP through a pinned transport,
+// streams the upstream response to the client, and classifies every outcome by its cause
+// so the HTTP layer can record it and, when nothing was forwarded, write the matching error envelope.
 package proxy
 
 import (
@@ -18,15 +17,15 @@ import (
 )
 
 const (
-	// dialTimeout bounds the TCP connect to a Pod; a Pod that cannot be reached in this
-	// time is reported as unreachable rather than waited for.
+	// dialTimeout bounds the TCP connect to a Pod;
+	// a Pod that cannot be reached in this time is reported as unreachable rather than waited for.
 	dialTimeout = 5 * time.Second
 	// headerDeadlineGrace is added to the effective duration for profiles that take one.
 	headerDeadlineGrace = 10 * time.Second
 	// defaultHeaderDeadline applies to profiles without a duration.
 	defaultHeaderDeadline = 30 * time.Second
-	// redirectDrainLimit caps how much of a redirect body is read before the connection is
-	// released; pprof handlers never redirect, so the body is never interesting.
+	// redirectDrainLimit caps how much of a redirect body is read before the connection is released;
+	// pprof handlers never redirect, so the body is never interesting.
 	redirectDrainLimit = 64 << 10
 
 	// Outcome codes, as the spec's proxy-behavior table names them.
@@ -69,8 +68,9 @@ type Outcome struct {
 
 // Options tunes a Proxy; the zero value follows the spec.
 type Options struct {
-	// HeaderDeadline maps the effective duration to the header deadline; nil means the spec's
-	// rule: seconds+10s, or 30s when seconds is 0. Tests inject short values.
+	// HeaderDeadline maps the effective duration to the header deadline; nil means the spec's rule:
+	// seconds+10s, or 30s when seconds is 0.
+	// Tests inject short values.
 	HeaderDeadline func(seconds int) time.Duration
 }
 
@@ -113,12 +113,12 @@ func specHeaderDeadline(seconds int) time.Duration {
 	return time.Duration(seconds)*time.Second + headerDeadlineGrace
 }
 
-// Do issues the upstream request under ctx (the caller's overall budget) plus its own header
-// deadline, streams forwarded responses to w, and never writes a JSON body itself:
+// Do issues the upstream request under ctx (the caller's overall budget) plus its own header deadline,
+// streams forwarded responses to w, and never writes a JSON body itself:
 // when Outcome.Committed is false the caller writes the error envelope for Outcome.Code.
 func (p *Proxy) Do(ctx context.Context, w http.ResponseWriter, req Request) Outcome {
-	// The header deadline must not live on the request context: Go applies a request's
-	// context to body reads too, and a body may legitimately stream past the header deadline.
+	// The header deadline must not live on the request context:
+	// Go applies a request's context to body reads too, and a body may legitimately stream past the header deadline.
 	reqCtx, cancelReq := context.WithCancelCause(ctx)
 	defer cancelReq(nil)
 
@@ -129,13 +129,15 @@ func (p *Proxy) Do(ctx context.Context, w http.ResponseWriter, req Request) Outc
 
 	// The header deadline is a timer that cancels reqCtx; nothing else cancels it.
 	// Stop's answer after the round trip settles the race with no goroutine and no channel:
-	// true means the timer never fired and never will, so headers that arrived can never be
-	// followed by a late cancel, and the body then streams until the overall budget ctx expires.
+	// true means the timer never fired and never will,
+	// so headers that arrived can never be followed by a late cancel,
+	// and the body then streams until the overall budget ctx expires.
 	timer := time.AfterFunc(p.headerDeadline(req.Seconds), func() { cancelReq(errHeaderDeadline) })
 	resp, err := p.client.Do(httpReq)
 	if !timer.Stop() {
-		// The deadline fired. Whatever the client returned, nothing has been committed,
-		// so the outcome is a timeout; a response that slipped through is released unread.
+		// The deadline fired.
+		// Whatever the client returned, nothing has been committed, so the outcome is a timeout;
+		// a response that slipped through is released unread.
 		if resp != nil {
 			_ = resp.Body.Close()
 		}
@@ -180,8 +182,8 @@ func (p *Proxy) Do(ctx context.Context, w http.ResponseWriter, req Request) Outc
 }
 
 // classifyBeforeHeaders maps a failure before any response headers to its outcome.
-// A deadline cause always wins; a client cancellation is reported as such; everything
-// else (refused, reset, EOF, malformed response) is an unreachable upstream.
+// A deadline cause always wins; a client cancellation is reported as such;
+// everything else (refused, reset, EOF, malformed response) is an unreachable upstream.
 func classifyBeforeHeaders(ctx, reqCtx context.Context) Outcome {
 	switch {
 	case errors.Is(context.Cause(reqCtx), errHeaderDeadline), errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -203,8 +205,8 @@ func upstreamURL(req Request) string {
 	return u
 }
 
-// contextReader stops a body copy once ctx is done, so a cancelled or expired request
-// is reported as such rather than read to the end.
+// contextReader stops a body copy once ctx is done,
+// so a cancelled or expired request is reported as such rather than read to the end.
 type contextReader struct {
 	ctx context.Context
 	r   io.Reader

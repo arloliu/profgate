@@ -23,8 +23,8 @@ type targetsBody struct {
 	Targets   []targetView `json:"targets"`
 }
 
-// writeTargets writes the targets response, sorted by Pod name, with an empty array
-// rather than null when the Service has no eligible backend.
+// writeTargets writes the targets response, sorted by Pod name, with an empty array rather than null
+// when the Service has no eligible backend.
 func writeTargets(w http.ResponseWriter, namespace, service string, targets []k8s.Target) {
 	views := make([]targetView, 0, len(targets))
 	for _, t := range targets {

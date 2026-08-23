@@ -69,8 +69,9 @@ func (b *countingBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
-// newFixture builds a Proxy for one row, wraps its transport to count body closes, starts the
-// trap server, and asserts at cleanup that every response handed out was closed exactly once.
+// newFixture builds a Proxy for one row, wraps its transport to count body closes,
+// starts the trap server, and asserts at cleanup
+// that every response handed out was closed exactly once.
 func newFixture(t *testing.T, opts Options) *fixture {
 	t.Helper()
 
@@ -122,8 +123,8 @@ func targetOf(t *testing.T, rawURL string) k8s.Target {
 	}
 }
 
-// request builds the Request every row sends: the cpu path with the given duration and the
-// target headers the HTTP layer would attach.
+// request builds the Request every row sends:
+// the cpu path with the given duration and the target headers the HTTP layer would attach.
 func request(target k8s.Target, seconds int) Request {
 	return Request{
 		Target:  target,

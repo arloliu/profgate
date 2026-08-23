@@ -1,6 +1,6 @@
-// Package e2e holds the end-to-end suite for the gateway: the lane matrix and
-// scenario registry compile without a build tag so unit tests cover them, while
-// the harness and the scenarios that drive a kind cluster sit behind the e2e tag.
+// Package e2e holds the end-to-end suite for the gateway:
+// the lane matrix and scenario registry compile without a build tag
+// so unit tests cover them, while the harness and the scenarios that drive a kind cluster sit behind the e2e tag.
 package e2e
 
 import (
@@ -88,8 +88,8 @@ func validateLanes(lanes []Lane) error {
 }
 
 // validateImage requires a repository path without a registry host and with a sha256 digest.
-// The registry comes from PROFGATE_E2E_REGISTRY at run time, so a host in the file would be
-// silently doubled when the harness prepends it.
+// The registry comes from PROFGATE_E2E_REGISTRY at run time,
+// so a host in the file would be silently doubled when the harness prepends it.
 func validateImage(image string) error {
 	if image == "" {
 		return errors.New("image is empty")

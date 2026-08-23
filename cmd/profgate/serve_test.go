@@ -73,8 +73,8 @@ func (b *syncBuffer) String() string {
 }
 
 // fakeUpstream answers every request with a committed 200 after release is closed.
-// It ignores the request context on purpose: the drain rows prove the lifecycle's own
-// bound ends the process, not the request budget.
+// It ignores the request context on purpose:
+// the drain rows prove the lifecycle's own bound ends the process, not the request budget.
 type fakeUpstream struct {
 	release chan struct{}
 	calls   atomic.Int32
@@ -113,8 +113,8 @@ func (r *recorder) syncedCalls() []bool {
 	return append([]bool(nil), r.synced...)
 }
 
-// fixtureObjects is one Service with one ready Pod behind one EndpointSlice, so a profile
-// request resolves, confirms, and reaches the upstream.
+// fixtureObjects is one Service with one ready Pod behind one EndpointSlice,
+// so a profile request resolves, confirms, and reaches the upstream.
 func fixtureObjects() []runtime.Object {
 	const uid = types.UID("u1")
 

@@ -1,6 +1,6 @@
 // Command testapp is the workload the end-to-end suite profiles through the gateway:
-// the standard net/http/pprof handlers on :6060, a readiness probe the harness can
-// flip, and a count of profile requests so a scenario can prove none arrived.
+// the standard net/http/pprof handlers on :6060, a readiness probe the harness can flip,
+// and a count of profile requests so a scenario can prove none arrived.
 //
 // "testapp sleep <seconds>" only sleeps; the Deployment's preStop hook runs it
 // because the distroless image has no sleep binary.

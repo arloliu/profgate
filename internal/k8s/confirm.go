@@ -16,14 +16,13 @@ const confirmCallTimeout = 5 * time.Second
 // A Cluster is the discovery the API listener runs against.
 var _ Discovery = (*Cluster)(nil)
 
-// Confirm re-reads the Pod behind t from the API server and checks that it is still
-// the Pod that was selected: same UID, not terminating, running and ready, and still
-// holding the selected address. Any mismatch, and a Pod that is gone, is ErrTargetChanged;
-// any other failure of the read is ErrDiscoveryUnavailable, because a gateway that cannot
-// check identity does not connect.
+// Confirm re-reads the Pod behind t from the API server and checks that it is still the Pod that was selected:
+// same UID, not terminating, running and ready, and still holding the selected address.
+// Any mismatch, and a Pod that is gone, is ErrTargetChanged; any other failure of the read is ErrDiscoveryUnavailable,
+// because a gateway that cannot check identity does not connect.
 //
-// The UID comes from t, captured at selection, so a replacement Pod that has since taken
-// the same name cannot satisfy the check.
+// The UID comes from t, captured at selection,
+// so a replacement Pod that has since taken the same name cannot satisfy the check.
 func (c *Cluster) Confirm(ctx context.Context, t Target) error {
 	callCtx, cancel := context.WithTimeout(ctx, confirmCallTimeout)
 	defer cancel()

@@ -1,6 +1,7 @@
-// Package metrics defines the Recorder interface through which the gateway
-// reports requests, confirmations, and cache state, along with a Prometheus
-// implementation and a no-op standing in for callers that do not need one.
+// Package metrics defines the Recorder interface through
+// which the gateway reports requests, confirmations, and cache state,
+// along with a Prometheus implementation and a no-op standing in for callers
+// that do not need one.
 package metrics
 
 import "time"
@@ -17,10 +18,10 @@ const (
 
 // Recorder records the metrics the gateway's handlers produce.
 type Recorder interface {
-	// Request records one completed /v1 request. endpoint and profile come from the resolved route
-	// when there is one (method failures included): targets → ("targets","none"), a known profile
-	// route → ("profile", name). Requests that fail before a route resolves, or name an unknown
-	// profile, record ("profile","none").
+	// Request records one completed /v1 request.
+	// endpoint and profile come from the resolved route when there is one (method failures included):
+	// targets → ("targets","none"), a known profile route → ("profile", name).
+	// Requests that fail before a route resolves, or name an unknown profile, record ("profile","none").
 	Request(endpoint Endpoint, profile, code string, d time.Duration)
 	// Confirm records the outcome of one Pod confirmation call: "ok", "changed", or "unavailable".
 	Confirm(result string)

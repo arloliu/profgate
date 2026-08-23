@@ -33,10 +33,9 @@ type Cluster struct {
 }
 
 // New constructs a Cluster over cs.
-// Asking the factory for each lister is what registers that informer, so the three
-// informers exist before Run starts them; the caches stay empty until then.
-// The confirmation read shares this clientset with the informers, so it shares
-// their client-side rate limit as well.
+// Asking the factory for each lister is what registers that informer, so the three informers exist before Run starts them;
+// the caches stay empty until then.
+// The confirmation read shares this clientset with the informers, so it shares their client-side rate limit as well.
 func New(cs kubernetes.Interface, opts Options) *Cluster {
 	log := opts.Logger
 	if log == nil {
@@ -60,9 +59,9 @@ func New(cs kubernetes.Interface, opts Options) *Cluster {
 func (c *Cluster) Run(ctx context.Context) {
 	c.factory.Start(ctx.Done())
 
-	// A canceled context ends the wait with unsynced informers, and a factory
-	// nobody registered an informer with reports an empty result: both leave
-	// HasSynced false rather than claiming an empty cache is a filled one.
+	// A canceled context ends the wait with unsynced informers,
+	// and a factory nobody registered an informer with reports an empty result:
+	// both leave HasSynced false rather than claiming an empty cache is a filled one.
 	result := c.factory.WaitForCacheSync(ctx.Done())
 	synced := len(result) == informerCount
 	for _, ok := range result {

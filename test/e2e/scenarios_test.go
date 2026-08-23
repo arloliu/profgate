@@ -227,8 +227,8 @@ func waitTargets(t *testing.T, h *Harness, ns, service string, want []string) {
 	}
 }
 
-// deployTestApp applies the test app into ns, waits for its rollout, and waits until both
-// gateways list its Pods; it returns the ready Pods sorted by name.
+// deployTestApp applies the test app into ns, waits for its rollout, and waits until both gateways list its Pods;
+// it returns the ready Pods sorted by name.
 func deployTestApp(t *testing.T, h *Harness, ns string) []corev1.Pod {
 	t.Helper()
 	ctx := t.Context()
@@ -325,8 +325,8 @@ func createSlice(t *testing.T, h *Harness, slice *discoveryv1.EndpointSlice) {
 	}
 }
 
-// testAppDeployment builds a Deployment of the test app named name whose Pods carry the
-// app label value app and, when version is not empty, the version label.
+// testAppDeployment builds a Deployment of the test app named name whose Pods carry the app label value app and,
+// when version is not empty, the version label.
 // It mirrors test/e2e/testapp/deployment.yaml for scenarios that need more than one Deployment.
 func testAppDeployment(name, ns, app, version string) *appsv1.Deployment {
 	labels := map[string]string{testAppLabel: app}
@@ -446,8 +446,9 @@ func orphanPods(t *testing.T, h *Harness, ns string) {
 	}
 }
 
-// converge polls both gateways every pollInterval until each has returned exactly want
-// stablePolls times in a row, and fails unless that happens within convergenceDeadline of start.
+// converge polls both gateways every pollInterval
+// until each has returned exactly want stablePolls times in a row, and fails
+// unless that happens within convergenceDeadline of start.
 func converge(t *testing.T, h *Harness, ns, service string, want []string, start time.Time) {
 	t.Helper()
 	want = slices.Clone(want)
@@ -534,8 +535,8 @@ func scenarioDedupe(t *testing.T, h *Harness) {
 	// A slice that names the real Pods at an address none of them holds.
 	createSlice(t, h, manualSlice("testapp-wrong-address", ns, testAppName, wrongAddress, pods...))
 
-	// The gateways give no signal for "I have seen the new slices", so the assertion holds
-	// over repeated polls long enough for an informer to deliver them.
+	// The gateways give no signal for "I have seen the new slices",
+	// so the assertion holds over repeated polls long enough for an informer to deliver them.
 	want := podNames(pods)
 	for i := 0; i < 6; i++ {
 		for g, c := range h.Gateways {
@@ -620,8 +621,9 @@ func scenarioConvergenceOnDelete(t *testing.T, h *Harness) {
 
 	events := h.WatchPods(t, ns)
 	deletePod(t, h, ns, victim.Name)
-	// The clock starts when the watch shows the deletion: the deletionTimestamp is what the
-	// gateway reacts to, and the DELETED event follows once the preStop sleep lets the Pod go.
+	// The clock starts when the watch shows the deletion: the deletionTimestamp is what the gateway reacts to,
+	// and the DELETED event follows
+	// once the preStop sleep lets the Pod go.
 	start := watchUntil(t, events, victim.Name, func(p *corev1.Pod, typ watch.EventType) bool {
 		return typ == watch.Deleted || p.DeletionTimestamp != nil
 	})
@@ -994,8 +996,8 @@ func scenarioAPIOutage(t *testing.T, h *Harness) {
 	}
 	t.Cleanup(deletePolicy)
 
-	// The policy takes effect in the data plane a moment after the object exists: wait until
-	// the first gateway's confirmation read fails before asserting on both.
+	// The policy takes effect in the data plane a moment after the object exists: wait
+	// until the first gateway's confirmation read fails before asserting on both.
 	err := poll(t.Context(), settleDeadline, func(_ context.Context) (bool, error) {
 		resp := get(t, h.Gateways[0], gatewayURL(ns, testAppName, "profiles/heap"))
 		var e errorResponse
@@ -1038,9 +1040,8 @@ func scenarioAPIOutage(t *testing.T, h *Harness) {
 
 // severAPIConnections drops the node's conntrack entries for every gateway Pod.
 // kind's NetworkPolicy enforcer accepts packets of a connection it already admitted,
-// so a policy applied after the gateway connected to the API server would never be felt
-// on that long-lived connection. A real outage severs it; this does the same, and the
-// next packet is evaluated as a new flow against the policy.
+// so a policy applied after the gateway connected to the API server would never be felt on that long-lived connection.
+// A real outage severs it; this does the same, and the next packet is evaluated as a new flow against the policy.
 func severAPIConnections(t *testing.T, h *Harness) {
 	t.Helper()
 	pods, err := h.gatewayPods(t.Context())

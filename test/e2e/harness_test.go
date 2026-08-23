@@ -44,8 +44,8 @@ const (
 	// gatewayImage and testAppImage are the references ko builds and kind loads.
 	gatewayImage = "ko.local/profgate:e2e"
 	testAppImage = "ko.local/testapp:e2e"
-	// testAppNamespaceLabel marks every namespace the harness creates, so the
-	// api-outage NetworkPolicy can allow egress to test apps without knowing their names.
+	// testAppNamespaceLabel marks every namespace the harness creates,
+	// so the api-outage NetworkPolicy can allow egress to test apps without knowing their names.
 	testAppNamespaceLabel = "profgate-e2e/test-app"
 
 	gatewayAPIPort = "8080"
@@ -243,8 +243,8 @@ func clusterState(ctx context.Context, h *Harness) (exists, matches bool, err er
 }
 
 // buildImages builds the gateway and the test app into the local Docker daemon.
-// With --bare ko names the image exactly KO_DOCKER_REPO plus the tag, so each
-// build sets the repository to the reference kind will load.
+// With --bare ko names the image exactly KO_DOCKER_REPO plus the tag,
+// so each build sets the repository to the reference kind will load.
 func (h *Harness) buildImages(ctx context.Context) error {
 	builds := []struct{ repo, importPath string }{
 		{"ko.local/profgate", "./cmd/profgate"},
@@ -450,8 +450,8 @@ func (h *Harness) Namespace(t *testing.T) string {
 	return name
 }
 
-// namespaceName turns a test name into a DNS label: lower case, runs of other characters
-// collapsed to one hyphen, trimmed, and capped at the Kubernetes limit.
+// namespaceName turns a test name into a DNS label:
+// lower case, runs of other characters collapsed to one hyphen, trimmed, and capped at the Kubernetes limit.
 func namespaceName(testName string) string {
 	name := strings.ToLower(testName)
 	name = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(name, "-")
@@ -495,8 +495,8 @@ func (h *Harness) waitNamespaceGone(ctx context.Context, name string) error {
 }
 
 // Apply renders the named overlay under test/e2e/overlays into namespace ns and applies it.
-// Cluster-scoped objects keep their names, so two tests applying the same overlay would
-// collide; the reduced overlays are named apart from the base for that reason.
+// Cluster-scoped objects keep their names, so two tests applying the same overlay would collide;
+// the reduced overlays are named apart from the base for that reason.
 func (h *Harness) Apply(t *testing.T, ns, overlay string) {
 	t.Helper()
 	if err := h.apply(t.Context(), ns, overlay); err != nil {
@@ -504,8 +504,8 @@ func (h *Harness) Apply(t *testing.T, ns, overlay string) {
 	}
 }
 
-// apply wraps the overlay in a kustomization that sets the namespace, which also
-// rewrites the ServiceAccount namespace in the overlay's ClusterRoleBinding subjects.
+// apply wraps the overlay in a kustomization that sets the namespace,
+// which also rewrites the ServiceAccount namespace in the overlay's ClusterRoleBinding subjects.
 func (h *Harness) apply(ctx context.Context, ns, overlay string) error {
 	dir, err := os.MkdirTemp("", "profgate-overlay-")
 	if err != nil {
@@ -527,9 +527,9 @@ func (h *Harness) apply(ctx context.Context, ns, overlay string) error {
 	return nil
 }
 
-// ForwardTestApp opens a port-forward to a test-app Pod's pprof port and returns the local
-// base URL. Only a scenario that declares NeedsPodReach may call it, so a degraded lane
-// skips exactly the scenarios that would fail there.
+// ForwardTestApp opens a port-forward to a test-app Pod's pprof port and returns the local base URL.
+// Only a scenario that declares NeedsPodReach may call it,
+// so a degraded lane skips exactly the scenarios that would fail there.
 func (h *Harness) ForwardTestApp(t *testing.T, ns, pod string) string {
 	t.Helper()
 	if h.scenario == nil || !h.scenario.NeedsPodReach {
@@ -626,8 +626,8 @@ func (h *Harness) kubectl(ctx context.Context, args ...string) error {
 	return h.run(ctx, []string{"KUBECONFIG=" + h.kubeconfig}, "kubectl", args...)
 }
 
-// run executes a command from the module root with its output on stderr, so
-// the test log shows what kind, ko, and kubectl reported.
+// run executes a command from the module root with its output on stderr,
+// so the test log shows what kind, ko, and kubectl reported.
 func (h *Harness) run(ctx context.Context, env []string, name string, args ...string) error {
 	h.log.Info("run", "command", name+" "+strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // the harness drives kind, ko, and kubectl with arguments it composes itself

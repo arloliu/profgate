@@ -150,9 +150,9 @@ func podGets(t *testing.T, cs *fake.Clientset) []k8stesting.GetAction {
 	return gets
 }
 
-// wantOnly asserts that err matches want and not the other sentinel. The API listener
-// picks its reason string by branching on which one it is, so an error carrying both
-// would answer with whichever it happened to test first.
+// wantOnly asserts that err matches want and not the other sentinel.
+// The API listener picks its reason string by branching on which one it is,
+// so an error carrying both would answer with whichever it happened to test first.
 func wantOnly(t *testing.T, err error, want error) {
 	t.Helper()
 
@@ -169,8 +169,9 @@ func wantOnly(t *testing.T, err error, want error) {
 }
 
 func TestConfirm(t *testing.T) {
-	// Each row starts from the baseline, captures the Target the caches resolve, stops the
-	// informers, and then changes the live object: what Confirm sees is the API server alone.
+	// Each row starts from the baseline, captures the Target the caches resolve, stops the informers,
+	// and then changes the live object:
+	// what Confirm sees is the API server alone.
 	tests := []struct {
 		name    string
 		live    func(*testing.T, *fake.Clientset)

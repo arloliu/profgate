@@ -1,6 +1,6 @@
 // Package ops serves the operations listener: liveness, readiness, and Prometheus metrics.
-// Nothing here checks authentication or realms; the listener is reachable only by the
-// cluster's probes and scrapers.
+// Nothing here checks authentication or realms;
+// the listener is reachable only by the cluster's probes and scrapers.
 package ops
 
 import (

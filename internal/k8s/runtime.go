@@ -14,8 +14,8 @@ type Runtime interface {
 	// Preflight exercises the granted tuples, over the runtime's own namespace.
 	Preflight(ctx context.Context) error
 	// Cluster is the discovery, constructed and not yet running.
-	// Every call returns the same one: the caller that runs the informers and the
-	// caller that reads them share a single set of caches.
+	// Every call returns the same one:
+	// the caller that runs the informers and the caller that reads them share a single set of caches.
 	Cluster() *Cluster
 }
 
@@ -37,8 +37,7 @@ func NewRuntime(opts Options) (Runtime, error) {
 }
 
 // NewRuntimeWithClientset builds a Runtime over a client the caller supplies.
-// It is exported for tests in other packages, which may name kubernetes.Interface
-// from their _test.go files.
+// It is exported for tests in other packages, which may name kubernetes.Interface from their _test.go files.
 func NewRuntimeWithClientset(cs kubernetes.Interface, opts Options) Runtime {
 	return &clusterRuntime{cs: cs, opts: opts, cluster: New(cs, opts)}
 }

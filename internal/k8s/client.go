@@ -73,9 +73,9 @@ type preflightCall struct {
 }
 
 // deadlineGuard runs fn under ctx and returns as soon as either fn returns or ctx is done.
-// The deadline is enforced here as well as passed down, so a transport that ignores its
-// context still cannot stall the caller. The error is returned unclassified: what a
-// failure means is the caller's decision, not this function's.
+// The deadline is enforced here as well as passed down,
+// so a transport that ignores its context still cannot stall the caller.
+// The error is returned unclassified: what a failure means is the caller's decision, not this function's.
 func deadlineGuard(ctx context.Context, fn func(context.Context) error) error {
 	done := make(chan error, 1)
 	go func() { done <- fn(ctx) }()

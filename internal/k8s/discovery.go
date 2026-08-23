@@ -25,8 +25,8 @@ var (
 	ErrServiceSelectorless = errors.New("service has no selector")
 	// ErrTargetChanged reports that the confirmation read no longer matches the selected Target.
 	ErrTargetChanged = errors.New("target changed")
-	// ErrDiscoveryUnavailable reports that discovery cannot answer: the informer caches
-	// have not synced, or the confirmation read failed against the API server.
+	// ErrDiscoveryUnavailable reports that discovery cannot answer:
+	// the informer caches have not synced, or the confirmation read failed against the API server.
 	ErrDiscoveryUnavailable = errors.New("discovery unavailable")
 )
 

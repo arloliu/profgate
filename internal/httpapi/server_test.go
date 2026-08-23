@@ -708,8 +708,8 @@ func TestProxyOutcomes(t *testing.T) {
 		upstream := newTrap(t, func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.WriteHeader(http.StatusOK)
-			// More than net/http's write buffer, so the headers and part of the body reach the
-			// client before the cut; a shorter prefix would be dropped whole with the abort.
+			// More than net/http's write buffer, so the headers and part of the body reach the client before the cut;
+			// a shorter prefix would be dropped whole with the abort.
 			_, _ = w.Write(bytes.Repeat([]byte("half-of-the-body"), 4096))
 			if err := http.NewResponseController(w).Flush(); err != nil {
 				t.Errorf("Flush() error = %v", err)

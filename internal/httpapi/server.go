@@ -1,6 +1,6 @@
-// Package httpapi serves the /v1 API: it runs the spec's request algorithm against a
-// Discovery, writes the targets listing and every gateway error itself, and hands one
-// confirmed Target to an Upstream for the profile bytes.
+// Package httpapi serves the /v1 API:
+// it runs the spec's request algorithm against a Discovery, writes the targets listing and every gateway error itself,
+// and hands one confirmed Target to an Upstream for the profile bytes.
 package httpapi
 
 import (
@@ -330,9 +330,8 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 		return
 	}
 	if out.Code == codeStreamFailed {
-		// The deferred audit and metrics run during the unwind; net/http then drops the
-		// connection without a stack trace, so the client sees a truncation rather than
-		// a cleanly finished body.
+		// The deferred audit and metrics run during the unwind; net/http then drops the connection without a stack trace,
+		// so the client sees a truncation rather than a cleanly finished body.
 		panic(http.ErrAbortHandler)
 	}
 }

@@ -7,10 +7,9 @@ import (
 	"testing"
 )
 
-// chdirToModuleRoot points the working directory at the module root for the
-// duration of the test, matching how the CI workflow and the usage
-// instructions invoke this command: "go run ./test/e2e/cmd/lanes" from the
-// repository root, so run's hard-coded lanesFile path resolves.
+// chdirToModuleRoot points the working directory at the module root for the duration of the test,
+// matching how the CI workflow and the usage instructions invoke this command:
+// "go run ./test/e2e/cmd/lanes" from the repository root, so run's hard-coded lanesFile path resolves.
 func chdirToModuleRoot(t *testing.T) {
 	t.Helper()
 	wd, err := os.Getwd()

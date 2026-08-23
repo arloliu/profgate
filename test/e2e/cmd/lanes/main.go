@@ -1,5 +1,5 @@
-// Command lanes prints the end-to-end lane matrix as a JSON array of lane
-// names, for the "e2e" workflow's lane job to fan out into a matrix.
+// Command lanes prints the end-to-end lane matrix as a JSON array of lane names,
+// for the "e2e" workflow's lane job to fan out into a matrix.
 // Run from the module root: "go run ./test/e2e/cmd/lanes [-unfrozen]".
 package main
 

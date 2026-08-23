@@ -61,10 +61,10 @@ type profileParams struct {
 	version string
 }
 
-// parseProfileParams validates the query string against the spec's parameter table and
-// resolves the effective duration against the configured limit.
-// Parameters are checked in name order so a query with several faults reports the same one
-// every time; the duration limit is checked only once every parameter is well-formed.
+// parseProfileParams validates the query string against the spec's parameter table
+// and resolves the effective duration against the configured limit.
+// Parameters are checked in name order so a query with several faults reports the same one every time;
+// the duration limit is checked only once every parameter is well-formed.
 func parseProfileParams(rawQuery string, spec profileSpec, limits config.LimitsConfig) (profileParams, *requestError) {
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {

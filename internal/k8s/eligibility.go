@@ -14,8 +14,9 @@ import (
 const podKind = "Pod"
 
 // Targets returns the currently eligible backends of a Service. Order is unspecified.
-// It reads only the informer caches and never calls the API server, which is why it
-// ignores the context: its answer is as current as the caches are, and it cannot block.
+// It reads only the informer caches and never calls the API server, which is why it ignores the context:
+// its answer is as current as the caches are,
+// and it cannot block.
 func (c *Cluster) Targets(_ context.Context, namespace, service string) ([]Target, error) {
 	svc, err := c.services.Services(namespace).Get(service)
 	if err != nil {
@@ -38,8 +39,8 @@ func (c *Cluster) Targets(_ context.Context, namespace, service string) ([]Targe
 	family := addressFamily(epSlices)
 
 	// Valid entries are collected in the order they are met and deduplicated by Pod UID.
-	// Two valid entries for one UID that disagree on address are a conflict: that Pod is
-	// excluded, because the gateway cannot tell which address belongs to it.
+	// Two valid entries for one UID that disagree on address are a conflict: that Pod is excluded,
+	// because the gateway cannot tell which address belongs to it.
 	var found []Target
 	seen := make(map[string]int, len(epSlices))
 	conflicted := make(map[string]bool)
@@ -98,8 +99,9 @@ func addressFamily(epSlices []*discoveryv1.EndpointSlice) discoveryv1.AddressTyp
 }
 
 // eligible applies the spec's eligibility rules to one endpoint and the cached Pod behind it.
-// A rule that does not hold makes the entry ineligible, never an error: an endpoint the gateway
-// cannot vouch for is dropped, and the rest of the Service is still resolvable.
+// A rule that does not hold makes the entry ineligible, never an error:
+// an endpoint the gateway cannot vouch for is dropped,
+// and the rest of the Service is still resolvable.
 func (c *Cluster) eligible(svc *corev1.Service, selector labels.Selector, ep *discoveryv1.Endpoint) (Target, bool) {
 	ref := ep.TargetRef
 	if ref == nil || ref.Kind != podKind || ref.Namespace != svc.Namespace {
@@ -169,8 +171,9 @@ func hasPodIP(pod *corev1.Pod, address string) bool {
 	return false
 }
 
-// pprofPort resolves the Pod's pprof port: the configured number, or the container port
-// carrying the configured name over TCP. A Pod with no such port has no pprof port at all.
+// pprofPort resolves the Pod's pprof port:
+// the configured number, or the container port carrying the configured name over TCP.
+// A Pod with no such port has no pprof port at all.
 func (c *Cluster) pprofPort(pod *corev1.Pod) (int32, bool) {
 	if c.opts.Port != 0 {
 		return c.opts.Port, true

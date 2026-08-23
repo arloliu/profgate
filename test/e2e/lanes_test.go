@@ -174,8 +174,8 @@ func TestLoadLanesRejectsMatrix(t *testing.T) {
 	})
 }
 
-// TestKnownKindVersionsMatchMise pins the kind versions a lane may name to the ones
-// mise.toml installs, so a lane cannot name a binary `mise x kind@<v>` cannot run.
+// TestKnownKindVersionsMatchMise pins the kind versions a lane may name to the ones mise.toml installs,
+// so a lane cannot name a binary `mise x kind@<v>` cannot run.
 func TestKnownKindVersionsMatchMise(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", "mise.toml"))
 	if err != nil {
