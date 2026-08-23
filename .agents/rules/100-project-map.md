@@ -64,8 +64,9 @@ internal/proxy/        // upstream HTTP to PodIP:port, timeouts, error mapping
 internal/httpapi/      // routing, realm checks, handlers, audit log
 internal/config/       // fuda-loaded Config and validation
 internal/metrics/      // Recorder interface, Prometheus implementation
+internal/ops/          // liveness, readiness, and the Prometheus /metrics listener
 deploy/                // kustomize base: RBAC, Deployment, NetworkPolicy
-test/e2e/              // kind harness, versions.yaml, testapp, overlays
+test/e2e/              // kind harness, versions.yaml, testapp, overlays, cmd/lanes (CI lane matrix)
 scripts/               // repository checks; check-repo.py
 docs/                  // see docs/README.md
 ```

@@ -920,7 +920,7 @@ so it cannot produce real EndpointSlices or reachable Pods.
   every scenario talks to the gateway through these and they are never accounted per scenario.
   **Test-app reach:** a scenario that opens a port-forward to a test-app Pod (to flip readiness)
   or that needs the gateway to complete a proxy to a test-app Pod declares `needsPodReach`.
-  `degraded: true` skips exactly the scenarios that declare it (2, the readiness half of 3, 4, and 8) on that lane;
+  `degraded: true` skips exactly the scenarios that declare it (2, the readiness half of 3, 4, 8, and 9) on that lane;
   the harness logs every skipped scenario by name, the remaining scenarios must still pass,
   and CI reports the lane as passed with a warning annotation.
   A scenario that opens a test-app port-forward without declaring `needsPodReach` fails on every lane.
@@ -993,7 +993,7 @@ Why kind rather than k3s for the old versions:
    and `?pod=` requests to each return identical target headers (`needsPodReach`).
 9. With the gateway's egress to the API server blocked by a NetworkPolicy (`needsNetworkPolicy`),
    `/readyz` on both replicas stays `200`, the targets endpoint still answers from cache,
-   and a profile request returns `503 discovery_unavailable` without the test app receiving a connection.
+   and a profile request returns `503 discovery_unavailable` without the test app receiving a connection (`needsPodReach`, to read the test app's request counter).
 10. Every scenario runs on every lane whose capabilities it does not exclude;
     a lane skips a scenario only by `degraded` or `networkPolicy`, and the skip is logged by scenario name.
 

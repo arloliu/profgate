@@ -693,7 +693,8 @@ then call `c.Confirm(ctx, t0)`.
 
 `callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)`;
 `pod, err := cs.CoreV1().Pods(t.Namespace).Get(callCtx, t.Pod, metav1.GetOptions{})`;
-`IsNotFound` → `ErrTargetChanged`; other error → `fmt.Errorf("%w: %v", ErrDiscoveryUnavailable, err)`;
+`IsNotFound` → `ErrTargetChanged`;
+other error → `fmt.Errorf("%w: confirm pod %s/%s: %s", ErrDiscoveryUnavailable, t.Namespace, t.Pod, err.Error())`;
 then `string(pod.UID) != t.UID`, `pod.DeletionTimestamp != nil`, `pod.Status.Phase != Running`,
 Ready condition not `True`, or `t.PodIP ∉ pod.Status.PodIPs` → `ErrTargetChanged`.
 
@@ -742,6 +743,7 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus
 Metric names and labels exactly as the spec's *Metrics* table:
 `profgate_requests_total{endpoint,profile,code}`, `profgate_request_duration_seconds{profile}`,
 `profgate_confirm_total{result}`, `profgate_profiles_in_flight`, `profgate_discovery_synced`.
+`profgate_request_duration_seconds` uses the spec's buckets: `0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300` seconds.
 
 - [x] **Add the module**: `mise exec -- go get github.com/prometheus/client_golang@v1.24.1`.
 - [x] **Write the failing tests**: register on `prometheus.NewPedanticRegistry()`, call each method once,
@@ -1264,10 +1266,11 @@ func TestMain(m *testing.M) {
         run("mise", "x", "kind@"+lane.Kind, "--", "kind", "create", "cluster", "--name", cluster,
             "--image", registry()+"/"+lane.Image)
     }
-    os.Setenv("KO_DOCKER_REPO", "ko.local")
     os.Setenv("VERSION", "e2e")
+    os.Setenv("KO_DOCKER_REPO", "ko.local/profgate")
     run("ko", "build", "--local", "--bare", "--tags", "e2e", "./cmd/profgate")      // -> ko.local/profgate:e2e
-    run("ko", "build", "--local", "--bare", "--tags", "e2e", "./test/e2e/testapp")   // -> ko.local/testapp:e2e
+    os.Setenv("KO_DOCKER_REPO", "ko.local/testapp")
+    run("ko", "build", "--local", "--bare", "--tags", "e2e", "./test/e2e/testapp") // -> ko.local/testapp:e2e
     run("mise", "x", "kind@"+lane.Kind, "--", "kind", "load", "docker-image", "--name", cluster,
         "ko.local/profgate:e2e", "ko.local/testapp:e2e")
     // apply overlays/default into namespace "profgate", wait for 2 ready gateway Pods,
@@ -1280,7 +1283,9 @@ func TestMain(m *testing.M) {
 }
 ```
 
-`--bare` makes ko name the image `$KO_DOCKER_REPO/<last path element>` with no hash suffix, so both references are known in advance.
+`--bare` makes ko name the image `$KO_DOCKER_REPO:<tag>` with no hash suffix;
+the harness sets `KO_DOCKER_REPO` to `ko.local/profgate` and `ko.local/testapp` for the respective build,
+so both references are known in advance.
 `registry()` returns `PROFGATE_E2E_REGISTRY` or `docker.io`.
 Port-forwards use `k8s.io/client-go/tools/portforward` with the tester's kubeconfig.
 
