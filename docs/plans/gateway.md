@@ -492,7 +492,7 @@ func Preflight(ctx context.Context, cs kubernetes.Interface, opts Options, ownNa
 
 `Options.PreflightCallTimeout` defaults to 10s when zero; tests pass a short value.
 
-- [ ] **Write the failing tests**
+- [x] **Write the failing tests**
 
 Every subtest builds its own `fake.NewClientset()` (the client-go 0.36 constructor) and reactors.
 Ordinary verbs use `PrependReactor(verb, resource, fn)`; watches use `PrependWatchReactor(resource, fn)` —
@@ -511,14 +511,14 @@ the two chains are separate.
 
 `OwnNamespace`: a temp file containing `"payment\n"` → `"payment"`; a missing file → error.
 
-- [ ] **Add the Kubernetes modules, then run the tests and watch them fail to compile**
+- [x] **Add the Kubernetes modules, then run the tests and watch them fail to compile**
 
 ```bash
 mise exec -- go get k8s.io/client-go@v0.36.4 k8s.io/api@v0.36.4 k8s.io/apimachinery@v0.36.4
 mise exec -- go test ./internal/k8s/
 ```
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `Preflight`, for each of `Services("")`, `Pods("")`, `EndpointSlices("")` (the `discovery/v1` client):
 `List(callCtx, metav1.ListOptions{Limit: 1})`;
@@ -527,7 +527,7 @@ Then `Pods(ownNamespace).Get(callCtx, "profgate-preflight", metav1.GetOptions{})
 `callCtx` is `context.WithTimeout(ctx, opts.PreflightCallTimeout)` per call.
 `apierrors.IsForbidden(err)` → `ErrForbidden{resource, verb}`; otherwise `fmt.Errorf("preflight %s %s: %w", verb, resource, err)`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/k8s/ && mise exec -- go mod tidy
@@ -566,7 +566,7 @@ func startFixture(t *testing.T, opts Options, objs ...runtime.Object) (cs *fake.
 func waitCache(t *testing.T, pred func() bool)
 ```
 
-- [ ] **Write the baseline fixture objects** in `eligibility_test.go`
+- [x] **Write the baseline fixture objects** in `eligibility_test.go`
 
 Service `payment/payment-api` with `Spec.Selector{"app":"payment"}`;
 Pod `payment-api-1` (UID `u1`, labels `app=payment`, `app.kubernetes.io/version=1.2.3`, `Spec.NodeName=worker-1`,
@@ -576,7 +576,7 @@ EndpointSlice `payment-api-abc` (`AddressType: IPv4`, label `kubernetes.io/servi
 one endpoint `{Addresses:["10.0.0.5"], Conditions:{Ready: &ready} with `ready := true`, TargetRef:{Kind:"Pod", Namespace:"payment", Name:"payment-api-1", UID:"u1"}}`).
 Default `Options{VersionLabel:"app.kubernetes.io/version", PortName:"pprof"}`.
 
-- [ ] **Write the failing tests**
+- [x] **Write the failing tests**
 
 Each subtest calls `startFixture` with the baseline objects **after applying its mutation to the object literals**
 (no mutation of a running fixture), so the cache is deterministic once `HasSynced` is true.
@@ -611,9 +611,9 @@ Rows expect zero targets unless stated.
 | not synced | construct with `New` but do not `Run` | `HasSynced() == false` |
 | cache follows deletes | baseline; then `cs.CoreV1().Pods("payment").Delete(...)`; `waitCache` until `Targets` is empty | passes within 5s |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `cluster.go`: `informers.NewSharedInformerFactory(cs, 10*time.Minute)`;
 listers for `Core().V1().Services()`, `Core().V1().Pods()`, `Discovery().V1().EndpointSlices()`;
@@ -629,7 +629,7 @@ readiness, phase, deletion timestamp, `addresses[0] ∈ pod.Status.PodIPs`,
 port resolution (named mode: a container port with that name and `Protocol == "" || Protocol == corev1.ProtocolTCP`);
 collect valid entries keyed by UID; a UID with two different addresses is dropped and logged with `"conflict"`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/k8s/
@@ -664,7 +664,7 @@ func NewRuntimeWithClientset(cs kubernetes.Interface, opts Options) Runtime
 A `runtime_test.go` row: `NewRuntimeWithClientset(fakeCS, opts).Cluster()` is a `*Cluster` whose `HasSynced()` is false,
 and `Preflight` on it returns the same `ErrForbidden` the direct call returns under a forbidden watch reactor.
 
-- [ ] **Write the failing tests**
+- [x] **Write the failing tests**
 
 Each subtest: `cs, c, cancel := startFixture(...)` with the baseline, take `t0 := Targets(...)[0]`,
 then `cancel()` to stop informer delivery, then mutate **the fake API** through `cs` (the cache no longer follows),
@@ -687,9 +687,9 @@ then call `c.Confirm(ctx, t0)`.
 | tuples across the lifecycle | `startFixture`, one `Targets`, one `Confirm`; inspect `cs.Actions()` | every `(verb, resource)` is within the seven RBAC tuples and `Confirm` added exactly one `get pods` |
 | relist continues under load | 64 goroutines loop `Confirm` for 2s through a reactor that sleeps 20ms; meanwhile `cs.Tracker().Add` a new eligible Pod and slice | the cache lists the new Pod within 5s while confirmations continue; the in-flight cap is asserted in `httpapi`, not here |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)`;
 `pod, err := cs.CoreV1().Pods(t.Namespace).Get(callCtx, t.Pod, metav1.GetOptions{})`;
@@ -697,7 +697,7 @@ then call `c.Confirm(ctx, t0)`.
 then `string(pod.UID) != t.UID`, `pod.DeletionTimestamp != nil`, `pod.Status.Phase != Running`,
 Ready condition not `True`, or `t.PodIP ∉ pod.Status.PodIPs` → `ErrTargetChanged`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/k8s/
