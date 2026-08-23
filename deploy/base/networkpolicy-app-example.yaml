@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: profgate-app-example
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: example-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 6060
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: profgate
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: profgate

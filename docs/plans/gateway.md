@@ -1108,7 +1108,7 @@ git commit -m "feat(cli): run the gateway end to end"
   `deployment.yaml`, `service.yaml`, `networkpolicy-gateway.yaml`, `networkpolicy-app-example.yaml`, `kustomization.yaml`;
   `deploy/deploy_test.go`
 
-- [ ] **Write the failing tests** (`sigs.k8s.io/yaml` into typed objects; `kustomization.yaml` lists every file):
+- [x] **Write the failing tests** (`sigs.k8s.io/yaml` into typed objects; `kustomization.yaml` lists every file):
 
 | Test | Assertion |
 |---|---|
@@ -1120,9 +1120,9 @@ git commit -m "feat(cli): run the gateway end to end"
 | App example NetworkPolicy | ingress on `6060/TCP` from `namespaceSelector` `kubernetes.io/metadata.name: profgate` and `podSelector` `app.kubernetes.io/name: profgate`; nothing else |
 | ConfigMap | `config.Load` on the embedded `config.yaml` succeeds and the anonymous realm lists `"*"` for all three lists |
 
-- [ ] **Write the manifests** to pass; the base image is `ghcr.io/arloliu/profgate:latest` (overridden by overlays and production kustomizations).
+- [x] **Write the manifests** to pass; the base image is `ghcr.io/arloliu/profgate:latest` (overridden by overlays and production kustomizations).
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go get sigs.k8s.io/yaml@v1.6.0
