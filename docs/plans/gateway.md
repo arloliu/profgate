@@ -409,12 +409,12 @@ subcommands `version`, `config validate --config <path>`, `serve --config <path>
 it is written only by the linker and is named as that exception in `200-coding-standards.md`.
 `serve` is wired in *Serve lifecycle and ops listener*; until then it loads the config and returns 0.
 
-- [ ] **Write the fixtures**
+- [x] **Write the fixtures**
 
 `testdata/good.yaml` is the spec's example configuration verbatim.
 `testdata/bad.yaml` is the same with `realms: {}`.
 
-- [ ] **Write the failing tests**
+- [x] **Write the failing tests**
 
 | Subtest | Args | Expect |
 |---|---|---|
@@ -424,9 +424,9 @@ it is written only by the linker and is named as that exception in `200-coding-s
 | unknown | `bogus` | exit 2, stderr contains `usage` |
 | no subcommand | (none) | exit 2 |
 
-- [ ] **Implement** with one `flag.NewFlagSet` per subcommand and `main()` as `os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))`.
+- [x] **Implement** with one `flag.NewFlagSet` per subcommand and `main()` as `os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./cmd/profgate/
