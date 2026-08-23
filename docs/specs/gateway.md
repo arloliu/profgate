@@ -778,6 +778,10 @@ and refuses to proxy (section 5.6), which is the correct behavior, not a reason 
 | `profgate_profiles_in_flight` (gauge) | — |
 | `profgate_discovery_synced` (gauge) | — |
 
+`profgate_request_duration_seconds` uses buckets `0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300` seconds,
+wide enough for the durations `limits.cpuSeconds` and `limits.traceSeconds` allow (section 6.3)
+and the header deadline and overall budget built from them (section 6.4).
+
 Every label has a fixed value set:
 `profile` is the eight names or `none`, `code` takes the values in sections 6.4 and 6.5
 with upstream statuses bucketed as `upstream_<status>`.

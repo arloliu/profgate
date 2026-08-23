@@ -743,10 +743,10 @@ Metric names and labels exactly as the spec's *Metrics* table:
 `profgate_requests_total{endpoint,profile,code}`, `profgate_request_duration_seconds{profile}`,
 `profgate_confirm_total{result}`, `profgate_profiles_in_flight`, `profgate_discovery_synced`.
 
-- [ ] **Add the module**: `mise exec -- go get github.com/prometheus/client_golang@v1.24.1`.
-- [ ] **Write the failing tests**: register on `prometheus.NewPedanticRegistry()`, call each method once,
+- [x] **Add the module**: `mise exec -- go get github.com/prometheus/client_golang@v1.24.1`.
+- [x] **Write the failing tests**: register on `prometheus.NewPedanticRegistry()`, call each method once,
   and compare with `testutil.GatherAndCompare` against the expected exposition text for each metric.
-- [ ] **Implement**, then validate and commit:
+- [x] **Implement**, then validate and commit:
 
 ```bash
 mise exec -- go test -race ./internal/metrics/ && mise exec -- go mod tidy
