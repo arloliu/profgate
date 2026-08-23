@@ -93,7 +93,7 @@ its edges.
 ## Widening the Boundary
 
 Broader access is a design decision, argued in
-[`docs/specs/profgate-design.md`](../../docs/specs/profgate-design.md) before
+[`docs/specs/gateway.md`](../../docs/specs/gateway.md) before
 it is written in code.
 A proposal to widen carries:
 

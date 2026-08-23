@@ -10,7 +10,8 @@ Kubernetes-aware pprof gateway for Go workloads: one HTTP entry point that
 resolves a Kubernetes Service to its backend Pods, proxies pprof profiles, and
 collects representative CPU profiles for Profile-Guided Optimization.
 Kubernetes 1.23 is the compatibility baseline.
-NATS JetStream KV holds control-plane state; profile bytes stay ephemeral.
+The gateway alone is stateless and uses no NATS;
+PGO collection, when it arrives, adds NATS JetStream KV for control-plane state while profile bytes stay ephemeral.
 
 ## This Repository Has No Code Yet
 
@@ -19,17 +20,17 @@ the repository invariants that need no build.
 There is no Go source, no `go.mod`, and no linter configuration.
 Every structural claim in
 [`100-project-map.md`](.agents/rules/100-project-map.md) describes **planned**
-layout drawn from the design draft, not what `ls` shows.
+layout drawn from the accepted gateway design, not what `ls` shows.
 Confirm any path, package, or command against reality before relying on it.
 
-## The Design Is a Draft
+## Two Specs, One Accepted
 
-[`docs/specs/profgate-design.md`](docs/specs/profgate-design.md) carries
-`Status: Draft`.
-Its direction has not been settled.
-Read it for context, cite it in discussion, and revise it freely — it is not
-an implementation source.
-A spec becomes the design of record when it reaches `Status: Accepted`.
+[`docs/specs/gateway.md`](docs/specs/gateway.md) is `Accepted`:
+the design of record for the pprof gateway — discovery, proxying, realms, configuration, testing — with no NATS and no PGO.
+[`docs/specs/pgo.md`](docs/specs/pgo.md) is `Draft`:
+PGO collection layered on the gateway, carried over from the superseded combined draft and not settled.
+Read a draft for context and revise it freely;
+implement only from an `Accepted` spec.
 Full authority order:
 [`000-agent-contract.md`](.agents/rules/000-agent-contract.md#document-authority).
 

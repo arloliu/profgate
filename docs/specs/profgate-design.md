@@ -1,10 +1,10 @@
 # Profgate — Design
 
-**Status:** Draft
+**Status:** Superseded
 
-Direction is not settled. This document is a proposal under discussion:
-read it for context and revise it freely, but do not implement from it.
-It becomes the design of record when its Status reaches `Accepted`.
+Superseded by [`gateway.md`](gateway.md) (the accepted gateway design)
+and [`pgo.md`](pgo.md) (the PGO collection draft).
+Kept unchanged as the original combined draft; do not revise or implement from it.
 
 **Scope:** Profgate — a lightweight standalone pprof gateway for Kubernetes 1.23+ environments  
 **Primary use cases:** On-demand production pprof access and lightweight asynchronous PGO collection

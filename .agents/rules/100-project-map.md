@@ -3,8 +3,8 @@
 Navigation aid, not ground truth.
 This repository has no Go code yet — only a pinned toolchain.
 Everything below is **planned** structure
-drawn from [`docs/specs/profgate-design.md`](../../docs/specs/profgate-design.md),
-which is itself a draft.
+drawn from the accepted gateway design,
+[`docs/specs/gateway.md`](../../docs/specs/gateway.md).
 Confirm any path, package, or import claim with `ls` or `grep` before relying
 on it ([000](000-agent-contract.md)).
 
@@ -34,9 +34,9 @@ on it ([000](000-agent-contract.md)).
   capabilities.
 - **Kubernetes baseline:** 1.23, using only stable API fields available at
   that release. 1.23 and 1.24 are first-class integration-test targets.
-- **Runtime dependencies:** the Kubernetes API and NATS JetStream KV.
-  No database, cache, message broker, PVC, or object storage.
-  No Kubernetes CRDs and no operator.
+- **Runtime dependencies:** the Kubernetes API only.
+  No NATS until PGO collection lands, no database, cache, PVC, or object
+  storage, no Kubernetes CRDs and no operator.
 
 ## The Kubernetes Seam
 
@@ -61,18 +61,19 @@ where the cost is visible.
 ```
 cmd/profgate/          // CLI entrypoint: serve, config validate, version
 internal/k8s/          // the Kubernetes seam; sole importer of client-go
-internal/proxy/        // pprof proxying to resolved Pod endpoints
-internal/pgo/          // scheduling, collection, merge, manifest
-internal/natskv/       // PROFGATE_CONFIG / PROFGATE_JOBS access
-internal/httpapi/      // external HTTP API, auth, access realms
-deploy/                // ClusterRole, Deployment, Service, NetworkPolicy
+internal/proxy/        // upstream HTTP to PodIP:port, timeouts, error mapping
+internal/httpapi/      // routing, realm checks, handlers, audit log
+internal/config/       // fuda-loaded Config and validation
+internal/metrics/      // Recorder interface, Prometheus implementation
+deploy/                // kustomize base: RBAC, Deployment, NetworkPolicy
+test/e2e/              // kind harness, versions.yaml, testapp, overlays
 scripts/               // repository checks; check-repo.py exists today
 docs/                  // see docs/README.md
 ```
 
 Only `scripts/` and `docs/` exist.
-Treat the list as the shape the design implies, and revisit it when the design
-reaches `Status: Accepted`.
+`internal/pgo/` and `internal/natskv/` arrive with the PGO design
+([`docs/specs/pgo.md`](../../docs/specs/pgo.md)) and not before.
 
 ## External HTTP API
 
