@@ -1400,11 +1400,11 @@ git commit -m "test(e2e): prove discovery, proxying, and RBAC"
 **Files:**
 - Create: `.github/workflows/check.yml`, `.github/workflows/e2e.yml`
 
-- [ ] **`check.yml`**: `on: push`; `jdx/mise-action@v2`; `mise run check && mise run lint && mise run test`.
-- [ ] **Lane printer**: `test/e2e/cmd/lanes/main.go` (untagged) calls `LoadLanes` and `LaneNames` from the `e2e` package
+- [x] **`check.yml`**: `on: push`; `jdx/mise-action@v2`; `mise run check && mise run lint && mise run test`.
+- [x] **Lane printer**: `test/e2e/cmd/lanes/main.go` (untagged) calls `LoadLanes` and `LaneNames` from the `e2e` package
   and prints the JSON list, taking `-unfrozen` as its only flag.
   `LaneNames` and its tests already exist from the harness task.
-- [ ] **`e2e.yml`**:
+- [x] **`e2e.yml`**:
 
 ```yaml
 name: e2e
@@ -1445,7 +1445,7 @@ jobs:
           password: ${{ secrets.E2E_REGISTRY_TOKEN }}
       - run: mise run test:e2e
 ```
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise run lint && mise run test && mise run check
