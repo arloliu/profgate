@@ -1,0 +1,15 @@
+[tools]
+go = "1.26.7"
+golangci-lint = "2.12.2"
+
+[env]
+# Fail loudly when go.mod asks for a toolchain mise did not install,
+# instead of silently downloading a different one.
+GOTOOLCHAIN = "local"
+
+# Build, test, and lint tasks arrive with go.mod. A task that fails today is
+# worse than no task: an agent reads it as a claim that it works.
+[tasks.check]
+description = "Verify the repository invariants that need no build"
+# Runs on the system python3 with standard library only; mise does not pin it.
+run = "python3 scripts/check-repo.py"

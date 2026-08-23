@@ -1,0 +1,6 @@
+# temporary artifacts
+/tmp/
+
+# machine-local mise overrides
+/mise.local.toml
+/.mise.local.toml
