@@ -3,13 +3,24 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/arloliu/profgate/internal/config"
+	"github.com/arloliu/profgate/internal/k8s"
+	"github.com/arloliu/profgate/internal/metrics"
+	"github.com/arloliu/profgate/internal/proxy"
 )
+
+// serviceAccountNamespaceFile is where the projected ServiceAccount token mounts the namespace.
+const serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 // version is set by the linker at build time; "dev" is the fallback for local builds.
 var version = "dev"
@@ -33,7 +44,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "config":
 		return runConfig(args[1:], stdout, stderr)
 	case "serve":
-		return runServe(args[1:], stderr)
+		return runServe(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintln(stderr, usage)
 		return 2
@@ -79,8 +90,8 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runServe loads the configuration and returns 0. It does not start a listener.
-func runServe(args []string, stderr io.Writer) int {
+// runServe runs the gateway with its production dependencies until SIGINT or SIGTERM.
+func runServe(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	path := fs.String("config", "", "path to the configuration file")
@@ -92,10 +103,19 @@ func runServe(args []string, stderr io.Writer) int {
 		return 2
 	}
 
-	if _, err := config.Load(*path); err != nil {
-		_, _ = fmt.Fprintln(stderr, err)
-		return 2
+	// The signal context is only the stop request; the gateway's own work runs under
+	// Background so a signal drains the listeners rather than cancelling them.
+	sigCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	registry := prometheus.NewRegistry()
+	deps := serveDeps{
+		namespaceFile: serviceAccountNamespaceFile,
+		runtime:       k8s.NewRuntime,
+		upstream:      proxy.New(proxy.Options{}),
+		registry:      registry,
+		recorder:      metrics.NewPrometheus(registry),
+		stop:          sigCtx.Done(),
 	}
 
-	return 0
+	return serve(context.Background(), *path, deps, stdout, stderr)
 }

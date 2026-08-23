@@ -1028,10 +1028,10 @@ type serveDeps struct {
 
 Tests fill `runtime` with a closure returning `k8s.NewRuntimeWithClientset(fakeCS, opts)` and `upstream` with a blocking fake.
 
-- [ ] **Write the ops tests**: `/healthz` 200; `/readyz` 503 then 200 after the `ready` func flips;
+- [x] **Write the ops tests**: `/healthz` 200; `/readyz` 503 then 200 after the `ready` func flips;
   `/metrics` contains `profgate_discovery_synced`; no request carries auth.
 
-- [ ] **Write the serve tests** (each with a fake clientset and a temp namespace file):
+- [x] **Write the serve tests** (each with a fake clientset and a temp namespace file):
 
 | Subtest | Setup | Expect |
 |---|---|---|
@@ -1044,7 +1044,7 @@ Tests fill `runtime` with a closure returning `k8s.NewRuntimeWithClientset(fakeC
 | synced gauge | after ready | `DiscoverySynced(true)` called once (recording `Recorder`) |
 | drain | send on `stop` while a `fakeUpstream` request blocks | `/readyz` 503 immediately; the listener refuses new connections; exit 0 after the request is released; with limits 1/1 and the request never released, exit within 31s |
 
-- [ ] **Implement**
+- [x] **Implement**
 
 Order from the spec's *Startup and shutdown*:
 
@@ -1090,7 +1090,7 @@ for {
    `draining` is an `atomic.Bool` read by `ready`; `HasSynced` is synchronized by the informer library;
    the lifecycle has no other state variable — readiness is `!draining && HasSynced()`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/ops/ ./cmd/profgate/
