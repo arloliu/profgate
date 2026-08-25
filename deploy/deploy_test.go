@@ -32,6 +32,10 @@ const credsSecretName = "profgate-nats-creds" //nolint:gosec // the Secret's nam
 // credsMountPath is where the credentials file appears in the container.
 const credsMountPath = "/etc/profgate/nats/" //nolint:gosec // a mount path, not a credential
 
+// tlsSecretName is the Secret the chart mounts the API listener's certificate
+// from; the base serves plain HTTP and ships only a commented example of it.
+const tlsSecretName = "profgate-tls" //nolint:gosec // the Secret's name, not its contents
+
 // ptr returns a pointer to v, for the pointer-typed fields k8s.io/api uses.
 func ptr[T any](v T) *T { return &v }
 
@@ -545,36 +549,46 @@ func TestNATSAccountFragment(t *testing.T) {
 	}
 }
 
-// TestSecretExampleIsCommented holds deploy/secret-nats-example.yaml to being
-// an example and nothing else: it carries the credentials of the NATS account,
-// so every line is a comment and `kubectl apply -f deploy/` cannot create it.
-// It lives outside deploy/base because the base's resource list must name
-// every file there, and a comment-only file cannot be applied.
-func TestSecretExampleIsCommented(t *testing.T) {
-	b, err := os.ReadFile("secret-nats-example.yaml")
-	if err != nil {
-		t.Fatalf("read secret-nats-example.yaml: %v", err)
-	}
+// TestSecretExamplesAreCommented holds both example Secrets to being examples
+// and nothing else: each carries a credential -- a NATS account, a private key
+// -- so every line is a comment and `kubectl apply -f deploy/` cannot create
+// either. They live outside deploy/base because the base's resource list must
+// name every file there, and a comment-only file cannot be applied.
+func TestSecretExamplesAreCommented(t *testing.T) {
+	for _, tc := range []struct {
+		file   string
+		secret string
+	}{
+		{file: "secret-nats-example.yaml", secret: credsSecretName},
+		{file: "secret-tls-example.yaml", secret: tlsSecretName},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			b, err := os.ReadFile(tc.file) //nolint:gosec // the file name is a fixed literal from this table
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.file, err)
+			}
 
-	var mentionsSecret bool
-	for i, line := range strings.Split(string(b), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if !strings.HasPrefix(trimmed, "#") {
-			t.Errorf("secret-nats-example.yaml line %d is live YAML, want every line commented: %q", i+1, line)
-		}
-		if strings.Contains(trimmed, credsSecretName) {
-			mentionsSecret = true
-		}
-	}
-	if !mentionsSecret {
-		t.Errorf("secret-nats-example.yaml never names the Secret %q the Deployment mounts", credsSecretName)
-	}
+			var mentionsSecret bool
+			for i, line := range strings.Split(string(b), "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" {
+					continue
+				}
+				if !strings.HasPrefix(trimmed, "#") {
+					t.Errorf("%s line %d is live YAML, want every line commented: %q", tc.file, i+1, line)
+				}
+				if strings.Contains(trimmed, tc.secret) {
+					mentionsSecret = true
+				}
+			}
+			if !mentionsSecret {
+				t.Errorf("%s never names the Secret %q it is an example of", tc.file, tc.secret)
+			}
 
-	if _, err := os.Stat(filepath.Join(baseDir, "secret-nats-example.yaml")); err == nil {
-		t.Error("secret-nats-example.yaml is inside deploy/base, where the resource list would have to name it")
+			if _, err := os.Stat(filepath.Join(baseDir, tc.file)); err == nil {
+				t.Errorf("%s is inside deploy/base, where the resource list would have to name it", tc.file)
+			}
+		})
 	}
 }
 

@@ -86,6 +86,11 @@ spec:
               mountPath: {{ .Values.nats.mountPath }}
               readOnly: true
             {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: {{ .Values.tls.mountPath }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -100,6 +105,23 @@ spec:
             secretName: {{ .Values.nats.existingSecret }}
             defaultMode: 0440
             optional: true
+        {{- end }}
+        {{- if .Values.tls.enabled }}
+        # The operator, or cert-manager, creates this Secret; the chart never
+        # does. It is not optional: tls.enabled asserts the certificate
+        # exists, so a missing Secret should hold the Pod here with an event
+        # naming it. 0440 with the pod fsGroup is the narrowest mode the
+        # non-root image can read.
+        #
+        # There is deliberately no checksum/tls-secret annotation beside
+        # checksum/config above. The gateway re-reads these files while it
+        # runs, so a renewal needs no rollout; hashing the Secret would roll
+        # the Deployment on every renewal and defeat that.
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret }}
+            defaultMode: 0440
+            optional: false
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

@@ -90,6 +90,46 @@ func pgoValues(t *testing.T) []string {
 	}
 }
 
+// tlsValues turns HTTPS on with a mount path that exists on this machine,
+// because config.Load opens the two files server.tls names.
+// The mount path is the only lever: the certificate paths are derived from it
+// and the key names, so there is no configuration key to point elsewhere.
+func tlsValues(t *testing.T) []string {
+	t.Helper()
+
+	dir := t.TempDir()
+	for _, name := range []string{"tls.crt", "tls.key"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("-----BEGIN CERTIFICATE-----\n"), 0o600); err != nil {
+			t.Fatalf("write a stand-in %s: %v", name, err)
+		}
+	}
+
+	return []string{"--set", "tls.enabled=true", "--set", "tls.mountPath=" + dir}
+}
+
+// volumeNamed returns the pod's volume of that name, or nil.
+func volumeNamed(spec corev1.PodSpec, name string) *corev1.Volume {
+	for i := range spec.Volumes {
+		if spec.Volumes[i].Name == name {
+			return &spec.Volumes[i]
+		}
+	}
+
+	return nil
+}
+
+// mountNamed returns the one container's volume mount of that name, or nil.
+func mountNamed(spec corev1.PodSpec, name string) *corev1.VolumeMount {
+	mounts := spec.Containers[0].VolumeMounts
+	for i := range mounts {
+		if mounts[i].Name == name {
+			return &mounts[i]
+		}
+	}
+
+	return nil
+}
+
 // loadRenderedConfig loads the chart's ConfigMap through internal/config,
 // which is both how the memory arithmetic is checked against the gateway's own
 // formula and the proof that the rendered file parses at all.
@@ -140,6 +180,7 @@ func TestChartLint(t *testing.T) {
 	}{
 		{name: "defaults"},
 		{name: "pgo enabled", values: []string{"--set", "pgo.enabled=true", "--set", "nats.url=nats://nats.profgate.svc:4222"}},
+		{name: "tls enabled", values: []string{"--set", "tls.enabled=true"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := append([]string{"lint", chartDir}, tc.values...)
@@ -360,6 +401,15 @@ func TestChartConfigChecksum(t *testing.T) {
 		}
 	})
 
+	t.Run("turning TLS on moves it", func(t *testing.T) {
+		// tls.enabled adds server.tls to the ConfigMap, and both paths are
+		// restart-class, so the upgrade that turns HTTPS on has to roll the
+		// Pods. Only the certificate's contents are re-read while running.
+		if got := checksumAnnotation(t, tlsValues(t)...); got == base {
+			t.Errorf("checksum/config is %q with and without tls.enabled; the upgrade would not restart any Pod", got)
+		}
+	})
+
 	t.Run("it can be turned off", func(t *testing.T) {
 		if got := checksumAnnotation(t, "--set", "configChecksumAnnotation=false"); got != "" {
 			t.Errorf("checksum/config = %q, want it absent when configChecksumAnnotation is false", got)
@@ -438,6 +488,77 @@ func TestChartConfigIsMergedAndParses(t *testing.T) {
 
 		if cfg.Server.LogLevel != "error" {
 			t.Errorf("server.logLevel = %q, want the raw block's error over the structured warn", cfg.Server.LogLevel)
+		}
+	})
+}
+
+// TestChartTLS covers the volume the certificate arrives through and the
+// configuration that points at it. Both halves have to agree, because the
+// gateway opens the files the ConfigMap names and exits when it cannot.
+func TestChartTLS(t *testing.T) {
+	t.Run("off by default", func(t *testing.T) {
+		podSpec := render[appsv1.Deployment](t, "deployment.yaml").Spec.Template.Spec
+
+		if vol := volumeNamed(podSpec, "tls"); vol != nil {
+			t.Errorf("Volumes carries %+v with tls.enabled false, want none", vol)
+		}
+		if cfg := loadRenderedConfig(t); cfg.Server.TLS.Enabled() {
+			t.Errorf("server.tls = %+v, want the plaintext default", cfg.Server.TLS)
+		}
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		values := tlsValues(t)
+		podSpec := render[appsv1.Deployment](t, "deployment.yaml", values...).Spec.Template.Spec
+		cfg := loadRenderedConfig(t, values...)
+
+		vol := volumeNamed(podSpec, "tls")
+		if vol == nil || vol.Secret == nil {
+			t.Fatalf("Volumes = %+v, want a Secret volume named tls", podSpec.Volumes)
+		}
+		if vol.Secret.SecretName != "profgate-tls" {
+			t.Errorf("the tls volume names Secret %q, want the default profgate-tls", vol.Secret.SecretName)
+		}
+		if vol.Secret.DefaultMode == nil || *vol.Secret.DefaultMode != 0o440 {
+			t.Errorf("defaultMode = %v, want 0440, the narrowest mode the non-root image can read", vol.Secret.DefaultMode)
+		}
+		// Not optional, unlike the NATS volume: enabling TLS asserts the
+		// certificate exists, so a missing Secret has to stop the Pod at mount
+		// time rather than let it start and exit over a file it cannot open.
+		if vol.Secret.Optional == nil || *vol.Secret.Optional {
+			t.Errorf("optional = %v, want an explicit false", vol.Secret.Optional)
+		}
+
+		mount := mountNamed(podSpec, "tls")
+		if mount == nil {
+			t.Fatalf("volumeMounts = %+v, want one named tls", podSpec.Containers[0].VolumeMounts)
+		}
+		if !mount.ReadOnly {
+			t.Error("the tls mount is writable, want read-only")
+		}
+		if !cfg.Server.TLS.Enabled() {
+			t.Fatalf("server.tls = %+v, want both files named", cfg.Server.TLS)
+		}
+		if got := filepath.Dir(cfg.Server.TLS.CertFile); got != mount.MountPath {
+			t.Errorf("server.tls.certFile is under %q, want the mount path %q", got, mount.MountPath)
+		}
+		if got := filepath.Base(cfg.Server.TLS.KeyFile); got != "tls.key" {
+			t.Errorf("server.tls.keyFile names %q, want the tls.keyKey default tls.key", got)
+		}
+		if cfg.Server.TLS.MinVersion != "1.2" {
+			t.Errorf("server.tls.minVersion = %q, want the 1.2 default", cfg.Server.TLS.MinVersion)
+		}
+	})
+
+	t.Run("the Secret is not hashed into the pod template", func(t *testing.T) {
+		// The gateway re-reads the files while it runs, so a renewal must not
+		// roll the Deployment. An annotation added here for symmetry with
+		// checksum/config would undo that.
+		annotations := render[appsv1.Deployment](t, "deployment.yaml", tlsValues(t)...).Spec.Template.Annotations
+		for key := range annotations {
+			if strings.Contains(key, "tls") {
+				t.Errorf("the pod template carries %q; a renewal would then roll the Deployment", key)
+			}
 		}
 	})
 }

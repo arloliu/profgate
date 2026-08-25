@@ -178,6 +178,29 @@ realms:
     #   collect: true
     #   configure: true
 
+# HTTPS on the API port. Off means plaintext, with TLS terminating at an
+# Ingress or a mesh, which is the shipped topology. The ops port stays
+# plaintext either way: the kubelet's probe and the metrics scraper reach it by
+# Pod address, where a certificate could never be verified anyway.
+# The port and its name do not change with the scheme.
+tls:
+  enabled: false
+  # The kubernetes.io/tls Secret the operator, or cert-manager, creates. The
+  # chart never creates it, the same way it never creates the NATS one.
+  # The volume is not optional, unlike the NATS one: enabling TLS asserts the
+  # certificate exists, so a missing Secret holds the Pod at mount time with an
+  # event naming it rather than starting a Pod that exits over a file.
+  existingSecret: profgate-tls
+  certKey: tls.crt
+  keyKey: tls.key
+  mountPath: /etc/profgate/tls
+  # The floor handshakes are held to: 1.2 or 1.3.
+  minVersion: "1.2"
+  # There is no enabled flag in the configuration file the gateway reads:
+  # server.tls is implied by naming the two files, the way nats.credsFile is.
+  # This flag exists because Helm needs a boolean to render a conditional, just
+  # as pgo.enabled gates the credentials volume.
+
 # NATS, used only when pgo.enabled. The chart renders these keys into the
 # configuration and mounts the credentials Secret; it never creates the
 # Secret, the account, or the stores. deploy/nats/README.md is how they are
@@ -236,6 +259,9 @@ pgo:
 #     limits:
 #       cpuSeconds: 60
 #       maxConcurrentProfiles: 16
+#
+# It is also where a key the structured values model can be overridden outright,
+# server.tls included: a value set here wins over what the tls block rendered.
 #
 # A key left out here and out of the structured values above takes the
 # binary's own default. server.listen and server.opsListen are the exception:

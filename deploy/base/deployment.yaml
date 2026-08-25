@@ -62,6 +62,10 @@ spec:
             - name: profgate-nats-creds
               mountPath: /etc/profgate/nats/
               readOnly: true
+      # This base serves plain HTTP on the API port. To serve HTTPS, create the
+      # Secret deploy/secret-tls-example.yaml describes, mount it here, and add
+      # the server.tls keys to the ConfigMap; the Helm chart's tls.enabled
+      # renders all three.
       volumes:
         - name: config
           configMap:
