@@ -45,7 +45,7 @@ func TestWorkerTwoWorkersRaceOnePending(t *testing.T) {
 	workers := make([]*Worker, 2)
 	for i, r := range []*replica{one, two} {
 		r.waitSynced()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 		stubs[i] = newRunStub(workResult{Object: id + "-1.pprof"})
 		workers[i] = r.newWorker(stubs[i].fn())
 	}
@@ -92,7 +92,7 @@ func TestWorkerScanReclaimsLapsedLease(t *testing.T) {
 
 	r := f.newReplica("replica", replicaOpts{})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 	stub := newRunStub(workResult{})
 	t.Cleanup(stub.release)
 	w := r.newWorker(stub.fn())
@@ -136,7 +136,7 @@ func TestWorkerFastClaimerKeepsOff(t *testing.T) {
 
 	r := f.newReplica("fast-replica", replicaOpts{clock: newFakeClock(lease.Add(skewMargin))})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 	w := r.newWorker(trapRun(t))
 	scanNow(t, w)
 
@@ -194,7 +194,7 @@ func TestWorkerScanTerminations(t *testing.T) {
 			id := f.seedClaimable("payment", "payment-api", tc.mutate)
 			r := f.newReplica("replica", replicaOpts{})
 			r.waitSynced()
-			r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+			r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 			w := r.newWorker(trapRun(t))
 
 			if !tc.notYet.IsZero() {
@@ -240,7 +240,7 @@ func TestWorkerLimitExceeded(t *testing.T) {
 
 	r := f.newReplica("replica", replicaOpts{})
 	r.waitSynced()
-	r.waitCache("holds both records", func(c *Caches) bool { return c.HasJob(over) && c.HasJob(fine) })
+	r.waitCache("holds both records", func(c *Caches) bool { return c.hasJob(over) && c.hasJob(fine) })
 
 	stub := newRunStub(workResult{})
 	t.Cleanup(stub.release)
@@ -286,7 +286,7 @@ func TestWorkerAttemptsExhausted(t *testing.T) {
 
 	r := f.newReplica("replica", replicaOpts{clock: newFakeClock(lease.Add(2 * skewMargin))})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 	w := r.newWorker(trapRun(t))
 	scanNow(t, w)
 
@@ -317,7 +317,7 @@ func TestWorkerClaimUnavailable(t *testing.T) {
 		wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
 	})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 	w := r.newWorker(trapRun(t))
 	scanNow(t, w)
 
@@ -364,7 +364,7 @@ func TestWorkerBehindBarrier(t *testing.T) {
 
 		held.release()
 		r.waitSynced()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 		scanNow(t, w)
 		stub.waitStarted(t)
 		if got := f.record(id); got.State != StateRunning {
@@ -383,7 +383,7 @@ func TestWorkerBehindBarrier(t *testing.T) {
 			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
 		})
 		r.waitSynced()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 		// The connection drops and comes back while the caches are held, so
 		// they still hold what they read under the old generation.
@@ -463,7 +463,7 @@ func TestWorkerRunClaimsOnDeliveryAndOnItsTicker(t *testing.T) {
 		})
 		r := f.newReplica("replica", replicaOpts{})
 		r.waitSynced()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 		stub := newRunStub(workResult{})
 		t.Cleanup(stub.release)
@@ -494,7 +494,7 @@ func TestWorkerRenewalKeepsTheLease(t *testing.T) {
 	id := f.seedClaimable("payment", "payment-api")
 	r := f.newReplica("replica", replicaOpts{})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 	stub := newRunStub(workResult{Object: id + "-1.pprof", Bytes: 10})
 	w := r.newWorker(stub.fn())
@@ -534,7 +534,7 @@ func TestWorkerUnavailableRenewalKeepsCommittedLease(t *testing.T) {
 		wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
 	})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 	stub := newRunStub(workResult{})
 	t.Cleanup(stub.release)
@@ -590,7 +590,7 @@ func TestWorkerBlockedRenewalAborts(t *testing.T) {
 		wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
 	})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 	stub := newRunStub(workResult{})
 	t.Cleanup(stub.release)
@@ -637,7 +637,7 @@ func TestWorkerRevisionMismatchCancelsImmediately(t *testing.T) {
 	id := f.seedClaimable("payment", "payment-api")
 	r := f.newReplica("replica", replicaOpts{})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 	stub := newRunStub(workResult{Object: id + "-1.pprof"})
 	w := r.newWorker(stub.fn())
@@ -686,7 +686,7 @@ func TestWorkerWorkHeldPastCutoff(t *testing.T) {
 		id := f.seedClaimable("payment", "payment-api")
 		r := f.newReplica("replica", replicaOpts{})
 		r.waitSynced()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 		object := id + "-1.pprof"
 		stub := newRunStub(workResult{Object: object, Bytes: 4})
@@ -714,7 +714,7 @@ func TestWorkerWorkHeldPastCutoff(t *testing.T) {
 		two := f.newReplica("replica-two", replicaOpts{})
 		for _, r := range []*replica{one, two} {
 			r.waitSynced()
-			r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+			r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 		}
 
 		object := id + "-1.pprof"
@@ -766,7 +766,7 @@ func TestWorkerReclaimedOwnerPastDeadline(t *testing.T) {
 	// lapsed lease reclaimable here.
 	r := f.newReplica("replica", replicaOpts{clock: newFakeClock(slotBase.Add(2 * skewMargin))})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 	object := id + "-2.pprof"
 	stub := newRunStub(workResult{Object: object, Bytes: 9})
@@ -806,7 +806,7 @@ func TestWorkerLostFinalUpdate(t *testing.T) {
 	id := f.seedClaimable("payment", "payment-api")
 	r := f.newReplica("replica", replicaOpts{})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 	object := id + "-1.pprof"
 	stub := newRunStub(workResult{Object: object, Bytes: 5})
@@ -853,7 +853,7 @@ func TestWorkerCancellationIgnoringWork(t *testing.T) {
 	first := f.seedClaimable("payment", "first")
 	r := f.newReplica("replica", replicaOpts{})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(first) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(first) })
 
 	stub := newRunStub(workResult{Object: first + "-1.pprof"})
 	stub.ignoreCancel = true
@@ -868,7 +868,7 @@ func TestWorkerCancellationIgnoringWork(t *testing.T) {
 	stub.waitCancelled(t)
 
 	second := f.seedClaimable("payment", "second")
-	r.waitCache("holds the second record", func(c *Caches) bool { return c.HasJob(second) })
+	r.waitCache("holds the second record", func(c *Caches) bool { return c.hasJob(second) })
 	scanNow(t, w)
 	if got := f.record(second).State; got != StatePending {
 		t.Fatalf("the second record is %q, want pending: the local slot is still held", got)
@@ -896,7 +896,7 @@ func TestWorkerObservability(t *testing.T) {
 	bad := f.seedClaimable("payment", "fails")
 	r := f.newReplica("replica", replicaOpts{})
 	r.waitSynced()
-	r.waitCache("holds both records", func(c *Caches) bool { return c.HasJob(good) && c.HasJob(bad) })
+	r.waitCache("holds both records", func(c *Caches) bool { return c.hasJob(good) && c.hasJob(bad) })
 
 	completing := newImmediateRunStub(workResult{Object: good + "-1.pprof", Bytes: 7})
 	failing := newImmediateRunStub(workResult{Reason: ReasonNoSamples})
@@ -964,7 +964,7 @@ func TestWorkerReleaseActiveLeavesASuccessorAlone(t *testing.T) {
 	id := f.seedClaimable("payment", "payment-api", func(rec *Record) { rec.ClaimBy = slotBase })
 	r := f.newReplica("replica", replicaOpts{clock: newFakeClock(slotBase.Add(time.Hour))})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 	// The Service has moved on to another Collection by the time the scan
 	// fails this one.
@@ -993,7 +993,7 @@ func TestWorkerDrain(t *testing.T) {
 		id := f.seedClaimable("payment", "payment-api")
 		r := f.newReplica("replica", replicaOpts{})
 		r.waitSynced()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 		stub := newRunStub(workResult{Object: id + "-1.pprof"})
 		w := r.newWorker(stub.fn())
@@ -1024,7 +1024,7 @@ func TestWorkerDrain(t *testing.T) {
 		id := f.seedClaimable("payment", "payment-api")
 		r := f.newReplica("replica", replicaOpts{})
 		r.waitSynced()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 		stub := newRunStub(workResult{})
 		stub.ignoreCancel = true

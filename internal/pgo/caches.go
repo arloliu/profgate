@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -190,8 +191,8 @@ func NewCaches(log *slog.Logger) *Caches {
 	}
 }
 
-// JobChanges receives one value after every job.* entry the cache applies.
-func (c *Caches) JobChanges() <-chan struct{} { return c.jobPulse }
+// jobChanges receives one value after every job.* entry the cache applies.
+func (c *Caches) jobChanges() <-chan struct{} { return c.jobPulse }
 
 // Run opens the four watches and consumes them until ctx ends.
 // It returns once every watch channel has closed.
@@ -450,9 +451,9 @@ func (c *Caches) liveLocked(ref serviceRef) bool {
 	return false
 }
 
-// CachedLive is the number of Services the caches show as live: the
+// cachedLive is the number of Services the caches show as live: the
 // cluster-wide live-Collection count as far as this replica has seen it.
-func (c *Caches) CachedLive() int {
+func (c *Caches) cachedLive() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -490,9 +491,9 @@ func (c *Caches) nonterminalJobIDs() []string {
 	return out
 }
 
-// HasJob reports whether the job cache holds job.<id> in any state.
+// hasJob reports whether the job cache holds job.<id> in any state.
 // The release rule's first observation.
-func (c *Caches) HasJob(id string) bool {
+func (c *Caches) hasJob(id string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, ok := c.jobs[jobKey(id)]
@@ -573,8 +574,8 @@ func (c *Caches) Override(ns, svc string) (*PolicyOverride, uint64) {
 	return o.Stored.Policy, o.Revision
 }
 
-// ActiveID returns the Collection named by active.<ns>.<svc> in the cache.
-func (c *Caches) ActiveID(ns, svc string) (string, bool) {
+// activeID returns the Collection named by active.<ns>.<svc> in the cache.
+func (c *Caches) activeID(ns, svc string) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	a, ok := c.active[serviceRef{Namespace: ns, Service: svc}]
@@ -589,12 +590,8 @@ func (c *Caches) ActiveID(ns, svc string) (string, bool) {
 func (c *Caches) jobEntries() map[string]cachedJob {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make(map[string]cachedJob, len(c.jobs))
-	for k, j := range c.jobs {
-		out[k] = j
-	}
 
-	return out
+	return maps.Clone(c.jobs)
 }
 
 // activeEntries returns a copy of the active keys, keyed by Service.
@@ -602,12 +599,8 @@ func (c *Caches) jobEntries() map[string]cachedJob {
 func (c *Caches) activeEntries() map[serviceRef]cachedActive {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make(map[serviceRef]cachedActive, len(c.active))
-	for ref, a := range c.active {
-		out[ref] = a
-	}
 
-	return out
+	return maps.Clone(c.active)
 }
 
 // slotEntries returns a copy of the slot keys and their retention.
@@ -615,10 +608,6 @@ func (c *Caches) activeEntries() map[serviceRef]cachedActive {
 func (c *Caches) slotEntries() map[string]cachedSlot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make(map[string]cachedSlot, len(c.slots))
-	for k, v := range c.slots {
-		out[k] = v
-	}
 
-	return out
+	return maps.Clone(c.slots)
 }

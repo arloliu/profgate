@@ -60,8 +60,8 @@ func NewRuntime() *Runtime { return &Runtime{} }
 // It is called exactly once, after natskv.Preflight succeeds.
 func (r *Runtime) Bind(b Bundle) { r.bundle.Store(&b) }
 
-// Bound reports whether Bind has run.
-func (r *Runtime) Bound() bool { return r.bundle.Load() != nil }
+// bound reports whether Bind has run.
+func (r *Runtime) bound() bool { return r.bundle.Load() != nil }
 
 // Session is one request's generation-bound view of the PGO stores.
 // It is taken exactly as every loop takes one — the generation first, then the
@@ -321,7 +321,8 @@ func readJob(ctx context.Context, jobs natskv.KV, id string) (Record, bool, erro
 	return rec, false, nil
 }
 
-// releaseActive deletes a Service's active key when it names this Collection.
+// releaseActive frees the Service the moment its Collection ends: it deletes
+// the active key when it names this Collection.
 // It can never release a successor's claim, and a release that fails is not
 // retried: the sweeper covers it on its next pass.
 func releaseActive(ctx context.Context, jobs natskv.KV, rec Record) {

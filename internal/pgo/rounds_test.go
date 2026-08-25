@@ -945,7 +945,7 @@ func TestCollectionReclaimStartsFromNothing(t *testing.T) {
 
 	r := f.newReplica("replica", replicaOpts{clock: newFakeClock(slotBase.Add(2 * skewMargin))})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 	rounds := newTestRounds(t, roundsOpts{
 		discovery: newFakeDiscovery(first.target, second.target),
@@ -1016,7 +1016,7 @@ func TestCollectionRecordTooLarge(t *testing.T) {
 
 		r := f.newReplica("replica", replicaOpts{})
 		r.waitSynced()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 		rounds := newTestRounds(t, roundsOpts{
 			discovery: newFakeDiscovery(pod.target),
@@ -1233,7 +1233,7 @@ func TestCollectionPutHeldPastTheCutoff(t *testing.T) {
 			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
 		})
 		r.waitSynced()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 		rounds := newTestRounds(t, roundsOpts{
 			discovery: newFakeDiscovery(pod.target), clock: r.clock, recorder: r.recorder, logs: r.logs,
@@ -1280,7 +1280,7 @@ func TestCollectionPutHeldPastTheCutoff(t *testing.T) {
 		winner := f.newReplica("replica-winner", replicaOpts{})
 		for _, r := range []*replica{stale, winner} {
 			r.waitSynced()
-			r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+			r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 		}
 
 		staleWorker := stale.newRoundsWorker(newTestRounds(t, roundsOpts{
@@ -1394,7 +1394,7 @@ func TestCollectionMergeAndWriteHeldPastTheCutoff(t *testing.T) {
 
 			r := f.newReplica("replica", replicaOpts{})
 			r.waitSynced()
-			r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+			r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 			rounds := newTestRounds(t, roundsOpts{
 				discovery: newFakeDiscovery(podA.target, podB.target),
@@ -1464,7 +1464,7 @@ func TestCollectionStalePutLandsFirst(t *testing.T) {
 	winner := f.newReplica("replica-winner", replicaOpts{})
 	for _, r := range []*replica{stale, winner} {
 		r.waitSynced()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 	}
 
 	staleWorker := stale.newRoundsWorker(newTestRounds(t, roundsOpts{
@@ -1544,7 +1544,7 @@ func TestCollectionRenewalMismatchStopsSampling(t *testing.T) {
 
 	r := f.newReplica("replica", replicaOpts{})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 	discovery := newRollingDiscovery(
 		[]k8s.Target{first.target},
@@ -1631,7 +1631,7 @@ func TestCollectionUnavailableRenewalStopsSampling(t *testing.T) {
 		wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
 	})
 	r.waitSynced()
-	r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
 	discovery := newRollingDiscovery(
 		[]k8s.Target{first.target},

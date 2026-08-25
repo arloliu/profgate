@@ -22,7 +22,7 @@ func TestSweeperExpiry(t *testing.T) {
 		})
 		r.waitSynced()
 		rec := f.seedCompleted(r, "payment", "payment-api")
-		r.waitCache("holds the completed record", func(c *Caches) bool { return c.HasJob(rec.ID) })
+		r.waitCache("holds the completed record", func(c *Caches) bool { return c.hasJob(rec.ID) })
 
 		hook.reset()
 		r.clock.Set(rec.ExpiresAt.Add(2 * skewMargin))
@@ -68,7 +68,7 @@ func TestSweeperExpiry(t *testing.T) {
 		r := f.newReplica("replica", replicaOpts{})
 		r.waitSynced()
 		rec := f.seedCompleted(r, "payment", "payment-api")
-		r.waitCache("holds the completed record", func(c *Caches) bool { return c.HasJob(rec.ID) })
+		r.waitCache("holds the completed record", func(c *Caches) bool { return c.hasJob(rec.ID) })
 
 		// Two clocks are assumed to differ by the margin, so an artifact is
 		// kept that much longer than its retention rather than that much less.
@@ -92,7 +92,7 @@ func TestSweeperExpiry(t *testing.T) {
 		r := f.newReplica("replica", replicaOpts{freezer: fz})
 		r.waitSynced()
 		rec := f.seedCompleted(r, "payment", "payment-api")
-		r.waitCache("holds the completed record", func(c *Caches) bool { return c.HasJob(rec.ID) })
+		r.waitCache("holds the completed record", func(c *Caches) bool { return c.hasJob(rec.ID) })
 
 		// The record moves after the cache saw it, so the revision the sweeper
 		// writes against is no longer the bucket's.
@@ -132,7 +132,7 @@ func TestSweeperMissingObjectFlips(t *testing.T) {
 		expires := slotBase.Add(24 * time.Hour)
 		rec.ExpiresAt = &expires
 	})
-	r.waitCache("holds the completed record", func(c *Caches) bool { return c.HasJob(rec.ID) })
+	r.waitCache("holds the completed record", func(c *Caches) bool { return c.hasJob(rec.ID) })
 	f.deleteObject(r, rec.Artifact.Object)
 
 	sweepNow(t, r.newSweeper())
@@ -187,7 +187,7 @@ func TestSweeperJobRetention(t *testing.T) {
 				rec.Artifact = nil
 				rec.ExpiresAt = nil
 			})
-			r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(rec.ID) })
+			r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(rec.ID) })
 
 			r.clock.Set(rec.FinishedAt.Add(tc.age))
 			sweepNow(t, r.newSweeper())
@@ -294,7 +294,7 @@ func TestSweeperOrphanObjects(t *testing.T) {
 			expires := base.Add(time.Hour)
 			rec.ExpiresAt = &expires
 		})
-		r.waitCache("holds the completed record", func(c *Caches) bool { return c.HasJob(rec.ID) })
+		r.waitCache("holds the completed record", func(c *Caches) bool { return c.hasJob(rec.ID) })
 
 		// Old enough to be a candidate on age alone, and well inside its
 		// retention, so only the record naming it saves it.
@@ -454,7 +454,7 @@ func TestSweeperKeepsAPausedCreatorsActiveKey(t *testing.T) {
 	}()
 	<-reached
 	r.waitCache("holds the active key", func(c *Caches) bool {
-		_, ok := c.ActiveID("payment", "payment-api")
+		_, ok := c.activeID("payment", "payment-api")
 
 		return ok
 	})
@@ -582,7 +582,7 @@ func TestSweeperBehindTheBarrier(t *testing.T) {
 
 	fz.release()
 	r.waitSynced()
-	r.waitCache("holds the completed record", func(c *Caches) bool { return c.HasJob(rec.ID) })
+	r.waitCache("holds the completed record", func(c *Caches) bool { return c.hasJob(rec.ID) })
 	sweepNow(t, s)
 
 	if got := f.record(rec.ID).State; got != StateExpired {
@@ -599,7 +599,7 @@ func TestSweeperRun(t *testing.T) {
 	r := f.newReplica("replica", replicaOpts{})
 	r.waitSynced()
 	rec := f.seedCompleted(r, "payment", "payment-api")
-	r.waitCache("holds the completed record", func(c *Caches) bool { return c.HasJob(rec.ID) })
+	r.waitCache("holds the completed record", func(c *Caches) bool { return c.hasJob(rec.ID) })
 	r.clock.Set(rec.ExpiresAt.Add(2 * skewMargin))
 
 	ctx, cancel := context.WithCancel(context.Background())

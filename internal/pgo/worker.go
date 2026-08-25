@@ -134,7 +134,7 @@ func NewWorker(
 func (w *Worker) Run(ctx context.Context) {
 	ticker := w.clock.NewTicker(w.leaseTTL / 2)
 	defer ticker.Stop()
-	changes := w.caches.JobChanges()
+	changes := w.caches.jobChanges()
 	for {
 		select {
 		case <-ctx.Done():
@@ -282,13 +282,6 @@ func (w *Worker) terminate(ctx context.Context, jobs natskv.KV, rec Record, rev 
 	}
 	logTransition(w.log, w.owner.Instance, rec)
 	w.recorder.Collection(string(StateFailed))
-	w.releaseActive(ctx, jobs, rec)
-}
-
-// releaseActive frees the Service the moment its Collection ends.
-// The cancel handler frees it by the same rule, so both go through the one
-// implementation in runtime.go.
-func (w *Worker) releaseActive(ctx context.Context, jobs natskv.KV, rec Record) {
 	releaseActive(ctx, jobs, rec)
 }
 
@@ -589,7 +582,7 @@ func (w *Worker) finish(
 	if proposed.State == StateCompleted && proposed.StartedAt != nil {
 		w.recorder.CollectionDuration(now.Sub(*proposed.StartedAt))
 	}
-	w.releaseActive(context.Background(), stores.Jobs, proposed)
+	releaseActive(context.Background(), stores.Jobs, proposed)
 }
 
 // discardArtifact removes the object this attempt wrote, and only that one.

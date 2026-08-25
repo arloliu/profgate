@@ -101,7 +101,7 @@ func (p *Publisher) Reserve(ns, svc string) (*Reservation, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.caches.CachedLive()+len(p.held) >= p.maxLive {
+	if p.caches.cachedLive()+len(p.held) >= p.maxLive {
 		return nil, false
 	}
 	r := &Reservation{p: p, ref: serviceRef{Namespace: ns, Service: svc}}
@@ -191,10 +191,10 @@ func (p *Publisher) ReleaseResolved(ctx context.Context, jobs natskv.KV) {
 // resolved reports whether one tracked reservation has been observed to be
 // counted elsewhere or to have left nothing behind.
 func (p *Publisher) resolved(ctx context.Context, jobs natskv.KV, id string, ref serviceRef) bool {
-	if p.caches.HasJob(id) {
+	if p.caches.hasJob(id) {
 		return true
 	}
-	if cached, ok := p.caches.ActiveID(ref.Namespace, ref.Service); ok && cached == id {
+	if cached, ok := p.caches.activeID(ref.Namespace, ref.Service); ok && cached == id {
 		return true
 	}
 

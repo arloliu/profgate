@@ -51,7 +51,7 @@ func (r *replica) session(rt *Runtime) *Session {
 func TestRuntimeIsUnavailableUntilBound(t *testing.T) {
 	rt := NewRuntime()
 
-	if rt.Bound() {
+	if rt.bound() {
 		t.Error("a fresh runtime reports itself bound")
 	}
 	_, err := rt.Session()
@@ -64,7 +64,7 @@ func TestRuntimeIsUnavailableUntilBound(t *testing.T) {
 	r.waitSynced()
 	rt = r.newRuntime()
 
-	if !rt.Bound() {
+	if !rt.bound() {
 		t.Error("a bound runtime reports itself unbound")
 	}
 	if _, err := rt.Session(); err != nil {

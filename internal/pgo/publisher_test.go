@@ -79,7 +79,7 @@ func TestPublishWriteOrder(t *testing.T) {
 	if got := r.pub.Reserved(); got != 1 {
 		t.Fatalf("reservations held right after the publication are %d, want 1", got)
 	}
-	r.waitCache("holds the new record", func(c *Caches) bool { return c.HasJob(id) })
+	r.waitCache("holds the new record", func(c *Caches) bool { return c.hasJob(id) })
 	r.releaseResolved()
 	if got := r.pub.Reserved(); got != 0 {
 		t.Fatalf("reservations held after the cache delivered are %d, want 0", got)
@@ -142,7 +142,7 @@ func TestReserveCeiling(t *testing.T) {
 
 	// A Service the caches show as live counts against the same ceiling.
 	f.seedLiveCollection("payment", "d", StateRunning)
-	r.waitCache("sees the live service", func(c *Caches) bool { return c.CachedLive() == 1 })
+	r.waitCache("sees the live service", func(c *Caches) bool { return c.cachedLive() == 1 })
 	if _, ok := r.pub.Reserve("payment", "e"); ok {
 		t.Fatal("a reservation was granted with one cached live collection and one reservation held")
 	}
@@ -160,7 +160,7 @@ func TestReleaseRule(t *testing.T) {
 		if err != nil {
 			t.Fatalf("publish: %v", err)
 		}
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 		r.releaseResolved()
 		if got := r.pub.Reserved(); got != 0 {
 			t.Fatalf("reservations held are %d, want 0", got)
@@ -179,11 +179,11 @@ func TestReleaseRule(t *testing.T) {
 			t.Fatalf("publish: %v", err)
 		}
 		r.waitCache("holds the active key", func(c *Caches) bool {
-			cached, ok := c.ActiveID("payment", "payment-api")
+			cached, ok := c.activeID("payment", "payment-api")
 
 			return ok && cached == id
 		})
-		if r.caches.HasJob(id) {
+		if r.caches.hasJob(id) {
 			t.Fatal("the job cache was not held")
 		}
 		r.releaseResolved()
@@ -350,7 +350,7 @@ func TestIndeterminateCreates(t *testing.T) {
 		}
 
 		frozen.release()
-		r.waitCache("holds the record", func(c *Caches) bool { return c.HasJob(id) })
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 		r.releaseResolved()
 		if got := r.pub.Reserved(); got != 0 {
 			t.Fatalf("reservations held are %d after the cache delivered, want 0", got)
