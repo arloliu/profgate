@@ -15,10 +15,14 @@ run `semlf check <file>` on every Markdown file you wrote or edited and fix the 
 
 ## Before a PR
 
-A PR that touches `internal/k8s`, `internal/proxy`, or `deploy/` runs the end-to-end suite on the `current` lane first:
+Five packages need the end-to-end suite on the `current` lane before a PR opens:
+`internal/k8s`, `internal/proxy`, `internal/pgo`, `internal/natskv`, and `deploy/`.
 
 ```bash
 mise run test:e2e
 ```
+
+Lease reclaim, the publication protocol, and the NATS preflight meet a real cluster only in the PGO scenarios.
+Their unit tests run against an embedded server and never see a Pod restart.
 
 Report what ran and what was skipped in the PR description ([600](600-git-conventions.md)).

@@ -1,6 +1,7 @@
 # PGO Implementation Plan
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** commits 193b372 through 2f1699a on main; lint, tests, and checks pass; all three e2e lanes green locally.
 
 > **For agentic workers:** implement this plan one task at a time, in order;
 > each task is written test-first and ends with its own validation block and commit.
@@ -143,7 +144,7 @@ the profile handler's admission step becomes `release, ok := d.Gate.TryAcquire()
 This realizes two amendment rows in the spec's *Changes to the accepted gateway design*:
 *Request algorithm* step 9, and `internal/httpapi/server.go`.
 
-- [ ] **Add the modules** (pins only; nothing imports them until later tasks):
+- [x] **Add the modules** (pins only; nothing imports them until later tasks):
 
 ```bash
 mise exec -- go get github.com/nats-io/nats.go@v1.53.1
@@ -151,7 +152,7 @@ mise exec -- go get github.com/nats-io/nats.go@v1.53.1
 
 Do not run `go mod tidy` here; the natskv task repeats the line and tidies.
 
-- [ ] **Write the failing tests** (`internal/admit`, per the spec's *Testing* bullet for the package):
+- [x] **Write the failing tests** (`internal/admit`, per the spec's *Testing* bullet for the package):
 
 | Subtest | Expect |
 |---|---|
@@ -162,16 +163,16 @@ Do not run `go mod tidy` here; the natskv task repeats the line and tidies.
 | release idempotent-ish | calling the same `release` twice does not free two slots (a second `TryAcquire` still fails); guard with `sync.Once` |
 | race | 100 goroutines mixing both paths under `-race`; net slots return to capacity |
 
-- [ ] **Implement** `Gate` over a buffered channel; `release` wraps the receive in `sync.Once`.
+- [x] **Implement** `Gate` over a buffered channel; `release` wraps the receive in `sync.Once`.
 
-- [ ] **Rewire `httpapi`**: `Deps` gains `Gate *admit.Gate` and every constructor caller passes one;
+- [x] **Rewire `httpapi`**: `Deps` gains `Gate *admit.Gate` and every constructor caller passes one;
   no nil-check path is added.
   Update the `server_test.go` fixtures to build `admit.New(cfg.Limits.MaxConcurrentProfiles)`;
   the admission subtests (429, in-flight gauge) must still pass unchanged.
 
-- [ ] **Rewire `cmd/profgate/serve.go`**: construct the gate next to the recorder and pass it into `httpapi.Deps`.
+- [x] **Rewire `cmd/profgate/serve.go`**: construct the gate next to the recorder and pass it into `httpapi.Deps`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/admit/ ./internal/httpapi/ ./cmd/profgate/
@@ -244,7 +245,7 @@ every `pgo.defaults` value within its ceiling;
 (`decodeFactor` 8) and the grace period covering the deadline formula at the ceilings
 (*Ceilings* and *Shutdown*).
 
-- [ ] **Write the failing tests**, one subtest per row of the spec's `internal/config` testing bullet:
+- [x] **Write the failing tests**, one subtest per row of the spec's `internal/config` testing bullet:
   the full example loads and validates as written (fixture `pgo-full.yaml`);
   every new env var lands on its field (extend the existing env-override table);
   `nats.url` missing with `pgo.enabled: true` rejected, accepted when disabled;
@@ -260,7 +261,7 @@ every `pgo.defaults` value within its ceiling;
   `replicas: all` and `replicas: 3` accepted, `replicas: many` and `replicas: 300` (over the ceiling) rejected;
   `config validate` output contains the memory figure and the required grace period.
 
-- [ ] **Implement**, run the tests, then validate and commit
+- [x] **Implement**, run the tests, then validate and commit
 
 ```bash
 mise exec -- go test -race ./internal/config/ ./cmd/profgate/
@@ -305,13 +306,13 @@ Mechanics the implementation must follow (spec: "The seam" and "The replay barri
 - `Objects.Delete` of an absent name is success.
 - `Status` reads the bucket's stream configuration (TTL, MaxValueSize, MaxBytes, Storage, Discard).
 
-- [ ] **Write the in-process fixture** (`fixtures_test.go`):
+- [x] **Write the in-process fixture** (`fixtures_test.go`):
   one `nats-server` per subtest with JetStream on `t.TempDir()`, random port,
   provisioned with the three buckets per the contract, returning a connected `Client` and a raw admin `nats.Conn`;
   helpers to stop and restart the server in place (same store directory, same port),
   and a variant that runs the server with per-user permissions for the permission tests of the next task.
 
-- [ ] **Add the modules, write the failing tests, and watch them fail to compile**
+- [x] **Add the modules, write the failing tests, and watch them fail to compile**
 
 ```bash
 mise exec -- go get github.com/nats-io/nats.go@v1.53.1 github.com/nats-io/nats-server/v2@v2.14.5
@@ -336,7 +337,7 @@ and must be named in the code);
 every call against a stopped server returns `ErrUnavailable` within its deadline;
 an Object `Put`/`Get` round-trips 40 MiB byte for byte; `Get` absent is `ErrObjectNotFound`.
 
-- [ ] **Implement**, then validate and commit
+- [x] **Implement**, then validate and commit
 
 ```bash
 mise exec -- go test -race ./internal/natskv/ && mise exec -- go mod tidy
@@ -385,7 +386,7 @@ Any violation or permission error returns an error naming the bucket and the ope
 connection failures are transient (`ErrUnavailable`) and the caller retries.
 A probe left by a crash is cleaned by the sweeper, not here.
 
-- [ ] **Write the failing tests** — the second half of the spec's `internal/natskv` bullet:
+- [x] **Write the failing tests** — the second half of the spec's `internal/natskv` bullet:
   missing bucket → error naming it; `PROFGATE_ARTIFACTS` created as KV → error;
   each contract field violated one at a time (1-minute TTL, memory storage, `Discard: old`,
   1 MiB `MaxBytes`, `MaxValueSize` below 512 KiB) → error naming bucket and field;
@@ -404,7 +405,7 @@ A probe left by a crash is cleaned by the sweeper, not here.
   `OnConnectionChange` fires true once when preflight's initial connection succeeds,
   false on server stop, and true again on restart (a recording callback asserts the exact sequence).
 
-- [ ] **Implement**, then validate and commit
+- [x] **Implement**, then validate and commit
 
 ```bash
 mise exec -- go test -race ./internal/natskv/
@@ -441,8 +442,8 @@ backed by the spec's *Metrics* table:
 `metrics.Endpoint` gains `pgo_policy`, `collections`, `collection`, `collection_profile`, `collection_cancel`
 as constants; `Request`'s contract line documents `profile` fixed to `cpu` for the last three and `none` otherwise.
 
-- [ ] **Write the failing tests**: extend the pedantic-registry comparison with each new metric; label sets pinned.
-- [ ] **Implement**,
+- [x] **Write the failing tests**: extend the pedantic-registry comparison with each new metric; label sets pinned.
+- [x] **Implement**,
   giving the test `recorder` in `internal/httpapi/fixtures_test.go` the seven new methods as no-op accumulators,
   because the interface expansion otherwise breaks that package's build and this task's validation block.
   Then validate and commit
@@ -489,7 +490,7 @@ func newID() string
 type Clock interface { ... }
 ```
 
-- [ ] **Write the failing tests** — the spec's `internal/pgo` policy bullet, plus record arithmetic:
+- [x] **Write the failing tests** — the spec's `internal/pgo` policy bullet, plus record arithmetic:
   layering one level deep (`{"sampling":{"rounds":3}}` changes `rounds` only);
   `null` as unset;
   every ceiling violated one field at a time at write validation;
@@ -507,7 +508,7 @@ type Clock interface { ... }
   `Deadline` with `replicas: all` uses `maxTargetsPerRound`, not a live count
   (`batches = ceil(min(replicas, maxTargetsPerRound) / maxParallel)`, `admissionWait = duration + roundInterval`).
 
-- [ ] **Implement**, then validate and commit
+- [x] **Implement**, then validate and commit
 
 ```bash
 mise exec -- go test -race ./internal/pgo/
@@ -556,7 +557,7 @@ git commit -m "feat(pgo): policy, records, and identifiers"
   built from `natskv.Watch` with a generation-tagged rebuild on re-replay,
   and the `pgoSynced` barrier (`Synced(gen)` for `gen = Generation()`).
 
-- [ ] **Write the failing tests** — every case of the spec's `internal/pgo` scheduler bullet, verbatim.
+- [x] **Write the failing tests** — every case of the spec's `internal/pgo` scheduler bullet, verbatim.
   The harness runs two scheduler+publisher instances over one in-process server with one fake clock;
   barriers (channels) pause creators between writes; "frozen watch" holds a cache's delivery;
   "killed creator" abandons a publication between writes;
@@ -586,7 +587,7 @@ git commit -m "feat(pgo): policy, records, and identifiers"
   and the reclaimed Collection's merge content (*Worker: rounds…* task).
   Each test the spec marks with "the test fails when X" must be verified to fail under mutation X before it ships.
 
-- [ ] **Implement**, then validate and commit
+- [x] **Implement**, then validate and commit
 
 ```bash
 mise exec -- go test -race ./internal/pgo/
@@ -649,7 +650,7 @@ func (w *Worker) Drain(ctx context.Context) error
 The work goroutine's body (rounds, sampling, finish) is a `run func(ctx, workInput) workResult` seam in this task,
 implemented by the next one; tests here drive it with stubs (blocking, cancelling-ignoring, failing).
 
-- [ ] **Write the failing tests** — the claim/lease/owner-loop slice of the spec's worker bullet:
+- [x] **Write the failing tests** — the claim/lease/owner-loop slice of the spec's worker bullet:
   two workers racing one `pending` record;
   fake clock past `leaseUntil + skewMargin` with no KV write → scan reclaims, attempt 2
   (fails if the scan is removed);
@@ -683,7 +684,7 @@ implemented by the next one; tests here drive it with stubs (blocking, cancellin
   that row belongs to the cancel handler whose CAS wins (the *HTTP API* task) —
   and the worker's lost final update records nothing.
 
-- [ ] **Implement**, then validate and commit
+- [x] **Implement**, then validate and commit
 
 ```bash
 mise exec -- go test -race ./internal/pgo/
@@ -723,7 +724,7 @@ git commit -m "feat(pgo): worker claim, scan, and owner loop"
   `CollectionSample(result)` recorded per sample (`ok`/`failed`);
   one debug-level sample log per sample with `pod`, `round`, `result`, `bytes`, never an IP.
 
-- [ ] **Write the failing tests** — the remaining worker bullet cases:
+- [x] **Write the failing tests** — the remaining worker bullet cases:
   stale owner at a barrier vs a completed reclaimer, both `Put` orders, winner's bytes intact;
   a worker crashed mid-round and reclaimed: the reclaimer's merge contains only the second attempt's samples,
   never the first attempt's (fails if attempt-one state leaks into attempt two);
@@ -757,7 +758,7 @@ git commit -m "feat(pgo): worker claim, scan, and owner loop"
   slot pressure: real `httpapi` handler and real worker share one `admit.Gate` capacity 3, `maxParallel` 2 —
   an interactive request always finds a slot (fails when either side gets its own gate).
 
-- [ ] **Implement**, then validate and commit
+- [x] **Implement**, then validate and commit
 
 ```bash
 mise exec -- go test -race ./internal/pgo/ ./internal/httpapi/
@@ -784,7 +785,7 @@ every threshold carries `skewMargin` toward later deletion;
 `Collection("expired")` recorded on every `completed → expired` flip this replica wins,
 and each flip logged as a transition record.
 
-- [ ] **Write the failing tests** — the spec's sweeper bullet, complete:
+- [x] **Write the failing tests** — the spec's sweeper bullet, complete:
   expiry order and lost-update tolerance; retention never deletes `completed` directly;
   slot keys after `retainUntil` only; orphan age boundary both sides;
   a named object never deleted before `expiresAt`;
@@ -797,7 +798,7 @@ and each flip logged as a transition record.
   and a second creator run — exactly one live Collection results, the active key survives the pass;
   nothing is swept while the replay marker is held, and the first pass runs once it is delivered.
 
-- [ ] **Implement**, then validate and commit
+- [x] **Implement**, then validate and commit
 
 ```bash
 mise exec -- go test -race ./internal/pgo/
@@ -852,7 +853,7 @@ The seam exists because the HTTP server must start before NATS preflight has suc
 (interactive routes stay available while NATS is unreachable — spec: *Failure Scenarios*),
 so the PGO dependencies cannot be constructor arguments.
 
-- [ ] **Write the failing tests** — the spec's `internal/httpapi` bullet, complete:
+- [x] **Write the failing tests** — the spec's `internal/httpapi` bullet, complete:
   the route × method × realm flag × state table including `501` and `503` variants
   (state-touching routes `503` while `/readyz` stays 200 — drive with a fake `Client`);
   every PGO route on an unbound `Runtime` → `503 pgo_unavailable`, interactive routes unaffected;
@@ -880,7 +881,7 @@ so the PGO dependencies cannot be constructor arguments.
   no response, header, or manifest with a Pod IP or port;
   metrics rows for the new endpoints.
 
-- [ ] **Implement**, then validate and commit
+- [x] **Implement**, then validate and commit
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/
@@ -916,7 +917,7 @@ SIGTERM never cancels a work context — in-flight Collections finish when they 
 `config validate` (the configuration task) already prints the grace period this bound requires.
 When `pgo.enabled` is false nothing NATS-related is constructed and the routes answer `501`.
 
-- [ ] **Write the failing tests** (serve tests with an in-process NATS server or a fake `Client` seam in `serveDeps`):
+- [x] **Write the failing tests** (serve tests with an in-process NATS server or a fake `Client` seam in `serveDeps`):
   disabled → `501` on a PGO route, no NATS connection attempted;
   enabled with NATS down → `/readyz` 503;
   interactive routes fine once Kubernetes is ready; PGO routes `503 pgo_unavailable`;
@@ -934,7 +935,7 @@ When `pgo.enabled` is false nothing NATS-related is constructed and the routes a
   (fails if `Drain` inherits the HTTP context);
   the contract-violation exit path names the bucket and field (exit non-zero).
 
-- [ ] **Implement**, then validate and commit
+- [x] **Implement**, then validate and commit
 
 ```bash
 mise exec -- go test -race ./cmd/profgate/ ./internal/ops/
@@ -971,14 +972,14 @@ whose comment also states the `terminationGracePeriodSeconds` an operator must s
 the value `profgate config validate` prints for that configuration — while the base stays at 120,
 which the gateway spec's drain bound already covers with PGO off.
 
-- [ ] **Write the failing tests**: the fragment file equals the spec's permission table exactly
+- [x] **Write the failing tests**: the fragment file equals the spec's permission table exactly
   (parse both, compare subject sets);
   the manifest test pins the credentials volume by name, Secret name, `defaultMode: 0440`, `optional: true`,
   its mount path `/etc/profgate/nats/` with `readOnly: true`, and pod `fsGroup: 65532`;
   the existing Deployment test's exact-count assertions move from one volume and one mount to two of each,
   still naming every element (config plus credentials);
   the golden ClusterRole test still passes untouched.
-- [ ] **Write the manifests**, then validate and commit
+- [x] **Write the manifests**, then validate and commit
 
 ```bash
 mise exec -- go test -race ./deploy/
@@ -1004,9 +1005,9 @@ and purges keys and objects between scenarios without recreating buckets.
 `Scenarios()` gains the nine PGO scenarios of the spec's *End-to-end* section, named here for the registry;
 `pgo-preflight-negative` restarts its own gateways because it re-provisions a bucket.
 
-- [ ] **Extend the registry and lane tests** (untagged): the new scenario names, flags, and skip rules;
+- [x] **Extend the registry and lane tests** (untagged): the new scenario names, flags, and skip rules;
   the five `needsPodReach` scenarios below run on every lane.
-- [ ] **Write the nine runners**, one per spec scenario, under these registry names:
+- [x] **Write the nine runners**, one per spec scenario, under these registry names:
   `pgo-on-demand` — an on-demand Collection across three test-app replicas: completes,
   the artifact parses, six `ok` samples over three Pod UIDs,
   both gateways agree on record and bytes (`needsPodReach`);
@@ -1028,7 +1029,7 @@ and purges keys and objects between scenarios without recreating buckets.
   → exit naming the bucket and `TTL`,
   and reduced NATS users (the four permission removals of the spec)
   → exit naming the bucket and operation, no probe left.
-- [ ] **Run the suite**
+- [x] **Run the suite**
 
 ```bash
 PROFGATE_E2E_LANE=current mise run test:e2e
@@ -1036,7 +1037,7 @@ PROFGATE_E2E_LANE=1.23 mise run test:e2e
 PROFGATE_E2E_LANE=1.24 mise run test:e2e
 ```
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go vet -tags e2e ./test/e2e/... && mise exec -- go mod tidy
@@ -1051,12 +1052,13 @@ git commit -m "test(e2e): prove PGO collection on the lanes"
 
 - [ ] Confirm the `main` run passed every lane (the existing workflows need no change:
   `check.yml` covers the new unit tests and `e2e.yml` the lanes).
-- [ ] Update `.agents/rules/500-validation-and-workflow.md`
+  All three lanes pass locally; this box is the CI run, which starts when `main` is pushed.
+- [x] Update `.agents/rules/500-validation-and-workflow.md`
   if review decides that `internal/pgo` or `internal/natskv` changes should also trigger the e2e suite before a PR;
   record the decision either way.
-- [ ] In the same change: set line 3 of this file to `**Status:** Done` and add line 4
+- [x] In the same change: set line 3 of this file to `**Status:** Done` and add line 4
   `**Outcome:** <tag or commit that shipped PGO collection>`.
-- [ ] `mise run lint && mise run test && mise run check`;
+- [x] `mise run lint && mise run test && mise run check`;
   `git add docs/plans/pgo.md .agents/rules/`; `git commit -m "docs: mark the PGO plan done"`.
 
 ---
