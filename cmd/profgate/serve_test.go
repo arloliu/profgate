@@ -1002,7 +1002,12 @@ func (s *stubWorker) Drain(ctx context.Context) error {
 }
 
 // InFlight names the Collections this worker still owns.
-func (s *stubWorker) InFlight() []string { return append([]string(nil), s.abandon...) }
+func (s *stubWorker) InFlight() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]string(nil), s.abandon...)
+}
 
 func (s *stubWorker) runCount() int {
 	s.mu.Lock()
@@ -1210,8 +1215,11 @@ func TestServePGO(t *testing.T) {
 		worker.abandon = []string{"c-1"}
 		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
 		fail := make(chan struct{})
+		// The drain delay is longer than the wait for the exit below: a
+		// listener that has failed receives nothing the endpoint window
+		// protects, so the fatal path does not spend the grace period on it.
 		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
-			gatewayOpts{enabled: true, preflight: pf, worker: worker, failAPI: fail})
+			gatewayOpts{enabled: true, preflight: pf, worker: worker, failAPI: fail, drainDelay: 30 * time.Second})
 		gw.waitReady(t, waitTimeout)
 		waitFor(t, waitTimeout, "the worker starting", func() bool { return worker.runCount() == 1 })
 

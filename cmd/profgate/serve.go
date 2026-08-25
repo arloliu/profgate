@@ -231,7 +231,9 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		// image is distroless and has no shell to run one, and the lifecycle
 		// "sleep" action is newer than the Kubernetes baseline this gateway
 		// supports.
-		if delay := cfg.Server.DrainDelay; delay > 0 {
+		// A listener that has failed receives nothing the window protects,
+		// so the fatal path spends none of the grace period on it.
+		if delay := cfg.Server.DrainDelay; delay > 0 && mode == drainAll {
 			logger.Info("draining; waiting for endpoint removal", "delay", delay.String())
 			time.Sleep(delay)
 		}

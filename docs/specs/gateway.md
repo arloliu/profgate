@@ -854,9 +854,10 @@ the drain's own waits are the ones the work legitimately needs,
 so only the operator can say it has gone on long enough.
 
 A listener that fails is fatal:
-the process logs the failure, drains the interactive requests, and exits 1.
-It never waits for the Collection drain of [`pgo.md`](pgo.md) section 12.4,
-because a replica with no listener has nothing left to serve,
+the process logs the failure, waits out the in-flight requests, and exits 1.
+It skips `server.drainDelay`, because a listener that has failed receives nothing that window protects,
+and it never waits for the Collection drain of [`pgo.md`](pgo.md) section 12.4,
+because a replica with no listener has nothing left to serve
 and a Collection left running stops renewing its lease for another replica to reclaim.
 
 An unreachable API server is never fatal after preflight and does not change `/readyz`:
