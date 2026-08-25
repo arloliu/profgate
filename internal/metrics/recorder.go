@@ -14,6 +14,19 @@ const (
 	EndpointTargets Endpoint = "targets"
 	// EndpointProfile is the profile-fetch endpoint route family.
 	EndpointProfile Endpoint = "profile"
+	// EndpointPGOPolicy is the PGO policy endpoint route family.
+	EndpointPGOPolicy Endpoint = "pgo_policy"
+	// EndpointCollections is the PGO collection-list/create endpoint route family.
+	EndpointCollections Endpoint = "collections"
+	// EndpointCollection is the PGO single-Collection endpoint route family.
+	// profile is fixed to "cpu" for this endpoint.
+	EndpointCollection Endpoint = "collection"
+	// EndpointCollectionProfile is the PGO Collection download endpoint route family.
+	// profile is fixed to "cpu" for this endpoint.
+	EndpointCollectionProfile Endpoint = "collection_profile"
+	// EndpointCollectionCancel is the PGO Collection cancel endpoint route family.
+	// profile is fixed to "cpu" for this endpoint.
+	EndpointCollectionCancel Endpoint = "collection_cancel"
 )
 
 // Recorder records the metrics the gateway's handlers produce.
@@ -29,6 +42,21 @@ type Recorder interface {
 	ProfilesInFlight(delta int)
 	// DiscoverySynced reports whether the discovery cache is currently synced.
 	DiscoverySynced(synced bool)
+	// Collection records the terminal outcome of one Collection: "completed", "failed", "cancelled", or "expired".
+	Collection(result string)
+	// CollectionSample records the outcome of one worker sample: "ok" or "failed".
+	CollectionSample(result string)
+	// CollectionDuration records the wall-clock duration of one completed Collection.
+	CollectionDuration(d time.Duration)
+	// ScheduleSlot records the outcome of one scheduling attempt: "won", "lost", "busy", or "capacity".
+	ScheduleSlot(result string)
+	// SweeperDelete records one sweeper deletion, by kind:
+	// "artifact", "record", "slot", "active", "orphan", or "probe".
+	SweeperDelete(kind string)
+	// CollectionsActive adjusts the count of Collections currently active by delta.
+	CollectionsActive(delta int)
+	// NATSConnected reports whether the NATS connection is currently up.
+	NATSConnected(up bool)
 }
 
 // Noop implements Recorder with empty methods, for callers that need a
@@ -46,3 +74,24 @@ func (Noop) ProfilesInFlight(int) {}
 
 // DiscoverySynced implements Recorder and does nothing.
 func (Noop) DiscoverySynced(bool) {}
+
+// Collection implements Recorder and does nothing.
+func (Noop) Collection(string) {}
+
+// CollectionSample implements Recorder and does nothing.
+func (Noop) CollectionSample(string) {}
+
+// CollectionDuration implements Recorder and does nothing.
+func (Noop) CollectionDuration(time.Duration) {}
+
+// ScheduleSlot implements Recorder and does nothing.
+func (Noop) ScheduleSlot(string) {}
+
+// SweeperDelete implements Recorder and does nothing.
+func (Noop) SweeperDelete(string) {}
+
+// CollectionsActive implements Recorder and does nothing.
+func (Noop) CollectionsActive(int) {}
+
+// NATSConnected implements Recorder and does nothing.
+func (Noop) NATSConnected(bool) {}

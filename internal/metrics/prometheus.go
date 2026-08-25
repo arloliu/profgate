@@ -8,11 +8,18 @@ import (
 
 // A Prometheus records metrics through github.com/prometheus/client_golang.
 type Prometheus struct {
-	requests         *prometheus.CounterVec
-	requestDuration  *prometheus.HistogramVec
-	confirms         *prometheus.CounterVec
-	profilesInFlight prometheus.Gauge
-	discoverySynced  prometheus.Gauge
+	requests           *prometheus.CounterVec
+	requestDuration    *prometheus.HistogramVec
+	confirms           *prometheus.CounterVec
+	profilesInFlight   prometheus.Gauge
+	discoverySynced    prometheus.Gauge
+	collections        *prometheus.CounterVec
+	collectionSamples  *prometheus.CounterVec
+	collectionDuration prometheus.Histogram
+	scheduleSlots      *prometheus.CounterVec
+	sweeperDeletes     *prometheus.CounterVec
+	collectionsActive  prometheus.Gauge
+	natsConnected      prometheus.Gauge
 }
 
 // NewPrometheus builds the gateway's metrics and registers them with reg.
@@ -39,9 +46,42 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 			Name: "profgate_discovery_synced",
 			Help: "Whether the discovery cache is currently synced: 1 if synced, 0 otherwise.",
 		}),
+		collections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "profgate_collections_total",
+			Help: "Total number of Collections, by terminal result.",
+		}, []string{"result"}),
+		collectionSamples: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "profgate_collection_samples_total",
+			Help: "Total number of worker samples, by result.",
+		}, []string{"result"}),
+		collectionDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "profgate_collection_duration_seconds",
+			Help:    "Duration in seconds of completed Collections.",
+			Buckets: []float64{10, 30, 60, 120, 300, 600, 1200},
+		}),
+		scheduleSlots: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "profgate_schedule_slots_total",
+			Help: "Total number of scheduling attempts, by result.",
+		}, []string{"result"}),
+		sweeperDeletes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "profgate_sweeper_deletes_total",
+			Help: "Total number of sweeper deletions, by kind.",
+		}, []string{"kind"}),
+		collectionsActive: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "profgate_collections_active",
+			Help: "Number of Collections currently active.",
+		}),
+		natsConnected: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "profgate_nats_connected",
+			Help: "Whether the NATS connection is currently up: 1 if up, 0 otherwise.",
+		}),
 	}
 
-	reg.MustRegister(p.requests, p.requestDuration, p.confirms, p.profilesInFlight, p.discoverySynced)
+	reg.MustRegister(
+		p.requests, p.requestDuration, p.confirms, p.profilesInFlight, p.discoverySynced,
+		p.collections, p.collectionSamples, p.collectionDuration, p.scheduleSlots, p.sweeperDeletes,
+		p.collectionsActive, p.natsConnected,
+	)
 
 	return p
 }
@@ -69,4 +109,43 @@ func (p *Prometheus) DiscoverySynced(synced bool) {
 		value = 1.0
 	}
 	p.discoverySynced.Set(value)
+}
+
+// Collection implements Recorder.
+func (p *Prometheus) Collection(result string) {
+	p.collections.WithLabelValues(result).Inc()
+}
+
+// CollectionSample implements Recorder.
+func (p *Prometheus) CollectionSample(result string) {
+	p.collectionSamples.WithLabelValues(result).Inc()
+}
+
+// CollectionDuration implements Recorder.
+func (p *Prometheus) CollectionDuration(d time.Duration) {
+	p.collectionDuration.Observe(d.Seconds())
+}
+
+// ScheduleSlot implements Recorder.
+func (p *Prometheus) ScheduleSlot(result string) {
+	p.scheduleSlots.WithLabelValues(result).Inc()
+}
+
+// SweeperDelete implements Recorder.
+func (p *Prometheus) SweeperDelete(kind string) {
+	p.sweeperDeletes.WithLabelValues(kind).Inc()
+}
+
+// CollectionsActive implements Recorder.
+func (p *Prometheus) CollectionsActive(delta int) {
+	p.collectionsActive.Add(float64(delta))
+}
+
+// NATSConnected implements Recorder.
+func (p *Prometheus) NATSConnected(up bool) {
+	value := 0.0
+	if up {
+		value = 1.0
+	}
+	p.natsConnected.Set(value)
 }
