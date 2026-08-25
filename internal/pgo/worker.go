@@ -89,9 +89,19 @@ type Worker struct {
 	owner     Owner
 	run       runFunc
 
-	mu       sync.Mutex
-	active   int
+	mu     sync.Mutex
+	active int
+	// stopped is set by Drain, and refuses every claim after it:
+	// the set of Collections the drain waits for never grows once it has
+	// started, which is what lets the drain end.
+	stopped  bool
 	inFlight map[string]*inFlight
+	// claims counts the claims between the capacity reservation and the
+	// inFlight entry that reservation leads to.
+	// Drain waits for it once no further claim can begin,
+	// so a claim already inside that window when the drain started is waited
+	// for rather than missed by a snapshot taken before it registered.
+	claims sync.WaitGroup
 }
 
 // NewWorker returns the replica's worker.
@@ -149,35 +159,40 @@ func (w *Worker) Run(ctx context.Context) {
 
 // Drain blocks until every owner loop and work goroutine has exited, waiting
 // per Collection no longer than its deadline.
+// It refuses every later claim first and then waits for the claims already
+// past their capacity check, because a claim whose conditional write is still
+// in flight owns nothing a snapshot can see yet.
+// A pass that waited for anything looks again before it returns,
+// so a Collection registered while the pass was waiting is not left behind;
+// the passes end because no claim can begin after the first line.
 // Merge, Compact, and Write take no context and run to completion once
 // entered, so a work goroutine still running at its Collection's deadline is
 // abandoned, logged by Collection id, and Drain returns without it.
 func (w *Worker) Drain(ctx context.Context) error {
-	var abandoned []string
-	for _, fl := range w.inFlightSnapshot() {
-		wait := fl.deadline.Sub(w.clock.Now())
-		if wait < 0 {
-			wait = 0
-		}
-		// An already-exited Collection is never abandoned, however long an
-		// earlier one in this pass held the wait.
-		select {
-		case <-fl.done:
-			continue
-		default:
-		}
-		timer := w.clock.NewTimer(wait)
-		select {
-		case <-fl.done:
-		case <-timer.C():
-			abandoned = append(abandoned, fl.id)
-			w.log.Warn("pgo: collection abandoned at its deadline", "collection", fl.id)
-		case <-ctx.Done():
-			timer.Stop()
+	w.stopClaiming()
+	w.claims.Wait()
 
-			return fmt.Errorf("pgo: drain: %w", ctx.Err())
+	var abandoned []string
+	waited := make(map[string]struct{})
+	for {
+		fresh := false
+		for _, fl := range w.inFlightSnapshot() {
+			if _, seen := waited[fl.id]; seen {
+				continue
+			}
+			waited[fl.id] = struct{}{}
+			fresh = true
+			exited, err := w.waitCollection(ctx, fl)
+			if err != nil {
+				return err
+			}
+			if !exited {
+				abandoned = append(abandoned, fl.id)
+			}
 		}
-		timer.Stop()
+		if !fresh {
+			break
+		}
 	}
 	if len(abandoned) > 0 {
 		return fmt.Errorf("pgo: %d collection(s) still running at their deadline: %s",
@@ -185,6 +200,41 @@ func (w *Worker) Drain(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// waitCollection waits for one Collection to exit, up to its deadline, and
+// reports whether it did: a false is the deadline passing first.
+func (w *Worker) waitCollection(ctx context.Context, fl *inFlight) (bool, error) {
+	// An already-exited Collection is never abandoned, however long an
+	// earlier one in this pass held the wait.
+	select {
+	case <-fl.done:
+		return true, nil
+	default:
+	}
+	wait := fl.deadline.Sub(w.clock.Now())
+	if wait < 0 {
+		wait = 0
+	}
+	timer := w.clock.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-fl.done:
+		return true, nil
+	case <-timer.C():
+		w.log.Warn("pgo: collection abandoned at its deadline", "collection", fl.id)
+
+		return false, nil
+	case <-ctx.Done():
+		return false, fmt.Errorf("pgo: drain: %w", ctx.Err())
+	}
+}
+
+// stopClaiming refuses every claim from here on.
+func (w *Worker) stopClaiming() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stopped = true
 }
 
 // inFlightSnapshot lists what this replica owns, in a stable order.
@@ -310,6 +360,9 @@ func (w *Worker) claim(ctx context.Context, stores natskv.Stores, rec Record, re
 	if !w.reserveLocalSlot() {
 		return
 	}
+	// The claim window closes when this call returns: by then the record is
+	// either registered for the drain to wait on or the slot is back.
+	defer w.claims.Done()
 	if rec.Attempt >= w.maxAttempts {
 		w.releaseLocalSlot()
 		w.terminate(ctx, jobs, rec, rev, ReasonAttemptsExhausted)
@@ -354,14 +407,18 @@ func (w *Worker) claim(ctx context.Context, stores natskv.Stores, rec Record, re
 	w.startOwner(stores, rec, newRev)
 }
 
-// reserveLocalSlot takes one of this replica's maxActiveCollections.
+// reserveLocalSlot takes one of this replica's maxActiveCollections, and
+// opens the claim window Drain waits for.
+// A drained worker reserves nothing: the Collection would have no one left to
+// finish it.
 func (w *Worker) reserveLocalSlot() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.active >= w.maxActive {
+	if w.stopped || w.active >= w.maxActive {
 		return false
 	}
 	w.active++
+	w.claims.Add(1)
 
 	return true
 }

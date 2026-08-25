@@ -1019,6 +1019,69 @@ func TestWorkerDrain(t *testing.T) {
 		}
 	})
 
+	t.Run("waits for a claim that lands after it began", func(t *testing.T) {
+		f := startPGO(t)
+		id := f.seedClaimable("payment", "payment-api")
+
+		// The claim's conditional write is held open, which leaves the scan
+		// inside the window between reserving a local slot and registering the
+		// Collection: a snapshot taken now sees nothing to wait for.
+		claiming := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		hook := &kvHook{}
+		hook.setBefore(func(op, key string) (error, bool) {
+			if op == "update" && key == jobKey(id) {
+				once.Do(func() { close(claiming) })
+				<-release
+			}
+
+			return nil, false
+		})
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+
+		stub := newRunStub(workResult{Object: id + "-1.pprof"})
+		t.Cleanup(stub.release)
+		w := r.newWorker(stub.fn())
+		scanned := make(chan struct{})
+		go func() {
+			defer close(scanned)
+			w.scan(context.Background())
+		}()
+		<-claiming
+
+		drained := make(chan error, 1)
+		go func() { drained <- w.Drain(context.Background()) }()
+		select {
+		case err := <-drained:
+			t.Fatalf("Drain returned %v while a claim was still committing", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		close(release)
+		stub.waitStarted(t)
+		select {
+		case err := <-drained:
+			t.Fatalf("Drain returned %v while the claim's work goroutine was running", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		stub.release()
+		select {
+		case err := <-drained:
+			if err != nil {
+				t.Fatalf("Drain returned %v, want nil", err)
+			}
+		case <-time.After(fixtureTimeout):
+			t.Fatal("Drain did not return once the work had exited")
+		}
+		<-scanned
+	})
+
 	t.Run("abandons a collection still running at its deadline", func(t *testing.T) {
 		f := startPGO(t)
 		id := f.seedClaimable("payment", "payment-api")
