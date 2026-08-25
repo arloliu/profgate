@@ -49,7 +49,9 @@ is what keeps `nodes` access unnecessary.
 
 ### NATS
 
-`PROFGATE_CONFIG`, `PROFGATE_JOBS`, and optionally `PROFGATE_ARTIFACTS`.
+`PROFGATE_CONFIG`, `PROFGATE_JOBS`, and `PROFGATE_ARTIFACTS`;
+all three are required when PGO collection is enabled,
+and the shipped account fragment is pinned by a test.
 Stream, bucket, and account administration belongs to whoever provisions the
 cluster; Profgate uses stores that already exist.
 
@@ -58,8 +60,8 @@ cluster; Profgate uses stores that already exist.
 Non-root, no Linux capabilities, no privilege escalation, read-only root
 filesystem.
 The gateway has no writable volume at all;
-if the PGO draft is accepted, its ephemeral profile bytes are confined to an
-`emptyDir` and nothing else becomes writable.
+PGO collection merges samples in memory and stores artifacts in NATS,
+so nothing becomes writable.
 Host namespaces, host paths, and `SYS_PTRACE` stay out — Profgate talks HTTP
 to applications rather than attaching to their processes.
 
@@ -82,6 +84,12 @@ The end-to-end harness under `test/` drives the cluster with the tester's
 kubeconfig, not the gateway's ServiceAccount; its client-go use is test
 tooling, which is why the grep excludes that tree.
 `mise run check` runs this grep through `scripts/check-repo.py`.
+
+### One Importer of nats.go
+
+`internal/natskv` is the only non-test importer of
+`github.com/nats-io/nats.go`;
+`mise run check` runs the same grep shape as for client-go.
 
 ### Golden ClusterRole
 

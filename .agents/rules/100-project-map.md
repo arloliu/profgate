@@ -32,8 +32,8 @@ on it ([000](000-agent-contract.md)).
   capabilities.
 - **Kubernetes baseline:** 1.23, using only stable API fields available at
   that release. 1.23 and 1.24 are first-class integration-test targets.
-- **Runtime dependencies:** the Kubernetes API only.
-  No NATS until PGO collection lands;
+- **Runtime dependencies:** the Kubernetes API,
+  and NATS JetStream when PGO collection is enabled;
   no database, cache, PVC, or object storage;
   no Kubernetes CRDs and no operator.
 
@@ -64,6 +64,9 @@ internal/proxy/        // upstream HTTP to PodIP:port, timeouts, error mapping
 internal/httpapi/      // routing, realm checks, handlers, audit log
 internal/config/       // fuda-loaded Config and validation
 internal/metrics/      // Recorder interface, Prometheus implementation
+internal/admit/        // the admission gate shared by interactive requests and Collections
+internal/natskv/       // the NATS seam; sole non-test importer of nats.go
+internal/pgo/          // policy, publisher, scheduler, worker, merge, sweeper
 internal/ops/          // liveness, readiness, and the Prometheus /metrics listener
 deploy/                // kustomize base: RBAC, Deployment, NetworkPolicy
 test/e2e/              // kind harness, versions.yaml, testapp, overlays, cmd/lanes (CI lane matrix)
@@ -71,8 +74,8 @@ scripts/               // repository checks; check-repo.py
 docs/                  // see docs/README.md
 ```
 
-`internal/pgo/` and `internal/natskv/` arrive with the PGO design
-([`docs/specs/pgo.md`](../../docs/specs/pgo.md)) and not before.
+`internal/pgo/`, `internal/natskv/`, and `internal/admit/`
+are defined by the accepted PGO design ([`docs/specs/pgo.md`](../../docs/specs/pgo.md)).
 
 ## External HTTP API
 
@@ -84,8 +87,15 @@ The name `profgate` does not appear in versioned API paths:
 /v1/namespaces/{namespace}/services/{service}/profiles/{profile}
 ```
 
-`.../collections` and `.../pgo` belong to the PGO draft
-([`docs/specs/pgo.md`](../../docs/specs/pgo.md)) and do not exist until it is accepted.
+The accepted PGO design ([`docs/specs/pgo.md`](../../docs/specs/pgo.md)) adds:
+
+```
+/v1/namespaces/{namespace}/services/{service}/pgo
+/v1/namespaces/{namespace}/services/{service}/collections
+/v1/collections/{id}
+/v1/collections/{id}/profile
+/v1/collections/{id}/cancel
+```
 
 ## Documentation
 

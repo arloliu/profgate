@@ -35,7 +35,7 @@ and records an `Outcome:` line naming what shipped.
 
 - **Understanding what Profgate is:** [`specs/gateway.md`](specs/gateway.md),
   the accepted gateway design.
-  [`specs/pgo.md`](specs/pgo.md) is the unsettled PGO draft layered on it;
+  [`specs/pgo.md`](specs/pgo.md) is the accepted PGO collection design layered on it;
   [`specs/profgate-design.md`](specs/profgate-design.md) is the superseded combined original, kept for history.
 - **Why a choice was made:** [`decisions/`](decisions/), one file per topic.
 - **Changing anything:** [`.agents/rules/`](../.agents/rules/) holds the rules

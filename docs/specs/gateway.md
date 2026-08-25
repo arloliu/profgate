@@ -37,9 +37,10 @@ which is what makes the profiled replica predictable.
    The gateway's ServiceAccount can read three resources —
    `list` and `watch` on each, plus `get` on Pods — and nothing else.
 2. **No Kubernetes CRDs, no operator.**
-3. **No NATS.**
-   The gateway binary links no NATS client library.
-   `go.mod` not containing `github.com/nats-io/nats.go` is the checkable form of this claim.
+3. **No NATS on the interactive path.**
+   Discovery, authorization, and proxying never touch NATS;
+   [`pgo.md`](pgo.md) is the only design that uses it,
+   and `internal/natskv` is its only importer.
 4. **Stateless.**
    Any replica answers any request; there is no coordination between replicas.
 5. **Read-only discovery through cluster-wide shared informers** over Services, Pods, and EndpointSlices.
@@ -61,9 +62,10 @@ which is what makes the profiled replica predictable.
   Grafana Pyroscope and Parca exist for that and are not dependencies of this design.
 - Profiling languages other than Go.
 - Reaching Pods through `pods/exec`, `pods/portforward`, or a sidecar.
-- Hot-reloading configuration, Basic Auth, OIDC, PGO collection.
-  Each is designed for in [`pgo.md`](pgo.md) or a later revision of this document;
-  the seams that make them additive are called out where they occur.
+- Hot-reloading configuration, Basic Auth, OIDC.
+  Each is designed for in a later revision of this document;
+  PGO collection is designed in [`pgo.md`](pgo.md).
+  The seams that make them additive are called out where they occur.
 
 ---
 
@@ -113,8 +115,8 @@ is reached only by the kubelet and the metrics scraper, and is never routed by t
 > connects to explicitly permitted application pprof ports,
 > and manipulates only its dedicated `PROFGATE_*` NATS stores.
 
-The gateway defined here uses no NATS stores at all;
-the clause exists so the wording stays stable when [`pgo.md`](pgo.md) adds them.
+The gateway defined here uses no NATS stores;
+[`pgo.md`](pgo.md) names the three it adds.
 [`.agents/rules/800-security-invariant.md`](../../.agents/rules/800-security-invariant.md)
 holds the authoritative wording and the mechanisms that keep it checkable.
 
@@ -211,9 +213,17 @@ securityContext:
     drop: ["ALL"]
 ```
 
-The gateway has no writable volume.
-Its read-only mounts are the configuration ConfigMap (section 10)
-and the projected ServiceAccount token that Kubernetes injects.
+The gateway has no writable volume, with or without PGO collection.
+Its read-only mounts are the configuration ConfigMap (section 10),
+the projected ServiceAccount token that Kubernetes injects,
+and, when `pgo.enabled` and `nats.credsFile` are configured ([`pgo.md`](pgo.md)),
+a Kubernetes Secret volume holding the NATS credentials file at `/etc/profgate/nats/`,
+mounted `readOnly: true` with `defaultMode: 0440`;
+the Deployment's pod `securityContext` sets `fsGroup: 65532`
+so the non-root gateway's group owns the volume and can read the file.
+The kubelet mounts the Secret;
+the gateway's ServiceAccount needs no Secrets API permission,
+and the RBAC table is unchanged.
 No host namespaces, host paths, `SYS_PTRACE`, or privileged mode.
 
 ### 3.5 What a compromised gateway can do
@@ -464,7 +474,8 @@ Steps 7–9 differ by endpoint.
 
 1. **Route.** Unknown path → `404 route_unknown`; unknown `{profile}` → `404 profile_unknown`.
    Path segments for `{namespace}` and `{service}` must be DNS-1123 labels, otherwise `404 route_unknown`.
-2. **Method.** Anything but `GET` → `405 method_not_allowed` with `Allow: GET`.
+2. **Method.** A method the route does not accept → `405 method_not_allowed` with `Allow` listing those it does;
+   the two routes defined here accept `GET` only.
 3. **Readiness.** `HasSynced()` false → `503 not_ready`.
 4. **Authentication.** Resolve the principal (section 7.1).
 5. **Realm.** Namespace, then Service, then (profile endpoint only) profile → `403 realm_denied`.
@@ -479,7 +490,8 @@ Steps 7–9 differ by endpoint.
    if `pod` is absent and no target remains → `503 no_targets`;
    otherwise pick `pod`, or one target by `strategy` (`random` when absent).
 9. **Admit** (profile endpoint only).
-   Acquire one of `limits.maxConcurrentProfiles` slots without waiting; none free → `429 too_many_profiles`.
+   Acquire one of `limits.maxConcurrentProfiles` slots from the shared admission gate (`internal/admit`) without waiting;
+   none free → `429 too_many_profiles`.
    The slot is held through confirmation and proxying and released when the response completes.
    The overall request budget (section 6.4) starts here.
 10. **Confirm** (profile endpoint only, section 5.6) → `503 target_changed`, `503 discovery_unavailable`.
@@ -1089,6 +1101,11 @@ Validation failures are fatal at startup and reported by `profgate config valida
   a NetworkPolicy for the gateway Pods that admits the API port from the Ingress controller's namespace
   and the ops port from the monitoring namespace (both namespace selectors are kustomize-patched per cluster),
   and an example NetworkPolicy for application pprof ports.
+- When PGO collection is enabled ([`pgo.md`](pgo.md)),
+  the operator creates the NATS credentials Secret alongside the NATS account;
+  `deploy/` ships a commented example Secret
+  and the Deployment's credentials volume (`defaultMode: 0440`),
+  read-only mount, and pod `fsGroup: 65532`, pinned by a manifest test.
 - No Helm chart; there is nothing to template.
 
 ### 11.1 Dependencies
@@ -1099,7 +1116,8 @@ Validation failures are fatal at startup and reported by `profgate config valida
 | `github.com/arloliu/fuda` | configuration |
 | `gopkg.in/yaml.v3` | strict unknown-key pass before fuda (already a fuda dependency) |
 | `github.com/prometheus/client_golang` | metrics |
-| `github.com/google/pprof` | tests only: parsing fetched profiles |
+| `github.com/nats-io/nats.go` | PGO coordination and artifacts (only in `internal/natskv`) |
+| `github.com/google/pprof` | profile merge ([`pgo.md`](pgo.md)) and tests: parsing fetched profiles |
 | `sigs.k8s.io/yaml` | tests only: golden ClusterRole and `versions.yaml` |
 
 Everything else is the standard library.
@@ -1115,6 +1133,7 @@ internal/proxy/      upstream HTTP to PodIP:Port, transport, budget, error mappi
 internal/httpapi/    routing, realm checks, handlers, error bodies, audit log
 internal/config/     fuda-loaded Config, strict pre-parse, validation, hot/restart classification
 internal/metrics/    Recorder interface and the Prometheus implementation
+internal/admit/      the admission gate shared by interactive requests and Collections
 deploy/              kustomize base
 test/e2e/            harness, versions.yaml, testapp, overlays
 ```

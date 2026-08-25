@@ -16,9 +16,9 @@ PGO collection, when it arrives, adds NATS JetStream KV for control-plane state 
 ## Two Specs, One Accepted
 
 [`docs/specs/gateway.md`](docs/specs/gateway.md) is `Accepted`:
-the design of record for the pprof gateway — discovery, proxying, realms, configuration, testing — with no NATS and no PGO.
-[`docs/specs/pgo.md`](docs/specs/pgo.md) is `Draft`:
-PGO collection layered on the gateway, carried over from the superseded combined draft and not settled.
+the design of record for the pprof gateway — discovery, proxying, realms, configuration, testing — with no NATS on the interactive path.
+[`docs/specs/pgo.md`](docs/specs/pgo.md) is `Accepted`:
+PGO collection layered on the gateway — scheduling, NATS coordination, in-memory merge, artifacts — changing none of the gateway's interactive behavior.
 Read a draft for context and revise it freely;
 implement only from an `Accepted` spec.
 Full authority order:
