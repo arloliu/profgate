@@ -16,6 +16,10 @@ The layers and the cases each one must cover are defined in the *Testing* sectio
 - `-race` is always on; a test that only passes without it is a bug.
 - Table tests with named subtests (`t.Run(tc.name, ...)`) so a failure names its case.
 - HTTP behavior is tested against `httptest.Server` stand-ins, never a live port.
+  The one exception is the API listener's TLS handshake in `cmd/profgate`,
+  where the listener the process builds is itself what is under test:
+  `httptest`'s `StartTLS` fills in `Certificates` of its own,
+  which suppresses the `GetCertificate` the certificate reload depends on for every ClientHello without a server name.
 - Kubernetes behavior is tested against `k8s.io/client-go/kubernetes/fake` with real informers.
 - Every subtest builds a fresh fixture;
   subtests never share a fake clientset, informer, or server.

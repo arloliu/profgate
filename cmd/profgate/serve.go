@@ -26,6 +26,7 @@ import (
 	"github.com/arloliu/profgate/internal/ops"
 	"github.com/arloliu/profgate/internal/pgo"
 	"github.com/arloliu/profgate/internal/proxy"
+	"github.com/arloliu/profgate/internal/tlscert"
 )
 
 const (
@@ -91,6 +92,7 @@ type serveDeps struct {
 	natsPreflight natsPreflightFunc                      // production: natskv.Preflight
 	pgoWorker     collectionWorker                       // production: nil, so serve builds a pgo.Worker
 	listen        listenFunc                             // production: nil, so serve uses net.ListenConfig
+	tlsRefresh    time.Duration                          // production: 0, so tlscert re-reads on its own interval
 }
 
 // serve runs the gateway until stop is closed or a fatal event happens, and returns the exit code.
@@ -163,6 +165,30 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	apiServer := &http.Server{Handler: counted, ReadHeaderTimeout: readHeaderTimeout}
 	opsServer := &http.Server{Handler: ops.New(ready, deps.registry), ReadHeaderTimeout: readHeaderTimeout}
 
+	// The API listener serves HTTPS when the configuration names a certificate,
+	// and the ops listener never does: its readers are the kubelet and the
+	// scraper, both of which reach it by Pod address and would skip
+	// verification anyway.
+	// A certificate that cannot be read or parsed ends startup here, before
+	// anything binds, rather than answering every handshake with an error.
+	var certs *tlscert.Loader
+	if cfg.Server.TLS.Enabled() {
+		certs, err = tlscert.New(tlscert.Options{
+			CertFile:   cfg.Server.TLS.CertFile,
+			KeyFile:    cfg.Server.TLS.KeyFile,
+			MinVersion: cfg.Server.TLS.MinVersion,
+			Interval:   deps.tlsRefresh,
+			Logger:     logger,
+			Recorder:   deps.recorder,
+		})
+		if err != nil {
+			logger.Error("tls certificate", "error", err)
+
+			return 1
+		}
+		apiServer.TLSConfig = certs.TLSConfig()
+	}
+
 	listen := deps.listen
 	if listen == nil {
 		var lc net.ListenConfig
@@ -181,11 +207,26 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 
 		return 1
 	}
-	logger.Info("listening", "api", apiListener.Addr().String(), "ops", opsListener.Addr().String())
+	scheme := "http"
+	if certs != nil {
+		scheme = "https"
+	}
+	logger.Info("listening",
+		"api", apiListener.Addr().String(), "scheme", scheme, "ops", opsListener.Addr().String())
 
 	// errCh holds one result per Serve; both goroutines send exactly once and never block.
 	errCh := make(chan error, 2)
-	go func() { errCh <- apiServer.Serve(apiListener) }()
+	go func() {
+		// ServeTLS with no file names wraps the listener with the TLSConfig
+		// already set, which is where GetCertificate lives, and sets up ALPN
+		// the way a plain tls.NewListener would not.
+		if certs != nil {
+			errCh <- apiServer.ServeTLS(apiListener, "", "")
+
+			return
+		}
+		errCh <- apiServer.Serve(apiListener)
+	}()
 	go func() { errCh <- opsServer.Serve(opsListener) }()
 
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -196,6 +237,13 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	// profile request confirms its Pod before it dials.
 	informerCtx, cancelInformers := context.WithCancel(ctx)
 	defer cancelInformers()
+	// The certificate is re-read under runCtx, so it stops with the other
+	// loops at the top of the drain.
+	// Nothing waits for it: the pair already loaded serves every connection
+	// the drain is still finishing.
+	if certs != nil {
+		go certs.Run(runCtx)
+	}
 	preflightCh := make(chan error, 1)
 	go func() { preflightCh <- preflight(runCtx, rt, logger) }()
 	syncedCh := make(chan struct{}, 1)
