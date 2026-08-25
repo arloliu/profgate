@@ -1182,6 +1182,11 @@ for round in 0..rounds-1:
     if round < rounds-1: sleep roundInterval
 ```
 
+`version_missing` covers two cases with one reason:
+no Pod the round resolves carries a version label,
+and every Pod carries one but none matches `target.version` when it is pinned —
+the pin filter runs before the distinct-version check, so both leave zero versions to resolve from.
+
 **Decoding a sample.**
 The body is read through `io.LimitReader(maxSampleBytes + 1)` into memory;
 reaching the extra byte is `sample_too_large`.
@@ -1484,6 +1489,12 @@ The identifier is opaque, so this leaks nothing the realm would hide.
 
 Request bodies are JSON, at most 64 KiB, decoded with unknown fields rejected (`400 invalid_parameter`).
 
+`state` is a closed set for this release:
+the values listed in section 8.2 are exhaustive, and adding one is a spec change.
+`origin` and `reason` are open sets:
+this release enumerates the values in use today and later work can add more,
+so a client that switches on either needs a default arm for a value it does not recognize.
+
 ### 10.1 Policy
 
 ```http
@@ -1731,6 +1742,8 @@ Loading, strict unknown-key handling, environment prefix, and the `atomic.Pointe
 | `realms.<name>.pgo.collect` | — | `false` | hot | bool |
 | `realms.<name>.pgo.configure` | — | `false` | hot | bool |
 
+The Reload column records which changes a future reload could apply without a restart;
+no reload mechanism exists yet, so today every change, `hot` or `restart`, takes effect only after one.
 `pgo.defaults` is hot because it is policy, like realms;
 the scheduler reads the config pointer on every tick.
 `pgo.limits` is restart because the memory figure in section 3.4 and the admission arithmetic in section 8.5 depend on it.
@@ -1739,11 +1752,15 @@ and the 10-minute orphan age (section 8.9) are constants, not configuration:
 a knob would invite tuning them past the assumptions they encode.
 The defaults satisfy every cross-field rule as published:
 `4 × 2 < 16` (the `maxParallel` ceiling times `maxActiveCollections`), `5 × 32 ≤ 256`, `168h ≥ 24h + 1h`, `60s ≤ 60`.
+Every cross-field rule above — between limits, and between a default and its ceiling —
+runs only when `pgo.enabled` is true:
+a file carrying an inconsistent `pgo` block loads without error while disabled
+and fails at startup only once `pgo.enabled` flips to true.
 
 ```yaml
 nats:
   url: nats://nats.profgate.svc:4222
-  credsFile: /etc/profgate/nats/profgate.creds
+  credsFile: /etc/profgate/nats/nats.creds
   connectTimeout: 5s
 pgo:
   enabled: true
