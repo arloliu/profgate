@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arloliu/profgate/internal/admit"
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
@@ -841,5 +842,88 @@ func TestConcurrentRequestsAreIndependent(t *testing.T) {
 	}
 	if got := len(h.audits(t)); got != n {
 		t.Errorf("audit records = %d, want %d", got, n)
+	}
+}
+
+// TestSharedGateLeavesRoomForInteractiveRequests proves the guarantee that
+// holds only because there is one gate: configuration keeps
+// pgo.limits.maxParallel × maxActiveCollections below
+// limits.maxConcurrentProfiles, so however many slots a Collection's samplers
+// hold, an interactive request always finds one.
+// The second half is what makes the sharing observable: with one slot left,
+// two requests at once take it and refuse the other, which a handler holding
+// a gate of its own would not do.
+// internal/pgo proves the sampler's half, that a Collection's fan-out never
+// takes more than maxParallel of the same gate.
+func TestSharedGateLeavesRoomForInteractiveRequests(t *testing.T) {
+	const (
+		capacity    = 3
+		maxParallel = 2
+	)
+
+	shared := admit.New(capacity)
+	h := newHarness(baseTarget())
+	h.gate = shared
+	h.configure(func(cfg *config.Config) { cfg.Limits.MaxConcurrentProfiles = capacity })
+
+	// A Collection's samplers take their slots the way internal/pgo does.
+	releases := make([]func(), 0, maxParallel)
+	for i := range maxParallel {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		release, err := shared.Acquire(ctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("a collection sampler could not take slot %d: %v", i, err)
+		}
+		releases = append(releases, release)
+	}
+
+	// Every interactive request still finds the slot the inequality reserves.
+	for i := range 5 {
+		rec := h.do(t, http.MethodGet, profilePath+"cpu")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("interactive request %d got %d, want 200 while a collection holds %d of %d slots",
+				i, rec.Code, maxParallel, capacity)
+		}
+	}
+
+	// One slot left and two requests at once: the handler admits on the gate
+	// it was given and nowhere else, so exactly one of them is refused.
+	block := make(chan struct{})
+	h.up.release = block
+	handler := h.handler()
+	admitted := h.up.calls.Load()
+
+	first := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, profilePath+"cpu", nil))
+		first <- rec.Code
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for h.up.calls.Load() == admitted {
+		if time.Now().After(deadline) {
+			t.Fatal("the first of the two concurrent requests never reached the upstream")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, httptest.NewRequestWithContext(context.Background(), http.MethodGet, profilePath+"cpu", nil))
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("the second concurrent request got %d, want 429: the last slot was already taken", second.Code)
+	}
+	if code, _ := errorBodyOf(t, second); code != "too_many_profiles" {
+		t.Errorf("the refused request answered %q, want too_many_profiles", code)
+	}
+
+	close(block)
+	if code := <-first; code != http.StatusOK {
+		t.Fatalf("the admitted request got %d, want 200", code)
+	}
+
+	for _, release := range releases {
+		release()
 	}
 }

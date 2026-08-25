@@ -11,6 +11,11 @@ type requestError struct {
 	status  int
 	code    string
 	message string
+	// auditCode replaces code in the audit record and the metrics row.
+	// It carries the outcomes that have a code of their own but no status of
+	// their own — cas_contended, artifact_stream_failed, client_gone — so the
+	// operator sees what happened while the client sees a status it can act on.
+	auditCode string
 }
 
 // errorBody is the envelope every gateway-generated error is written as.

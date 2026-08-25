@@ -6,21 +6,41 @@ import (
 )
 
 // auditRecord is the one log record every /v1 request emits on completion.
-// It names the principal, the route, and the selected Pod, never the Pod's address.
+// It names the principal, the route, and the selected Pod or Collection, never the Pod's address.
+// An interactive request and a PGO one carry different keys, because they answer different questions:
+// which Pod and profile the caller reached, or which Collection and method it acted on.
 type auditRecord struct {
-	principal string
-	namespace string
-	service   string
-	pod       string
-	profile   string
-	seconds   int
-	status    int
-	code      string
-	duration  time.Duration
+	pgo        bool
+	principal  string
+	namespace  string
+	service    string
+	pod        string
+	profile    string
+	collection string
+	method     string
+	seconds    int
+	status     int
+	code       string
+	duration   time.Duration
 }
 
 // writeAudit emits rec as the "request" record at info level.
 func writeAudit(log *slog.Logger, rec auditRecord) {
+	if rec.pgo {
+		log.Info("request",
+			"principal", rec.principal,
+			"namespace", rec.namespace,
+			"service", rec.service,
+			"collection", rec.collection,
+			"method", rec.method,
+			"status", rec.status,
+			"code", rec.code,
+			"duration_ms", rec.duration.Milliseconds(),
+		)
+
+		return
+	}
+
 	log.Info("request",
 		"principal", rec.principal,
 		"namespace", rec.namespace,

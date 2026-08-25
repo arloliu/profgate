@@ -11,14 +11,18 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"regexp"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/arloliu/profgate/internal/admit"
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
+	"github.com/arloliu/profgate/internal/pgo"
 	"github.com/arloliu/profgate/internal/proxy"
 )
 
@@ -32,10 +36,21 @@ const (
 	codeStreamFailed = "upstream_stream_failed"
 	// labelNone is the metrics profile label when no profile applies.
 	labelNone = "none"
+	// labelCPU is the metrics profile label every Collection route carries:
+	// a Collection profiles CPU and nothing else.
+	labelCPU = "cpu"
 )
 
-// routeRE matches the two /v1 routes; the namespace and Service segments are validated separately.
-var routeRE = regexp.MustCompile(`^/v1/namespaces/([^/]+)/services/([^/]+)/(targets|profiles/([^/]+))$`)
+var (
+	// serviceRouteRE matches the four Service-scoped /v1 routes;
+	// the namespace and Service segments are validated separately.
+	serviceRouteRE = regexp.MustCompile(
+		`^/v1/namespaces/([^/]+)/services/([^/]+)/(targets|pgo|collections|profiles/([^/]+))$`)
+	// collectionRouteRE matches the three Collection-scoped routes;
+	// the identifier is validated against its own grammar, so a path carrying a
+	// separator or a traversal segment is never read as one.
+	collectionRouteRE = regexp.MustCompile(`^/v1/collections/([^/]+)(?:/(profile|cancel))?$`)
+)
 
 // Upstream is what the profile handler needs from internal/proxy.
 type Upstream interface {
@@ -48,19 +63,23 @@ type Deps struct {
 	Upstream  Upstream
 	Config    *atomic.Pointer[config.Config]
 	Recorder  metrics.Recorder
-	Logger    *slog.Logger
-	Choose    func(n int) int // nil means math/rand/v2 IntN
+	Gate      *admit.Gate
+	// PGO is the late-bound handle to the PGO machinery.
+	// The server starts before the NATS preflight has succeeded, so an unbound
+	// runtime is the normal early state and every PGO route answers
+	// 503 pgo_unavailable through it; nil means one that is never bound.
+	PGO    *pgo.Runtime
+	Logger *slog.Logger
+	Choose func(n int) int // nil means math/rand/v2 IntN
 }
 
-// server is the handler's state: the dependencies and the admission slots.
+// server is the handler's state.
 type server struct {
-	deps  Deps
-	slots chan struct{}
+	deps Deps
 }
 
 // New builds the /v1 handler.
-// The admission slots are sized once from the configuration loaded now:
-// limits.maxConcurrentProfiles is a restart-only field.
+// Admission runs on the caller's Gate, which is shared with PGO collection and sized once at startup.
 func New(d Deps) http.Handler {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
@@ -71,32 +90,95 @@ func New(d Deps) http.Handler {
 	if d.Choose == nil {
 		d.Choose = rand.IntN
 	}
-	cfg := d.Config.Load()
+	if d.PGO == nil {
+		d.PGO = pgo.NewRuntime()
+	}
 
-	return &server{deps: d, slots: make(chan struct{}, cfg.Limits.MaxConcurrentProfiles)}
+	return &server{deps: d}
+}
+
+// routeKind is which of the /v1 routes a path matched.
+type routeKind int
+
+// The routes the gateway serves: the two interactive ones and the five PGO ones.
+const (
+	kindTargets routeKind = iota
+	kindProfile
+	kindPGOPolicy
+	kindCollections
+	kindCollection
+	kindCollectionProfile
+	kindCollectionCancel
+)
+
+// isPGO reports whether the route reads or writes PGO state, which is what the
+// pgo.enabled and replay-barrier steps of the request algorithm gate.
+func (k routeKind) isPGO() bool { return k >= kindPGOPolicy }
+
+// isCollectionScoped reports whether the route names a Collection rather than a
+// Service, so its namespace, Service, and realm come from the stored record.
+func (k routeKind) isCollectionScoped() bool { return k >= kindCollection }
+
+// methods lists what the route accepts, in the order the Allow header carries them.
+func (k routeKind) methods() []string {
+	switch k {
+	case kindPGOPolicy:
+		return []string{http.MethodGet, http.MethodPut, http.MethodDelete}
+	case kindCollections:
+		return []string{http.MethodGet, http.MethodPost}
+	case kindCollectionCancel:
+		return []string{http.MethodPost}
+	case kindTargets, kindProfile, kindCollection, kindCollectionProfile:
+		return []string{http.MethodGet}
+	default:
+		return []string{http.MethodGet}
+	}
 }
 
 // route is a parsed /v1 path.
 type route struct {
-	namespace string
-	service   string
-	profile   string // empty for the targets endpoint
-	isProfile bool
+	kind       routeKind
+	namespace  string
+	service    string
+	profile    string // empty for every route but the profile endpoint
+	collection string // set for the three Collection-scoped routes
 }
 
-// parseRoute matches path against the two routes and validates the two name segments.
+// parseRoute matches path against the seven routes,
+// validating the two name segments as DNS-1123 labels and the identifier against its own grammar.
 func parseRoute(path string) (route, bool) {
-	m := routeRE.FindStringSubmatch(path)
-	if m == nil {
+	if m := serviceRouteRE.FindStringSubmatch(path); m != nil {
+		if len(validation.IsDNS1123Label(m[1])) > 0 || len(validation.IsDNS1123Label(m[2])) > 0 {
+			return route{}, false
+		}
+		rt := route{namespace: m[1], service: m[2]}
+		switch m[3] {
+		case "targets":
+			rt.kind = kindTargets
+		case "pgo":
+			rt.kind = kindPGOPolicy
+		case "collections":
+			rt.kind = kindCollections
+		default:
+			rt.kind = kindProfile
+			rt.profile = m[4]
+		}
+
+		return rt, true
+	}
+
+	m := collectionRouteRE.FindStringSubmatch(path)
+	if m == nil || !pgo.ValidID(m[1]) {
 		return route{}, false
 	}
-	if len(validation.IsDNS1123Label(m[1])) > 0 || len(validation.IsDNS1123Label(m[2])) > 0 {
-		return route{}, false
-	}
-	rt := route{namespace: m[1], service: m[2]}
-	if m[3] != "targets" {
-		rt.isProfile = true
-		rt.profile = m[4]
+	rt := route{collection: m[1]}
+	switch m[2] {
+	case "profile":
+		rt.kind = kindCollectionProfile
+	case "cancel":
+		rt.kind = kindCollectionCancel
+	default:
+		rt.kind = kindCollection
 	}
 
 	return rt, true
@@ -113,13 +195,28 @@ type request struct {
 // the resolved route when there is one, ("profile","none") before a route resolves
 // or when the profile name is unknown.
 func (q *request) labels() (metrics.Endpoint, string) {
-	switch {
-	case !q.routed:
+	if !q.routed {
 		return metrics.EndpointProfile, labelNone
-	case !q.route.isProfile:
+	}
+	switch q.route.kind {
+	case kindTargets:
 		return metrics.EndpointTargets, labelNone
-	case config.IsProfile(q.route.profile):
-		return metrics.EndpointProfile, q.route.profile
+	case kindPGOPolicy:
+		return metrics.EndpointPGOPolicy, labelNone
+	case kindCollections:
+		return metrics.EndpointCollections, labelNone
+	case kindCollection:
+		return metrics.EndpointCollection, labelCPU
+	case kindCollectionProfile:
+		return metrics.EndpointCollectionProfile, labelCPU
+	case kindCollectionCancel:
+		return metrics.EndpointCollectionCancel, labelCPU
+	case kindProfile:
+		if config.IsProfile(q.route.profile) {
+			return metrics.EndpointProfile, q.route.profile
+		}
+
+		return metrics.EndpointProfile, labelNone
 	default:
 		return metrics.EndpointProfile, labelNone
 	}
@@ -129,6 +226,9 @@ func (q *request) labels() (metrics.Endpoint, string) {
 func (q *request) fail(w http.ResponseWriter, e *requestError) {
 	q.audit.status = e.status
 	q.audit.code = e.code
+	if e.auditCode != "" {
+		q.audit.code = e.auditCode
+	}
 	writeError(w, e.status, e.code, e.message)
 }
 
@@ -157,11 +257,14 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	q.routed = true
 	q.route = rt
+	q.audit.pgo = rt.kind.isPGO()
+	q.audit.method = r.Method
 	q.audit.namespace = rt.namespace
 	q.audit.service = rt.service
 	q.audit.profile = rt.profile
+	q.audit.collection = rt.collection
 	var spec profileSpec
-	if rt.isProfile {
+	if rt.kind == kindProfile {
 		spec, ok = lookupProfile(rt.profile)
 		if !ok {
 			q.fail(w, &requestError{status: http.StatusNotFound, code: "profile_unknown", message: fmt.Sprintf("unknown profile %q", rt.profile)})
@@ -170,8 +273,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	if !slices.Contains(rt.kind.methods(), r.Method) {
+		w.Header().Set("Allow", strings.Join(rt.kind.methods(), ", "))
 		q.fail(w, &requestError{status: http.StatusMethodNotAllowed, code: "method_not_allowed", message: fmt.Sprintf("method %s not allowed", r.Method)})
 
 		return
@@ -183,16 +286,50 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// PGO collection is off, or its stores cannot be decided from yet.
+	// The step sits between readiness and authentication, so a caller learns
+	// the feature is absent before anything about the realm it asked through.
+	var sess *pgo.Session
+	if rt.kind.isPGO() {
+		if !cfg.PGO.Enabled {
+			q.fail(w, &requestError{status: http.StatusNotImplemented, code: "pgo_disabled", message: "pgo collection is not enabled"})
+
+			return
+		}
+		var err error
+		if sess, err = s.deps.PGO.Session(); err != nil {
+			q.fail(w, errPGOUnavailable)
+
+			return
+		}
+	}
+
 	principal, realm, ok := principalRealm(cfg)
 	q.audit.principal = principal
-	if !ok || !realmAllows(realm, rt) {
+
+	// A Collection-scoped route reads its record first: the realm is evaluated
+	// against the record's namespace and Service, and a denied record and a
+	// missing one answer alike.
+	if rt.kind.isCollectionScoped() {
+		s.servePGOCollection(w, r, q, cfg, sess, realm, ok)
+
+		return
+	}
+
+	if !ok || !realmAllows(realm, rt, r.Method) {
 		// The denial names nothing: the same body whether or not the Service exists.
 		q.fail(w, &requestError{status: http.StatusForbidden, code: "realm_denied", message: "access denied by realm"})
 
 		return
 	}
 
-	if !rt.isProfile {
+	if rt.kind.isPGO() {
+		s.servePGOService(w, r, q, cfg, sess, principal)
+
+		return
+	}
+
+	if rt.kind == kindTargets {
 		if r.URL.RawQuery != "" {
 			q.fail(w, invalidParameter("the targets endpoint takes no parameters"))
 
@@ -271,14 +408,13 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 	q.audit.pod = target.Pod
 
 	// Admission never waits: a slot is taken now or the request is refused now.
-	select {
-	case s.slots <- struct{}{}:
-	default:
+	release, ok := s.deps.Gate.TryAcquire()
+	if !ok {
 		q.fail(w, &requestError{status: http.StatusTooManyRequests, code: "too_many_profiles", message: "too many profiles in flight"})
 
 		return
 	}
-	defer func() { <-s.slots }()
+	defer release()
 	s.deps.Recorder.ProfilesInFlight(1)
 	defer s.deps.Recorder.ProfilesInFlight(-1)
 
