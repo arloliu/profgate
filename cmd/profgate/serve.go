@@ -79,7 +79,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 
 		return 2
 	}
-	logger := slog.New(slog.NewJSONHandler(stdout, nil))
+	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: cfg.Server.SlogLevel()}))
 	logger.Warn("authentication disabled; access is controlled only by network boundary and static realm policy")
 	var cfgPtr atomic.Pointer[config.Config]
 	cfgPtr.Store(cfg)

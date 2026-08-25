@@ -495,6 +495,17 @@ func TestServe(t *testing.T) {
 		t.Fatalf("no WARN record about disabled authentication in stdout:\n%s", gw.stdout.String())
 	})
 
+	t.Run("log level suppresses lower records", func(t *testing.T) {
+		t.Setenv("PROFGATE_LOG_LEVEL", "error")
+		gw := startGateway(t, fake.NewClientset(), defaultLimits())
+		gw.waitReady(t, waitTimeout)
+		for _, rec := range gw.records(t) {
+			if rec["level"] == "WARN" && strings.Contains(fmt.Sprint(rec["msg"]), "authentication disabled") {
+				t.Fatalf("WARN record survived server.logLevel error:\n%s", gw.stdout.String())
+			}
+		}
+	})
+
 	t.Run("logger is JSON on stdout", func(t *testing.T) {
 		gw := startGateway(t, fake.NewClientset(), defaultLimits())
 		gw.waitReady(t, waitTimeout)

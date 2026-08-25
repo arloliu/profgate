@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"reflect"
 	"slices"
@@ -31,10 +32,11 @@ type Config struct {
 	Realms    map[string]Realm `yaml:"realms" validate:"required,min=1,dive"`
 }
 
-// ServerConfig holds the two listen addresses.
+// ServerConfig holds the two listen addresses and the log level.
 type ServerConfig struct {
 	Listen    string `yaml:"listen"    env:"LISTEN"     default:":8080" validate:"required,hostname_port"`
 	OpsListen string `yaml:"opsListen" env:"OPS_LISTEN" default:":9090" validate:"required,hostname_port"`
+	LogLevel  string `yaml:"logLevel"  env:"LOG_LEVEL"  default:"info"  validate:"oneof=debug info warn error"`
 }
 
 // DiscoveryConfig controls how Pods are matched and which port serves pprof.
@@ -181,6 +183,22 @@ func IsProfile(name string) bool {
 // Profiles returns a copy of the eight profile names in the spec's order.
 func Profiles() []string {
 	return slices.Clone(profileNames[:])
+}
+
+// SlogLevel is LogLevel as the level the JSON handler is built with.
+// The oneof tag is what pins the four names,
+// so an unknown one never reaches here and info is the unreachable fallback.
+func (s ServerConfig) SlogLevel() slog.Level {
+	switch s.LogLevel {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // RequiredGracePeriod is the Deployment grace period the limits demand:

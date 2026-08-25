@@ -753,7 +753,7 @@ Standard-library `flag` with hand-written subcommand dispatch.
 
 ### 8.2 Logging
 
-`log/slog`, JSON to stdout.
+`log/slog`, JSON to stdout, at the level `server.logLevel` names.
 Every `/v1` request emits one record on completion:
 
 ```text
@@ -1040,6 +1040,7 @@ so a later hot-reload (`fuda/watcher`) is one goroutine and no change to request
 |---|---|---|---|---|
 | `server.listen` | `PROFGATE_LISTEN` | `:8080` | restart | host:port |
 | `server.opsListen` | `PROFGATE_OPS_LISTEN` | `:9090` | restart | host:port, distinct from `listen` |
+| `server.logLevel` | `PROFGATE_LOG_LEVEL` | `info` | restart | `debug`, `info`, `warn`, `error` |
 | `discovery.versionLabel` | `PROFGATE_VERSION_LABEL` | `app.kubernetes.io/version` | restart | valid label key |
 | `discovery.pprof.port` | `PROFGATE_PPROF_PORT` | `6060` when `portName` is also absent | restart | 1–65535; exactly one of `port`/`portName` after normalization |
 | `discovery.pprof.portName` | `PROFGATE_PPROF_PORT_NAME` | — | restart | IANA service name (the Kubernetes container-port name rule) |
@@ -1054,6 +1055,7 @@ so a later hot-reload (`fuda/watcher`) is one goroutine and no change to request
 server:
   listen: ":8080"
   opsListen: ":9090"
+  logLevel: info
 discovery:
   versionLabel: app.kubernetes.io/version
   pprof:
@@ -1076,7 +1078,8 @@ realms:
 `restart` marks a field whose change requires a process restart.
 Only access policy (`realms`, `auth.anonymousRealm`) is hot:
 discovery fields are read inside `Targets()` and would otherwise need a snapshot threaded through the seam,
-and the duration limits are coupled to the Deployment's grace period.
+the duration limits are coupled to the Deployment's grace period,
+and the log level is fixed in the handler the process builds at startup.
 The classification is fixed now so a reload cannot later be applied to `server.listen` by accident.
 
 **Normalization** runs before validation:

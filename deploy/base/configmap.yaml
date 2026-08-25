@@ -8,6 +8,7 @@ data:
     server:
       listen: ":8080"
       opsListen: ":9090"
+      logLevel: info
     discovery:
       versionLabel: app.kubernetes.io/version
       pprof:

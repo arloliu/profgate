@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func TestLoad(t *testing.T) {
 	t.Run("good", func(t *testing.T) {
 		cfg := loadOK(t, fixture("good.yaml"))
 		want := config.Config{
-			Server:    config.ServerConfig{Listen: ":8080", OpsListen: ":9090"},
+			Server:    config.ServerConfig{Listen: ":8080", OpsListen: ":9090", LogLevel: "info"},
 			Discovery: config.DiscoveryConfig{VersionLabel: "app.kubernetes.io/version", Pprof: config.PprofConfig{Port: 6060}},
 			Limits:    config.LimitsConfig{CPUSeconds: 60, TraceSeconds: 60, MaxConcurrentProfiles: 16},
 			Auth:      config.AuthConfig{Mode: "disabled", AnonymousRealm: "developer"},
@@ -113,6 +114,39 @@ func TestLoad(t *testing.T) {
 	t.Run("same listen", func(t *testing.T) {
 		loadErr(t, fixture("same-listen.yaml"), "server.opsListen must differ")
 	})
+
+	t.Run("log level from file", func(t *testing.T) {
+		cfg := loadOK(t, fixture("log-level.yaml"))
+		if cfg.Server.LogLevel != "warn" {
+			t.Fatalf("server.logLevel = %q, want warn", cfg.Server.LogLevel)
+		}
+	})
+	t.Run("log level values", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			level slog.Level
+		}{
+			{"debug", slog.LevelDebug},
+			{"info", slog.LevelInfo},
+			{"warn", slog.LevelWarn},
+			{"error", slog.LevelError},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("PROFGATE_LOG_LEVEL", tc.name)
+				cfg := loadOK(t, fixture("good.yaml"))
+				if cfg.Server.LogLevel != tc.name {
+					t.Fatalf("server.logLevel = %q, want %q", cfg.Server.LogLevel, tc.name)
+				}
+				if got := cfg.Server.SlogLevel(); got != tc.level {
+					t.Fatalf("SlogLevel() = %v, want %v", got, tc.level)
+				}
+			})
+		}
+	})
+	t.Run("log level unknown", func(t *testing.T) {
+		t.Setenv("PROFGATE_LOG_LEVEL", "verbose")
+		loadErr(t, fixture("good.yaml"), "server.logLevel (oneof)")
+	})
 	t.Run("no realms", func(t *testing.T) {
 		loadErr(t, fixture("no-realms.yaml"), "realms")
 	})
@@ -136,9 +170,10 @@ func TestLoad(t *testing.T) {
 		t.Setenv("PROFGATE_LIMIT_MAX_CONCURRENT_PROFILES", "4")
 		t.Setenv("PROFGATE_AUTH_MODE", "disabled")
 		t.Setenv("PROFGATE_ANONYMOUS_REALM", "ops")
+		t.Setenv("PROFGATE_LOG_LEVEL", "debug")
 		cfg := loadOK(t, fixture("two-realms.yaml"))
 		want := config.Config{
-			Server:    config.ServerConfig{Listen: "127.0.0.1:18080", OpsListen: "127.0.0.1:19090"},
+			Server:    config.ServerConfig{Listen: "127.0.0.1:18080", OpsListen: "127.0.0.1:19090", LogLevel: "debug"},
 			Discovery: config.DiscoveryConfig{VersionLabel: "example.com/release", Pprof: config.PprofConfig{Port: 7070}},
 			Limits:    config.LimitsConfig{CPUSeconds: 120, TraceSeconds: 30, MaxConcurrentProfiles: 4},
 			Auth:      config.AuthConfig{Mode: "disabled", AnonymousRealm: "ops"},
