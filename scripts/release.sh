@@ -61,9 +61,15 @@ for workflow in check e2e; do
 		--jq '.[] | "\(.status)\t\(.conclusion)\t\(.url)"')"
 
 	if [ -z "$line" ]; then
-		fail "no $workflow run for $head_sha on $branch.
-The e2e lane is not started at all for a push that touches only
-documentation and Markdown, so such a commit can never satisfy this check."
+		message="no $workflow run for $head_sha on $branch"
+		if [ "$workflow" = e2e ]; then
+			# The workflow's paths-ignore keeps GitHub from creating a run at
+			# all, so waiting for one never ends.
+			message="$message.
+The e2e lane is not started for a push that touches only documentation
+and Markdown, so such a commit can never be tagged."
+		fi
+		fail "$message"
 	fi
 
 	status="$(printf '%s' "$line" | cut -f1)"
