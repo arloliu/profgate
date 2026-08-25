@@ -3,7 +3,7 @@ module github.com/arloliu/profgate
 go 1.26.0
 
 require (
-	github.com/arloliu/fuda v1.6.1
+	github.com/arloliu/fuda v1.7.0
 	github.com/go-playground/validator/v10 v10.30.1
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3
 	github.com/nats-io/jwt/v2 v2.8.2

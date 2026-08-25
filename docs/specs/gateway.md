@@ -1099,8 +1099,9 @@ The classification is fixed now so a reload cannot later be applied to `server.l
 
 **Normalization** runs before validation:
 when neither `discovery.pprof.port` nor `discovery.pprof.portName` is set, `port` becomes 6060.
-The `default` tag is not used for `port`, because fuda applies field defaults to every zero value
-and would set `port` even when `portName` was given.
+The `default` tag is not used for `port`,
+because a file that names the pprof port through `portName` leaves `port` absent,
+and fuda fills an absent field from its `default` tag.
 
 Validation failures are fatal at startup and reported by `profgate config validate`.
 

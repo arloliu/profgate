@@ -101,7 +101,7 @@ func TestLoad(t *testing.T) {
 		loadErr(t, fixture("bad-name.yaml"), "discovery.pprof.portName")
 	})
 	t.Run("port out of range", func(t *testing.T) {
-		loadErr(t, fixture("bad-port.yaml"), "discovery.pprof.port")
+		loadErr(t, fixture("bad-port.yaml"), "discovery.pprof.port: must be at most 65535")
 	})
 	t.Run("bad version label", func(t *testing.T) {
 		t.Setenv("PROFGATE_VERSION_LABEL", "bad label")
@@ -145,7 +145,7 @@ func TestLoad(t *testing.T) {
 	})
 	t.Run("log level unknown", func(t *testing.T) {
 		t.Setenv("PROFGATE_LOG_LEVEL", "verbose")
-		loadErr(t, fixture("good.yaml"), "server.logLevel (oneof)")
+		loadErr(t, fixture("good.yaml"), "server.logLevel: must be one of: debug, info, warn, error")
 	})
 	t.Run("no realms", func(t *testing.T) {
 		loadErr(t, fixture("no-realms.yaml"), "realms")
