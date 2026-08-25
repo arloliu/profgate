@@ -3,11 +3,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	cryptorand "crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -98,12 +106,14 @@ func (f *fakeUpstream) Do(_ context.Context, w http.ResponseWriter, _ proxy.Requ
 	return proxy.Outcome{Code: "ok", Status: http.StatusOK, Committed: true}
 }
 
-// recorder remembers every DiscoverySynced and NATSConnected call and ignores the rest.
+// recorder remembers every DiscoverySynced, NATSConnected, and TLS call and ignores the rest.
 type recorder struct {
 	metrics.Noop
 	mu        sync.Mutex
 	synced    []bool
 	connected []bool
+	reloads   []string
+	expiry    time.Time
 }
 
 func (r *recorder) DiscoverySynced(v bool) {
@@ -123,6 +133,34 @@ func (r *recorder) NATSConnected(up bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.connected = append(r.connected, up)
+}
+
+func (r *recorder) TLSReload(result string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reloads = append(r.reloads, result)
+}
+
+func (r *recorder) TLSCertificateExpiry(notAfter time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.expiry = notAfter
+}
+
+// reloadCalls returns the certificate reload results recorded so far.
+func (r *recorder) reloadCalls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]string(nil), r.reloads...)
+}
+
+// certificateExpiry returns the expiry last recorded.
+func (r *recorder) certificateExpiry() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.expiry
 }
 
 func (r *recorder) connectedCalls() []bool {
@@ -297,11 +335,16 @@ pgo:
 func writeConfig(t *testing.T, listen, opsListen string, l limits, o gatewayOpts) string {
 	t.Helper()
 
+	tlsBlock := ""
+	if o.tlsDir != "" {
+		tlsBlock = fmt.Sprintf("  tls:\n    certFile: %q\n    keyFile: %q\n",
+			filepath.Join(o.tlsDir, "tls.crt"), filepath.Join(o.tlsDir, "tls.key"))
+	}
 	body := fmt.Sprintf(`server:
   listen: %q
   opsListen: %q
   drainDelay: %s
-discovery:
+%sdiscovery:
   versionLabel: app.kubernetes.io/version
   pprof:
     port: 6060
@@ -321,7 +364,7 @@ realms:
       read: true
       collect: true
       configure: true
-`, listen, opsListen, o.drainDelay.String(), l.cpu, l.trace, l.maxConcurrent)
+`, listen, opsListen, o.drainDelay.String(), tlsBlock, l.cpu, l.trace, l.maxConcurrent)
 	if o.enabled {
 		body += pgoBlock
 	}
@@ -369,6 +412,10 @@ type gatewayOpts struct {
 	drainDelay time.Duration
 	// failAPI, when set, is closed by the subtest to fail the API listener.
 	failAPI chan struct{}
+	// tlsDir, when set, holds tls.crt and tls.key and turns the API listener
+	// into an HTTPS listener; tlsRefresh is how often they are read again.
+	tlsDir     string
+	tlsRefresh time.Duration
 }
 
 // startGateway runs serve over cs with PGO off.
@@ -408,6 +455,7 @@ func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o gatewayOpts)
 		recorder: gw.rec,
 		stop:     gw.stop,
 	}
+	deps.tlsRefresh = o.tlsRefresh
 	if o.preflight != nil {
 		deps.natsPreflight = o.preflight.fn()
 	}
@@ -594,7 +642,140 @@ func (gw *gateway) waitReady(t *testing.T, timeout time.Duration) {
 	gw.waitStatus(t, timeout, gw.opsAddr, "/readyz", http.StatusOK)
 }
 
+// writeSelfSigned writes a fresh certificate and key for 127.0.0.1 into dir,
+// replacing whatever was there, and returns a pool that trusts only it.
+// A rotation is two calls: the second replaces the files under the running
+// gateway the way a renewed Secret does.
+func writeSelfSigned(t *testing.T, dir string) *x509.CertPool {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	serial, err := cryptorand.Int(cryptorand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("serial: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "profgate"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(cryptorand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	write := func(name string, block *pem.Block) {
+		if err := os.WriteFile(filepath.Join(dir, name), pem.EncodeToMemory(block), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	write("tls.crt", &pem.Block{Type: "CERTIFICATE", Bytes: der})
+	write("tls.key", &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+
+	return pool
+}
+
+// httpsGet fetches path over TLS, trusting only pool.
+// Keep-alives are off so every call completes a handshake of its own,
+// which is what makes a rotation observable from the client side.
+func httpsGet(addr, path string, pool *x509.CertPool) (int, error) {
+	client := &http.Client{Transport: &http.Transport{
+		DisableKeepAlives: true,
+		TLSClientConfig:   &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+	}}
+	defer client.CloseIdleConnections()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+path, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	return resp.StatusCode, nil
+}
+
 func TestServe(t *testing.T) {
+	// The one test that completes a real handshake against a bound port: it is
+	// the listener serve builds that is under test, and an httptest server
+	// cannot stand in for it, because StartTLS fills in Certificates of its
+	// own, which suppresses the GetCertificate the rotation depends on for
+	// every ClientHello without a server name.
+	t.Run("api listener serves https and follows a rotation", func(t *testing.T) {
+		dir := t.TempDir()
+		first := writeSelfSigned(t, dir)
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{tlsDir: dir, tlsRefresh: 10 * time.Millisecond})
+		gw.waitReady(t, waitTimeout)
+
+		status, err := httpsGet(gw.apiAddr, targetsPath, first)
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("https GET %s = %d, %v; want 200 over TLS", targetsPath, status, err)
+		}
+		// The ops listener is deliberately not TLS: the readiness wait above
+		// reached it over plain HTTP.
+		if code, _ := mustGet(t, gw.opsAddr, "/readyz"); code != http.StatusOK {
+			t.Errorf("plain GET /readyz on the ops listener = %d, want 200: the ops listener stays plaintext", code)
+		}
+
+		_, err = httpsGet(gw.apiAddr, targetsPath, x509.NewCertPool())
+		var unknown x509.UnknownAuthorityError
+		if !errors.As(err, &unknown) {
+			t.Errorf("https GET with an empty trust store: error = %v, want an unknown-authority failure", err)
+		}
+
+		// The rotation: the files change under the running process, and no
+		// restart happens.
+		second := writeSelfSigned(t, dir)
+		waitFor(t, waitTimeout, "the rotated certificate to be served", func() bool {
+			status, err := httpsGet(gw.apiAddr, targetsPath, second)
+
+			return err == nil && status == http.StatusOK
+		})
+		if _, err := httpsGet(gw.apiAddr, targetsPath, first); err == nil {
+			t.Error("a client pinning the replaced certificate still succeeded; the swap did not happen")
+		}
+
+		if results := gw.rec.reloadCalls(); len(results) < 2 || results[0] != "applied" {
+			t.Errorf("reload results = %v, want an applied first result and at least one more", results)
+		}
+		if gw.rec.certificateExpiry().IsZero() {
+			t.Error("no certificate expiry was recorded, so a stalled rotation would be invisible")
+		}
+	})
+
+	t.Run("certificate that cannot be parsed", func(t *testing.T) {
+		dir := t.TempDir()
+		writeSelfSigned(t, dir)
+		if err := os.WriteFile(filepath.Join(dir, "tls.key"), []byte("-----BEGIN EC PRIVATE KEY-----\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		gw := startGatewayWith(t, fake.NewClientset(), defaultLimits(), gatewayOpts{tlsDir: dir})
+
+		if code := gw.exitCode(t, waitTimeout); code != 1 {
+			t.Fatalf("exit code = %d, want 1: a gateway asked for TLS that cannot serve a certificate has nothing to offer", code)
+		}
+	})
+
 	t.Run("warning on disabled auth", func(t *testing.T) {
 		gw := startGateway(t, fake.NewClientset(), defaultLimits())
 		gw.waitReady(t, waitTimeout)
