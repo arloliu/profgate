@@ -1,4 +1,4 @@
-defaultBaseImage: cgr.dev/chainguard/static:latest
+defaultBaseImage: gcr.io/distroless/static-debian12:nonroot
 builds:
   - id: profgate
     main: ./cmd/profgate
