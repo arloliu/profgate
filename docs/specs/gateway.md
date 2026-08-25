@@ -884,6 +884,14 @@ Because the overall request budget already includes confirmation, the drain boun
 - The golden ClusterRole test (section 3.1) parses `deploy/` and compares rule tuples.
 - A manifest test pins the gateway NetworkPolicy's selectors and ports and the Service's port list;
   the kind lanes cannot prove NetworkPolicy enforcement, only that the manifest is shaped as specified.
+- Chart tests render `deploy/chart/profgate` with the `helm` binary mise pins, and assert on the objects:
+  the derived memory limit equals `PGOMemoryBytes` applied to the rendered ConfigMap loaded through `internal/config`,
+  which also proves the rendered configuration parses;
+  `checksum/config` moves with a configuration change and stays put for an unrelated one;
+  a null `fsGroup` renders no key;
+  the ClusterRole rules match the base's;
+  and `helm lint` passes.
+  They skip when `helm` is absent rather than failing.
 - A configuration test sets every `PROFGATE_*` variable and proves each lands on its field,
   guarding against a doubled prefix in a tag.
 - The client-go import check:
@@ -1109,7 +1117,24 @@ Validation failures are fatal at startup and reported by `profgate config valida
   `deploy/` ships a commented example Secret
   and the Deployment's credentials volume (`defaultMode: 0440`),
   read-only mount, and pod `fsGroup: 65532`, pinned by a manifest test.
-- No Helm chart; there is nothing to template.
+- [`deploy/chart/profgate/`](../../deploy/chart/profgate/README.md) holds a Helm chart over the same resources,
+  for an operator installing Profgate from outside this repository.
+  The two surfaces are both shipped and neither is generated from the other:
+  the chart templates what an external operator changes,
+  the kustomize base is what a repository already using kustomize patches.
+  The chart guarantees four things beyond rendering those resources:
+  - `checksum/config` on the pod template, holding a hash of the rendered ConfigMap,
+    because the binary reads its configuration once at startup and has no reload,
+    so without it a `helm upgrade` that changes only configuration rolls nothing out.
+  - `limits.memory` derived from `pgo.limits` through the sizing rule of `PGOMemoryBytes`,
+    so the limit cannot drift from the configuration it is sized for.
+    An explicit `resources` block overrides it;
+    with PGO off the limit is a static 512Mi, because the formula reads `pgo.limits`
+    and never `pgo.enabled` and would otherwise size a merge that never happens.
+  - `podSecurityContext.fsGroup`, 65532 by default, rendering no key at all when set to null,
+    for a cluster that assigns its own ranges through a security context constraint.
+  - Release-scoped ClusterRole and ClusterRoleBinding names, so two releases in one cluster do not collide,
+    over rules identical to the base's.
 
 ### 11.1 Dependencies
 
@@ -1137,7 +1162,7 @@ internal/httpapi/    routing, realm checks, handlers, error bodies, audit log
 internal/config/     fuda-loaded Config, strict pre-parse, validation, hot/restart classification
 internal/metrics/    Recorder interface and the Prometheus implementation
 internal/admit/      the admission gate shared by interactive requests and Collections
-deploy/              kustomize base
+deploy/              kustomize base and Helm chart
 test/e2e/            harness, versions.yaml, testapp, overlays
 ```
 
