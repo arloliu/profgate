@@ -237,6 +237,18 @@ func (w *Worker) stopClaiming() {
 	w.stopped = true
 }
 
+// InFlight names the Collections this replica owns, in a stable order,
+// so a drain can report what it is waiting for and what it left behind.
+func (w *Worker) InFlight() []string {
+	snapshot := w.inFlightSnapshot()
+	out := make([]string, 0, len(snapshot))
+	for _, fl := range snapshot {
+		out = append(out, fl.id)
+	}
+
+	return out
+}
+
 // inFlightSnapshot lists what this replica owns, in a stable order.
 func (w *Worker) inFlightSnapshot() []*inFlight {
 	w.mu.Lock()

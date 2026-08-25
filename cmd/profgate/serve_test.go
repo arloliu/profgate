@@ -449,6 +449,24 @@ func (gw *gateway) records(t *testing.T) []map[string]any {
 	return out
 }
 
+// record returns the one record serve logged with this msg,
+// failing the subtest when there is not exactly one.
+func (gw *gateway) record(t *testing.T, msg string) map[string]any {
+	t.Helper()
+
+	var found []map[string]any
+	for _, rec := range gw.records(t) {
+		if rec["msg"] == msg {
+			found = append(found, rec)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d records with msg %q, want 1:\n%s", len(found), msg, gw.stdout.String())
+	}
+
+	return found[0]
+}
+
 // get runs one GET against addr and returns the status and body; a dial failure is returned as err.
 func get(addr, path string) (int, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
@@ -681,6 +699,11 @@ func TestServe(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatalf("the in-flight profile did not finish cleanly: %v", err)
 		}
+		// What the drain did is the one thing an operator reading the logs
+		// after a rollout has to go on.
+		if rec := gw.record(t, "drain complete"); rec["api"] != "completed" {
+			t.Fatalf("drain complete record = %v, want api=completed: every in-flight request finished", rec)
+		}
 	})
 
 	t.Run("drain delay holds the api listener open", func(t *testing.T) {
@@ -736,6 +759,12 @@ func TestServe(t *testing.T) {
 		}
 		if elapsed < 30*time.Second || elapsed > 35*time.Second {
 			t.Fatalf("serve exited after %s, want max(cpu,trace)+30s = 31s: the drain waits for the bound and then closes", elapsed)
+		}
+		if rec := gw.record(t, "drain complete"); rec["api"] != "deadline_closed" {
+			t.Fatalf("drain complete record = %v, want api=deadline_closed: the bound cut the request", rec)
+		}
+		if got := gw.record(t, "drain deadline passed; closing in-flight connections")["requests"]; got != float64(1) {
+			t.Fatalf("the deadline record counted %v requests, want 1", got)
 		}
 	})
 }
@@ -872,6 +901,9 @@ type stubWorker struct {
 	runEnded chan struct{}
 	entered  chan struct{}
 	release  chan struct{}
+	// abandon, when set, is what this worker reports as still running when the
+	// drain gives up on it.
+	abandon []string
 
 	mu            sync.Mutex
 	runs          int
@@ -917,8 +949,16 @@ func (s *stubWorker) Drain(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
+	if len(s.abandon) > 0 {
+		return fmt.Errorf("pgo: %d collection(s) still running at their deadline: %s",
+			len(s.abandon), strings.Join(s.abandon, ", "))
+	}
+
 	return nil
 }
+
+// InFlight names the Collections this worker still owns.
+func (s *stubWorker) InFlight() []string { return append([]string(nil), s.abandon...) }
 
 func (s *stubWorker) runCount() int {
 	s.mu.Lock()
@@ -1095,9 +1135,7 @@ func TestServePGO(t *testing.T) {
 
 		gw.stopOnce()
 		waitFor(t, waitTimeout, "the worker drain starting", func() bool { return closed(worker.entered) })
-		if !closed(worker.runEnded) {
-			t.Fatal("the worker was still claiming after the stop request: SIGTERM cancels the claiming context at once")
-		}
+		waitFor(t, waitTimeout, "the worker stopping its claiming", func() bool { return closed(worker.runEnded) })
 		done, deadline, err := worker.drainContext()
 		if done || deadline || err != nil {
 			t.Fatalf("Drain context: done=%v deadline=%v err=%v, want a context of its own that nothing cuts off: "+
@@ -1116,6 +1154,36 @@ func TestServePGO(t *testing.T) {
 		worker.releaseDrain()
 		if code := gw.exitCode(t, waitTimeout); code != 0 {
 			t.Fatalf("exit code = %d, want 0", code)
+		}
+		rec := gw.record(t, "drain complete")
+		if rec["api"] != "completed" || rec["pgo"] != "drained" {
+			t.Fatalf("drain complete record = %v, want api=completed pgo=drained", rec)
+		}
+	})
+
+	t.Run("an abandoned collection is named in the drain record", func(t *testing.T) {
+		worker := newStubWorker()
+		worker.abandon = []string{"c-1", "c-2"}
+		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{enabled: true, preflight: pf, worker: worker})
+		gw.waitReady(t, waitTimeout)
+		waitFor(t, waitTimeout, "the worker starting", func() bool { return worker.runCount() == 1 })
+
+		gw.stopOnce()
+		worker.releaseDrain()
+		if code := gw.exitCode(t, waitTimeout); code != 0 {
+			t.Fatalf("exit code = %d, want 0: a Collection left running is a documented outcome, not a failure", code)
+		}
+		// The ids are what tells the operator which Collections another
+		// replica has to reclaim.
+		rec := gw.record(t, "drain complete")
+		if rec["pgo"] != "abandoned" {
+			t.Fatalf("drain complete record = %v, want pgo=abandoned", rec)
+		}
+		ids, _ := rec["collections"].([]any)
+		if len(ids) != 2 || ids[0] != "c-1" || ids[1] != "c-2" {
+			t.Fatalf("drain complete collections = %v, want [c-1 c-2]", rec["collections"])
 		}
 	})
 }

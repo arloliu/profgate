@@ -37,6 +37,9 @@ const (
 	drainSlack = 30 * time.Second
 	// opsDrainTimeout bounds the ops listener's shutdown.
 	opsDrainTimeout = 5 * time.Second
+	// drainReportInterval is how often a drain that is still waiting for a
+	// Collection says so.
+	drainReportInterval = 30 * time.Second
 	// readHeaderTimeout bounds how long a connection may take to send its request headers.
 	readHeaderTimeout = 10 * time.Second
 	// syncedPollInterval is how often the lifecycle re-checks HasSynced after the informers start.
@@ -50,10 +53,12 @@ const (
 type natsPreflightFunc func(ctx context.Context, opts natskv.Options, instanceID string, log *slog.Logger) (natskv.Client, error)
 
 // collectionWorker is what the lifecycle needs from the PGO worker:
-// claiming until the stop request, and a drain of its own.
+// claiming until the stop request, a drain of its own,
+// and the Collection ids the drain reports on.
 type collectionWorker interface {
 	Run(ctx context.Context)
 	Drain(ctx context.Context) error
+	InFlight() []string
 }
 
 // serveDeps is what serve needs from the outside; production fills it in runServe,
@@ -129,7 +134,15 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		PGO:       pgoRuntime,
 		Logger:    logger,
 	})
-	apiServer := &http.Server{Handler: api, ReadHeaderTimeout: readHeaderTimeout}
+	// inFlightRequests is how many API requests are being served right now,
+	// so a drain that runs out of time reports how many it cut.
+	var inFlightRequests atomic.Int64
+	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inFlightRequests.Add(1)
+		defer inFlightRequests.Add(-1)
+		api.ServeHTTP(w, r)
+	})
+	apiServer := &http.Server{Handler: counted, ReadHeaderTimeout: readHeaderTimeout}
 	opsServer := &http.Server{Handler: ops.New(ready, deps.registry), ReadHeaderTimeout: readHeaderTimeout}
 
 	var lc net.ListenConfig
@@ -181,6 +194,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	}
 
 	shutdown := func() {
+		start := time.Now()
 		draining.Store(true)
 		// Stops the scheduler, the sweeper, and the worker's claiming.
 		// The informers are the one thing that outlives it, until the waits
@@ -200,6 +214,12 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 			time.Sleep(delay)
 		}
 
+		// apiOutcome and the two PGO variables are written by the goroutines
+		// below and read after wg.Wait, which is what orders them.
+		apiOutcome := "completed"
+		pgoOutcome := "drained"
+		var abandoned []string
+
 		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
@@ -207,15 +227,26 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 			drainBound := time.Duration(max(cfg.Limits.CPUSeconds, cfg.Limits.TraceSeconds))*time.Second + drainSlack
 			drainCtx, cancel := context.WithTimeout(context.Background(), drainBound)
 			defer cancel()
-			if err := apiServer.Shutdown(drainCtx); errors.Is(err, context.DeadlineExceeded) {
-				logger.Warn("drain deadline passed; closing in-flight connections")
+			err := apiServer.Shutdown(drainCtx)
+			switch {
+			case err == nil:
+			case errors.Is(err, context.DeadlineExceeded):
+				apiOutcome = "deadline_closed"
+				logger.Warn("drain deadline passed; closing in-flight connections",
+					"requests", inFlightRequests.Load())
 				_ = apiServer.Close()
+			default:
+				apiOutcome = "failed"
+				logger.Warn("api listener shutdown", "error", err)
 			}
 		}()
 		if worker != nil {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				reporting := make(chan struct{})
+				defer close(reporting)
+				go reportDraining(reporting, worker, start, logger)
 				// A context of its own, and deliberately an unbounded one:
 				// Drain already waits per Collection no longer than that Collection's deadline,
 				// which is the only bound that knows how long a merge may still legitimately run.
@@ -223,6 +254,8 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 				// so the two waits run side by side.
 				if err := worker.Drain(context.Background()); err != nil {
 					logger.Warn("pgo drain incomplete", "error", err)
+					pgoOutcome = "abandoned"
+					abandoned = worker.InFlight()
 				}
 			}()
 		}
@@ -232,6 +265,15 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		opsCtx, cancelOps := context.WithTimeout(context.Background(), opsDrainTimeout)
 		defer cancelOps()
 		_ = opsServer.Shutdown(opsCtx)
+
+		fields := []any{"elapsed", time.Since(start).Round(time.Millisecond).String(), "api", apiOutcome}
+		if worker != nil {
+			fields = append(fields, "pgo", pgoOutcome)
+			if len(abandoned) > 0 {
+				fields = append(fields, "collections", abandoned)
+			}
+		}
+		logger.Info("drain complete", fields...)
 	}
 
 	for {
@@ -290,6 +332,25 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 			shutdown()
 
 			return 0
+		}
+	}
+}
+
+// reportDraining says what the Collection drain is still waiting for, every
+// drainReportInterval, until reporting is closed.
+// A drain that outlasts the interactive one has nothing else to show for
+// itself: the merge it waits for writes no record until it ends.
+func reportDraining(reporting <-chan struct{}, worker collectionWorker, start time.Time, logger *slog.Logger) {
+	ticker := time.NewTicker(drainReportInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-reporting:
+			return
+		case <-ticker.C:
+			ids := worker.InFlight()
+			logger.Info("still draining collections",
+				"collections", len(ids), "ids", ids, "elapsed", time.Since(start).Round(time.Second).String())
 		}
 	}
 }
