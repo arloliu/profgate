@@ -45,6 +45,23 @@ func opts() k8s.Options {
 	return k8s.Options{PreflightCallTimeout: time.Second}
 }
 
+// TestNewClientsetOutOfCluster proves the failure names the way out.
+// The in-cluster error alone names only the service variables,
+// and reads as if a cluster were the only place the gateway runs.
+func TestNewClientsetOutOfCluster(t *testing.T) {
+	t.Setenv("KUBECONFIG", "")
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "")
+
+	_, err := k8s.NewClientset()
+	if err == nil {
+		t.Fatal("NewClientset() = nil error, want one")
+	}
+	if !strings.Contains(err.Error(), "KUBECONFIG") {
+		t.Errorf("error = %q, want it to mention KUBECONFIG", err)
+	}
+}
+
 func TestPreflight(t *testing.T) {
 	t.Run("all allowed", func(t *testing.T) {
 		cs := fake.NewClientset()

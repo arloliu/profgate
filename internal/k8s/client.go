@@ -34,6 +34,11 @@ func NewClientset() (kubernetes.Interface, error) {
 		cfg, err = clientcmd.BuildConfigFromFlags("", path)
 	} else {
 		cfg, err = rest.InClusterConfig()
+		// The in-cluster error alone names only the service variables,
+		// and reads as if a cluster were the only place the gateway runs.
+		if err != nil {
+			err = fmt.Errorf("%w; set KUBECONFIG to a kubeconfig file to run outside a cluster", err)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("kubernetes config: %w", err)
