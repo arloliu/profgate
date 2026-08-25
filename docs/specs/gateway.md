@@ -952,7 +952,10 @@ Because the overall request budget already includes confirmation, the drain boun
 - A handshake test on the API listener as `serve` builds it,
   proving a client that pins the certificate's authority completes a handshake
   and that replacing the files on disk changes which authority is accepted.
-  It is the one test that binds a loopback port ([`300-testing.md`](../../.agents/rules/300-testing.md)).
+  The `cmd/profgate` tests drive the process's own listeners over loopback,
+  because the listener the process builds is what they are about;
+  the handshake is the case that cannot be written against a stand-in
+  ([`300-testing.md`](../../.agents/rules/300-testing.md)).
 - The golden ClusterRole test (section 3.1) parses `deploy/` and compares rule tuples.
 - A manifest test pins the gateway NetworkPolicy's selectors and ports and the Service's port list;
   the kind lanes cannot prove NetworkPolicy enforcement, only that the manifest is shaped as specified.
