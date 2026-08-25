@@ -1084,6 +1084,7 @@ so a later hot-reload (`fuda/watcher`) is one goroutine and no change to request
 | `server.listen` | `PROFGATE_LISTEN` | `:8080` | restart | host:port |
 | `server.opsListen` | `PROFGATE_OPS_LISTEN` | `:9090` | restart | host:port, distinct from `listen` |
 | `server.logLevel` | `PROFGATE_LOG_LEVEL` | `info` | restart | `debug`, `info`, `warn`, `error` |
+| `server.drainDelay` | `PROFGATE_DRAIN_DELAY` | `5s` | restart | 0s–60s |
 | `discovery.versionLabel` | `PROFGATE_VERSION_LABEL` | `app.kubernetes.io/version` | restart | valid label key |
 | `discovery.pprof.port` | `PROFGATE_PPROF_PORT` | `6060` when `portName` is also absent | restart | 1–65535; exactly one of `port`/`portName` after normalization |
 | `discovery.pprof.portName` | `PROFGATE_PPROF_PORT_NAME` | — | restart | IANA service name (the Kubernetes container-port name rule) |
@@ -1099,6 +1100,7 @@ server:
   listen: ":8080"
   opsListen: ":9090"
   logLevel: info
+  drainDelay: 5s
 discovery:
   versionLabel: app.kubernetes.io/version
   pprof:
