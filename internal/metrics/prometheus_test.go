@@ -224,6 +224,37 @@ profgate_nats_connected 1
 	}
 }
 
+// TestPrometheus_TLS covers the pair that makes a stalled rotation visible:
+// the counter says a reload was attempted and how it ended, and the gauge says
+// how long the certificate now being served is still good for.
+func TestPrometheus_TLS(t *testing.T) {
+	reg := prometheus.NewPedanticRegistry()
+	rec := NewPrometheus(reg)
+
+	rec.TLSReload("applied")
+	rec.TLSReload("failed")
+	rec.TLSCertificateExpiry(time.Unix(1800000000, 0))
+
+	wantCounter := `
+# HELP profgate_tls_reloads_total Total number of attempts to re-read the API listener certificate, by result.
+# TYPE profgate_tls_reloads_total counter
+profgate_tls_reloads_total{result="applied"} 1
+profgate_tls_reloads_total{result="failed"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(wantCounter), "profgate_tls_reloads_total"); err != nil {
+		t.Errorf("profgate_tls_reloads_total: %v", err)
+	}
+
+	wantGauge := `
+# HELP profgate_tls_certificate_expiry_seconds When the certificate the API listener serves stops being valid, in seconds since the epoch.
+# TYPE profgate_tls_certificate_expiry_seconds gauge
+profgate_tls_certificate_expiry_seconds 1.8e+09
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(wantGauge), "profgate_tls_certificate_expiry_seconds"); err != nil {
+		t.Errorf("profgate_tls_certificate_expiry_seconds: %v", err)
+	}
+}
+
 func TestNoop(t *testing.T) {
 	t.Run("methods record nothing and do not panic", func(_ *testing.T) {
 		var rec Recorder = Noop{}
@@ -240,5 +271,7 @@ func TestNoop(t *testing.T) {
 		rec.CollectionsActive(1)
 		rec.CollectionsActive(-1)
 		rec.NATSConnected(true)
+		rec.TLSReload("unchanged")
+		rec.TLSCertificateExpiry(time.Now())
 	})
 }

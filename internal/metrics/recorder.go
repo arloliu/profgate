@@ -57,6 +57,12 @@ type Recorder interface {
 	CollectionsActive(delta int)
 	// NATSConnected reports whether the NATS connection is currently up.
 	NATSConnected(up bool)
+	// TLSReload records one attempt to re-read the API listener's certificate:
+	// "applied", "unchanged", or "failed".
+	TLSReload(result string)
+	// TLSCertificateExpiry reports when the certificate the API listener is
+	// serving stops being valid.
+	TLSCertificateExpiry(notAfter time.Time)
 }
 
 // Noop implements Recorder with empty methods, for callers that need a
@@ -95,3 +101,9 @@ func (Noop) CollectionsActive(int) {}
 
 // NATSConnected implements Recorder and does nothing.
 func (Noop) NATSConnected(bool) {}
+
+// TLSReload implements Recorder and does nothing.
+func (Noop) TLSReload(string) {}
+
+// TLSCertificateExpiry implements Recorder and does nothing.
+func (Noop) TLSCertificateExpiry(time.Time) {}
