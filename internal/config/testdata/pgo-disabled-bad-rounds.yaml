@@ -1,0 +1,14 @@
+auth:
+  anonymousRealm: developer
+pgo:
+  enabled: false
+  limits:
+    maxRounds: 5
+  defaults:
+    sampling:
+      rounds: 6
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

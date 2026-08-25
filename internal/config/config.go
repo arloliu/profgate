@@ -386,26 +386,20 @@ func validate(cfg *Config) error {
 }
 
 // validatePGO runs the rules that relate a PGO key to another key.
-// They apply only when pgo.enabled, because a gateway that never collects has
-// no PGO configuration to satisfy them with:
-// at limits.maxConcurrentProfiles 1 no maxParallel and maxActiveCollections
-// pair exists that keeps their product below it, and both are at least 1.
+// The rules that judge the pgo block against itself run whether or not
+// pgo.enabled, so a block that contradicts itself fails at startup rather than
+// on the day collection is turned on.
+// Two rules wait for pgo.enabled because they measure the PGO ceilings against
+// the interactive limits, which a gateway that never collects is free to set
+// low: at limits.maxConcurrentProfiles 1 no maxParallel and
+// maxActiveCollections pair exists that keeps their product below it, and both
+// are at least 1, and limits.cpuSeconds may sit under the shipped maxDuration.
+// The NATS settings wait for the same reason:
+// a disabled gateway reaches no NATS cluster and needs none configured.
 // The per-key ranges are struct tags and hold either way,
 // since the shipped defaults satisfy every one of them.
 func validatePGO(cfg *Config) error {
-	if !cfg.PGO.Enabled {
-		return nil
-	}
-
-	if err := validateNATS(&cfg.NATS); err != nil {
-		return err
-	}
-
 	limits := cfg.PGO.Limits
-	if limits.MaxParallel*limits.MaxActiveCollections >= cfg.Limits.MaxConcurrentProfiles {
-		return fmt.Errorf("pgo.limits.maxParallel %d times pgo.limits.maxActiveCollections %d must stay below limits.maxConcurrentProfiles %d",
-			limits.MaxParallel, limits.MaxActiveCollections, cfg.Limits.MaxConcurrentProfiles)
-	}
 	if limits.MaxRounds*limits.MaxTargetsPerRound > maxSamplesPerCollection {
 		return fmt.Errorf("pgo.limits.maxRounds %d times pgo.limits.maxTargetsPerRound %d must be at most %d",
 			limits.MaxRounds, limits.MaxTargetsPerRound, maxSamplesPerCollection)
@@ -417,14 +411,30 @@ func validatePGO(cfg *Config) error {
 	if limits.MinEvery > limits.MaxEvery {
 		return fmt.Errorf("pgo.limits.maxEvery %v must be at least pgo.limits.minEvery %v", limits.MaxEvery, limits.MinEvery)
 	}
-	if cpu := time.Duration(cfg.Limits.CPUSeconds) * time.Second; limits.MaxDuration > cpu {
-		return fmt.Errorf("pgo.limits.maxDuration %v must be at most limits.cpuSeconds %v", limits.MaxDuration, cpu)
-	}
 	if limits.MaxSampleBytes > limits.MaxMergedBytes {
 		return fmt.Errorf("pgo.limits.maxMergedBytes %d must be at least pgo.limits.maxSampleBytes %d",
 			limits.MaxMergedBytes, limits.MaxSampleBytes)
 	}
-	return validatePGODefaults(&cfg.PGO.Defaults, limits)
+	if err := validatePGODefaults(&cfg.PGO.Defaults, limits); err != nil {
+		return err
+	}
+
+	if !cfg.PGO.Enabled {
+		return nil
+	}
+
+	if err := validateNATS(&cfg.NATS); err != nil {
+		return err
+	}
+
+	if limits.MaxParallel*limits.MaxActiveCollections >= cfg.Limits.MaxConcurrentProfiles {
+		return fmt.Errorf("pgo.limits.maxParallel %d times pgo.limits.maxActiveCollections %d must stay below limits.maxConcurrentProfiles %d",
+			limits.MaxParallel, limits.MaxActiveCollections, cfg.Limits.MaxConcurrentProfiles)
+	}
+	if cpu := time.Duration(cfg.Limits.CPUSeconds) * time.Second; limits.MaxDuration > cpu {
+		return fmt.Errorf("pgo.limits.maxDuration %v must be at most limits.cpuSeconds %v", limits.MaxDuration, cpu)
+	}
+	return nil
 }
 
 // validateNATS checks the connection settings the PGO stores are reached through.

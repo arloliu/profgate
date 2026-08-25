@@ -420,6 +420,27 @@ func TestLoadPGO(t *testing.T) {
 		loadErr(t, fixture("pgo-bad-jitter.yaml"), "pgo.defaults.schedule.jitter")
 	})
 
+	// A pgo block that contradicts itself is an error the day it is written,
+	// not the day pgo.enabled flips to true,
+	// and it names the same key either way.
+	t.Run("defaults above limits while disabled", func(t *testing.T) {
+		loadErr(t, fixture("pgo-disabled-bad-rounds.yaml"), "pgo.defaults.sampling.rounds")
+	})
+	t.Run("limits contradict each other while disabled", func(t *testing.T) {
+		loadErr(t, fixture("pgo-disabled-bad-retention.yaml"), "pgo.jobRetention")
+	})
+
+	// The rules that measure the PGO ceilings against the interactive limits
+	// wait for pgo.enabled:
+	// a gateway that never collects may hold limits.maxConcurrentProfiles 1,
+	// which no maxParallel and maxActiveCollections pair stays below,
+	// and a limits.cpuSeconds under the shipped pgo.limits.maxDuration.
+	t.Run("interactive limits are not measured against pgo while disabled", func(t *testing.T) {
+		t.Setenv("PROFGATE_LIMIT_MAX_CONCURRENT_PROFILES", "1")
+		t.Setenv("PROFGATE_LIMIT_CPU_SECONDS", "30")
+		loadOK(t, fixture("pgo-disabled.yaml"))
+	})
+
 	t.Run("replicas all", func(t *testing.T) {
 		cfg := loadOK(t, fixture("pgo-full.yaml"))
 		if cfg.PGO.Defaults.Sampling.Replicas != "all" {

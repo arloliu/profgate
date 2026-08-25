@@ -1,0 +1,12 @@
+auth:
+  anonymousRealm: developer
+pgo:
+  enabled: false
+  jobRetention: 24h
+  limits:
+    maxRetention: 24h
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

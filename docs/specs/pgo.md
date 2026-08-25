@@ -1753,10 +1753,17 @@ and the 10-minute orphan age (section 8.9) are constants, not configuration:
 a knob would invite tuning them past the assumptions they encode.
 The defaults satisfy every cross-field rule as published:
 `4 × 2 < 16` (the `maxParallel` ceiling times `maxActiveCollections`), `5 × 32 ≤ 256`, `168h ≥ 24h + 1h`, `60s ≤ 60`.
-Every cross-field rule above — between limits, and between a default and its ceiling —
-runs only when `pgo.enabled` is true:
-a file carrying an inconsistent `pgo` block loads without error while disabled
-and fails at startup only once `pgo.enabled` flips to true.
+Every cross-field rule that judges the `pgo` block against itself —
+between limits, and between a default and its ceiling —
+runs whether or not `pgo.enabled` is true,
+so a file carrying an inconsistent `pgo` block fails at startup as written rather than on the day the flag flips.
+The two rules that measure the PGO ceilings against `limits`
+(`maxParallel × maxActiveCollections < limits.maxConcurrentProfiles` and `maxDuration ≤ limits.cpuSeconds`)
+wait for `pgo.enabled`, because a gateway that never collects is free to set
+`limits.maxConcurrentProfiles: 1` or a `limits.cpuSeconds` under the shipped `maxDuration`,
+values no pair of PGO ceilings can satisfy.
+The `nats` requirements wait for the same flag:
+a disabled gateway reaches no NATS cluster and needs none configured.
 
 ```yaml
 nats:
@@ -2116,6 +2123,8 @@ one server per subtest.
   `maxEvery` below `minEvery` rejected;
   `maxDuration` above `limits.cpuSeconds`;
   defaults violating limits;
+  a `pgo` block that contradicts itself rejected with `enabled: false`,
+  and the two rules against `limits` not applied to a disabled block;
   a realm without `pgo` has all flags false.
 - `deploy/`: the NATS account fragment equals the section 3.3 list exactly.
   A manifest test pins the NATS credentials Secret volume:
