@@ -30,3 +30,9 @@ run = "golangci-lint run ./..."
 [tasks."test:e2e"]
 description = "End-to-end suite on the lane named by PROFGATE_E2E_LANE (default current)"
 run = "go test -tags e2e -count=1 -timeout 40m ./test/e2e/..."
+
+[tasks.release]
+description = "Check the repository is ready to tag, then tag and push: mise run release -- vX.Y.Z"
+# The tag is what publishes; this only refuses to create one that would
+# publish from a dirty, unpushed, or red commit. Needs git and gh.
+run = "bash scripts/release.sh"
