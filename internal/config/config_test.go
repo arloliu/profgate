@@ -294,6 +294,19 @@ func TestLoadPGO(t *testing.T) {
 		}
 	})
 
+	// The floors the four keys carry apply to what the operator wrote,
+	// not to a key left out: an absent key still takes its shipped default.
+	t.Run("absent sampling and artifact keys take their defaults", func(t *testing.T) {
+		cfg := loadOK(t, fixture("pgo-replicas-int.yaml"))
+		sampling := cfg.PGO.Defaults.Sampling
+		if sampling.Duration != 30*time.Second || sampling.Rounds != 2 || sampling.MaxParallel != 4 {
+			t.Fatalf("sampling = %+v, want duration 30s, rounds 2, maxParallel 4", sampling)
+		}
+		if got := cfg.PGO.Defaults.Artifact.Retention; got != 2*time.Hour {
+			t.Fatalf("retention = %v, want 2h", got)
+		}
+	})
+
 	t.Run("realm without pgo", func(t *testing.T) {
 		cfg := loadOK(t, fixture("good.yaml"))
 		realm := cfg.Realms["developer"]
@@ -418,6 +431,27 @@ func TestLoadPGO(t *testing.T) {
 	})
 	t.Run("jitter above half of every", func(t *testing.T) {
 		loadErr(t, fixture("pgo-bad-jitter.yaml"), "pgo.defaults.schedule.jitter")
+	})
+
+	// An explicit zero reaches the loader untouched.
+	// Each of these four keys carries the floor the Collection API holds an override to:
+	// a zero duration samples nothing,
+	// and zero rounds or zero maxParallel describes a Collection that does no work.
+	t.Run("a default below its floor is refused", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			fixture string
+			want    string
+		}{
+			{"zero duration", "pgo-zero-duration.yaml", "pgo.defaults.sampling.duration: must be at least 1s"},
+			{"zero rounds", "pgo-zero-rounds.yaml", "pgo.defaults.sampling.rounds: must be at least 1"},
+			{"zero maxParallel", "pgo-zero-max-parallel.yaml", "pgo.defaults.sampling.maxParallel: must be at least 1"},
+			{"zero retention", "pgo-zero-retention.yaml", "pgo.defaults.artifact.retention: must be at least 1m"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				loadErr(t, fixture(tc.fixture), tc.want)
+			})
+		}
 	})
 
 	// A pgo block that contradicts itself is an error the day it is written,

@@ -1729,13 +1729,13 @@ Loading, strict unknown-key handling, environment prefix, and the `atomic.Pointe
 | `pgo.limits.maxLiveCollections` | `PROFGATE_PGO_LIMIT_MAX_LIVE_COLLECTIONS` | `64` | restart | 1–1024 |
 | `pgo.defaults.schedule.every` | — | `6h` | hot | `minEvery`–`maxEvery` |
 | `pgo.defaults.schedule.jitter` | — | `10m` | hot | ≤ `every / 2` |
-| `pgo.defaults.sampling.duration` | — | `30s` | hot | ≤ `maxDuration` |
-| `pgo.defaults.sampling.rounds` | — | `2` | hot | ≤ `maxRounds` |
+| `pgo.defaults.sampling.duration` | — | `30s` | hot | 1s–`maxDuration` |
+| `pgo.defaults.sampling.rounds` | — | `2` | hot | 1–`maxRounds` |
 | `pgo.defaults.sampling.roundInterval` | — | `30s` | hot | 0–10m |
 | `pgo.defaults.sampling.replicas` | — | `all` | hot | `all` or 1–`maxTargetsPerRound` |
-| `pgo.defaults.sampling.maxParallel` | — | `4` | hot | ≤ `limits.maxParallel` |
+| `pgo.defaults.sampling.maxParallel` | — | `4` | hot | 1–`limits.maxParallel` |
 | `pgo.defaults.target.versionPolicy` | — | `strict` | hot | `strict` |
-| `pgo.defaults.artifact.retention` | — | `2h` | hot | ≤ `maxRetention` |
+| `pgo.defaults.artifact.retention` | — | `2h` | hot | 1m–`maxRetention` |
 | `nats.url` | `PROFGATE_NATS_URL` | — | restart | required when `pgo.enabled`; `nats://` or `tls://` URL list |
 | `nats.credsFile` | `PROFGATE_NATS_CREDS_FILE` | — | restart | readable file when set |
 | `nats.connectTimeout` | `PROFGATE_NATS_CONNECT_TIMEOUT` | `5s` | restart | 1s–60s |

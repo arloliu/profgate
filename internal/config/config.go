@@ -120,6 +120,8 @@ type PGOLimits struct {
 
 // PGODefaults is the policy a Service gets before any override.
 // It carries no environment overrides: it is policy, like realms.
+// Each field holds the floor the Collection API holds an operator override to,
+// so a value written here and the same value sent to the API are judged alike.
 type PGODefaults struct {
 	Schedule PGOScheduleDefaults `yaml:"schedule"`
 	Sampling PGOSamplingDefaults `yaml:"sampling"`
@@ -136,11 +138,11 @@ type PGOScheduleDefaults struct {
 // PGOSamplingDefaults is how a Collection samples by default.
 // Replicas is what the operator wrote: "all" or a decimal count.
 type PGOSamplingDefaults struct {
-	Duration      time.Duration `yaml:"duration"      default:"30s"`
-	Rounds        int           `yaml:"rounds"        default:"2"`
-	RoundInterval time.Duration `yaml:"roundInterval" default:"30s" validate:"min=0,max=10m"`
+	Duration      time.Duration `yaml:"duration"      default:"30s"  validate:"min=1s"`
+	Rounds        int           `yaml:"rounds"        default:"2"    validate:"min=1"`
+	RoundInterval time.Duration `yaml:"roundInterval" default:"30s"  validate:"min=0,max=10m"`
 	Replicas      string        `yaml:"replicas"      default:"all"`
-	MaxParallel   int           `yaml:"maxParallel"   default:"4"`
+	MaxParallel   int           `yaml:"maxParallel"   default:"4"    validate:"min=1"`
 }
 
 // PGOTargetDefaults is how a Collection picks the binary version it profiles.
@@ -150,7 +152,7 @@ type PGOTargetDefaults struct {
 
 // PGOArtifactDefaults is how long a finished profile is kept by default.
 type PGOArtifactDefaults struct {
-	Retention time.Duration `yaml:"retention" default:"2h"`
+	Retention time.Duration `yaml:"retention" default:"2h" validate:"min=1m"`
 }
 
 // defaultPprofPort is used when neither port nor portName is configured.
