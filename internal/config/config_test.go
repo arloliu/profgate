@@ -240,6 +240,25 @@ func TestLoadPGO(t *testing.T) {
 		}
 	})
 
+	// A round interval of zero runs rounds back-to-back,
+	// a setting an operator can write.
+	// It is also the field's zero value, so a loader default would erase it.
+	t.Run("an explicit zero round interval survives", func(t *testing.T) {
+		cfg := loadOK(t, fixture("pgo-zero-round-interval.yaml"))
+		if got := cfg.PGO.Defaults.Sampling.RoundInterval; got != 0 {
+			t.Fatalf("roundInterval = %v, want 0", got)
+		}
+	})
+
+	// The sampling block is present and carries a sibling key,
+	// which is the shape an absent roundInterval arrives in.
+	t.Run("an absent round interval is 30s", func(t *testing.T) {
+		cfg := loadOK(t, fixture("pgo-replicas-int.yaml"))
+		if got := cfg.PGO.Defaults.Sampling.RoundInterval; got != 30*time.Second {
+			t.Fatalf("roundInterval = %v, want 30s", got)
+		}
+	})
+
 	t.Run("realm without pgo", func(t *testing.T) {
 		cfg := loadOK(t, fixture("good.yaml"))
 		realm := cfg.Realms["developer"]

@@ -136,7 +136,7 @@ type PGOScheduleDefaults struct {
 type PGOSamplingDefaults struct {
 	Duration      time.Duration `yaml:"duration"      default:"30s"`
 	Rounds        int           `yaml:"rounds"        default:"2"`
-	RoundInterval time.Duration `yaml:"roundInterval" default:"30s" validate:"min=0,max=10m"`
+	RoundInterval time.Duration `yaml:"roundInterval" validate:"min=0,max=10m"`
 	Replicas      string        `yaml:"replicas"      default:"all"`
 	MaxParallel   int           `yaml:"maxParallel"   default:"4"`
 }
@@ -153,6 +153,11 @@ type PGOArtifactDefaults struct {
 
 // defaultPprofPort is used when neither port nor portName is configured.
 const defaultPprofPort = 6060
+
+// defaultRoundInterval is used when the file leaves roundInterval out.
+// It is not a `default` struct tag because 0 is a setting of its own,
+// and the loader applies a tag default to any zero field.
+const defaultRoundInterval = 30 * time.Second
 
 // gracePeriodSlack is added to the longest profile duration to form the grace period.
 const gracePeriodSlack = 60 * time.Second
@@ -255,6 +260,11 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
+	var given givenKeys
+	if err := yaml.Unmarshal(b, &given); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+
 	v := validator.New()
 	v.RegisterTagNameFunc(func(f reflect.StructField) string {
 		return strings.Split(f.Tag.Get("yaml"), ",")[0]
@@ -273,11 +283,25 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
 
-	normalize(&cfg)
+	normalize(&cfg, given)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// givenKeys reads the file a second time to record which keys it carries,
+// for the fields whose zero value is a setting rather than an absence.
+// The loaded Config cannot answer that question:
+// a zero field looks the same whether the operator wrote 0 or wrote nothing.
+type givenKeys struct {
+	PGO struct {
+		Defaults struct {
+			Sampling struct {
+				RoundInterval *time.Duration `yaml:"roundInterval"`
+			} `yaml:"sampling"`
+		} `yaml:"defaults"`
+	} `yaml:"pgo"`
 }
 
 // fieldPaths renders each failing field as its YAML key path,
@@ -291,10 +315,15 @@ func fieldPaths(verrs validator.ValidationErrors) string {
 	return strings.Join(paths, ", ")
 }
 
-// normalize fills the pprof port when neither port nor portName was given.
-func normalize(cfg *Config) {
+// normalize fills the keys whose default the loader cannot apply:
+// the pprof port, where 0 means the operator named the port some other way,
+// and the round interval, where 0 is a setting of its own.
+func normalize(cfg *Config, given givenKeys) {
 	if cfg.Discovery.Pprof.Port == 0 && cfg.Discovery.Pprof.PortName == "" {
 		cfg.Discovery.Pprof.Port = defaultPprofPort
+	}
+	if given.PGO.Defaults.Sampling.RoundInterval == nil {
+		cfg.PGO.Defaults.Sampling.RoundInterval = defaultRoundInterval
 	}
 }
 
