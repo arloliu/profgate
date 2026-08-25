@@ -247,6 +247,37 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
+// failingListener is a real listener whose Accept fails for good once the
+// subtest trips it, standing in for the listener failure that ends the process.
+// The goroutine each pending Accept leaves behind returns when the lifecycle
+// closes the listener.
+type failingListener struct {
+	net.Listener
+	fail chan struct{}
+}
+
+// errListenerFailed is what a tripped listener answers Accept with.
+var errListenerFailed = errors.New("listener failed for good")
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	type accepted struct {
+		conn net.Conn
+		err  error
+	}
+	next := make(chan accepted, 1)
+	go func() {
+		conn, err := l.Listener.Accept()
+		next <- accepted{conn: conn, err: err}
+	}()
+
+	select {
+	case <-l.fail:
+		return nil, errListenerFailed
+	case a := <-next:
+		return a.conn, a.err
+	}
+}
+
 // limits are the duration and concurrency caps a subtest writes into its configuration.
 type limits struct{ cpu, trace, maxConcurrent int }
 
@@ -336,6 +367,8 @@ type gatewayOpts struct {
 	preflight  *preflightStub
 	worker     *stubWorker
 	drainDelay time.Duration
+	// failAPI, when set, is closed by the subtest to fail the API listener.
+	failAPI chan struct{}
 }
 
 // startGateway runs serve over cs with PGO off.
@@ -380,6 +413,17 @@ func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o gatewayOpts)
 	}
 	if o.worker != nil {
 		deps.pgoWorker = o.worker
+	}
+	if o.failAPI != nil {
+		deps.listen = func(ctx context.Context, network, address string) (net.Listener, error) {
+			var lc net.ListenConfig
+			l, err := lc.Listen(ctx, network, address)
+			if err != nil || address != gw.apiAddr {
+				return l, err
+			}
+
+			return &failingListener{Listener: l, fail: o.failAPI}, nil
+		}
 	}
 	go func() { gw.exited <- serve(context.Background(), cfgPath, deps, gw.stdout, gw.stderr) }()
 	t.Cleanup(func() {
@@ -1158,6 +1202,36 @@ func TestServePGO(t *testing.T) {
 		rec := gw.record(t, "drain complete")
 		if rec["api"] != "completed" || rec["pgo"] != "drained" {
 			t.Fatalf("drain complete record = %v, want api=completed pgo=drained", rec)
+		}
+	})
+
+	t.Run("a failed listener exits without waiting for the collections", func(t *testing.T) {
+		worker := newStubWorker()
+		worker.abandon = []string{"c-1"}
+		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
+		fail := make(chan struct{})
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{enabled: true, preflight: pf, worker: worker, failAPI: fail})
+		gw.waitReady(t, waitTimeout)
+		waitFor(t, waitTimeout, "the worker starting", func() bool { return worker.runCount() == 1 })
+
+		// The drain is never released: a process whose listener has failed has
+		// nothing left to serve, and the lease another replica reclaims is the
+		// recovery.
+		close(fail)
+		if code := gw.exitCode(t, waitTimeout); code != 1 {
+			t.Fatalf("exit code = %d, want 1: a failed listener is a crash", code)
+		}
+		if closed(worker.entered) {
+			t.Fatal("the fatal path entered the Collection drain, which has no bound")
+		}
+		rec := gw.record(t, "drain complete")
+		if rec["pgo"] != "abandoned" {
+			t.Fatalf("drain complete record = %v, want pgo=abandoned", rec)
+		}
+		ids, _ := rec["collections"].([]any)
+		if len(ids) != 1 || ids[0] != "c-1" {
+			t.Fatalf("drain complete collections = %v, want [c-1]", rec["collections"])
 		}
 	})
 

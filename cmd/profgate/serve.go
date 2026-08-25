@@ -49,6 +49,23 @@ const (
 	instanceSuffixBytes = 4
 )
 
+// listenFunc opens one of the two listeners.
+type listenFunc func(ctx context.Context, network, address string) (net.Listener, error)
+
+// shutdownMode says what the shutdown waits for.
+type shutdownMode int
+
+const (
+	// drainAll waits for the interactive drain and the Collection drain.
+	drainAll shutdownMode = iota
+	// abandonCollections skips the Collection drain.
+	// The process is ending because a listener it cannot serve without has
+	// failed, and there is nothing left for a finished Collection to be
+	// serving; a Collection left running stops renewing its lease, and
+	// another replica reclaims it after leaseTTL.
+	abandonCollections
+)
+
 // natsPreflightFunc is the NATS preflight the lifecycle retries; production is natskv.Preflight.
 type natsPreflightFunc func(ctx context.Context, opts natskv.Options, instanceID string, log *slog.Logger) (natskv.Client, error)
 
@@ -73,6 +90,7 @@ type serveDeps struct {
 	stop          <-chan struct{}                        // production: signal.NotifyContext(...).Done()
 	natsPreflight natsPreflightFunc                      // production: natskv.Preflight
 	pgoWorker     collectionWorker                       // production: nil, so serve builds a pgo.Worker
+	listen        listenFunc                             // production: nil, so serve uses net.ListenConfig
 }
 
 // serve runs the gateway until stop is closed or a fatal event happens, and returns the exit code.
@@ -145,14 +163,18 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	apiServer := &http.Server{Handler: counted, ReadHeaderTimeout: readHeaderTimeout}
 	opsServer := &http.Server{Handler: ops.New(ready, deps.registry), ReadHeaderTimeout: readHeaderTimeout}
 
-	var lc net.ListenConfig
-	apiListener, err := lc.Listen(ctx, "tcp", cfg.Server.Listen)
+	listen := deps.listen
+	if listen == nil {
+		var lc net.ListenConfig
+		listen = lc.Listen
+	}
+	apiListener, err := listen(ctx, "tcp", cfg.Server.Listen)
 	if err != nil {
 		logger.Error("listen", "address", cfg.Server.Listen, "error", err)
 
 		return 1
 	}
-	opsListener, err := lc.Listen(ctx, "tcp", cfg.Server.OpsListen)
+	opsListener, err := listen(ctx, "tcp", cfg.Server.OpsListen)
 	if err != nil {
 		logger.Error("listen", "address", cfg.Server.OpsListen, "error", err)
 		_ = apiListener.Close()
@@ -193,7 +215,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		}()
 	}
 
-	shutdown := func() {
+	shutdown := func(mode shutdownMode) {
 		start := time.Now()
 		draining.Store(true)
 		// Stops the scheduler, the sweeper, and the worker's claiming.
@@ -240,7 +262,15 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 				logger.Warn("api listener shutdown", "error", err)
 			}
 		}()
-		if worker != nil {
+		switch {
+		case worker == nil:
+		case mode == abandonCollections:
+			// Nothing waits: the Collections this replica owns stop renewing
+			// when the process exits, and another replica reclaims them.
+			abandoned = worker.InFlight()
+			pgoOutcome = "abandoned"
+			logger.Warn("exiting without the collection drain", "collections", abandoned)
+		default:
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -282,13 +312,13 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 			var fb k8s.ErrForbidden
 			if errors.As(err, &fb) {
 				logger.Error("preflight forbidden; the ClusterRole lacks a tuple", "resource", fb.Resource, "verb", fb.Verb)
-				shutdown()
+				shutdown(drainAll)
 
 				return 1
 			}
 			if err != nil {
 				logger.Error("preflight cancelled", "error", err)
-				shutdown()
+				shutdown(drainAll)
 
 				return 1
 			}
@@ -305,7 +335,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 				// a configuration outside the contract, or a denied probe.
 				// The error names the bucket and the operation or field.
 				logger.Error("nats preflight failed", "error", res.err)
-				shutdown()
+				shutdown(drainAll)
 
 				return 1
 			}
@@ -314,7 +344,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 			w, err := startPGO(runCtx, res.client, cfg, pgoRuntime, gate, cluster, owner, deps, logger)
 			if err != nil {
 				logger.Error("pgo runtime", "error", err)
-				shutdown()
+				shutdown(drainAll)
 
 				return 1
 			}
@@ -324,12 +354,12 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 				continue
 			}
 			logger.Error("listener failed", "error", err)
-			shutdown()
+			shutdown(abandonCollections)
 
 			return 1
 		case <-deps.stop:
 			logger.Info("stop requested; draining")
-			shutdown()
+			shutdown(drainAll)
 
 			return 0
 		}

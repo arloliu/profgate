@@ -848,6 +848,12 @@ which covers the drain delay and the default limits (60s) with margin.
 An operator who raises either limit must raise the grace period with it:
 at least `server.drainDelay` plus the larger limit plus 60s,
 which `profgate config validate` prints.
+A listener that fails is fatal:
+the process logs the failure, drains the interactive requests, and exits 1.
+It never waits for the Collection drain of [`pgo.md`](pgo.md) section 12.4,
+because a replica with no listener has nothing left to serve,
+and a Collection left running stops renewing its lease for another replica to reclaim.
+
 An unreachable API server is never fatal after preflight and does not change `/readyz`:
 the targets endpoint keeps serving the cache, confirmation fails closed, and the failure table in section 13 applies.
 Because the overall request budget already includes confirmation, the drain bound above covers it.
