@@ -87,7 +87,7 @@ type serveDeps struct {
 	sampler       *proxy.Proxy                           // production: the same proxy, as the Collection sampler
 	registry      *prometheus.Registry                   // production: prometheus.NewRegistry()
 	recorder      metrics.Recorder                       // production: metrics.NewPrometheus(registry)
-	stop          <-chan struct{}                        // production: signal.NotifyContext(...).Done()
+	stop          <-chan struct{}                        // production: closed by the first SIGINT or SIGTERM
 	natsPreflight natsPreflightFunc                      // production: natskv.Preflight
 	pgoWorker     collectionWorker                       // production: nil, so serve builds a pgo.Worker
 	listen        listenFunc                             // production: nil, so serve uses net.ListenConfig
