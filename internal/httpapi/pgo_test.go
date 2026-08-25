@@ -324,6 +324,19 @@ func TestPGOBodiesAreBounded(t *testing.T) {
 		}
 	})
 
+	t.Run("a policy delete takes no body", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		enabled := true
+		revision := h.seedOverride(t, &pgo.PolicyOverride{Enabled: &enabled})
+
+		got := h.doPGO(t, http.MethodDelete, pgoPath, `{"enabled":false}`, ifMatch(etagOf(revision)))
+
+		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+		if n := h.nats.config.countKeys(overrideKeyPrefix); n != 1 {
+			t.Errorf("override keys = %d, want the override kept", n)
+		}
+	})
+
 	t.Run("query parameters are refused", func(t *testing.T) {
 		h := newPGOHarness(t, pgoOpts{})
 

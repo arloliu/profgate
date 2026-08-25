@@ -194,6 +194,12 @@ func (s *server) servePolicyDelete(
 		return
 	}
 
+	if berr := rejectBody(w, r); berr != nil {
+		q.fail(w, berr)
+
+		return
+	}
+
 	expected, present, perr := parseIfMatch(r.Header.Get("If-Match"))
 	if perr != nil {
 		q.fail(w, perr)

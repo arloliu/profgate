@@ -299,12 +299,14 @@ func TestPolicyStoreFailuresAreUnavailable(t *testing.T) {
 	cases := []struct {
 		name    string
 		method  string
+		body    string
 		ifMatch http.Header
 		fail    func(*fakeKV)
 	}{
-		{"the read fails", http.MethodGet, nil, func(kv *fakeKV) { kv.getErr = natskv.ErrUnavailable }},
-		{"the create fails", http.MethodPut, nil, func(kv *fakeKV) { kv.createErr = natskv.ErrUnavailable }},
-		{"the delete's read fails", http.MethodDelete, ifMatch(`"1"`), func(kv *fakeKV) { kv.getErr = natskv.ErrUnavailable }},
+		{"the read fails", http.MethodGet, `{"enabled":true}`, nil, func(kv *fakeKV) { kv.getErr = natskv.ErrUnavailable }},
+		{"the create fails", http.MethodPut, `{"enabled":true}`, nil, func(kv *fakeKV) { kv.createErr = natskv.ErrUnavailable }},
+		// The delete takes no body, so the row that exercises it sends none.
+		{"the delete's read fails", http.MethodDelete, "", ifMatch(`"1"`), func(kv *fakeKV) { kv.getErr = natskv.ErrUnavailable }},
 	}
 
 	for _, tc := range cases {
@@ -312,7 +314,7 @@ func TestPolicyStoreFailuresAreUnavailable(t *testing.T) {
 			h := newPGOHarness(t, pgoOpts{})
 			tc.fail(h.nats.config)
 
-			got := h.doPGO(t, tc.method, pgoPath, `{"enabled":true}`, tc.ifMatch)
+			got := h.doPGO(t, tc.method, pgoPath, tc.body, tc.ifMatch)
 
 			h.expectPGOError(t, got, http.StatusServiceUnavailable, "pgo_unavailable", "pgo_unavailable")
 		})

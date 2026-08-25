@@ -1560,6 +1560,7 @@ If-Match: "43"
 
 The handler reads the key for its revision and the absent/present distinction, then deletes at that revision.
 `204 No Content`; `428` and `412` as for `PUT`; `404 pgo_override_not_found` when the key is absent.
+No body is accepted (`400 invalid_parameter` if one is sent).
 A `Delete` that loses its revision (the key moved between the read and the delete) is `412`,
 the same as a stale `If-Match`: the client re-reads and decides again.
 Deleting the override returns the Service to the defaults and stops scheduling it.
