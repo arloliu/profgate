@@ -1031,6 +1031,8 @@ The image goes to `ghcr.io/arloliu/profgate` for `linux/amd64` and `linux/arm64`
 tagged with the tag and with `latest`, and its version is stamped into the binary from the tag.
 The chart goes to `oci://ghcr.io/arloliu/charts` with the tag as its `appVersion`
 and the tag without its leading `v` as its chart version.
+Consuming both from a network without egress to GHCR — through a proxy, as files, or from an internal mirror —
+is [`deploy/chart/profgate/README.md`](../../deploy/chart/profgate/README.md).
 
 There is no scheduled run.
 The GHCR mirror is public, so no pull credentials are needed;

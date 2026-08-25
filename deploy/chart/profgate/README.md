@@ -23,6 +23,79 @@ An unreleased chart installs from a checkout:
 helm install profgate ./deploy/chart/profgate --namespace profgate --create-namespace
 ```
 
+## Installing from a private network
+
+Two artifacts have to reach the cluster:
+the chart, an OCI artifact at `oci://ghcr.io/arloliu/charts/profgate`,
+and the image at `ghcr.io/arloliu/profgate`.
+Their versions differ by one character.
+The release tag `vX.Y.Z` publishes chart version `X.Y.Z`, the tag without its leading `v`,
+with `appVersion: vX.Y.Z`, which is what `image.tag` defaults to.
+
+**Egress through a proxy.**
+`helm` reads `HTTPS_PROXY` and `NO_PROXY` from the environment for its registry client:
+
+```bash
+export HTTPS_PROXY=http://proxy.internal.example:3128
+export NO_PROXY=.internal.example,.svc,.cluster.local
+helm install profgate oci://ghcr.io/arloliu/charts/profgate --version X.Y.Z \
+  --namespace profgate --create-namespace
+```
+
+The nodes still pull the image themselves and never see that proxy,
+so this is enough only where the container runtime has its own route to `ghcr.io`.
+
+**One transfer, by hand.**
+On a connected machine, pull the chart as a file and the image as an archive:
+
+```bash
+helm pull oci://ghcr.io/arloliu/charts/profgate --version X.Y.Z
+skopeo copy --all docker://ghcr.io/arloliu/profgate:vX.Y.Z \
+  oci-archive:profgate-vX.Y.Z.tar:profgate:vX.Y.Z
+```
+
+That leaves `profgate-X.Y.Z.tgz` and `profgate-vX.Y.Z.tar` to carry across.
+`--all` copies the whole index rather than the one manifest matching the machine doing the copy;
+the published image is an index over `linux/amd64` and `linux/arm64`,
+and without it a cluster on the other architecture gets an image its nodes cannot run.
+
+Inside, push the archive to a registry the cluster can reach and install from the file:
+
+```bash
+skopeo copy --all oci-archive:profgate-vX.Y.Z.tar \
+  docker://registry.internal.example/profgate:vX.Y.Z
+helm install profgate ./profgate-X.Y.Z.tgz \
+  --namespace profgate --create-namespace \
+  --set image.repository=registry.internal.example/profgate \
+  --set imagePullSecrets[0].name=internal-registry
+```
+
+Keep the image tag's leading `v` through the copy, or set `image.tag` to whatever it became:
+the chart falls back to `appVersion`, which carries the `v`.
+The Secret that `imagePullSecrets` names has to exist in the release namespace first;
+the chart never creates it, and a registry that allows anonymous pulls needs no `imagePullSecrets` at all.
+
+**A standing mirror.**
+Where an internal registry is already the cluster's only source,
+mirror both artifacts into it on each release instead of moving files:
+
+```bash
+crane copy ghcr.io/arloliu/profgate:vX.Y.Z registry.internal.example/profgate:vX.Y.Z
+helm pull oci://ghcr.io/arloliu/charts/profgate --version X.Y.Z
+helm push profgate-X.Y.Z.tgz oci://registry.internal.example/charts
+```
+
+`crane copy` carries every platform of an index across the way `skopeo copy --all` does.
+The chart is an OCI artifact like the image,
+so Harbor, GitLab, or any other OCI registry holds it next to the image,
+and the install names the mirror on both sides:
+
+```bash
+helm install profgate oci://registry.internal.example/charts/profgate --version X.Y.Z \
+  --namespace profgate --create-namespace \
+  --set image.repository=registry.internal.example/profgate
+```
+
 ## What the chart guarantees
 
 **A configuration change restarts the Pods.**
