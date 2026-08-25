@@ -1,0 +1,104 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+# One release at a time. The group is deliberately ref-independent: two tags
+# publishing at once would race for the `latest` image tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - run: mise run check && mise run lint && mise run test
+
+  e2e:
+    needs: gates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      PROFGATE_E2E_REGISTRY: ghcr.io/${{ github.repository_owner }}
+      PROFGATE_E2E_LANE: current
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: mise run test:e2e
+
+  publish:
+    needs: [gates, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    env:
+      # .ko.yaml stamps this into main.version, and ko fails the build when it
+      # is unset, so a published binary always reports the tag it was cut from.
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the image
+        id: image
+        env:
+          KO_DOCKER_REPO: ghcr.io/${{ github.repository_owner }}/profgate
+        run: |
+          set -euo pipefail
+          ref="$(mise exec -- ko build --bare \
+            --platform=linux/amd64,linux/arm64 \
+            --tags "$VERSION,latest" ./cmd/profgate)"
+          digest="${ref##*@}"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Image"
+            echo
+            echo "- \`$KO_DOCKER_REPO:$VERSION\`"
+            echo "- \`$KO_DOCKER_REPO:latest\`"
+            echo "- \`$KO_DOCKER_REPO@$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package and push the chart
+        env:
+          CHARTS_REPO: ghcr.io/${{ github.repository_owner }}/charts
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The chart version is semver without the tag's leading v; appVersion
+          # keeps the v, because values.yaml defaults image.tag to appVersion
+          # and the image carries the tag verbatim.
+          chart_version="${VERSION#v}"
+          mise exec -- helm package deploy/chart/profgate \
+            --version "$chart_version" \
+            --app-version "$VERSION" \
+            --destination dist
+          printf '%s' "$REGISTRY_TOKEN" | mise exec -- helm registry login ghcr.io \
+            --username "$REGISTRY_USER" --password-stdin
+          mise exec -- helm push "dist/profgate-$chart_version.tgz" "oci://$CHARTS_REPO"
+          {
+            echo "### Chart"
+            echo
+            echo "- \`oci://$CHARTS_REPO/profgate\` version \`$chart_version\`, appVersion \`$VERSION\`"
+          } >> "$GITHUB_STEP_SUMMARY"
