@@ -1,0 +1,575 @@
+package natskv
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestKV(t *testing.T) {
+	t.Run("create on an existing key is ErrKeyExists", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		kv := f.view().Jobs
+
+		rev, err := kv.Create(ctx, "job.a", []byte("first"))
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if rev == 0 {
+			t.Fatalf("create returned revision 0")
+		}
+		if _, err := kv.Create(ctx, "job.a", []byte("second")); !errors.Is(err, ErrKeyExists) {
+			t.Fatalf("second create: got %v, want ErrKeyExists", err)
+		}
+
+		e, err := kv.Get(ctx, "job.a")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if string(e.Value) != "first" {
+			t.Fatalf("value changed by a lost create: %q", e.Value)
+		}
+		if e.Key != "job.a" || e.Revision != rev {
+			t.Fatalf("entry key/revision: got %q/%d, want job.a/%d", e.Key, e.Revision, rev)
+		}
+		if e.Created.IsZero() {
+			t.Fatalf("entry carries no Created timestamp")
+		}
+		if e.Generation != f.c.Generation() {
+			t.Fatalf("entry generation: got %d, want %d", e.Generation, f.c.Generation())
+		}
+	})
+
+	t.Run("update with a stale revision is ErrRevisionMismatch", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		kv := f.view().Jobs
+
+		rev1, err := kv.Create(ctx, "job.a", []byte("v1"))
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		rev2, err := kv.Update(ctx, "job.a", []byte("v2"), rev1)
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if _, err := kv.Update(ctx, "job.a", []byte("v3"), rev1); !errors.Is(err, ErrRevisionMismatch) {
+			t.Fatalf("stale update: got %v, want ErrRevisionMismatch", err)
+		}
+
+		e, err := kv.Get(ctx, "job.a")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if string(e.Value) != "v2" || e.Revision != rev2 {
+			t.Fatalf("value changed by a lost update: %q at %d", e.Value, e.Revision)
+		}
+	})
+
+	t.Run("delete with a stale revision is ErrRevisionMismatch", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		kv := f.view().Jobs
+
+		rev1, err := kv.Create(ctx, "job.a", []byte("v1"))
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		rev2, err := kv.Update(ctx, "job.a", []byte("v2"), rev1)
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if err := kv.Delete(ctx, "job.a", rev1); !errors.Is(err, ErrRevisionMismatch) {
+			t.Fatalf("stale delete: got %v, want ErrRevisionMismatch", err)
+		}
+		e, err := kv.Get(ctx, "job.a")
+		if err != nil || string(e.Value) != "v2" {
+			t.Fatalf("value after a lost delete: %q, %v", e.Value, err)
+		}
+
+		if err := kv.Delete(ctx, "job.a", rev2); err != nil {
+			t.Fatalf("delete at the current revision: %v", err)
+		}
+		if _, err := kv.Get(ctx, "job.a"); !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("get after delete: got %v, want ErrKeyNotFound", err)
+		}
+	})
+
+	t.Run("get of a deleted key equals get of an absent key", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		kv := f.view().Jobs
+
+		rev, err := kv.Create(ctx, "job.gone", []byte("x"))
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if err := kv.Delete(ctx, "job.gone", rev); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := kv.Get(ctx, "job.gone"); !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("get of a deleted key: got %v, want ErrKeyNotFound", err)
+		}
+		if _, err := kv.Get(ctx, "job.never"); !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("get of an absent key: got %v, want ErrKeyNotFound", err)
+		}
+	})
+
+	t.Run("keys lists live keys under the prefix", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		kv := f.view().Jobs
+
+		for _, key := range []string{"job.a", "job.b", "active.a"} {
+			if _, err := kv.Create(ctx, key, []byte("x")); err != nil {
+				t.Fatalf("create %s: %v", key, err)
+			}
+		}
+		rev, err := kv.Get(ctx, "job.b")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if err := kv.Delete(ctx, "job.b", rev.Revision); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+
+		keys, err := kv.Keys(ctx, "job.")
+		if err != nil {
+			t.Fatalf("keys: %v", err)
+		}
+		if len(keys) != 1 || keys[0] != "job.a" {
+			t.Fatalf("keys under job.: got %v, want [job.a]", keys)
+		}
+	})
+}
+
+func TestWatch(t *testing.T) {
+	t.Run("replay, one marker, live puts, deletes as nil, context end", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		kv := f.view().Jobs
+		gen := f.c.Generation()
+
+		for key, val := range map[string]string{"w.a": "1", "w.b": "2", "x.c": "3"} {
+			if _, err := kv.Create(ctx, key, []byte(val)); err != nil {
+				t.Fatalf("seed %s: %v", key, err)
+			}
+		}
+
+		wctx, cancel := context.WithCancel(ctx)
+		ch, err := kv.Watch(wctx, "w.")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+
+		replay := map[string]string{}
+		var marker Entry
+		for {
+			e := nextEntry(t, ch)
+			if e.Synced {
+				marker = e
+				break
+			}
+			replay[e.Key] = string(e.Value)
+			if e.Generation != gen {
+				t.Fatalf("replay entry generation: got %d, want %d", e.Generation, gen)
+			}
+		}
+		if len(replay) != 2 || replay["w.a"] != "1" || replay["w.b"] != "2" {
+			t.Fatalf("replay delivered %v, want w.a=1 and w.b=2", replay)
+		}
+		if marker.Key != "" || marker.Generation != gen {
+			t.Fatalf("marker: key %q generation %d, want empty key generation %d", marker.Key, marker.Generation, gen)
+		}
+		if !f.c.Synced(gen) {
+			t.Fatalf("Synced(%d) is false after the marker was read", gen)
+		}
+
+		if _, err := kv.Create(ctx, "w.new", []byte("4")); err != nil {
+			t.Fatalf("live create: %v", err)
+		}
+		e := nextEntry(t, ch)
+		if e.Synced || e.Key != "w.new" || string(e.Value) != "4" {
+			t.Fatalf("live change: got %+v, want w.new=4 and no second marker", e)
+		}
+
+		got, err := kv.Get(ctx, "w.a")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if err := kv.Delete(ctx, "w.a", got.Revision); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		e = nextEntry(t, ch)
+		if e.Key != "w.a" || e.Value != nil {
+			t.Fatalf("delete arrived as %+v, want key w.a with a nil value", e)
+		}
+
+		cancel()
+		waitFor(t, "watch channel close", func() bool {
+			select {
+			case _, ok := <-ch:
+				return !ok
+			default:
+				return false
+			}
+		})
+	})
+
+	t.Run("marker arrives for an empty prefix", func(t *testing.T) {
+		f := startFixture(t)
+		ch, err := f.view().Jobs.Watch(t.Context(), "none.")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+		e := nextEntry(t, ch)
+		if !e.Synced || e.Key != "" {
+			t.Fatalf("first entry: got %+v, want the marker", e)
+		}
+	})
+
+	t.Run("a whole-key prefix delivers its create, update, and delete", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		kv := f.view().Config
+
+		ch, err := kv.Watch(ctx, "probe.one")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+		if e := nextEntry(t, ch); !e.Synced {
+			t.Fatalf("first entry: got %+v, want the marker", e)
+		}
+
+		rev, err := kv.Create(ctx, "probe.one", []byte("a"))
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if e := nextEntry(t, ch); e.Key != "probe.one" || string(e.Value) != "a" {
+			t.Fatalf("create delivery: got %+v", e)
+		}
+		rev, err = kv.Update(ctx, "probe.one", []byte("b"), rev)
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if e := nextEntry(t, ch); string(e.Value) != "b" {
+			t.Fatalf("update delivery: got %+v", e)
+		}
+		if err := kv.Delete(ctx, "probe.one", rev); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if e := nextEntry(t, ch); e.Key != "probe.one" || e.Value != nil {
+			t.Fatalf("delete delivery: got %+v, want a nil value", e)
+		}
+	})
+
+	t.Run("a restart re-opens the watch and replays before a fresh marker", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		kv := f.view().Jobs
+		gen := f.c.Generation()
+
+		if _, err := kv.Create(ctx, "w.a", []byte("1")); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		ch, err := kv.Watch(ctx, "w.")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+		e := nextEntry(t, ch)
+		for !e.Synced {
+			e = nextEntry(t, ch)
+		}
+
+		f.stopServer()
+		waitFor(t, "generation move", func() bool { return f.c.Generation() != gen })
+		newGen := f.c.Generation()
+		f.restartServer()
+
+		e = nextEntry(t, ch)
+		if e.Synced || e.Key != "w.a" || string(e.Value) != "1" {
+			t.Fatalf("first post-restart entry: got %+v, want the w.a replay", e)
+		}
+		if e.Generation != newGen {
+			t.Fatalf("replayed entry generation: got %d, want %d", e.Generation, newGen)
+		}
+		e = nextEntry(t, ch)
+		if !e.Synced || e.Generation != newGen {
+			t.Fatalf("fresh marker: got %+v, want Synced under generation %d", e, newGen)
+		}
+		if !f.c.Synced(newGen) {
+			t.Fatalf("Synced(%d) is false after the fresh marker", newGen)
+		}
+	})
+}
+
+func TestGeneration(t *testing.T) {
+	t.Run("the disconnected callback alone moves the generation", func(t *testing.T) {
+		f := startFixture(t)
+		kv := f.view().Jobs
+		gen := f.c.Generation()
+
+		ch, err := kv.Watch(t.Context(), "g.")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+		if e := nextEntry(t, ch); !e.Synced {
+			t.Fatalf("first entry: got %+v, want the marker", e)
+		}
+		if !f.c.Synced(gen) {
+			t.Fatalf("Synced(%d) is false before the outage", gen)
+		}
+
+		f.stopServer()
+		waitFor(t, "generation move", func() bool { return f.c.Generation() != gen })
+
+		newGen := f.c.Generation()
+		if newGen != gen+1 {
+			t.Fatalf("generation: got %d, want %d", newGen, gen+1)
+		}
+		if f.c.Synced(newGen) {
+			t.Fatalf("Synced(%d) is true before any watch replayed under it", newGen)
+		}
+		if f.c.Synced(gen) {
+			t.Fatalf("Synced(%d) is true for a superseded generation", gen)
+		}
+		if f.c.Connected() {
+			t.Fatalf("Connected() is true while the server is down")
+		}
+		// The server never comes back in this subtest, so no watch can have
+		// been re-opened: nothing arrives on the channel.
+		select {
+		case e := <-ch:
+			t.Fatalf("watch delivered %+v with the server down", e)
+		case <-time.After(200 * time.Millisecond):
+		}
+	})
+
+	t.Run("a stale view fails before reaching the server", func(t *testing.T) {
+		f := startFixture(t)
+		gen := f.c.Generation()
+		stores := f.view()
+
+		f.stopServer()
+		waitFor(t, "generation move", func() bool { return f.c.Generation() != gen })
+
+		if _, err := f.c.View(gen); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("View(%d): got %v, want ErrUnavailable", gen, err)
+		}
+		start := time.Now()
+		if _, err := stores.Jobs.Get(t.Context(), "job.a"); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("get on a stale view: got %v, want ErrUnavailable", err)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("a stale view waited %s on the server instead of failing at once", elapsed)
+		}
+	})
+
+	t.Run("View for a non-current generation is ErrUnavailable", func(t *testing.T) {
+		f := startFixture(t)
+		if _, err := f.c.View(f.c.Generation() + 7); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("View: got %v, want ErrUnavailable", err)
+		}
+	})
+
+	t.Run("a result arriving after the move is ErrUnavailable whatever the server answered", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		stores := f.view()
+
+		// The named test hook delays the post-call check until the
+		// generation has moved, after the server has already answered.
+		f.c.testDelayPostCheck = func() {
+			f.c.bumpGeneration(errors.New("cut between the call and its result"))
+		}
+		_, err := stores.Jobs.Create(ctx, "job.cut", []byte("x"))
+		f.c.testDelayPostCheck = nil
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("create across a generation move: got %v, want ErrUnavailable", err)
+		}
+
+		// The server did answer: the write landed, only the result was discarded.
+		e, err := f.view().Jobs.Get(ctx, "job.cut")
+		if err != nil || string(e.Value) != "x" {
+			t.Fatalf("the server-side write is missing: %v, %v", e, err)
+		}
+	})
+}
+
+func TestObjects(t *testing.T) {
+	t.Run("a 40 MiB object round-trips byte for byte", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		obs := f.view().Artifacts
+
+		data := make([]byte, 40<<20)
+		for i := range data {
+			data[i] = byte(i*31 + 7)
+		}
+		if err := obs.Put(ctx, "big.pprof", bytes.NewReader(data)); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+
+		r, err := obs.Get(ctx, "big.pprof")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		got, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if !bytes.Equal(got, data) {
+			t.Fatalf("object bytes differ: got %d bytes, want %d", len(got), len(data))
+		}
+	})
+
+	t.Run("get of an absent object is ErrObjectNotFound", func(t *testing.T) {
+		f := startFixture(t)
+		if _, err := f.view().Artifacts.Get(t.Context(), "absent"); !errors.Is(err, ErrObjectNotFound) {
+			t.Fatalf("get: got %v, want ErrObjectNotFound", err)
+		}
+	})
+
+	t.Run("delete of an absent object is success", func(t *testing.T) {
+		f := startFixture(t)
+		if err := f.view().Artifacts.Delete(t.Context(), "absent"); err != nil {
+			t.Fatalf("delete: got %v, want nil", err)
+		}
+	})
+
+	t.Run("list returns every object with its mod time", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		obs := f.view().Artifacts
+
+		for name, body := range map[string]string{"one.pprof": "aa", "two.pprof": "bbbb"} {
+			if err := obs.Put(ctx, name, bytes.NewReader([]byte(body))); err != nil {
+				t.Fatalf("put %s: %v", name, err)
+			}
+		}
+		infos, err := obs.List(ctx)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		sizes := map[string]uint64{}
+		for _, info := range infos {
+			sizes[info.Name] = info.Size
+			if info.ModTime.IsZero() || time.Since(info.ModTime) > time.Minute {
+				t.Fatalf("object %s mod time %v is not the server's put time", info.Name, info.ModTime)
+			}
+		}
+		if len(infos) != 2 || sizes["one.pprof"] != 2 || sizes["two.pprof"] != 4 {
+			t.Fatalf("list: got %v, want one.pprof (2 bytes) and two.pprof (4 bytes)", sizes)
+		}
+	})
+
+	t.Run("list of an empty bucket is empty", func(t *testing.T) {
+		f := startFixture(t)
+		infos, err := f.view().Artifacts.List(t.Context())
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if len(infos) != 0 {
+			t.Fatalf("list of an empty bucket: got %v", infos)
+		}
+	})
+}
+
+func TestUnavailable(t *testing.T) {
+	t.Run("every call against a stopped server fails within its deadline", func(t *testing.T) {
+		f := startFixture(t)
+		gen := f.c.Generation()
+		f.stopServer()
+		waitFor(t, "generation move", func() bool { return f.c.Generation() != gen })
+		stores := f.view() // bound to the generation that is current while the server is down
+
+		ops := map[string]func(ctx context.Context) error{
+			"kv get": func(ctx context.Context) error {
+				_, err := stores.Jobs.Get(ctx, "job.a")
+				return err
+			},
+			"kv create": func(ctx context.Context) error {
+				_, err := stores.Jobs.Create(ctx, "job.a", []byte("x"))
+				return err
+			},
+			"kv update": func(ctx context.Context) error {
+				_, err := stores.Jobs.Update(ctx, "job.a", []byte("x"), 1)
+				return err
+			},
+			"kv delete": func(ctx context.Context) error {
+				return stores.Jobs.Delete(ctx, "job.a", 1)
+			},
+			"kv keys": func(ctx context.Context) error {
+				_, err := stores.Jobs.Keys(ctx, "job.")
+				return err
+			},
+			"kv status": func(ctx context.Context) error {
+				st, ok := stores.Jobs.(Statused)
+				if !ok {
+					return errors.New("the KV view does not implement Statused")
+				}
+				_, err := st.Status(ctx)
+				return err
+			},
+			"kv watch": func(ctx context.Context) error {
+				_, err := stores.Jobs.Watch(ctx, "job.")
+				return err
+			},
+			"object put": func(ctx context.Context) error {
+				return stores.Artifacts.Put(ctx, "a", bytes.NewReader([]byte("x")))
+			},
+			"object get": func(ctx context.Context) error {
+				_, err := stores.Artifacts.Get(ctx, "a")
+				return err
+			},
+			"object delete": func(ctx context.Context) error {
+				return stores.Artifacts.Delete(ctx, "a")
+			},
+			"object list": func(ctx context.Context) error {
+				_, err := stores.Artifacts.List(ctx)
+				return err
+			},
+			"object status": func(ctx context.Context) error {
+				st, ok := stores.Artifacts.(Statused)
+				if !ok {
+					return errors.New("the Objects view does not implement Statused")
+				}
+				_, err := st.Status(ctx)
+				return err
+			},
+		}
+
+		start := time.Now()
+		var wg sync.WaitGroup
+		results := make(chan error, len(ops))
+		for name, op := range ops {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := op(t.Context())
+				if !errors.Is(err, ErrUnavailable) {
+					results <- fmt.Errorf("%s: got %w, want ErrUnavailable", name, err)
+				}
+			}()
+		}
+		wg.Wait()
+		close(results)
+		for err := range results {
+			t.Error(err)
+		}
+		// Each call carries a 5-second deadline; running concurrently they
+		// must all be back well before two deadlines have passed.
+		if elapsed := time.Since(start); elapsed > 2*callTimeout {
+			t.Fatalf("calls against a stopped server took %s, deadline is %s", elapsed, callTimeout)
+		}
+	})
+}
