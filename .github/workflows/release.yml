@@ -66,9 +66,11 @@ jobs:
           KO_DOCKER_REPO: ghcr.io/${{ github.repository_owner }}/profgate
         run: |
           set -euo pipefail
+          # ko prints one <repo>:<tag>@<digest> line per built image on
+          # stdout; this builds one, and tail guards against a future prologue.
           ref="$(mise exec -- ko build --bare \
             --platform=linux/amd64,linux/arm64 \
-            --tags "$VERSION,latest" ./cmd/profgate)"
+            --tags "$VERSION,latest" ./cmd/profgate | tail -n1)"
           digest="${ref##*@}"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           {
