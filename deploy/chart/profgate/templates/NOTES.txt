@@ -23,13 +23,18 @@ Check these three things first.
 
      kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "profgate.fullname" . }} 8080:{{ .Values.service.port }}
 {{- if .Values.tls.enabled }}
-     curl --cacert ca.crt https://localhost:8080/v1/targets?namespace=<ns>&service=<svc>
+     curl --cacert ca.crt --resolve <name>:8080:127.0.0.1 \
+       https://<name>:8080/v1/targets?namespace=<ns>&service=<svc>
 
-   The API port serves HTTPS from the Secret {{ .Values.tls.existingSecret }} in namespace {{ .Release.Namespace }},
-   holding keys {{ .Values.tls.certKey }} and {{ .Values.tls.keyKey }}, mounted at {{ .Values.tls.mountPath }}. Create it
-   before this release, or its Pods wait at mount time. A renewal written to
-   the same Secret is picked up without a restart. The ops port stays plain
-   HTTP, which is what the readiness probe and the metrics scraper use.
+   The API port serves HTTPS. <name> has to be a name the certificate is issued
+   for, which is why the URL names it and --resolve sends it to the forwarded
+   port: an address the certificate has no SAN for fails verification.
+
+   The certificate comes from the Secret {{ .Values.tls.existingSecret }} in namespace {{ .Release.Namespace }}, holding keys
+   {{ .Values.tls.certKey }} and {{ .Values.tls.keyKey }}, mounted at {{ .Values.tls.mountPath }}. Create it before this release,
+   or its Pods wait at mount time. A renewal written to the same Secret is
+   picked up without a restart. The ops port stays plain HTTP, which is what
+   the readiness probe and the metrics scraper use.
 {{- else }}
      curl localhost:8080/v1/targets?namespace=<ns>&service=<svc>
 {{- end }}

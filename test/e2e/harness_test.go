@@ -87,6 +87,11 @@ const (
 	credsSecretKey = "nats.creds"
 	credsFile      = "/etc/profgate/nats/nats.creds" //nolint:gosec // a path, not a credential
 
+	// tlsSecret is the certificate Secret the tls-gateway overlay mounts, and
+	// tlsMountPath is where the pair appears in the container.
+	tlsSecret    = "profgate-tls" //nolint:gosec // the Secret's name, not its contents
+	tlsMountPath = "/etc/profgate/tls"
+
 	// The three stores of the bucket contract.
 	configBucket    = "PROFGATE_CONFIG"
 	jobsBucket      = "PROFGATE_JOBS"
@@ -149,6 +154,7 @@ func runners() map[string]func(t *testing.T, h *Harness) {
 		"pgo-disabled":                   scenarioPGODisabled,
 		"pgo-clusterrole":                scenarioPGOClusterRole,
 		"pgo-preflight-negative":         scenarioPGOPreflightNegative,
+		"tls-rotation":                   scenarioTLSRotation,
 	}
 }
 
@@ -723,6 +729,9 @@ type gatewayConfigOptions struct {
 	// RealmPGO writes the realm's three PGO flags as true.
 	// A realm without the block has every flag false.
 	RealmPGO bool
+	// TLSMount, when set, is where the certificate Secret is mounted, and
+	// turns the API listener into an HTTPS listener serving the pair under it.
+	TLSMount string
 }
 
 // gatewayConfig renders the configuration one gateway runs with:
@@ -738,7 +747,14 @@ func gatewayConfig(o gatewayConfigOptions) string {
 	b.WriteString(`server:
   listen: ":8080"
   opsListen: ":9090"
-discovery:
+`)
+	if o.TLSMount != "" {
+		fmt.Fprintf(&b, `  tls:
+    certFile: %s/tls.crt
+    keyFile: %s/tls.key
+`, o.TLSMount, o.TLSMount)
+	}
+	b.WriteString(`discovery:
   versionLabel: app.kubernetes.io/version
   pprof:
     port: 6060
@@ -1448,6 +1464,29 @@ func (h *Harness) applyCredsSecret(ctx context.Context, ns string, creds []byte)
 	if err != nil {
 		return fmt.Errorf("apply secret %s/%s: %w", ns, credsSecret, err)
 	}
+	return nil
+}
+
+// applyTLSSecret creates or replaces the API listener's certificate Secret in ns.
+// It is a kubernetes.io/tls Secret with the two standard keys, which is what
+// cert-manager writes and what the chart's volume expects.
+// The harness holds the cluster's administrative kubeconfig; the gateway reads
+// the pair through a mounted volume and needs no Secrets permission for it.
+func (h *Harness) applyTLSSecret(ctx context.Context, ns string, cert, key []byte) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: tlsSecret, Namespace: ns},
+		Type:       corev1.SecretTypeTLS,
+		Data:       map[string][]byte{corev1.TLSCertKey: cert, corev1.TLSPrivateKeyKey: key},
+	}
+	api := h.Client.CoreV1().Secrets(ns)
+	_, err := api.Create(ctx, secret, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = api.Update(ctx, secret, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		return fmt.Errorf("apply secret %s/%s: %w", ns, tlsSecret, err)
+	}
+
 	return nil
 }
 

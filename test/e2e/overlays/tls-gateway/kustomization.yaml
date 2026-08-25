@@ -1,0 +1,15 @@
+# A one-replica gateway whose API listener serves HTTPS, which the shared
+# gateways must not do: every other scenario reaches them over plain HTTP.
+# Everything is named profgate-tls and the ClusterRoleBinding reuses the shipped
+# ClusterRole, so the gateway's Kubernetes access is exactly the shipped one and
+# the certificate reaches it through a volume rather than through the API.
+# The scenario wraps this overlay in a kustomization that sets the namespace and
+# creates the Secret first; only one scenario may run it at a time, because the
+# ClusterRoleBinding is cluster-scoped.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - clusterrolebinding.yaml
+  - configmap.yaml
+  - deployment.yaml

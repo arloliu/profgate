@@ -236,6 +236,17 @@ func TestScenariosRegistry(t *testing.T) {
 		}
 	}
 
+	// The TLS scenario port-forwards to a gateway Pod and asks that gateway for
+	// a target list; it never reaches a test-app Pod and needs no NetworkPolicy
+	// enforcement, so every lane runs it, degraded ones included.
+	k := slices.IndexFunc(all, func(s Scenario) bool { return s.Name == "tls-rotation" })
+	if k < 0 {
+		t.Fatal("no scenario named \"tls-rotation\"")
+	}
+	if all[k].NeedsPodReach || all[k].NeedsNetworkPolicy {
+		t.Fatalf("%q declares a lane capability it does not use: %+v", all[k].Name, all[k])
+	}
+
 	// Scenarios hands out a copy: mutating it must not reach the registry.
 	all[i].Name = "mutated"
 	if Scenarios()[i].Name != "convergence on ready" {

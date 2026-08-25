@@ -36,6 +36,7 @@ var scenarios = [...]Scenario{
 	{Name: "pgo-disabled"},
 	{Name: "pgo-clusterrole"},
 	{Name: "pgo-preflight-negative"},
+	{Name: "tls-rotation"},
 }
 
 // Scenarios returns a copy of the complete, ordered scenario metadata.

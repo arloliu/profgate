@@ -58,11 +58,13 @@ podDisruptionBudget:
 configChecksumAnnotation: true
 
 # Pod-level security context.
-# fsGroup is what makes the NATS credentials Secret readable by the non-root
-# image: the kubelet only changes a volume's group ownership when it is set.
+# fsGroup is what makes the NATS credentials Secret and the TLS key readable by
+# the non-root image: both are mounted at 0440, and the kubelet only changes a
+# volume's group ownership when fsGroup is set.
 # 65532 is the uid and gid the distroless image runs as.
 # Set fsGroup to null to render no pod securityContext at all, which is what a
-# cluster that assigns its own ranges through an SCC needs.
+# cluster that assigns its own ranges through an SCC needs; that cluster has to
+# make the mounted Secrets readable by the uid it assigns some other way.
 podSecurityContext:
   fsGroup: 65532
 
