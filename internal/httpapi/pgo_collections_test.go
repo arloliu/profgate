@@ -209,17 +209,24 @@ func TestCollectionCreateResolvesTargetsBeforeWriting(t *testing.T) {
 	cases := []struct {
 		name    string
 		targets []k8s.Target
+		body    string
 		code    string
 	}{
-		{"two versions", []k8s.Target{namedTarget("a", "1.0"), namedTarget("b", "2.0")}, "version_conflict"},
-		{"no version labels", []k8s.Target{namedTarget("a", "")}, "version_missing"},
+		{"two versions", []k8s.Target{namedTarget("a", "1.0"), namedTarget("b", "2.0")}, `{}`, "version_conflict"},
+		{"no version labels", []k8s.Target{namedTarget("a", "")}, `{}`, "version_missing"},
+		{
+			"a pinned version nothing carries",
+			[]k8s.Target{namedTarget("a", "1.0")},
+			`{"target":{"version":"9.9"}}`,
+			"version_missing",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newPGOHarness(t, pgoOpts{}, tc.targets...)
 
-			got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil)
+			got := h.doPGO(t, http.MethodPost, collectionsPath, tc.body, nil)
 
 			h.expectPGOError(t, got, http.StatusConflict, tc.code, tc.code)
 			for _, prefix := range []string{jobKeyPrefix, activeKeyPrefix, slotKeyPrefix} {
@@ -231,6 +238,43 @@ func TestCollectionCreateResolvesTargetsBeforeWriting(t *testing.T) {
 			// live-Collection ceiling for a request that wrote nothing.
 			if held := h.pub.Reserved(); held != 0 {
 				t.Errorf("reservations = %d, want none taken", held)
+			}
+		})
+	}
+}
+
+// TestVersionMissingSaysWhichCaseItIs proves one refusal code, two texts:
+// no Pod carries a version label at all,
+// and none carries the version the policy pins.
+// The code is the contract, so only the pinned version is asserted in the text.
+func TestVersionMissingSaysWhichCaseItIs(t *testing.T) {
+	cases := []struct {
+		name    string
+		targets []k8s.Target
+		body    string
+		want    string
+	}{
+		{"no version labels", []k8s.Target{namedTarget("a", "")}, `{}`, "version label"},
+		{
+			"a pinned version nothing carries",
+			[]k8s.Target{namedTarget("a", "1.0")},
+			`{"target":{"version":"9.9"}}`,
+			"9.9",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPGOHarness(t, pgoOpts{}, tc.targets...)
+
+			got := h.doPGO(t, http.MethodPost, collectionsPath, tc.body, nil)
+
+			code, message := errorBodyOf(t, got)
+			if code != "version_missing" {
+				t.Fatalf("code = %q, want version_missing", code)
+			}
+			if !strings.Contains(message, tc.want) {
+				t.Errorf("message = %q, want it to mention %q", message, tc.want)
 			}
 		})
 	}

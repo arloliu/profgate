@@ -159,7 +159,7 @@ func (s *server) serveCollectionCreate(
 		q.fail(w, &requestError{
 			status:  http.StatusConflict,
 			code:    reason,
-			message: versionMessage(reason, rt.namespace, rt.service),
+			message: versionMessage(reason, rt.namespace, rt.service, snapshot.Target.Version),
 		})
 
 		return
@@ -207,12 +207,23 @@ func (s *server) serveCollectionCreate(
 
 // versionMessage is the envelope text for an advisory version refusal;
 // it names the Service and never a Pod's address.
-func versionMessage(reason, namespace, service string) string {
+// One missing-version refusal covers two situations,
+// so the text says which one the caller is in:
+// no Pod carries a version label at all,
+// or none carries the version the effective policy pins.
+// A conflict never carries a pin,
+// since the pin filter leaves at most one version to disagree over.
+func versionMessage(reason, namespace, service, pin string) string {
+	where := " of service " + service + " in namespace " + namespace
 	if reason == pgo.ReasonVersionMissing {
-		return "no pod of service " + service + " in namespace " + namespace + " carries a version label"
+		if pin != "" {
+			return "no pod" + where + " carries version " + pin
+		}
+
+		return "no pod" + where + " carries a version label"
 	}
 
-	return "the pods of service " + service + " in namespace " + namespace + " carry more than one version"
+	return "the pods" + where + " carry more than one version"
 }
 
 // serveCollectionRead answers the Collection record as the bucket holds it.
