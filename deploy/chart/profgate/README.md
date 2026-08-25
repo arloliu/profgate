@@ -150,7 +150,7 @@ and the chart offers no way to widen them.
 The gateway's configuration file is assembled from two places.
 
 Structured values cover the keys the chart itself depends on:
-`server.logLevel`, `auth.anonymousRealm`, `realms`,
+`server.logLevel`, `server.tls`, `auth.anonymousRealm`, `realms`,
 `nats.url` and `nats.credsFile`, and `pgo.enabled`, `pgo.configAPI`, and `pgo.limits`.
 The chart reads `pgo.limits` for the memory arithmetic and `nats` for the volume it mounts,
 so these have to be values rather than opaque text.
@@ -218,6 +218,66 @@ Raising the grace period to that number is a tradeoff rather than a requirement:
 a Collection the kubelet kills mid-merge loses no work,
 its lease expires and another replica reclaims it.
 
+## HTTPS on the API port
+
+`tls.enabled` makes the API port serve HTTPS.
+The port and its name do not change, only the scheme:
+the Service, the NetworkPolicy, and the container port stay as they are.
+The ops port stays plain HTTP either way,
+because the readiness probe and the metrics scraper reach it by Pod address,
+where a certificate could never be verified.
+Off is the shipped default, and means TLS terminating at an Ingress or a mesh.
+
+The chart mounts the `kubernetes.io/tls` Secret named by `tls.existingSecret`,
+read-only at `tls.mountPath` with mode 0440,
+and renders `server.tls.certFile` and `server.tls.keyFile` to point inside it.
+It never creates the Secret.
+Unlike the NATS volume the certificate volume is not optional:
+`tls.enabled` asserts that the certificate exists,
+so a missing Secret holds the Pod at mount time with an event naming it,
+rather than starting a Pod that exits over a file it cannot open.
+
+```yaml
+tls:
+  enabled: true
+  existingSecret: profgate-tls
+  minVersion: "1.2"
+```
+
+**Renewals need no rollout.**
+The gateway re-reads both files while it runs and swaps the certificate it serves when their contents change,
+so a certificate renewed into the same Secret is served without restarting a Pod.
+The pod template deliberately carries no `checksum/tls-secret` beside `checksum/config`:
+hashing the Secret would roll the Deployment on every renewal and defeat that.
+`profgate_tls_reloads_total` and `profgate_tls_certificate_expiry_seconds` are on the ops port,
+and are how a rotation that stopped working becomes visible before the certificate expires.
+
+**With cert-manager**, point a `Certificate` at the same Secret and change nothing else:
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: profgate
+  namespace: profgate
+spec:
+  secretName: profgate-tls
+  issuerRef:
+    name: my-issuer
+    kind: ClusterIssuer
+  dnsNames:
+    - profgate.example.com
+```
+
+cert-manager writes `tls.crt` and `tls.key`, which are the keys `tls.certKey` and `tls.keyKey` name,
+and renews in place.
+The chart renders neither the `Certificate` nor an issuer annotation,
+the same posture it takes toward the NATS account and its Secret.
+
+Certificate contents are the only part of the configuration that changes without a restart.
+Both paths and `tls.minVersion` are read once at startup,
+so changing them rolls the Pods through `checksum/config`, as any other configuration change does.
+
 ## NATS credentials
 
 The chart never creates credentials, the NATS account, or the JetStream stores.
@@ -261,6 +321,7 @@ that provision the buckets, the account, and the Secret.
 | `server.drainDelay` | `5s` | The wait between `/readyz` turning 503 and the API listener closing. |
 | `auth.anonymousRealm` | `developer` | The realm every request gets while authentication is disabled. |
 | `realms` | one wide-open realm | What each principal may reach. |
+| `tls.enabled`, `.existingSecret`, `.certKey`, `.keyKey`, `.mountPath`, `.minVersion` | `false`, `profgate-tls`, `tls.crt`, `tls.key`, `/etc/profgate/tls`, `1.2` | HTTPS on the API port, from a Secret the operator creates. |
 | `nats.url`, `.credsFile`, `.existingSecret`, `.secretKey`, `.mountPath` | empty, `/etc/profgate/nats/nats.creds`, `profgate-nats-creds`, `nats.creds`, `/etc/profgate/nats` | NATS, used only with `pgo.enabled`. |
 | `pgo.enabled`, `.configAPI`, `.limits` | `false`, `enabled`, shipped ceilings | PGO collection and the ceilings the memory limit is derived from. |
 | `config` | `{}` | Raw configuration merged over everything above. |

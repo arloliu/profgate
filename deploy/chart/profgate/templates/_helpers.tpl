@@ -108,6 +108,12 @@ server:
   opsListen: ":9090"
   logLevel: {{ .Values.server.logLevel | quote }}
   drainDelay: {{ .Values.server.drainDelay | quote }}
+{{- if .Values.tls.enabled }}
+  tls:
+    certFile: {{ printf "%s/%s" .Values.tls.mountPath .Values.tls.certKey | quote }}
+    keyFile: {{ printf "%s/%s" .Values.tls.mountPath .Values.tls.keyKey | quote }}
+    minVersion: {{ .Values.tls.minVersion | quote }}
+{{- end }}
 auth:
   mode: disabled
   anonymousRealm: {{ .Values.auth.anonymousRealm | quote }}
