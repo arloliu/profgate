@@ -1,0 +1,48 @@
+auth:
+  anonymousRealm: developer
+nats:
+  url: nats://nats.profgate.svc:4222
+  credsFile: testdata/nats.creds
+  connectTimeout: 5s
+pgo:
+  enabled: true
+  configAPI: enabled
+  leaseTTL: 60s
+  maxAttempts: 3
+  jobRetention: 168h
+  limits:
+    maxDuration: 60s
+    maxRounds: 5
+    maxParallel: 4
+    minEvery: 15m
+    maxEvery: 24h
+    maxRetention: 24h
+    maxSampleBytes: 33554432
+    maxMergedBytes: 67108864
+    maxTargetsPerRound: 32
+    maxActiveCollections: 2
+    onDemandPerMinute: 10
+    maxLiveCollections: 64
+  defaults:
+    schedule:
+      every: 6h
+      jitter: 10m
+    sampling:
+      duration: 30s
+      rounds: 2
+      roundInterval: 30s
+      replicas: all
+      maxParallel: 4
+    target:
+      versionPolicy: strict
+    artifact:
+      retention: 2h
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
+    pgo:
+      read: true
+      collect: true
+      configure: true

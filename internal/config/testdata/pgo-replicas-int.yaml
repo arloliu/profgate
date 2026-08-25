@@ -1,0 +1,14 @@
+auth:
+  anonymousRealm: developer
+nats:
+  url: nats://nats.profgate.svc:4222
+pgo:
+  enabled: true
+  defaults:
+    sampling:
+      replicas: 3
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

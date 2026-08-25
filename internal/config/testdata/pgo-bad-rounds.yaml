@@ -1,0 +1,16 @@
+auth:
+  anonymousRealm: developer
+nats:
+  url: nats://nats.profgate.svc:4222
+pgo:
+  enabled: true
+  limits:
+    maxRounds: 5
+  defaults:
+    sampling:
+      rounds: 6
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

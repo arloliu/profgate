@@ -1,0 +1,9 @@
+auth:
+  anonymousRealm: developer
+pgo:
+  enabled: true
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

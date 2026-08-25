@@ -186,3 +186,217 @@ func TestProfiles(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadPGO(t *testing.T) {
+	t.Run("full example", func(t *testing.T) {
+		cfg := loadOK(t, fixture("pgo-full.yaml"))
+		wantNATS := config.NATSConfig{
+			URL:            "nats://nats.profgate.svc:4222",
+			CredsFile:      fixture("nats.creds"),
+			ConnectTimeout: 5 * time.Second,
+		}
+		if cfg.NATS != wantNATS {
+			t.Fatalf("NATS = %+v, want %+v", cfg.NATS, wantNATS)
+		}
+		want := config.PGOConfig{
+			Enabled:      true,
+			ConfigAPI:    "enabled",
+			LeaseTTL:     60 * time.Second,
+			MaxAttempts:  3,
+			JobRetention: 168 * time.Hour,
+			Limits: config.PGOLimits{
+				MaxDuration:          60 * time.Second,
+				MaxRounds:            5,
+				MaxParallel:          4,
+				MinEvery:             15 * time.Minute,
+				MaxEvery:             24 * time.Hour,
+				MaxRetention:         24 * time.Hour,
+				MaxSampleBytes:       33554432,
+				MaxMergedBytes:       67108864,
+				MaxTargetsPerRound:   32,
+				MaxActiveCollections: 2,
+				OnDemandPerMinute:    10,
+				MaxLiveCollections:   64,
+			},
+			Defaults: config.PGODefaults{
+				Schedule: config.PGOScheduleDefaults{Every: 6 * time.Hour, Jitter: 10 * time.Minute},
+				Sampling: config.PGOSamplingDefaults{
+					Duration:      30 * time.Second,
+					Rounds:        2,
+					RoundInterval: 30 * time.Second,
+					Replicas:      "all",
+					MaxParallel:   4,
+				},
+				Target:   config.PGOTargetDefaults{VersionPolicy: "strict"},
+				Artifact: config.PGOArtifactDefaults{Retention: 2 * time.Hour},
+			},
+		}
+		if cfg.PGO != want {
+			t.Fatalf("PGO = %+v, want %+v", cfg.PGO, want)
+		}
+		realm := cfg.Realms["developer"]
+		if realm.PGO != (config.RealmPGO{Read: true, Collect: true, Configure: true}) {
+			t.Fatalf("realm pgo = %+v, want every flag true", realm.PGO)
+		}
+	})
+
+	t.Run("realm without pgo", func(t *testing.T) {
+		cfg := loadOK(t, fixture("good.yaml"))
+		realm := cfg.Realms["developer"]
+		if realm.PGO != (config.RealmPGO{}) {
+			t.Fatalf("realm pgo = %+v, want every flag false", realm.PGO)
+		}
+	})
+
+	t.Run("env overrides", func(t *testing.T) {
+		t.Setenv("PROFGATE_NATS_URL", "tls://one.example:4222,nats://two.example:4222")
+		t.Setenv("PROFGATE_NATS_CREDS_FILE", "testdata/nats.creds")
+		t.Setenv("PROFGATE_NATS_CONNECT_TIMEOUT", "9s")
+		t.Setenv("PROFGATE_PGO_ENABLED", "true")
+		t.Setenv("PROFGATE_PGO_CONFIG_API", "disabled")
+		t.Setenv("PROFGATE_PGO_LEASE_TTL", "90s")
+		t.Setenv("PROFGATE_PGO_MAX_ATTEMPTS", "7")
+		t.Setenv("PROFGATE_PGO_JOB_RETENTION", "200h")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_DURATION", "45s")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_ROUNDS", "4")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_PARALLEL", "5")
+		t.Setenv("PROFGATE_PGO_LIMIT_MIN_EVERY", "20m")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_EVERY", "12h")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_RETENTION", "10h")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_SAMPLE_BYTES", "2097152")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES", "4194304")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_TARGETS_PER_ROUND", "16")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS", "3")
+		t.Setenv("PROFGATE_PGO_LIMIT_ON_DEMAND_PER_MINUTE", "20")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_LIVE_COLLECTIONS", "128")
+		cfg := loadOK(t, fixture("good.yaml"))
+		wantNATS := config.NATSConfig{
+			URL:            "tls://one.example:4222,nats://two.example:4222",
+			CredsFile:      fixture("nats.creds"),
+			ConnectTimeout: 9 * time.Second,
+		}
+		if cfg.NATS != wantNATS {
+			t.Fatalf("NATS = %+v, want %+v", cfg.NATS, wantNATS)
+		}
+		want := config.PGOConfig{
+			Enabled:      true,
+			ConfigAPI:    "disabled",
+			LeaseTTL:     90 * time.Second,
+			MaxAttempts:  7,
+			JobRetention: 200 * time.Hour,
+			Limits: config.PGOLimits{
+				MaxDuration:          45 * time.Second,
+				MaxRounds:            4,
+				MaxParallel:          5,
+				MinEvery:             20 * time.Minute,
+				MaxEvery:             12 * time.Hour,
+				MaxRetention:         10 * time.Hour,
+				MaxSampleBytes:       2097152,
+				MaxMergedBytes:       4194304,
+				MaxTargetsPerRound:   16,
+				MaxActiveCollections: 3,
+				OnDemandPerMinute:    20,
+				MaxLiveCollections:   128,
+			},
+			Defaults: cfg.PGO.Defaults,
+		}
+		if cfg.PGO != want {
+			t.Fatalf("PGO = %+v, want %+v", cfg.PGO, want)
+		}
+	})
+
+	t.Run("url required when enabled", func(t *testing.T) {
+		loadErr(t, fixture("pgo-no-url.yaml"), "nats.url")
+	})
+	t.Run("url optional when disabled", func(t *testing.T) {
+		cfg := loadOK(t, fixture("pgo-disabled.yaml"))
+		if cfg.PGO.Enabled {
+			t.Fatal("pgo.enabled = true, want false")
+		}
+	})
+	t.Run("url scheme", func(t *testing.T) {
+		t.Setenv("PROFGATE_NATS_URL", "http://nats.example:4222")
+		loadErr(t, fixture("pgo-full.yaml"), "nats.url")
+	})
+	t.Run("creds file missing", func(t *testing.T) {
+		t.Setenv("PROFGATE_NATS_CREDS_FILE", "testdata/no-such.creds")
+		loadErr(t, fixture("pgo-full.yaml"), "nats.credsFile")
+	})
+
+	t.Run("admission inequality violated", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_PARALLEL", "8")
+		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.maxParallel")
+	})
+	t.Run("admission inequality satisfied", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_PARALLEL", "6")
+		loadOK(t, fixture("pgo-full.yaml"))
+	})
+	t.Run("record size product", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_ROUNDS", "20")
+		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.maxRounds")
+	})
+	t.Run("on-demand rate too low", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_ON_DEMAND_PER_MINUTE", "0")
+		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.onDemandPerMinute")
+	})
+	t.Run("on-demand rate too high", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_ON_DEMAND_PER_MINUTE", "601")
+		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.onDemandPerMinute")
+	})
+	t.Run("job retention too short", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_JOB_RETENTION", "24h")
+		loadErr(t, fixture("pgo-full.yaml"), "pgo.jobRetention")
+	})
+	t.Run("max every below min every", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_EVERY", "10m")
+		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.maxEvery")
+	})
+	t.Run("max duration above cpu seconds", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_DURATION", "120s")
+		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.maxDuration")
+	})
+	t.Run("sample bytes above merged bytes", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES", "2097152")
+		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.maxMergedBytes")
+	})
+	t.Run("defaults above limits", func(t *testing.T) {
+		loadErr(t, fixture("pgo-bad-rounds.yaml"), "pgo.defaults.sampling.rounds")
+	})
+	t.Run("jitter above half of every", func(t *testing.T) {
+		loadErr(t, fixture("pgo-bad-jitter.yaml"), "pgo.defaults.schedule.jitter")
+	})
+
+	t.Run("replicas all", func(t *testing.T) {
+		cfg := loadOK(t, fixture("pgo-full.yaml"))
+		if cfg.PGO.Defaults.Sampling.Replicas != "all" {
+			t.Fatalf("replicas = %q, want all", cfg.PGO.Defaults.Sampling.Replicas)
+		}
+	})
+	t.Run("replicas integer", func(t *testing.T) {
+		cfg := loadOK(t, fixture("pgo-replicas-int.yaml"))
+		if cfg.PGO.Defaults.Sampling.Replicas != "3" {
+			t.Fatalf("replicas = %q, want 3", cfg.PGO.Defaults.Sampling.Replicas)
+		}
+	})
+	t.Run("replicas not a number", func(t *testing.T) {
+		loadErr(t, fixture("pgo-bad-replicas.yaml"), "pgo.defaults.sampling.replicas")
+	})
+	t.Run("replicas above ceiling", func(t *testing.T) {
+		loadErr(t, fixture("pgo-replicas-over.yaml"), "pgo.defaults.sampling.replicas")
+	})
+}
+
+func TestPGOSizing(t *testing.T) {
+	cfg := loadOK(t, fixture("pgo-full.yaml"))
+	// The spec's own arithmetic for the shipped ceilings:
+	// 2 x (4 x 8 x 32 MiB + 2 x 8 x 64 MiB).
+	if got, want := cfg.PGOMemoryBytes(), int64(4*1024*1024*1024); got != want {
+		t.Fatalf("PGOMemoryBytes() = %d, want %d", got, want)
+	}
+	// The deadline formula at the slowest policy the shipped ceilings admit,
+	// which samples one Pod at a time:
+	// 5 x 32 x (60s + 30s + 660s) + 4 x 600s + 60s.
+	if got, want := cfg.RequiredPGOGracePeriod(), 122460*time.Second; got != want {
+		t.Fatalf("RequiredPGOGracePeriod() = %v, want %v", got, want)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,8 @@ type Config struct {
 	Discovery DiscoveryConfig  `yaml:"discovery"`
 	Limits    LimitsConfig     `yaml:"limits"`
 	Auth      AuthConfig       `yaml:"auth"`
+	NATS      NATSConfig       `yaml:"nats"`
+	PGO       PGOConfig        `yaml:"pgo"`
 	Realms    map[string]Realm `yaml:"realms" validate:"required,min=1,dive"`
 }
 
@@ -65,6 +68,87 @@ type Realm struct {
 	Namespaces []string `yaml:"namespaces" validate:"required,min=1"`
 	Services   []string `yaml:"services"   validate:"required,min=1"`
 	Profiles   []string `yaml:"profiles"   validate:"required,min=1"`
+	PGO        RealmPGO `yaml:"pgo"`
+}
+
+// RealmPGO says what the realm may do with PGO Collections.
+// A realm without a pgo block has every flag false.
+type RealmPGO struct {
+	Read      bool `yaml:"read"`
+	Collect   bool `yaml:"collect"`
+	Configure bool `yaml:"configure"`
+}
+
+// NATSConfig points the gateway at the NATS cluster holding the PGO stores.
+// Url is a comma-separated list of nats:// or tls:// URLs.
+type NATSConfig struct {
+	URL            string        `yaml:"url"            env:"NATS_URL"`
+	CredsFile      string        `yaml:"credsFile"      env:"NATS_CREDS_FILE"`
+	ConnectTimeout time.Duration `yaml:"connectTimeout" env:"NATS_CONNECT_TIMEOUT" default:"5s" validate:"min=1s,max=60s"`
+}
+
+// PGOConfig turns PGO collection on and holds its ceilings and default policy.
+type PGOConfig struct {
+	Enabled      bool          `yaml:"enabled"      env:"PGO_ENABLED"       default:"false"`
+	ConfigAPI    string        `yaml:"configAPI"    env:"PGO_CONFIG_API"    default:"enabled" validate:"oneof=enabled disabled"`
+	LeaseTTL     time.Duration `yaml:"leaseTTL"     env:"PGO_LEASE_TTL"     default:"60s"     validate:"min=30s,max=10m"`
+	MaxAttempts  int           `yaml:"maxAttempts"  env:"PGO_MAX_ATTEMPTS"  default:"3"       validate:"min=1,max=10"`
+	JobRetention time.Duration `yaml:"jobRetention" env:"PGO_JOB_RETENTION" default:"168h"    validate:"max=2160h"`
+	Limits       PGOLimits     `yaml:"limits"`
+	Defaults     PGODefaults   `yaml:"defaults"`
+}
+
+// PGOLimits are the ceilings every effective policy is measured against.
+// They are read at startup because the container memory figure and the
+// admission arithmetic depend on them.
+type PGOLimits struct {
+	MaxDuration          time.Duration `yaml:"maxDuration"          env:"PGO_LIMIT_MAX_DURATION"           default:"60s"      validate:"min=1s"`
+	MaxRounds            int           `yaml:"maxRounds"            env:"PGO_LIMIT_MAX_ROUNDS"             default:"5"        validate:"min=1,max=20"`
+	MaxParallel          int           `yaml:"maxParallel"          env:"PGO_LIMIT_MAX_PARALLEL"           default:"4"        validate:"min=1,max=64"`
+	MinEvery             time.Duration `yaml:"minEvery"             env:"PGO_LIMIT_MIN_EVERY"              default:"15m"      validate:"min=1m"`
+	MaxEvery             time.Duration `yaml:"maxEvery"             env:"PGO_LIMIT_MAX_EVERY"              default:"24h"      validate:"max=24h"`
+	MaxRetention         time.Duration `yaml:"maxRetention"         env:"PGO_LIMIT_MAX_RETENTION"          default:"24h"      validate:"min=1m,max=720h"`
+	MaxSampleBytes       int64         `yaml:"maxSampleBytes"       env:"PGO_LIMIT_MAX_SAMPLE_BYTES"       default:"33554432" validate:"min=1048576,max=268435456"`
+	MaxMergedBytes       int64         `yaml:"maxMergedBytes"       env:"PGO_LIMIT_MAX_MERGED_BYTES"       default:"67108864" validate:"max=1073741824"`
+	MaxTargetsPerRound   int           `yaml:"maxTargetsPerRound"   env:"PGO_LIMIT_MAX_TARGETS_PER_ROUND"  default:"32"       validate:"min=1,max=256"`
+	MaxActiveCollections int           `yaml:"maxActiveCollections" env:"PGO_LIMIT_MAX_ACTIVE_COLLECTIONS" default:"2"        validate:"min=1"`
+	OnDemandPerMinute    int           `yaml:"onDemandPerMinute"    env:"PGO_LIMIT_ON_DEMAND_PER_MINUTE"   default:"10"       validate:"min=1,max=600"`
+	MaxLiveCollections   int           `yaml:"maxLiveCollections"   env:"PGO_LIMIT_MAX_LIVE_COLLECTIONS"   default:"64"       validate:"min=1,max=1024"`
+}
+
+// PGODefaults is the policy a Service gets before any override.
+// It carries no environment overrides: it is policy, like realms.
+type PGODefaults struct {
+	Schedule PGOScheduleDefaults `yaml:"schedule"`
+	Sampling PGOSamplingDefaults `yaml:"sampling"`
+	Target   PGOTargetDefaults   `yaml:"target"`
+	Artifact PGOArtifactDefaults `yaml:"artifact"`
+}
+
+// PGOScheduleDefaults is how often a Service is collected by default.
+type PGOScheduleDefaults struct {
+	Every  time.Duration `yaml:"every"  default:"6h"`
+	Jitter time.Duration `yaml:"jitter" default:"10m"`
+}
+
+// PGOSamplingDefaults is how a Collection samples by default.
+// Replicas is what the operator wrote: "all" or a decimal count.
+type PGOSamplingDefaults struct {
+	Duration      time.Duration `yaml:"duration"      default:"30s"`
+	Rounds        int           `yaml:"rounds"        default:"2"`
+	RoundInterval time.Duration `yaml:"roundInterval" default:"30s" validate:"min=0,max=10m"`
+	Replicas      string        `yaml:"replicas"      default:"all"`
+	MaxParallel   int           `yaml:"maxParallel"   default:"4"`
+}
+
+// PGOTargetDefaults is how a Collection picks the binary version it profiles.
+type PGOTargetDefaults struct {
+	VersionPolicy string `yaml:"versionPolicy" default:"strict" validate:"oneof=strict"`
+}
+
+// PGOArtifactDefaults is how long a finished profile is kept by default.
+type PGOArtifactDefaults struct {
+	Retention time.Duration `yaml:"retention" default:"2h"`
 }
 
 // defaultPprofPort is used when neither port nor portName is configured.
@@ -72,6 +156,14 @@ const defaultPprofPort = 6060
 
 // gracePeriodSlack is added to the longest profile duration to form the grace period.
 const gracePeriodSlack = 60 * time.Second
+
+// maxSamplesPerCollection bounds rounds times targets so a Collection record
+// stays well under the size a single NATS message can carry.
+const maxSamplesPerCollection = 256
+
+// replicasAll is the sampling default that means every eligible Pod,
+// up to the maxTargetsPerRound ceiling.
+const replicasAll = "all"
 
 // profileNames holds the eight profile names in the spec's order.
 var profileNames = [...]string{"cpu", "trace", "heap", "allocs", "goroutine", "mutex", "block", "threadcreate"}
@@ -90,6 +182,58 @@ func Profiles() []string {
 // the longer of the CPU and trace limits plus 60 seconds.
 func (c *Config) RequiredGracePeriod() time.Duration {
 	return time.Duration(max(c.Limits.CPUSeconds, c.Limits.TraceSeconds))*time.Second + gracePeriodSlack
+}
+
+// pgoDecodeFactor estimates how much heap a decoded profile occupies
+// against its encoded length: two buffers of input plus about six times that
+// in decoded structures.
+const pgoDecodeFactor = 8
+
+// pgoMaxRoundInterval is the largest roundInterval any policy may ask for.
+const pgoMaxRoundInterval = 10 * time.Minute
+
+// pgoSampleOverhead is the per-sample allowance the deadline formula adds
+// on top of the profile duration and the wait for an admission slot.
+const pgoSampleOverhead = 30 * time.Second
+
+// pgoDeadlineSlack is the fixed tail of the deadline formula.
+const pgoDeadlineSlack = 60 * time.Second
+
+// PGOMemoryBytes is the container memory a Collection worker can occupy at the
+// configured ceilings, over the gateway's own footprint:
+// per active Collection, every in-flight sample as compressed bytes,
+// decompressed bytes, and a decoded profile;
+// the running merged profile; and the serialized copy written to the store.
+// It is a sizing rule, not a proof: the decoded sizes are an estimate.
+func (c *Config) PGOMemoryBytes() int64 {
+	l := c.PGO.Limits
+	perCollection := int64(l.MaxParallel)*pgoDecodeFactor*l.MaxSampleBytes + 2*pgoDecodeFactor*l.MaxMergedBytes
+
+	return int64(l.MaxActiveCollections) * perCollection
+}
+
+// RequiredPGOGracePeriod is the Deployment grace period a Collection demands,
+// because drain waits for in-flight merges that cannot be interrupted.
+// It is the deadline formula at the longest value every input can take:
+// maxRounds rounds, maxDuration per sample, roundInterval at its own
+// 10-minute bound, which has no pgo.limits entry, and maxTargetsPerRound
+// batches of one target each.
+// The batch count is the target ceiling rather than
+// maxTargetsPerRound / maxParallel because pgo.limits.maxParallel only caps a
+// policy from above: a policy may sample one Pod at a time, which is the
+// slowest a Collection can legally run.
+// A grace period below this number loses no work — a Collection the kubelet
+// kills mid-merge stops renewing its lease and another replica reclaims it —
+// so this is the period that lets every admissible Collection finish in place,
+// not a floor below which the gateway is unsafe.
+func (c *Config) RequiredPGOGracePeriod() time.Duration {
+	l := c.PGO.Limits
+	batches := time.Duration(l.MaxTargetsPerRound)
+	rounds := time.Duration(l.MaxRounds)
+	admissionWait := l.MaxDuration + pgoMaxRoundInterval
+
+	return rounds*batches*(l.MaxDuration+pgoSampleOverhead+admissionWait) +
+		(rounds-1)*pgoMaxRoundInterval + pgoDeadlineSlack
 }
 
 // Load reads the YAML file at path, rejects unknown keys at any nesting level,
@@ -186,6 +330,109 @@ func validate(cfg *Config) error {
 				}
 			}
 		}
+	}
+	return validatePGO(cfg)
+}
+
+// validatePGO runs the rules that relate a PGO key to another key.
+// They apply only when pgo.enabled, because a gateway that never collects has
+// no PGO configuration to satisfy them with:
+// at limits.maxConcurrentProfiles 1 no maxParallel and maxActiveCollections
+// pair exists that keeps their product below it, and both are at least 1.
+// The per-key ranges are struct tags and hold either way,
+// since the shipped defaults satisfy every one of them.
+func validatePGO(cfg *Config) error {
+	if !cfg.PGO.Enabled {
+		return nil
+	}
+
+	if err := validateNATS(&cfg.NATS); err != nil {
+		return err
+	}
+
+	limits := cfg.PGO.Limits
+	if limits.MaxParallel*limits.MaxActiveCollections >= cfg.Limits.MaxConcurrentProfiles {
+		return fmt.Errorf("pgo.limits.maxParallel %d times pgo.limits.maxActiveCollections %d must stay below limits.maxConcurrentProfiles %d",
+			limits.MaxParallel, limits.MaxActiveCollections, cfg.Limits.MaxConcurrentProfiles)
+	}
+	if limits.MaxRounds*limits.MaxTargetsPerRound > maxSamplesPerCollection {
+		return fmt.Errorf("pgo.limits.maxRounds %d times pgo.limits.maxTargetsPerRound %d must be at most %d",
+			limits.MaxRounds, limits.MaxTargetsPerRound, maxSamplesPerCollection)
+	}
+	if cfg.PGO.JobRetention < limits.MaxRetention+time.Hour {
+		return fmt.Errorf("pgo.jobRetention %v must be at least pgo.limits.maxRetention %v plus 1h",
+			cfg.PGO.JobRetention, limits.MaxRetention)
+	}
+	if limits.MinEvery > limits.MaxEvery {
+		return fmt.Errorf("pgo.limits.maxEvery %v must be at least pgo.limits.minEvery %v", limits.MaxEvery, limits.MinEvery)
+	}
+	if cpu := time.Duration(cfg.Limits.CPUSeconds) * time.Second; limits.MaxDuration > cpu {
+		return fmt.Errorf("pgo.limits.maxDuration %v must be at most limits.cpuSeconds %v", limits.MaxDuration, cpu)
+	}
+	if limits.MaxSampleBytes > limits.MaxMergedBytes {
+		return fmt.Errorf("pgo.limits.maxMergedBytes %d must be at least pgo.limits.maxSampleBytes %d",
+			limits.MaxMergedBytes, limits.MaxSampleBytes)
+	}
+	return validatePGODefaults(&cfg.PGO.Defaults, limits)
+}
+
+// validateNATS checks the connection settings the PGO stores are reached through.
+func validateNATS(nats *NATSConfig) error {
+	if nats.URL == "" {
+		return errors.New("nats.url is required when pgo.enabled is true")
+	}
+	for _, entry := range strings.Split(nats.URL, ",") {
+		entry = strings.TrimSpace(entry)
+		if !strings.HasPrefix(entry, "nats://") && !strings.HasPrefix(entry, "tls://") {
+			return fmt.Errorf("nats.url %q: every URL must begin with nats:// or tls://", entry)
+		}
+	}
+	if nats.CredsFile != "" {
+		f, err := os.Open(nats.CredsFile) //nolint:gosec // the operator names the file; reading it is the purpose
+		if err != nil {
+			return fmt.Errorf("nats.credsFile: %w", err)
+		}
+		_ = f.Close()
+	}
+	return nil
+}
+
+// validatePGODefaults checks the shipped policy against the ceilings it must obey.
+func validatePGODefaults(defaults *PGODefaults, limits PGOLimits) error {
+	if every := defaults.Schedule.Every; every < limits.MinEvery || every > limits.MaxEvery {
+		return fmt.Errorf("pgo.defaults.schedule.every %v must be between pgo.limits.minEvery %v and pgo.limits.maxEvery %v",
+			every, limits.MinEvery, limits.MaxEvery)
+	}
+	if jitter := defaults.Schedule.Jitter; jitter > defaults.Schedule.Every/2 {
+		return fmt.Errorf("pgo.defaults.schedule.jitter %v must be at most half of pgo.defaults.schedule.every %v",
+			jitter, defaults.Schedule.Every)
+	}
+	sampling := defaults.Sampling
+	if sampling.Duration > limits.MaxDuration {
+		return fmt.Errorf("pgo.defaults.sampling.duration %v must be at most pgo.limits.maxDuration %v",
+			sampling.Duration, limits.MaxDuration)
+	}
+	if sampling.Rounds > limits.MaxRounds {
+		return fmt.Errorf("pgo.defaults.sampling.rounds %d must be at most pgo.limits.maxRounds %d",
+			sampling.Rounds, limits.MaxRounds)
+	}
+	if sampling.MaxParallel > limits.MaxParallel {
+		return fmt.Errorf("pgo.defaults.sampling.maxParallel %d must be at most pgo.limits.maxParallel %d",
+			sampling.MaxParallel, limits.MaxParallel)
+	}
+	if sampling.Replicas != replicasAll {
+		count, err := strconv.Atoi(sampling.Replicas)
+		if err != nil {
+			return fmt.Errorf("pgo.defaults.sampling.replicas %q must be %q or a number", sampling.Replicas, replicasAll)
+		}
+		if count < 1 || count > limits.MaxTargetsPerRound {
+			return fmt.Errorf("pgo.defaults.sampling.replicas %d must be between 1 and pgo.limits.maxTargetsPerRound %d",
+				count, limits.MaxTargetsPerRound)
+		}
+	}
+	if defaults.Artifact.Retention > limits.MaxRetention {
+		return fmt.Errorf("pgo.defaults.artifact.retention %v must be at most pgo.limits.maxRetention %v",
+			defaults.Artifact.Retention, limits.MaxRetention)
 	}
 	return nil
 }
