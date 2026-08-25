@@ -1023,7 +1023,14 @@ GitHub Actions in this repository:
 
 - every push: `mise run check`, lint, unit tests;
 - pull requests: the `current` lane;
-- pushes to `main`: all three lanes, except documentation-only changes, which skip the lanes.
+- pushes to `main`: all three lanes, except documentation-only changes, which skip the lanes;
+- `v*` tags: the same unit gates and the `current` lane, then publication to GHCR.
+
+A tag publishes two artifacts, both gated on those runs passing.
+The image goes to `ghcr.io/arloliu/profgate` for `linux/amd64` and `linux/arm64`,
+tagged with the tag and with `latest`, and its version is stamped into the binary from the tag.
+The chart goes to `oci://ghcr.io/arloliu/charts` with the tag as its `appVersion`
+and the tag without its leading `v` as its chart version.
 
 There is no scheduled run.
 The GHCR mirror is public, so no pull credentials are needed;

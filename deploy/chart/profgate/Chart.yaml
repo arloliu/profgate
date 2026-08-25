@@ -5,7 +5,8 @@ type: application
 # The chart's own version. It moves when the templates change.
 version: 0.1.0
 # The application version, and the default for image.tag.
-# The published image is tagged latest until the project cuts releases;
+# A checkout tracks latest; releasing overrides this with the git tag,
+# so a released chart defaults to the image of that release.
 # image.digest pins a build regardless of what the tag points at.
 appVersion: "latest"
 kubeVersion: ">=1.23.0-0"

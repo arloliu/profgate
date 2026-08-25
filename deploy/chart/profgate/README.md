@@ -9,8 +9,15 @@ Both are shipped surfaces and neither is a copy of the other:
 the chart templates what an external operator has to change,
 the base is what a repository already using kustomize patches.
 
-The chart is not published to a registry yet.
-Install it from a checkout:
+Releases go to GHCR as an OCI artifact,
+with `image.tag` defaulting to the release the chart was cut from:
+
+```bash
+helm install profgate oci://ghcr.io/arloliu/charts/profgate --version X.Y.Z \
+  --namespace profgate --create-namespace
+```
+
+An unreleased chart installs from a checkout:
 
 ```bash
 helm install profgate ./deploy/chart/profgate --namespace profgate --create-namespace
