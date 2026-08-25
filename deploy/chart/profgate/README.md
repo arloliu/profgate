@@ -204,9 +204,14 @@ A new Pod therefore cannot become Ready while NATS is down and `pgo.enabled` is 
 The rollout stalls at `maxUnavailable: 0` instead of replacing a working replica with one that cannot collect,
 which is the safe failure and does mean a NATS outage blocks upgrades.
 
-`terminationGracePeriodSeconds` defaults to 120,
-which covers the drain of in-flight profile requests:
+`terminationGracePeriodSeconds` defaults to 125,
+which covers `server.drainDelay` and then the drain of in-flight profile requests:
 the longest of `limits.cpuSeconds` and `limits.traceSeconds`, plus 60 seconds of slack.
+
+`server.drainDelay` is the window between `/readyz` turning 503 and the API listener closing.
+The gateway waits it out in process because the image is distroless and has no shell for a `preStop` hook,
+and the `sleep` lifecycle action is newer than the Kubernetes baseline the gateway supports.
+The ops listener keeps answering `/readyz`, `/healthz`, and `/metrics` for the whole drain.
 A Collection can run far longer than that,
 and `profgate config validate` prints the period that lets every Collection the ceilings admit finish in place.
 Raising the grace period to that number is a tradeoff rather than a requirement:
@@ -246,13 +251,14 @@ that provision the buckets, the account, and the Secret.
 | `securityContext` | hardened | Container security context. |
 | `resources` | `{}` | Explicit resources, replacing the derived limit. |
 | `memoryLimitWithoutPGO` | `512Mi` | The memory limit while `pgo.enabled` is false. |
-| `terminationGracePeriodSeconds` | `120` | Drain time before SIGKILL. |
+| `terminationGracePeriodSeconds` | `125` | Drain time before SIGKILL. |
 | `readinessProbe` | 10s period | Probe timings. There is no liveness probe. |
 | `extraEnv` | `[]` | `PROFGATE_`-prefixed overrides and anything else. |
 | `podAnnotations`, `podLabels` | `{}` | Extra pod metadata. |
 | `nodeSelector`, `tolerations`, `affinity`, `topologySpreadConstraints` | empty | Scheduling. |
 | `networkPolicy.enabled`, `.apiFromNamespaces`, `.opsFromNamespaces` | `false`, `[ingress-nginx]`, `[monitoring]` | Ingress policy for the gateway Pods. |
 | `server.logLevel` | `info` | `debug`, `info`, `warn`, or `error`. |
+| `server.drainDelay` | `5s` | The wait between `/readyz` turning 503 and the API listener closing. |
 | `auth.anonymousRealm` | `developer` | The realm every request gets while authentication is disabled. |
 | `realms` | one wide-open realm | What each principal may reach. |
 | `nats.url`, `.credsFile`, `.existingSecret`, `.secretKey`, `.mountPath` | empty, `/etc/profgate/nats/nats.creds`, `profgate-nats-creds`, `nats.creds`, `/etc/profgate/nats` | NATS, used only with `pgo.enabled`. |

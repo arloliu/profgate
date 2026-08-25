@@ -32,11 +32,20 @@ type Config struct {
 	Realms    map[string]Realm `yaml:"realms" validate:"required,min=1,dive"`
 }
 
-// ServerConfig holds the two listen addresses and the log level.
+// ServerConfig holds the two listen addresses, the log level,
+// and how long the drain waits before it closes the API listener.
 type ServerConfig struct {
 	Listen    string `yaml:"listen"    env:"LISTEN"     default:":8080" validate:"required,hostname_port"`
 	OpsListen string `yaml:"opsListen" env:"OPS_LISTEN" default:":9090" validate:"required,hostname_port"`
 	LogLevel  string `yaml:"logLevel"  env:"LOG_LEVEL"  default:"info"  validate:"oneof=debug info warn error"`
+	// DrainDelay is the window between /readyz turning 503 and the API
+	// listener closing, so the EndpointSlice controllers and every kube-proxy
+	// have time to stop routing new requests to this replica.
+	// A preStop hook is where a deployment usually buys that window;
+	// the image is distroless and has no shell to run one,
+	// and the lifecycle "sleep" action is newer than the Kubernetes baseline.
+	// Zero is allowed, and turns the wait off for local runs and tests.
+	DrainDelay time.Duration `yaml:"drainDelay" env:"DRAIN_DELAY" default:"5s" validate:"min=0,max=60s"`
 }
 
 // DiscoveryConfig controls how Pods are matched and which port serves pprof.
@@ -199,9 +208,10 @@ func (s ServerConfig) SlogLevel() slog.Level {
 }
 
 // RequiredGracePeriod is the Deployment grace period the limits demand:
-// the longer of the CPU and trace limits plus 60 seconds.
+// server.drainDelay, then the longer of the CPU and trace limits plus 60 seconds.
 func (c *Config) RequiredGracePeriod() time.Duration {
-	return time.Duration(max(c.Limits.CPUSeconds, c.Limits.TraceSeconds))*time.Second + gracePeriodSlack
+	return c.Server.DrainDelay +
+		time.Duration(max(c.Limits.CPUSeconds, c.Limits.TraceSeconds))*time.Second + gracePeriodSlack
 }
 
 // The PGO figures that no pgo.limits key expresses.
@@ -238,7 +248,8 @@ func (c *Config) PGOMemoryBytes() int64 {
 
 // RequiredPGOGracePeriod is the Deployment grace period a Collection demands,
 // because drain waits for in-flight merges that cannot be interrupted.
-// It is the deadline formula at the longest value every input can take:
+// It is server.drainDelay, which runs before either wait begins,
+// plus the deadline formula at the longest value every input can take:
 // maxRounds rounds, maxDuration per sample, roundInterval at its own
 // 10-minute bound, which has no pgo.limits entry, and maxTargetsPerRound
 // batches of one target each.
@@ -256,7 +267,8 @@ func (c *Config) RequiredPGOGracePeriod() time.Duration {
 	rounds := time.Duration(l.MaxRounds)
 	admissionWait := l.MaxDuration + PGOMaxRoundInterval
 
-	return rounds*batches*(l.MaxDuration+PGOSampleOverhead+admissionWait) +
+	return c.Server.DrainDelay +
+		rounds*batches*(l.MaxDuration+PGOSampleOverhead+admissionWait) +
 		(rounds-1)*PGOMaxRoundInterval + PGODeadlineSlack
 }
 

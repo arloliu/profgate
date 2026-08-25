@@ -16,7 +16,10 @@ spec:
         app.kubernetes.io/name: profgate
     spec:
       serviceAccountName: profgate
-      terminationGracePeriodSeconds: 120
+      # server.drainDelay, the longest profile limits.cpuSeconds or
+      # limits.traceSeconds admits, and 60 seconds of slack.
+      # `profgate config validate` prints the figure for the ConfigMap.
+      terminationGracePeriodSeconds: 125
       securityContext:
         # The uid and gid the distroless image runs as. Without it the kubelet
         # leaves the credentials Secret owned by root:root and the gateway

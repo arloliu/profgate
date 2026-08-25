@@ -219,12 +219,13 @@ pgo:
 // writeConfig writes a valid configuration listening on the two addresses.
 // The realm always carries every PGO flag,
 // so a route that answers 501 or 503 answers it for the reason under test and not for the realm.
-func writeConfig(t *testing.T, listen, opsListen string, l limits, enablePGO bool) string {
+func writeConfig(t *testing.T, listen, opsListen string, l limits, o gatewayOpts) string {
 	t.Helper()
 
 	body := fmt.Sprintf(`server:
   listen: %q
   opsListen: %q
+  drainDelay: %s
 discovery:
   versionLabel: app.kubernetes.io/version
   pprof:
@@ -245,8 +246,8 @@ realms:
       read: true
       collect: true
       configure: true
-`, listen, opsListen, l.cpu, l.trace, l.maxConcurrent)
-	if enablePGO {
+`, listen, opsListen, o.drainDelay.String(), l.cpu, l.trace, l.maxConcurrent)
+	if o.enabled {
 		body += pgoBlock
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -281,26 +282,30 @@ type gateway struct {
 	exited  chan int
 }
 
-// pgoOpts turns PGO collection on for one gateway
-// and carries the seams the lifecycle rows drive it through: the NATS preflight and the Collection worker.
-type pgoOpts struct {
-	enabled   bool
-	preflight *preflightStub
-	worker    *stubWorker
+// gatewayOpts is what a subtest varies about the gateway it starts:
+// whether PGO collection is on, the seams the lifecycle rows drive it through
+// -- the NATS preflight and the Collection worker -- and the drain delay,
+// which every row but the one that proves it leaves at zero
+// so a subtest waits for the behavior it is about and not for the window.
+type gatewayOpts struct {
+	enabled    bool
+	preflight  *preflightStub
+	worker     *stubWorker
+	drainDelay time.Duration
 }
 
 // startGateway runs serve over cs with PGO off.
 func startGateway(t *testing.T, cs *fake.Clientset, l limits) *gateway {
 	t.Helper()
 
-	return startGatewayWith(t, cs, l, pgoOpts{})
+	return startGatewayWith(t, cs, l, gatewayOpts{})
 }
 
 // startGatewayWith runs serve over cs in a goroutine and returns once it is running.
 // The subtest stops it through gw.stop;
 // cleanup stops it anyway, releases the upstream, and releases the worker drain,
 // so a failed assertion reports itself instead of timing out.
-func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o pgoOpts) *gateway {
+func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o gatewayOpts) *gateway {
 	t.Helper()
 
 	gw := &gateway{
@@ -313,7 +318,7 @@ func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o pgoOpts) *ga
 		stop:    make(chan struct{}),
 		exited:  make(chan int, 1),
 	}
-	cfgPath := writeConfig(t, gw.apiAddr, gw.opsAddr, l, o.enabled)
+	cfgPath := writeConfig(t, gw.apiAddr, gw.opsAddr, l, o)
 	registry := prometheus.NewRegistry()
 	deps := serveDeps{
 		namespaceFile: namespaceFile(t),
@@ -634,6 +639,25 @@ func TestServe(t *testing.T) {
 		}
 	})
 
+	t.Run("drain delay holds the api listener open", func(t *testing.T) {
+		const delay = 3 * time.Second
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{drainDelay: delay})
+		gw.waitReady(t, waitTimeout)
+
+		gw.stopOnce()
+		gw.waitStatus(t, waitTimeout, gw.opsAddr, "/readyz", http.StatusServiceUnavailable)
+		// The endpoint-removal window: readiness is already 503, and a request
+		// the routing has not caught up with is still served rather than reset.
+		if code, _ := mustGet(t, gw.apiAddr, targetsPath); code != http.StatusOK {
+			t.Fatalf("targets during the drain delay = %d, want 200: the API listener closes after the delay, not with readiness", code)
+		}
+		waitFor(t, 2*delay, "the API listener refusing connections", func() bool { return refuses(gw.apiAddr) })
+		if code := gw.exitCode(t, waitTimeout); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+	})
+
 	t.Run("drain bound", func(t *testing.T) {
 		gw := startGateway(t, fake.NewClientset(fixtureObjects()...), limits{cpu: 1, trace: 1, maxConcurrent: 1})
 		gw.waitReady(t, waitTimeout)
@@ -884,7 +908,7 @@ func TestServePGO(t *testing.T) {
 	t.Run("disabled reaches no NATS and answers 501", func(t *testing.T) {
 		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
 		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
-			pgoOpts{enabled: false, preflight: pf})
+			gatewayOpts{enabled: false, preflight: pf})
 		gw.waitReady(t, waitTimeout)
 
 		if status, code := pgoCode(t, gw.apiAddr, collectionsPath); status != http.StatusNotImplemented || code != "pgo_disabled" {
@@ -899,7 +923,7 @@ func TestServePGO(t *testing.T) {
 		pf := newPreflightStub(preflightResult{err: fmt.Errorf("dial nats: %w", natskv.ErrUnavailable)})
 		worker := newStubWorker()
 		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
-			pgoOpts{enabled: true, preflight: pf, worker: worker})
+			gatewayOpts{enabled: true, preflight: pf, worker: worker})
 
 		waitFor(t, waitTimeout, "the targets route answering 200", func() bool {
 			code, _, err := get(gw.apiAddr, targetsPath)
@@ -921,7 +945,7 @@ func TestServePGO(t *testing.T) {
 		down := preflightResult{err: fmt.Errorf("dial nats: %w", natskv.ErrUnavailable)}
 		pf := newPreflightStub(down, down, preflightResult{client: newFakeNATS(true)})
 		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
-			pgoOpts{enabled: true, preflight: pf, worker: newStubWorker()})
+			gatewayOpts{enabled: true, preflight: pf, worker: newStubWorker()})
 
 		gw.waitReady(t, backoffWaitTimeout)
 		var attempts int
@@ -939,7 +963,7 @@ func TestServePGO(t *testing.T) {
 		violation := errors.New("nats preflight: bucket PROFGATE_JOBS: field TTL is 1h0m0s, the contract requires no TTL")
 		pf := newPreflightStub(preflightResult{err: violation})
 		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
-			pgoOpts{enabled: true, preflight: pf, worker: newStubWorker()})
+			gatewayOpts{enabled: true, preflight: pf, worker: newStubWorker()})
 
 		if code := gw.exitCode(t, waitTimeout); code != 1 {
 			t.Fatalf("exit code = %d, want 1: a bucket outside the contract is a crash", code)
@@ -963,7 +987,7 @@ func TestServePGO(t *testing.T) {
 		nats := newFakeNATS(false)
 		pf := newPreflightStub(preflightResult{client: nats})
 		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
-			pgoOpts{enabled: true, preflight: pf, worker: newStubWorker()})
+			gatewayOpts{enabled: true, preflight: pf, worker: newStubWorker()})
 
 		gw.waitReady(t, waitTimeout)
 		if status, code := pgoCode(t, gw.apiAddr, collectionsPath); status != http.StatusServiceUnavailable || code != "pgo_unavailable" {
@@ -984,7 +1008,7 @@ func TestServePGO(t *testing.T) {
 	t.Run("the connected gauge reports the initial connection", func(t *testing.T) {
 		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
 		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
-			pgoOpts{enabled: true, preflight: pf, worker: newStubWorker()})
+			gatewayOpts{enabled: true, preflight: pf, worker: newStubWorker()})
 
 		gw.waitReady(t, waitTimeout)
 		waitFor(t, waitTimeout, "NATSConnected(true)", func() bool { return len(gw.rec.connectedCalls()) > 0 })
@@ -997,7 +1021,7 @@ func TestServePGO(t *testing.T) {
 		worker := newStubWorker()
 		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
 		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
-			pgoOpts{enabled: true, preflight: pf, worker: worker})
+			gatewayOpts{enabled: true, preflight: pf, worker: worker})
 		gw.waitReady(t, waitTimeout)
 		waitFor(t, waitTimeout, "the worker starting", func() bool { return worker.runCount() == 1 })
 

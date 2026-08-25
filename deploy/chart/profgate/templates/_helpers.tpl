@@ -107,6 +107,7 @@ server:
   listen: ":8080"
   opsListen: ":9090"
   logLevel: {{ .Values.server.logLevel | quote }}
+  drainDelay: {{ .Values.server.drainDelay | quote }}
 auth:
   mode: disabled
   anonymousRealm: {{ .Values.auth.anonymousRealm | quote }}

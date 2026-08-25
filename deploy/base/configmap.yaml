@@ -9,6 +9,10 @@ data:
       listen: ":8080"
       opsListen: ":9090"
       logLevel: info
+      # The window between /readyz turning 503 and the API listener closing,
+      # so the EndpointSlice controllers and every kube-proxy stop routing new
+      # requests here first. It is part of the grace period below.
+      drainDelay: 5s
     discovery:
       versionLabel: app.kubernetes.io/version
       pprof:
@@ -44,11 +48,12 @@ data:
     # Every pgo.limits ceiling then keeps the shipped default, which is what
     # the 4Gi memory limit in deployment.yaml is sized from.
     #
-    # An enabled gateway asks for terminationGracePeriodSeconds 122460, the
+    # An enabled gateway asks for terminationGracePeriodSeconds 122465, the
     # number `profgate config validate` prints for this configuration. That is
     # the worst case over every policy the ceilings admit -- one Pod at a time,
     # the longest sample, the most rounds -- so it is large. An operator who
     # does not want to wait that long can leave the grace period lower: a
     # Collection cut short by SIGKILL is not lost, its lease expires and
-    # another replica reclaims it. The base stays at 120, which covers the
-    # gateway's own drain with PGO off.
+    # another replica reclaims it. The base stays at 125, which covers the
+    # gateway's own drain with PGO off: server.drainDelay, the longest profile,
+    # and 60 seconds of slack.

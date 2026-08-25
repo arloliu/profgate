@@ -26,8 +26,8 @@ func TestRun(t *testing.T) {
 			args:     []string{"config", "validate", "--config", "testdata/good.yaml"},
 			wantCode: 0,
 			wantStdout: []string{
-				"required terminationGracePeriodSeconds: 120",
-				"required terminationGracePeriodSeconds for pgo: 122460",
+				"required terminationGracePeriodSeconds: 125",
+				"required terminationGracePeriodSeconds for pgo: 122465",
 				"another replica reclaims it",
 				"pgo memory bytes: 4294967296",
 			},

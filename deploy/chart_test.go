@@ -293,6 +293,17 @@ func TestChartResourcesOverride(t *testing.T) {
 	}
 }
 
+// TestChartGracePeriod ties the chart's default grace period to the drain its
+// own default values ask for: server.drainDelay and the profile limits.
+func TestChartGracePeriod(t *testing.T) {
+	cfg := loadRenderedConfig(t)
+	grace := render[appsv1.Deployment](t, "deployment.yaml").Spec.Template.Spec.TerminationGracePeriodSeconds
+	want := int64(cfg.RequiredGracePeriod().Seconds())
+	if grace == nil || *grace != want {
+		t.Errorf("terminationGracePeriodSeconds = %v, want %d from the rendered configuration", grace, want)
+	}
+}
+
 // TestChartConfigVolumeNamesTheConfigMap pins the reference between the two
 // templates. The Deployment reaches the ConfigMap through two name helpers and
 // the checksum reaches it through a template path, so a rename that misses one

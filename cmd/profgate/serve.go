@@ -181,6 +181,18 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		// when it can, and is reclaimed by another replica when it cannot.
 		cancelRun()
 
+		// Readiness is 503 from here, and the API listener stays open for the
+		// delay, which is the window the EndpointSlice controllers and every
+		// kube-proxy get to stop routing new requests to this replica.
+		// A preStop hook is where a deployment usually buys that window: the
+		// image is distroless and has no shell to run one, and the lifecycle
+		// "sleep" action is newer than the Kubernetes baseline this gateway
+		// supports.
+		if delay := cfg.Server.DrainDelay; delay > 0 {
+			logger.Info("draining; waiting for endpoint removal", "delay", delay.String())
+			time.Sleep(delay)
+		}
+
 		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {

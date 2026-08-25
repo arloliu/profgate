@@ -826,13 +826,28 @@ start
 SIGTERM
   |
   v
-[draining]    /readyz 503; listeners stop accepting; in-flight requests finish
-              up to max(limits.cpuSeconds, limits.traceSeconds) + 30s, then the process exits
+[draining]    /readyz 503; after server.drainDelay the API listener stops accepting;
+              in-flight requests finish up to max(limits.cpuSeconds, limits.traceSeconds) + 30s;
+              the ops listener answers /readyz, /healthz, and /metrics for the whole drain;
+              with pgo.enabled the Collection drain of pgo.md section 12.4 runs beside it,
+              and the process exits once both waits have ended
 ```
 
-The Deployment sets `terminationGracePeriodSeconds: 120`, which covers the default limits (60s) with margin.
-An operator who raises either limit must raise the grace period to at least the larger limit + 60s;
-`profgate config validate` prints the required value.
+`server.drainDelay` is the window between `/readyz` turning 503 and the API listener closing:
+without it the listener closes before the EndpointSlice controllers and the kube-proxies have removed this replica,
+and every request already in flight towards it is reset.
+A `preStop` hook is where a deployment usually buys that window.
+The image is distroless and has no shell to run one,
+and the `sleep` lifecycle action arrived after the Kubernetes 1.23 baseline,
+so the gateway waits in process instead.
+It defaults to 5 seconds and accepts anything up to 60;
+zero turns it off for a local run.
+
+The Deployment sets `terminationGracePeriodSeconds: 125`,
+which covers the drain delay and the default limits (60s) with margin.
+An operator who raises either limit must raise the grace period with it:
+at least `server.drainDelay` plus the larger limit plus 60s,
+which `profgate config validate` prints.
 An unreachable API server is never fatal after preflight and does not change `/readyz`:
 the targets endpoint keeps serving the cache, confirmation fails closed, and the failure table in section 13 applies.
 Because the overall request budget already includes confirmation, the drain bound above covers it.
@@ -1117,7 +1132,7 @@ Validation failures are fatal at startup and reported by `profgate config valida
   ServiceAccount, ClusterRole, ClusterRoleBinding,
   ConfigMap with the example configuration mounted read-only at `/etc/profgate/config.yaml`,
   Deployment (`replicas: 2`, hardened as in section 3.4, `--config /etc/profgate/config.yaml`,
-  readiness probe on the ops listener's `/readyz`, `terminationGracePeriodSeconds: 120`),
+  readiness probe on the ops listener's `/readyz`, `terminationGracePeriodSeconds: 125`),
   a `ClusterIP` Service exposing only the API port,
   a NetworkPolicy for the gateway Pods that admits the API port from the Ingress controller's namespace
   and the ops port from the monitoring namespace (both namespace selectors are kustomize-patched per cluster),
@@ -1187,7 +1202,7 @@ test/e2e/            harness, versions.yaml, testapp, overlays
 | Kubernetes API unreachable while running | targets endpoint serves the cache; profile requests fail at confirmation with `503 discovery_unavailable`; informers reconnect and relist on their own |
 | Selected Pod deleted before confirmation | confirmation returns `503 target_changed`; the client retries |
 | Selected Pod deleted after confirmation, before the dial | the residual window of section 5.6: a reset or `502` in practice, and, if the address was already reused, a connection to the wrong Pod |
-| Gateway replica receives SIGTERM mid-profile | `/readyz` 503; the profile completes within the grace period; then exit |
+| Gateway replica receives SIGTERM mid-profile | `/readyz` 503; the API listener closes after `server.drainDelay`; the profile completes within the grace period; then exit |
 | Gateway replica crashes mid-profile | the client's connection drops; no state to recover |
 | Target Pod dies mid-profile | `502` if headers were not yet sent; otherwise a truncated body and `upstream_stream_failed` in the audit log |
 | Configuration invalid | process exits at startup with the validation error |

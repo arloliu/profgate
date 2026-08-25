@@ -40,7 +40,9 @@ func TestLoad(t *testing.T) {
 	t.Run("good", func(t *testing.T) {
 		cfg := loadOK(t, fixture("good.yaml"))
 		want := config.Config{
-			Server:    config.ServerConfig{Listen: ":8080", OpsListen: ":9090", LogLevel: "info"},
+			Server: config.ServerConfig{
+				Listen: ":8080", OpsListen: ":9090", LogLevel: "info", DrainDelay: 5 * time.Second,
+			},
 			Discovery: config.DiscoveryConfig{VersionLabel: "app.kubernetes.io/version", Pprof: config.PprofConfig{Port: 6060}},
 			Limits:    config.LimitsConfig{CPUSeconds: 60, TraceSeconds: 60, MaxConcurrentProfiles: 16},
 			Auth:      config.AuthConfig{Mode: "disabled", AnonymousRealm: "developer"},
@@ -171,9 +173,12 @@ func TestLoad(t *testing.T) {
 		t.Setenv("PROFGATE_AUTH_MODE", "disabled")
 		t.Setenv("PROFGATE_ANONYMOUS_REALM", "ops")
 		t.Setenv("PROFGATE_LOG_LEVEL", "debug")
+		t.Setenv("PROFGATE_DRAIN_DELAY", "0s")
 		cfg := loadOK(t, fixture("two-realms.yaml"))
 		want := config.Config{
-			Server:    config.ServerConfig{Listen: "127.0.0.1:18080", OpsListen: "127.0.0.1:19090", LogLevel: "debug"},
+			Server: config.ServerConfig{
+				Listen: "127.0.0.1:18080", OpsListen: "127.0.0.1:19090", LogLevel: "debug", DrainDelay: 0,
+			},
 			Discovery: config.DiscoveryConfig{VersionLabel: "example.com/release", Pprof: config.PprofConfig{Port: 7070}},
 			Limits:    config.LimitsConfig{CPUSeconds: 120, TraceSeconds: 30, MaxConcurrentProfiles: 4},
 			Auth:      config.AuthConfig{Mode: "disabled", AnonymousRealm: "ops"},
@@ -194,9 +199,25 @@ func TestLoad(t *testing.T) {
 		t.Setenv("PROFGATE_LIMIT_CPU_SECONDS", "60")
 		t.Setenv("PROFGATE_LIMIT_TRACE_SECONDS", "90")
 		cfg := loadOK(t, fixture("good.yaml"))
-		if got := cfg.RequiredGracePeriod(); got != 150*time.Second {
-			t.Fatalf("RequiredGracePeriod() = %v, want 150s", got)
+		// The 5-second drain delay, the 90-second trace limit, and 60 seconds of slack.
+		if got := cfg.RequiredGracePeriod(); got != 155*time.Second {
+			t.Fatalf("RequiredGracePeriod() = %v, want 155s", got)
 		}
+	})
+
+	t.Run("grace period follows the drain delay", func(t *testing.T) {
+		t.Setenv("PROFGATE_DRAIN_DELAY", "20s")
+		cfg := loadOK(t, fixture("good.yaml"))
+		// A grace period that ignored the delay would cut the drain short by
+		// exactly the window the endpoints need.
+		if got := cfg.RequiredGracePeriod(); got != 140*time.Second {
+			t.Fatalf("RequiredGracePeriod() = %v, want 140s", got)
+		}
+	})
+
+	t.Run("drain delay out of range", func(t *testing.T) {
+		t.Setenv("PROFGATE_DRAIN_DELAY", "61s")
+		loadErr(t, fixture("good.yaml"), "server.drainDelay")
 	})
 }
 
@@ -504,8 +525,8 @@ func TestPGOSizing(t *testing.T) {
 	}
 	// The deadline formula at the slowest policy the shipped ceilings admit,
 	// which samples one Pod at a time:
-	// 5 x 32 x (60s + 30s + 660s) + 4 x 600s + 60s.
-	if got, want := cfg.RequiredPGOGracePeriod(), 122460*time.Second; got != want {
+	// 5 x 32 x (60s + 30s + 660s) + 4 x 600s + 60s, after the 5-second drain delay.
+	if got, want := cfg.RequiredPGOGracePeriod(), 122465*time.Second; got != want {
 		t.Fatalf("RequiredPGOGracePeriod() = %v, want %v", got, want)
 	}
 }

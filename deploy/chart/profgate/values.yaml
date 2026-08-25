@@ -90,15 +90,15 @@ resources: {}
 memoryLimitWithoutPGO: 512Mi
 
 # How long the kubelet waits after SIGTERM before SIGKILL.
-# It covers the drain of in-flight profile requests, whose longest is
-# limits.cpuSeconds or limits.traceSeconds plus 60 seconds of slack: 120
-# seconds at the shipped limits.
+# It covers server.drainDelay and then the drain of in-flight profile
+# requests, whose longest is limits.cpuSeconds or limits.traceSeconds plus 60
+# seconds of slack: 125 seconds at the shipped values.
 # With PGO on, a Collection can run far longer than this, and
 # `profgate config validate` prints the period that lets every Collection the
 # ceilings admit finish in place. Raising this to that number is a tradeoff,
 # not a requirement: a Collection the kubelet kills mid-merge loses no work,
 # its lease expires and another replica reclaims it.
-terminationGracePeriodSeconds: 120
+terminationGracePeriodSeconds: 125
 
 # There is no livenessProbe, by design. /healthz answers 200 as soon as the
 # HTTP server is up and does not depend on Kubernetes or NATS, so a liveness
@@ -152,6 +152,12 @@ networkPolicy:
 server:
   # One of debug, info, warn, error.
   logLevel: info
+  # The window between /readyz turning 503 and the API listener closing, so
+  # the EndpointSlice controllers and every kube-proxy stop routing new
+  # requests to this replica before it stops accepting them. The image is
+  # distroless and runs no preStop hook, so the gateway waits in process.
+  # terminationGracePeriodSeconds below covers this window.
+  drainDelay: 5s
 
 auth:
   # The realm every request gets while authentication is disabled.

@@ -121,10 +121,6 @@ func TestDeployment(t *testing.T) {
 	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 2 {
 		t.Errorf("Replicas = %v, want 2", dep.Spec.Replicas)
 	}
-	if podSpec.TerminationGracePeriodSeconds == nil || *podSpec.TerminationGracePeriodSeconds != 120 {
-		t.Errorf("TerminationGracePeriodSeconds = %v, want 120", podSpec.TerminationGracePeriodSeconds)
-	}
-
 	if len(podSpec.Containers) != 1 {
 		t.Fatalf("Containers = %+v, want exactly one", podSpec.Containers)
 	}
@@ -579,6 +575,33 @@ func TestSecretExampleIsCommented(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(baseDir, "secret-nats-example.yaml")); err == nil {
 		t.Error("secret-nats-example.yaml is inside deploy/base, where the resource list would have to name it")
+	}
+}
+
+// TestDeploymentGracePeriod ties the grace period to the drain the ConfigMap
+// this base ships actually asks for, so raising server.drainDelay or a profile
+// limit without raising the period fails here instead of as a SIGKILL through
+// an in-flight profile.
+func TestDeploymentGracePeriod(t *testing.T) {
+	cm := decode[corev1.ConfigMap](t, "configmap.yaml")
+	body, ok := cm.Data["config.yaml"]
+	if !ok {
+		t.Fatal(`ConfigMap data has no "config.yaml" key`)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write embedded config.yaml: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load(embedded config.yaml) error = %v", err)
+	}
+
+	dep := decode[appsv1.Deployment](t, "deployment.yaml")
+	grace := dep.Spec.Template.Spec.TerminationGracePeriodSeconds
+	want := int64(cfg.RequiredGracePeriod().Seconds())
+	if grace == nil || *grace != want {
+		t.Errorf("terminationGracePeriodSeconds = %v, want %d from the ConfigMap's own drain delay and limits", grace, want)
 	}
 }
 
