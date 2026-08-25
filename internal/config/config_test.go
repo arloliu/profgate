@@ -42,6 +42,7 @@ func TestLoad(t *testing.T) {
 		want := config.Config{
 			Server: config.ServerConfig{
 				Listen: ":8080", OpsListen: ":9090", LogLevel: "info", DrainDelay: 5 * time.Second,
+				TLS: config.TLSConfig{MinVersion: "1.2"},
 			},
 			Discovery: config.DiscoveryConfig{VersionLabel: "app.kubernetes.io/version", Pprof: config.PprofConfig{Port: 6060}},
 			Limits:    config.LimitsConfig{CPUSeconds: 60, TraceSeconds: 60, MaxConcurrentProfiles: 16},
@@ -178,6 +179,7 @@ func TestLoad(t *testing.T) {
 		want := config.Config{
 			Server: config.ServerConfig{
 				Listen: "127.0.0.1:18080", OpsListen: "127.0.0.1:19090", LogLevel: "debug", DrainDelay: 0,
+				TLS: config.TLSConfig{MinVersion: "1.2"},
 			},
 			Discovery: config.DiscoveryConfig{VersionLabel: "example.com/release", Pprof: config.PprofConfig{Port: 7070}},
 			Limits:    config.LimitsConfig{CPUSeconds: 120, TraceSeconds: 30, MaxConcurrentProfiles: 4},
@@ -218,6 +220,72 @@ func TestLoad(t *testing.T) {
 	t.Run("drain delay out of range", func(t *testing.T) {
 		t.Setenv("PROFGATE_DRAIN_DELAY", "61s")
 		loadErr(t, fixture("good.yaml"), "server.drainDelay")
+	})
+}
+
+// TestLoadTLS covers the presence-implied TLS block: two paths that are set
+// together or not at all. The pairing rule is the point -- a gateway that
+// serves HTTPS with only half a key pair is not a state the process should be
+// able to reach, so half a block is a startup failure rather than a listener
+// that fails every handshake.
+func TestLoadTLS(t *testing.T) {
+	t.Run("absent", func(t *testing.T) {
+		cfg := loadOK(t, fixture("good.yaml"))
+		if cfg.Server.TLS.Enabled() {
+			t.Fatalf("server.tls = %+v, want the plaintext default", cfg.Server.TLS)
+		}
+		if cfg.Server.TLS.MinVersion != "1.2" {
+			t.Fatalf("server.tls.minVersion = %q, want the 1.2 default", cfg.Server.TLS.MinVersion)
+		}
+	})
+
+	t.Run("from file", func(t *testing.T) {
+		cfg := loadOK(t, fixture("tls.yaml"))
+		want := config.TLSConfig{CertFile: "testdata/tls.crt", KeyFile: "testdata/tls.key", MinVersion: "1.3"}
+		if cfg.Server.TLS != want {
+			t.Fatalf("server.tls = %+v, want %+v", cfg.Server.TLS, want)
+		}
+		if !cfg.Server.TLS.Enabled() {
+			t.Fatal("server.tls names both files, so Enabled() must report true")
+		}
+	})
+
+	t.Run("from env", func(t *testing.T) {
+		t.Setenv("PROFGATE_TLS_CERT_FILE", fixture("tls.crt"))
+		t.Setenv("PROFGATE_TLS_KEY_FILE", fixture("tls.key"))
+		t.Setenv("PROFGATE_TLS_MIN_VERSION", "1.3")
+		cfg := loadOK(t, fixture("good.yaml"))
+		want := config.TLSConfig{CertFile: fixture("tls.crt"), KeyFile: fixture("tls.key"), MinVersion: "1.3"}
+		if cfg.Server.TLS != want {
+			t.Fatalf("server.tls = %+v, want %+v", cfg.Server.TLS, want)
+		}
+	})
+
+	t.Run("key without cert", func(t *testing.T) {
+		t.Setenv("PROFGATE_TLS_KEY_FILE", fixture("tls.key"))
+		loadErr(t, fixture("good.yaml"), "server.tls.certFile")
+	})
+
+	t.Run("cert without key", func(t *testing.T) {
+		t.Setenv("PROFGATE_TLS_CERT_FILE", fixture("tls.crt"))
+		loadErr(t, fixture("good.yaml"), "server.tls.keyFile")
+	})
+
+	t.Run("cert file missing", func(t *testing.T) {
+		t.Setenv("PROFGATE_TLS_CERT_FILE", fixture("no-such.crt"))
+		t.Setenv("PROFGATE_TLS_KEY_FILE", fixture("tls.key"))
+		loadErr(t, fixture("good.yaml"), "server.tls.certFile")
+	})
+
+	t.Run("key file missing", func(t *testing.T) {
+		t.Setenv("PROFGATE_TLS_CERT_FILE", fixture("tls.crt"))
+		t.Setenv("PROFGATE_TLS_KEY_FILE", fixture("no-such.key"))
+		loadErr(t, fixture("good.yaml"), "server.tls.keyFile")
+	})
+
+	t.Run("min version unknown", func(t *testing.T) {
+		t.Setenv("PROFGATE_TLS_MIN_VERSION", "1.1")
+		loadErr(t, fixture("good.yaml"), "server.tls.minVersion")
 	})
 }
 

@@ -46,6 +46,27 @@ type ServerConfig struct {
 	// and the lifecycle "sleep" action is newer than the Kubernetes baseline.
 	// Zero is allowed, and turns the wait off for local runs and tests.
 	DrainDelay time.Duration `yaml:"drainDelay" env:"DRAIN_DELAY" default:"5s" validate:"min=0,max=60s"`
+	// TLS turns the API listener into an HTTPS listener.
+	// A block naming neither file is the plaintext default.
+	TLS TLSConfig `yaml:"tls"`
+}
+
+// TLSConfig names the certificate the API listener serves and the key that
+// signs its handshakes.
+// There is no enabled flag: the two paths are the statement, the way
+// nats.credsFile is, because they start no subsystem.
+// The ops listener has no TLS block at all and is always plaintext.
+type TLSConfig struct {
+	CertFile   string `yaml:"certFile"   env:"TLS_CERT_FILE"`
+	KeyFile    string `yaml:"keyFile"    env:"TLS_KEY_FILE"`
+	MinVersion string `yaml:"minVersion" env:"TLS_MIN_VERSION" default:"1.2" validate:"oneof=1.2 1.3"`
+}
+
+// Enabled reports whether the API listener serves HTTPS.
+// Validation has already rejected a block naming one file and not the other,
+// so either path answers the question.
+func (t TLSConfig) Enabled() bool {
+	return t.CertFile != ""
 }
 
 // DiscoveryConfig controls how Pods are matched and which port serves pprof.
@@ -335,6 +356,9 @@ func validate(cfg *Config) error {
 	if cfg.Server.Listen == cfg.Server.OpsListen {
 		return fmt.Errorf("server.opsListen must differ from server.listen (both %q)", cfg.Server.Listen)
 	}
+	if err := validateTLS(cfg.Server.TLS); err != nil {
+		return err
+	}
 	if _, ok := cfg.Realms[cfg.Auth.AnonymousRealm]; !ok {
 		return fmt.Errorf("auth.anonymousRealm %q is not a realm", cfg.Auth.AnonymousRealm)
 	}
@@ -407,6 +431,35 @@ func validatePGO(cfg *Config) error {
 	if cpu := time.Duration(cfg.Limits.CPUSeconds) * time.Second; limits.MaxDuration > cpu {
 		return fmt.Errorf("pgo.limits.maxDuration %v must be at most limits.cpuSeconds %v", limits.MaxDuration, cpu)
 	}
+	return nil
+}
+
+// validateTLS holds the API listener's certificate to being whole:
+// both files or neither, and both readable.
+// Opening them here is what turns a path typo into a startup failure that
+// names the key, rather than a listener that answers every handshake with an
+// error only the client can see.
+// The pair itself is parsed by internal/tlscert, which serves it.
+func validateTLS(tls TLSConfig) error {
+	switch {
+	case tls.CertFile == "" && tls.KeyFile == "":
+		return nil
+	case tls.CertFile == "":
+		return errors.New("server.tls.certFile is required when server.tls.keyFile is set")
+	case tls.KeyFile == "":
+		return errors.New("server.tls.keyFile is required when server.tls.certFile is set")
+	}
+	for _, file := range []struct{ key, path string }{
+		{"server.tls.certFile", tls.CertFile},
+		{"server.tls.keyFile", tls.KeyFile},
+	} {
+		f, err := os.Open(file.path) //nolint:gosec // the operator names the file; reading it is the purpose
+		if err != nil {
+			return fmt.Errorf("%s: %w", file.key, err)
+		}
+		_ = f.Close()
+	}
+
 	return nil
 }
 

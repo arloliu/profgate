@@ -1,0 +1,22 @@
+server:
+  listen: ":8080"
+  opsListen: ":9090"
+  tls:
+    certFile: testdata/tls.crt
+    keyFile: testdata/tls.key
+    minVersion: "1.3"
+discovery:
+  pprof:
+    port: 6060
+limits:
+  cpuSeconds: 60
+  traceSeconds: 60
+  maxConcurrentProfiles: 16
+auth:
+  mode: disabled
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
