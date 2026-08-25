@@ -22,7 +22,6 @@ const replicasAll = "all"
 // so a policy is measured against them wherever it is validated.
 const (
 	minSamplingDuration = time.Second
-	maxRoundInterval    = 10 * time.Minute
 	minRetention        = time.Minute
 	versionPolicyStrict = "strict"
 )
@@ -357,8 +356,9 @@ func Validate(p Policy, lim config.PGOLimits) []Violation {
 		add("sampling.rounds", "1", "%d is less than 1", rounds)
 	}
 
-	if ri := p.Sampling.RoundInterval.Duration(); ri < 0 || ri > maxRoundInterval {
-		add("sampling.roundInterval", Duration(maxRoundInterval).String(), "%v is outside 0 to %v", ri, maxRoundInterval)
+	if ri := p.Sampling.RoundInterval.Duration(); ri < 0 || ri > config.PGOMaxRoundInterval {
+		add("sampling.roundInterval", Duration(config.PGOMaxRoundInterval).String(),
+			"%v is outside 0 to %v", ri, config.PGOMaxRoundInterval)
 	}
 
 	if !p.Sampling.Replicas.IsAll() {

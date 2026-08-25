@@ -30,11 +30,6 @@ const profilePath = "/debug/pprof/profile"
 // profileKind is the manifest's profile field; a Collection is CPU only.
 const profileKind = "cpu"
 
-// decodeFactor is the engineering estimate the container memory figure uses:
-// a decoded profile is about this many times its encoded length.
-// A constant, not configuration.
-const decodeFactor = 8
-
 // The reasons one sample fails.
 // A failed sample is recorded and skipped; only a round with zero successes
 // fails the Collection.

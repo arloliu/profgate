@@ -324,8 +324,9 @@ func TestDeadline(t *testing.T) {
 // config.RequiredPGOGracePeriod is the number `profgate config validate`
 // prints and the number an operator sets terminationGracePeriodSeconds from;
 // Deadline is what a worker enforces.
-// They repeat the same per-sample overhead, the same fixed slack, the same
-// 10-minute roundInterval bound, and the same batching rule in two packages,
+// They read the same per-sample overhead, fixed slack, and 10-minute
+// roundInterval bound from internal/config, and then repeat the arithmetic
+// that combines them with the batching rule in two packages,
 // so the printed number is only true while both stay in step.
 // For each set of ceilings the test walks every policy Validate admits and
 // requires the printed period to cover the longest deadline any of them
@@ -380,7 +381,7 @@ func TestRequiredGracePeriodCoversEveryDeadline(t *testing.T) {
 				replicas = append(replicas, ReplicaCount(n))
 			}
 			durations := []time.Duration{minSamplingDuration, lim.MaxDuration}
-			intervals := []time.Duration{0, maxRoundInterval / 2, maxRoundInterval}
+			intervals := []time.Duration{0, config.PGOMaxRoundInterval / 2, config.PGOMaxRoundInterval}
 
 			var worst time.Duration
 			var admitted int

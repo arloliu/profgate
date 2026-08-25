@@ -184,20 +184,24 @@ func (c *Config) RequiredGracePeriod() time.Duration {
 	return time.Duration(max(c.Limits.CPUSeconds, c.Limits.TraceSeconds))*time.Second + gracePeriodSlack
 }
 
-// pgoDecodeFactor estimates how much heap a decoded profile occupies
-// against its encoded length: two buffers of input plus about six times that
-// in decoded structures.
-const pgoDecodeFactor = 8
-
-// pgoMaxRoundInterval is the largest roundInterval any policy may ask for.
-const pgoMaxRoundInterval = 10 * time.Minute
-
-// pgoSampleOverhead is the per-sample allowance the deadline formula adds
-// on top of the profile duration and the wait for an admission slot.
-const pgoSampleOverhead = 30 * time.Second
-
-// pgoDeadlineSlack is the fixed tail of the deadline formula.
-const pgoDeadlineSlack = 60 * time.Second
+// The PGO figures that no pgo.limits key expresses.
+// They are constants, not configuration, and internal/pgo measures its
+// policies, deadlines, and decoder against the same four.
+// They live here because internal/pgo imports internal/config and the reverse
+// direction would be an import cycle.
+const (
+	// PGODecodeFactor estimates how much heap a decoded profile occupies
+	// against its encoded length: two buffers of input plus about six times
+	// that in decoded structures.
+	PGODecodeFactor = 8
+	// PGOMaxRoundInterval is the largest roundInterval any policy may ask for.
+	PGOMaxRoundInterval = 10 * time.Minute
+	// PGOSampleOverhead is the per-sample allowance the deadline formula adds
+	// on top of the profile duration and the wait for an admission slot.
+	PGOSampleOverhead = 30 * time.Second
+	// PGODeadlineSlack is the fixed tail of the deadline formula.
+	PGODeadlineSlack = 60 * time.Second
+)
 
 // PGOMemoryBytes is the container memory a Collection worker can occupy at the
 // configured ceilings, over the gateway's own footprint:
@@ -207,7 +211,7 @@ const pgoDeadlineSlack = 60 * time.Second
 // It is a sizing rule, not a proof: the decoded sizes are an estimate.
 func (c *Config) PGOMemoryBytes() int64 {
 	l := c.PGO.Limits
-	perCollection := int64(l.MaxParallel)*pgoDecodeFactor*l.MaxSampleBytes + 2*pgoDecodeFactor*l.MaxMergedBytes
+	perCollection := int64(l.MaxParallel)*PGODecodeFactor*l.MaxSampleBytes + 2*PGODecodeFactor*l.MaxMergedBytes
 
 	return int64(l.MaxActiveCollections) * perCollection
 }
@@ -230,10 +234,10 @@ func (c *Config) RequiredPGOGracePeriod() time.Duration {
 	l := c.PGO.Limits
 	batches := time.Duration(l.MaxTargetsPerRound)
 	rounds := time.Duration(l.MaxRounds)
-	admissionWait := l.MaxDuration + pgoMaxRoundInterval
+	admissionWait := l.MaxDuration + PGOMaxRoundInterval
 
-	return rounds*batches*(l.MaxDuration+pgoSampleOverhead+admissionWait) +
-		(rounds-1)*pgoMaxRoundInterval + pgoDeadlineSlack
+	return rounds*batches*(l.MaxDuration+PGOSampleOverhead+admissionWait) +
+		(rounds-1)*PGOMaxRoundInterval + PGODeadlineSlack
 }
 
 // Load reads the YAML file at path, rejects unknown keys at any nesting level,

@@ -67,15 +67,6 @@ const (
 // sampleResultOK is the manifest result of a sample that was fetched and parsed.
 const sampleResultOK = "ok"
 
-// Deadline arithmetic that no pgo.limits key expresses.
-const (
-	// sampleOverhead is the per-batch allowance on top of the profile
-	// duration and the wait for an admission slot.
-	sampleOverhead = 30 * time.Second
-	// deadlineSlack is the fixed tail of the formula.
-	deadlineSlack = 60 * time.Second
-)
-
 // Record is the value at job.<id> in PROFGATE_JOBS, and the durable source of
 // truth for one Collection; gateway memory is a watched cache of it.
 type Record struct {
@@ -215,6 +206,6 @@ func Deadline(startedAt time.Time, p Policy, lim config.PGOLimits) time.Time {
 	roundInterval := p.Sampling.RoundInterval.Duration()
 	admissionWait := duration + roundInterval
 
-	return startedAt.Add(rounds*batches*(duration+sampleOverhead+admissionWait) +
-		(rounds-1)*roundInterval + deadlineSlack)
+	return startedAt.Add(rounds*batches*(duration+config.PGOSampleOverhead+admissionWait) +
+		(rounds-1)*roundInterval + config.PGODeadlineSlack)
 }

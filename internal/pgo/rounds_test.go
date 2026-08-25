@@ -861,15 +861,15 @@ func TestRoundsCancellationStoresNothing(t *testing.T) {
 }
 
 // TestRoundsDecodeHeapDelta is the regression guard on the decoder's
-// footprint: parsing a fixture must not cost more than decodeFactor times its
-// encoded length.
+// footprint: parsing a fixture must not cost more than
+// config.PGODecodeFactor times its encoded length.
 // It is skipped under -race, whose allocator accounting makes the delta
 // meaningless.
 func TestRoundsDecodeHeapDelta(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector's allocator accounting makes a heap delta meaningless")
 	}
-	// decodeFactor multiplies maxSampleBytes, which bounds the decompressed
+	// config.PGODecodeFactor multiplies maxSampleBytes, which bounds the decompressed
 	// body, so the guard measures against the bytes the decoder is actually
 	// handed and not against the gzipped wire form.
 	plain := gunzipBytes(t, fixtureProfile(t, "cpu-heap.pprof"))
@@ -890,7 +890,7 @@ func TestRoundsDecodeHeapDelta(t *testing.T) {
 
 	//nolint:gosec // G115: a heap figure never reaches the top bit of an int64
 	delta := int64(after.HeapAlloc) - int64(before.HeapAlloc)
-	if bound := int64(decodeFactor * len(plain)); delta > bound {
+	if bound := int64(config.PGODecodeFactor * len(plain)); delta > bound {
 		t.Fatalf("decoding %d bytes grew the heap by %d, want at most %d", len(plain), delta, bound)
 	}
 }
