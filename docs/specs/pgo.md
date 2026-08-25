@@ -203,7 +203,7 @@ Reading the status needs `$JS.API.STREAM.INFO.<stream>`, which section 3.3 alrea
 **NATS preflight.**
 Before the scheduler, worker, or sweeper starts, the gateway connects, opens all three stores,
 checks the configuration contract above,
-and exercises every operation it will later need with reversible probes, under one 10-second deadline per bucket:
+and exercises every operation it will later need with reversible probes, under one 30-second deadline per bucket:
 in each KV bucket, a `Watch` on the key `probe.<instanceID>` is opened first,
 then `Create`, `Update` at the returned revision, `Get`, and `Delete` of that key run in order,
 and the watch must deliver all three revisions — the create, the update, and the delete — before it is closed;

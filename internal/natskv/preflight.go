@@ -20,8 +20,11 @@ const (
 	minKVMaxBytes     = 64 << 20
 	minObjectMaxBytes = 1 << 30
 
-	// probeTimeout is the one deadline each bucket's probe sequence runs under.
-	probeTimeout = 10 * time.Second
+	// probeTimeout is the one deadline each bucket's probe sequence runs
+	// under. Wide enough that a starved scheduler never turns slow watch
+	// delivery into a fatal startup error; a denied permission still fails
+	// immediately, from the server's error, not from this deadline.
+	probeTimeout = 30 * time.Second
 )
 
 // Preflight connects, opens the three buckets through View(Generation()),
