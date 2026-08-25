@@ -231,6 +231,10 @@ func (r *recorder) CollectionsActive(int) {}
 
 func (r *recorder) NATSConnected(bool) {}
 
+func (r *recorder) TLSReload(string) {}
+
+func (r *recorder) TLSCertificateExpiry(time.Time) {}
+
 func (r *recorder) snapshot() ([]requestCall, []string, int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

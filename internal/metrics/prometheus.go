@@ -20,6 +20,8 @@ type Prometheus struct {
 	sweeperDeletes     *prometheus.CounterVec
 	collectionsActive  prometheus.Gauge
 	natsConnected      prometheus.Gauge
+	tlsReloads         *prometheus.CounterVec
+	tlsCertificateTTL  prometheus.Gauge
 }
 
 // NewPrometheus builds the gateway's metrics and registers them with reg.
@@ -75,12 +77,20 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 			Name: "profgate_nats_connected",
 			Help: "Whether the NATS connection is currently up: 1 if up, 0 otherwise.",
 		}),
+		tlsReloads: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "profgate_tls_reloads_total",
+			Help: "Total number of attempts to re-read the API listener certificate, by result.",
+		}, []string{"result"}),
+		tlsCertificateTTL: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "profgate_tls_certificate_expiry_seconds",
+			Help: "When the certificate the API listener serves stops being valid, in seconds since the epoch.",
+		}),
 	}
 
 	reg.MustRegister(
 		p.requests, p.requestDuration, p.confirms, p.profilesInFlight, p.discoverySynced,
 		p.collections, p.collectionSamples, p.collectionDuration, p.scheduleSlots, p.sweeperDeletes,
-		p.collectionsActive, p.natsConnected,
+		p.collectionsActive, p.natsConnected, p.tlsReloads, p.tlsCertificateTTL,
 	)
 
 	return p
@@ -148,4 +158,14 @@ func (p *Prometheus) NATSConnected(up bool) {
 		value = 1.0
 	}
 	p.natsConnected.Set(value)
+}
+
+// TLSReload implements Recorder.
+func (p *Prometheus) TLSReload(result string) {
+	p.tlsReloads.WithLabelValues(result).Inc()
+}
+
+// TLSCertificateExpiry implements Recorder.
+func (p *Prometheus) TLSCertificateExpiry(notAfter time.Time) {
+	p.tlsCertificateTTL.Set(float64(notAfter.Unix()))
 }

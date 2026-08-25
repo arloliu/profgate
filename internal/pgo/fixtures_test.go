@@ -1198,6 +1198,10 @@ func (r *countingRecorder) CollectionsActive(delta int) {
 
 func (r *countingRecorder) NATSConnected(bool) {}
 
+func (r *countingRecorder) TLSReload(string) {}
+
+func (r *countingRecorder) TLSCertificateExpiry(time.Time) {}
+
 // logCapture collects the records a replica logs, so a test can count
 // transition records and violation warnings.
 type logCapture struct {
