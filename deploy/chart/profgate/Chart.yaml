@@ -1,0 +1,18 @@
+apiVersion: v2
+name: profgate
+description: Kubernetes-aware pprof gateway for Go workloads
+type: application
+# The chart's own version. It moves when the templates change.
+version: 0.1.0
+# The application version, and the default for image.tag.
+# The published image is tagged latest until the project cuts releases;
+# image.digest pins a build regardless of what the tag points at.
+appVersion: "latest"
+kubeVersion: ">=1.23.0-0"
+home: https://github.com/arloliu/profgate
+sources:
+  - https://github.com/arloliu/profgate
+keywords:
+  - pprof
+  - profiling
+  - pgo

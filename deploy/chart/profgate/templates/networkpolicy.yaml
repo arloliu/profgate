@@ -1,0 +1,37 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "profgate.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "profgate.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "profgate.selectorLabels" . | nindent 6 }}
+  # Ingress only. Egress is left alone: the gateway connects to the Kubernetes
+  # API, to application pprof ports across the cluster, and to NATS, so an
+  # egress policy here would be a per-cluster guess.
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+      from:
+        {{- range .Values.networkPolicy.apiFromNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+    - ports:
+        - protocol: TCP
+          port: 9090
+      from:
+        {{- range .Values.networkPolicy.opsFromNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+{{- end }}

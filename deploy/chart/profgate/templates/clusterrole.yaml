@@ -1,0 +1,24 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  # Cluster-scoped, so the name carries the release.
+  name: {{ include "profgate.fullname" . }}
+  labels:
+    {{- include "profgate.labels" . | nindent 4 }}
+# These seven read-only tuples are the whole of Profgate's Kubernetes access,
+# and they are not templated: list and watch feed the informer caches every
+# selection reads from, and the single get on Pods confirms a Pod's identity
+# and address before the gateway connects to it. A startup preflight exercises
+# exactly these tuples and exits on a 403.
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list", "watch"]
+{{- end }}

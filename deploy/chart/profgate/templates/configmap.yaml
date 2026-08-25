@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "profgate.configMapName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "profgate.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- include "profgate.config" . | nindent 4 }}

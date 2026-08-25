@@ -1,0 +1,239 @@
+# Default values for the profgate chart.
+# Every key here is documented where it is defined; the chart's README.md
+# explains how the configuration file is assembled from these values.
+
+image:
+  repository: ghcr.io/arloliu/profgate
+  # Empty means Chart.yaml's appVersion.
+  tag: ""
+  # A digest, "sha256:...", replaces the tag when it is set.
+  # This is the reproducible way to pin a build.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Names of Secrets holding registry credentials, as [{name: my-pull-secret}].
+imagePullSecrets: []
+
+# Override the generated resource names.
+nameOverride: ""
+fullnameOverride: ""
+
+# The gateway holds no state, so replicas exist for availability during a
+# rollout, not for capacity.
+replicaCount: 2
+
+serviceAccount:
+  create: true
+  # Empty means the generated fullname. Set it to bind an existing account.
+  name: ""
+  annotations: {}
+
+rbac:
+  # The ClusterRole and ClusterRoleBinding, named after the release so two
+  # releases in one cluster do not collide. The rules are read-only and fixed:
+  # services (list, watch), pods (get, list, watch), endpointslices
+  # (list, watch). The chart offers no way to widen them.
+  create: true
+
+service:
+  type: ClusterIP
+  # The API port. The ops port (metrics, health) is not in the Service;
+  # scrape it from the Pod.
+  port: 8080
+  annotations: {}
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # Set maxUnavailable instead of minAvailable to express the same budget the
+  # other way around. Exactly one of the two is rendered; minAvailable wins.
+  maxUnavailable: ""
+
+# Add checksum/config to the pod template, holding a hash of the rendered
+# ConfigMap. The binary reads its configuration once at startup and has no
+# reload, so without this annotation a helm upgrade that only changes
+# configuration updates the ConfigMap and never restarts a Pod.
+# Turning this off means config changes take effect at the next unrelated
+# rollout, whenever that is.
+configChecksumAnnotation: true
+
+# Pod-level security context.
+# fsGroup is what makes the NATS credentials Secret readable by the non-root
+# image: the kubelet only changes a volume's group ownership when it is set.
+# 65532 is the uid and gid the distroless image runs as.
+# Set fsGroup to null to render no pod securityContext at all, which is what a
+# cluster that assigns its own ranges through an SCC needs.
+podSecurityContext:
+  fsGroup: 65532
+
+# Container-level security context. This is the hardened block the security
+# invariant requires; runAsUser is deliberately absent so a cluster that
+# assigns its own uid can, while runAsNonRoot still rejects a root image.
+securityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Container resources. An explicit block here is rendered verbatim and turns
+# off the derived memory limit below; use it when a cluster's quota or
+# LimitRange demands requests, or a CPU limit.
+resources: {}
+
+# The memory limit while pgo.enabled is false.
+# With PGO off the gateway streams profiles through to the client and holds no
+# profile in memory, so its footprint is the runtime plus the informer caches
+# plus limits.maxConcurrentProfiles transfer buffers.
+# With PGO on this value is ignored and the limit is derived from pgo.limits;
+# see the README.
+memoryLimitWithoutPGO: 512Mi
+
+# How long the kubelet waits after SIGTERM before SIGKILL.
+# It covers the drain of in-flight profile requests, whose longest is
+# limits.cpuSeconds or limits.traceSeconds plus 60 seconds of slack: 120
+# seconds at the shipped limits.
+# With PGO on, a Collection can run far longer than this, and
+# `profgate config validate` prints the period that lets every Collection the
+# ceilings admit finish in place. Raising this to that number is a tradeoff,
+# not a requirement: a Collection the kubelet kills mid-merge loses no work,
+# its lease expires and another replica reclaims it.
+terminationGracePeriodSeconds: 120
+
+# There is no livenessProbe, by design. /healthz answers 200 as soon as the
+# HTTP server is up and does not depend on Kubernetes or NATS, so a liveness
+# probe on it can only restart a Pod whose HTTP server has stopped answering
+# at all -- a case the kubelet already handles by other means. Readiness is
+# the mechanism that keeps traffic off a gateway that cannot serve.
+readinessProbe:
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  timeoutSeconds: 1
+  failureThreshold: 3
+
+# Extra environment variables on the container, as a list of core/v1 EnvVar.
+# The binary applies PROFGATE_-prefixed overrides on top of the configuration
+# file, so this is the way to change one key without re-rendering the chart:
+#   extraEnv:
+#     - name: PROFGATE_LOG_LEVEL
+#       value: debug
+# An override set here is invisible to the ConfigMap checksum, so a change to
+# it does not restart Pods on its own.
+extraEnv: []
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+# An ingress NetworkPolicy for the gateway Pods. It is off by default because
+# the namespaces that reach the two ports differ per cluster;
+# deploy/base/networkpolicy-gateway.yaml is the same policy as plain YAML,
+# and deploy/base/networkpolicy-app-example.yaml is the matching policy an
+# application namespace needs to admit the gateway to its pprof port.
+networkPolicy:
+  enabled: false
+  # Namespaces allowed to reach the API port, matched on
+  # kubernetes.io/metadata.name.
+  apiFromNamespaces:
+    - ingress-nginx
+  # Namespaces allowed to reach the ops port.
+  opsFromNamespaces:
+    - monitoring
+
+# --- Configuration file ---------------------------------------------------
+# The keys below are rendered into the ConfigMap the gateway loads from
+# /etc/profgate/config.yaml. Anything the chart does not model structurally
+# goes in the raw `config` block at the bottom, which is merged over
+# everything here.
+
+server:
+  # One of debug, info, warn, error.
+  logLevel: info
+
+auth:
+  # The realm every request gets while authentication is disabled.
+  # It must name one of the realms below.
+  anonymousRealm: developer
+
+# What each principal may reach. Every list is exact strings or "*".
+# The shipped realm is wide open, which is a deliberate default for a gateway
+# reachable only from inside the cluster; narrow it before exposing it.
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
+    # PGO access is off for a realm that names no pgo block.
+    # pgo:
+    #   read: true
+    #   collect: true
+    #   configure: true
+
+# NATS, used only when pgo.enabled. The chart renders these keys into the
+# configuration and mounts the credentials Secret; it never creates the
+# Secret, the account, or the stores. deploy/nats/README.md is how they are
+# provisioned.
+nats:
+  # Comma-separated nats:// or tls:// URLs. Required when pgo.enabled.
+  url: ""
+  # Where the credentials file appears in the container. It is the mount path
+  # below joined with the Secret key.
+  credsFile: /etc/profgate/nats/nats.creds
+  # The Secret the operator created from their NATS account credentials.
+  # Create it before turning pgo.enabled on: startup validation opens the
+  # file credsFile names, so a gateway whose Secret does not exist yet exits
+  # rather than running without it. The volume itself is optional, which is
+  # what lets the Secret be replaced under a running Pod.
+  existingSecret: profgate-nats-creds
+  secretKey: nats.creds
+  mountPath: /etc/profgate/nats
+
+pgo:
+  # PGO collection. Off means no NATS connection and no scheduler.
+  # A Pod cannot become Ready while NATS is unreachable and this is on, so a
+  # rollout stalls at maxUnavailable 0 rather than replacing a working replica
+  # with one that cannot collect. That is the safe failure, but it does mean
+  # NATS being down blocks upgrades.
+  enabled: false
+  # The Collection configuration API: enabled or disabled.
+  configAPI: enabled
+  # The ceilings every effective policy is measured against. Four of them
+  # decide the container memory limit:
+  #
+  #   maxActiveCollections x (maxParallel x 8 x maxSampleBytes
+  #                           + 2 x 8 x maxMergedBytes)
+  #
+  # The chart computes that number and renders it as limits.memory, so the
+  # limit cannot drift from the configuration it is sized for. 8 is the
+  # gateway's decode factor: a profile occupies about eight times its
+  # compressed length once decoded.
+  # At the values below the limit is 4Gi.
+  limits:
+    maxParallel: 4
+    maxSampleBytes: 33554432
+    maxMergedBytes: 67108864
+    maxActiveCollections: 2
+    # Any other pgo.limits key can be added here and is rendered as written;
+    # only the four above take part in the memory arithmetic.
+
+# Raw configuration merged over everything the chart renders, key by key.
+# This is where the keys the chart does not model go -- discovery, limits,
+# pgo.defaults -- and the escape hatch when a structured value is not enough:
+#
+#   config:
+#     discovery:
+#       pprof:
+#         port: 6060
+#     limits:
+#       cpuSeconds: 60
+#       maxConcurrentProfiles: 16
+#
+# A key left out here and out of the structured values above takes the
+# binary's own default. server.listen and server.opsListen are the exception:
+# the chart renders them to match the container ports it declares, so
+# overriding them here moves the listener without moving the probe or the
+# Service.
+config: {}

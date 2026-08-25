@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "profgate.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "profgate.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "profgate.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # No replacement replica takes traffic before it is Ready, and none of
+      # the running ones leaves first. With pgo.enabled this is what makes a
+      # NATS outage stall a rollout instead of draining the deployment.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "profgate.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if .Values.configChecksumAnnotation }}
+        # The binary reads its configuration once at startup. This hash is what
+        # turns a configuration change into a rollout.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "profgate.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: profgate
+          image: {{ include "profgate.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - --config
+            - /etc/profgate/config.yaml
+          ports:
+            - name: api
+              containerPort: 8080
+            - name: ops
+              containerPort: 9090
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # There is no livenessProbe: /healthz answers 200 whenever the HTTP
+          # server is up, so probing it can only restart a Pod that has stopped
+          # answering entirely. /readyz is the mechanism that keeps traffic off
+          # a gateway whose informers, or NATS connection, are not usable.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ops
+            {{- with .Values.readinessProbe }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- include "profgate.resources" . | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/profgate
+              readOnly: true
+            {{- if .Values.pgo.enabled }}
+            - name: nats-creds
+              mountPath: {{ .Values.nats.mountPath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "profgate.configMapName" . }}
+        {{- if .Values.pgo.enabled }}
+        # The operator creates this Secret from their NATS account
+        # credentials; the chart never does. It is optional so a Pod starts
+        # before the Secret exists, and 0440 with the pod fsGroup is the
+        # narrowest mode the non-root image can read.
+        - name: nats-creds
+          secret:
+            secretName: {{ .Values.nats.existingSecret }}
+            defaultMode: 0440
+            optional: true
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

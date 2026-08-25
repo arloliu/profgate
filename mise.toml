@@ -1,6 +1,7 @@
 [tools]
 go = "1.26.7"
 golangci-lint = "2.12.2"
+helm = "3.21.4"
 kind = ["0.32.0", "0.22.0"]
 ko = "0.19.1"
 kubectl = "1.36.4"
