@@ -24,3 +24,30 @@ data:
         namespaces: ["*"]
         services: ["*"]
         profiles: ["*"]
+        # PGO access is off for a realm that names no pgo block.
+        # pgo:
+        #   read: true
+        #   collect: true
+        #   configure: true
+    # PGO collection is off. To turn it on, provision the NATS stores and the
+    # account of deploy/nats/README.md, create the credentials Secret, and
+    # uncomment:
+    #
+    # nats:
+    #   url: nats://nats.profgate.svc:4222
+    #   credsFile: /etc/profgate/nats/nats.creds
+    # pgo:
+    #   enabled: true
+    #   configAPI: enabled
+    #
+    # Every pgo.limits ceiling then keeps the shipped default, which is what
+    # the 4Gi memory limit in deployment.yaml is sized from.
+    #
+    # An enabled gateway asks for terminationGracePeriodSeconds 122460, the
+    # number `profgate config validate` prints for this configuration. That is
+    # the worst case over every policy the ceilings admit -- one Pod at a time,
+    # the longest sample, the most rounds -- so it is large. An operator who
+    # does not want to wait that long can leave the grace period lower: a
+    # Collection cut short by SIGKILL is not lost, its lease expires and
+    # another replica reclaims it. The base stays at 120, which covers the
+    # gateway's own drain with PGO off.

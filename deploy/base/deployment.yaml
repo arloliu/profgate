@@ -17,6 +17,12 @@ spec:
     spec:
       serviceAccountName: profgate
       terminationGracePeriodSeconds: 120
+      securityContext:
+        # The uid and gid the distroless image runs as. Without it the kubelet
+        # leaves the credentials Secret owned by root:root and the gateway
+        # cannot read it. It only widens group ownership, so the ConfigMap and
+        # the ServiceAccount token stay readable exactly as before.
+        fsGroup: 65532
       containers:
         - name: profgate
           image: ghcr.io/arloliu/profgate:latest
@@ -39,11 +45,29 @@ spec:
             httpGet:
               path: /readyz
               port: ops
+          resources:
+            limits:
+              # The PGO sizing formula applied to this base's ConfigMap, over
+              # the gateway's own footprint. `profgate config validate` prints
+              # the figure for a given configuration; raise this with any
+              # pgo.limits ceiling.
+              memory: 4Gi
           volumeMounts:
             - name: config
               mountPath: /etc/profgate
+              readOnly: true
+            - name: profgate-nats-creds
+              mountPath: /etc/profgate/nats/
               readOnly: true
       volumes:
         - name: config
           configMap:
             name: profgate-config
+        # The operator creates this Secret from their NATS account credentials;
+        # see deploy/nats/README.md. It is optional so the base applies before
+        # the Secret exists, which is the default state while PGO is off.
+        - name: profgate-nats-creds
+          secret:
+            secretName: profgate-nats-creds
+            defaultMode: 0440
+            optional: true

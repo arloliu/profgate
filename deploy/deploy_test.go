@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
+	"strings"
 	"testing"
 
+	"github.com/nats-io/nats-server/v2/conf"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -20,6 +23,14 @@ import (
 )
 
 const baseDir = "base"
+
+// credsSecretName is the Secret the operator creates from their NATS account
+// credentials; the Deployment mounts it optionally, so the base stays
+// deployable while PGO is off and nothing has created it.
+const credsSecretName = "profgate-nats-creds" //nolint:gosec // the Secret's name, not its contents
+
+// credsMountPath is where the credentials file appears in the container.
+const credsMountPath = "/etc/profgate/nats/" //nolint:gosec // a mount path, not a credential
 
 // ptr returns a pointer to v, for the pointer-typed fields k8s.io/api uses.
 func ptr[T any](v T) *T { return &v }
@@ -173,30 +184,74 @@ func TestDeployment(t *testing.T) {
 		t.Errorf("ReadinessProbe port = %+v, want the ops port (9090)", c.ReadinessProbe.HTTPGet.Port)
 	}
 
-	if len(podSpec.Volumes) != 1 {
-		t.Fatalf("Volumes = %+v, want exactly one", podSpec.Volumes)
+	// fsGroup is what makes a Secret volume readable by the non-root image:
+	// the kubelet only changes a volume's group ownership when it is set.
+	if podSpec.SecurityContext == nil || podSpec.SecurityContext.FSGroup == nil || *podSpec.SecurityContext.FSGroup != 65532 {
+		t.Errorf("pod securityContext.fsGroup = %+v, want 65532, the uid/gid the image runs as", podSpec.SecurityContext)
 	}
-	vol := podSpec.Volumes[0]
-	if vol.ConfigMap == nil {
-		t.Fatalf("Volumes[0] = %+v, want a ConfigMap volume", vol)
+
+	if len(podSpec.Volumes) != 2 {
+		t.Fatalf("Volumes = %+v, want exactly two: the config and the NATS credentials", podSpec.Volumes)
+	}
+	vols := map[string]corev1.Volume{}
+	for _, v := range podSpec.Volumes {
+		vols[v.Name] = v
+	}
+
+	vol, ok := vols["config"]
+	if !ok || vol.ConfigMap == nil {
+		t.Fatalf("Volumes = %+v, want a ConfigMap volume named config", podSpec.Volumes)
 	}
 	cm := decode[corev1.ConfigMap](t, "configmap.yaml")
 	if vol.ConfigMap.Name != cm.Name {
-		t.Errorf("Volumes[0].ConfigMap.Name = %q, want it to match configmap.yaml's metadata.name %q", vol.ConfigMap.Name, cm.Name)
+		t.Errorf("the config volume names ConfigMap %q, want configmap.yaml's metadata.name %q", vol.ConfigMap.Name, cm.Name)
 	}
 
-	if len(c.VolumeMounts) != 1 {
-		t.Fatalf("VolumeMounts = %+v, want exactly one", c.VolumeMounts)
+	creds, ok := vols[credsSecretName]
+	if !ok || creds.Secret == nil {
+		t.Fatalf("Volumes = %+v, want a Secret volume named %s", podSpec.Volumes, credsSecretName)
 	}
-	mount := c.VolumeMounts[0]
+	if creds.Secret.SecretName != credsSecretName {
+		t.Errorf("the credentials volume names Secret %q, want %q", creds.Secret.SecretName, credsSecretName)
+	}
+	// 0440 with fsGroup 65532 is the narrowest mode the gateway can read.
+	if creds.Secret.DefaultMode == nil || *creds.Secret.DefaultMode != 0o440 {
+		t.Errorf("the credentials volume defaultMode = %v, want 0440", creds.Secret.DefaultMode)
+	}
+	// optional is what keeps the base deployable while PGO is off and the
+	// operator has created no Secret.
+	if creds.Secret.Optional == nil || !*creds.Secret.Optional {
+		t.Errorf("the credentials volume optional = %v, want true", creds.Secret.Optional)
+	}
+
+	if len(c.VolumeMounts) != 2 {
+		t.Fatalf("VolumeMounts = %+v, want exactly two: the config and the NATS credentials", c.VolumeMounts)
+	}
+	mounts := map[string]corev1.VolumeMount{}
+	for _, m := range c.VolumeMounts {
+		mounts[m.Name] = m
+	}
+
+	mount, ok := mounts["config"]
+	if !ok {
+		t.Fatalf("VolumeMounts = %+v, want one named config", c.VolumeMounts)
+	}
 	if mount.MountPath != "/etc/profgate" {
-		t.Errorf("VolumeMounts[0].MountPath = %q, want /etc/profgate", mount.MountPath)
+		t.Errorf("the config mount path = %q, want /etc/profgate", mount.MountPath)
 	}
 	if !mount.ReadOnly {
-		t.Error("VolumeMounts[0].ReadOnly = false, want true")
+		t.Error("the config mount is writable, want readOnly")
 	}
-	if vol.ConfigMap != nil && mount.Name != vol.Name {
-		t.Errorf("VolumeMounts[0].Name = %q, want it to match the ConfigMap volume %q", mount.Name, vol.Name)
+
+	credsMount, ok := mounts[credsSecretName]
+	if !ok {
+		t.Fatalf("VolumeMounts = %+v, want one named %s", c.VolumeMounts, credsSecretName)
+	}
+	if credsMount.MountPath != credsMountPath {
+		t.Errorf("the credentials mount path = %q, want %q", credsMount.MountPath, credsMountPath)
+	}
+	if !credsMount.ReadOnly {
+		t.Error("the credentials mount is writable, want readOnly")
 	}
 }
 
@@ -362,5 +417,200 @@ func TestKustomizationListsEveryFile(t *testing.T) {
 			t.Errorf("kustomization.yaml resources = %v, want exactly the directory's files %v", gotFiles, wantFiles)
 			break
 		}
+	}
+}
+
+// backtickedSubject matches one `subject` span of a Markdown table cell.
+var backtickedSubject = regexp.MustCompile("`([^`]+)`")
+
+// specPermissions reads the NATS permission table of docs/specs/pgo.md and
+// returns the publish and subscribe subject sets it grants.
+// Only table rows count: the prose around the table names subjects the account
+// must not hold, and a sweep over the whole section would collect those too.
+func specPermissions(t *testing.T) (map[string]bool, map[string]bool) {
+	t.Helper()
+
+	b, err := os.ReadFile(filepath.Join("..", "docs", "specs", "pgo.md"))
+	if err != nil {
+		t.Fatalf("read the PGO spec: %v", err)
+	}
+
+	publish, subscribe := map[string]bool{}, map[string]bool{}
+	var inSection, inTable bool
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "#") {
+			if inSection {
+				break
+			}
+			inSection = strings.Contains(line, "NATS permissions")
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if !strings.HasPrefix(line, "|") {
+			if inTable {
+				break
+			}
+			continue
+		}
+		inTable = true
+
+		cols := strings.Split(strings.Trim(line, "|"), "|")
+		if len(cols) != 2 {
+			continue
+		}
+		var into map[string]bool
+		switch strings.TrimSpace(cols[0]) {
+		case "publish":
+			into = publish
+		case "subscribe":
+			into = subscribe
+		default:
+			continue
+		}
+		for _, m := range backtickedSubject.FindAllStringSubmatch(cols[1], -1) {
+			into[m[1]] = true
+		}
+	}
+
+	if !publish["$JS.API.INFO"] || len(subscribe) == 0 {
+		t.Fatalf("the spec's permission table did not parse: publish = %v, subscribe = %v", publish, subscribe)
+	}
+
+	return publish, subscribe
+}
+
+// fragmentSubjects returns the allow list of one permission direction of the
+// shipped account fragment.
+func fragmentSubjects(t *testing.T, perms map[string]any, direction string) map[string]bool {
+	t.Helper()
+
+	block, ok := perms[direction].(map[string]any)
+	if !ok {
+		t.Fatalf("account.conf permissions has no %s block: %v", direction, perms)
+	}
+	allow, ok := block["allow"].([]any)
+	if !ok {
+		t.Fatalf("account.conf %s block has no allow list: %v", direction, block)
+	}
+
+	got := map[string]bool{}
+	for _, v := range allow {
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("account.conf %s.allow holds %v, want subject strings", direction, v)
+		}
+		if got[s] {
+			t.Errorf("account.conf %s.allow lists %q twice", direction, s)
+		}
+		got[s] = true
+	}
+
+	return got
+}
+
+// TestNATSAccountFragment pins deploy/nats/account.conf to the spec's
+// permission table the way TestClusterRoleTuples pins the ClusterRole:
+// the fragment is what an operator pastes into their NATS account, so a
+// subject the spec does not grant is a widening of the permission boundary and
+// a subject it grants but the fragment omits is a gateway that fails preflight.
+func TestNATSAccountFragment(t *testing.T) {
+	parsed, err := conf.ParseFile(filepath.Join("nats", "account.conf"))
+	if err != nil {
+		t.Fatalf("parse nats/account.conf: %v", err)
+	}
+	perms, ok := parsed["permissions"].(map[string]any)
+	if !ok {
+		t.Fatalf("nats/account.conf has no permissions block: %v", parsed)
+	}
+
+	wantPublish, wantSubscribe := specPermissions(t)
+	for _, tc := range []struct {
+		direction string
+		want      map[string]bool
+	}{
+		{direction: "publish", want: wantPublish},
+		{direction: "subscribe", want: wantSubscribe},
+	} {
+		t.Run(tc.direction, func(t *testing.T) {
+			got := fragmentSubjects(t, perms, tc.direction)
+			for s := range tc.want {
+				if !got[s] {
+					t.Errorf("account.conf %s is missing the spec's subject %q", tc.direction, s)
+				}
+			}
+			for s := range got {
+				if !tc.want[s] {
+					t.Errorf("account.conf %s grants %q, which the spec's table does not list", tc.direction, s)
+				}
+			}
+		})
+	}
+}
+
+// TestSecretExampleIsCommented holds deploy/secret-nats-example.yaml to being
+// an example and nothing else: it carries the credentials of the NATS account,
+// so every line is a comment and `kubectl apply -f deploy/` cannot create it.
+// It lives outside deploy/base because the base's resource list must name
+// every file there, and a comment-only file cannot be applied.
+func TestSecretExampleIsCommented(t *testing.T) {
+	b, err := os.ReadFile("secret-nats-example.yaml")
+	if err != nil {
+		t.Fatalf("read secret-nats-example.yaml: %v", err)
+	}
+
+	var mentionsSecret bool
+	for i, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "#") {
+			t.Errorf("secret-nats-example.yaml line %d is live YAML, want every line commented: %q", i+1, line)
+		}
+		if strings.Contains(trimmed, credsSecretName) {
+			mentionsSecret = true
+		}
+	}
+	if !mentionsSecret {
+		t.Errorf("secret-nats-example.yaml never names the Secret %q the Deployment mounts", credsSecretName)
+	}
+
+	if _, err := os.Stat(filepath.Join(baseDir, "secret-nats-example.yaml")); err == nil {
+		t.Error("secret-nats-example.yaml is inside deploy/base, where the resource list would have to name it")
+	}
+}
+
+// TestDeploymentMemoryLimit ties the container's memory limit to the spec's
+// sizing formula applied to the configuration this base actually ships,
+// so raising a pgo.limits ceiling in the ConfigMap without raising the limit
+// fails here instead of as an out-of-memory kill during a merge.
+func TestDeploymentMemoryLimit(t *testing.T) {
+	cm := decode[corev1.ConfigMap](t, "configmap.yaml")
+	body, ok := cm.Data["config.yaml"]
+	if !ok {
+		t.Fatal(`ConfigMap data has no "config.yaml" key`)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write embedded config.yaml: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load(embedded config.yaml) error = %v", err)
+	}
+
+	dep := decode[appsv1.Deployment](t, "deployment.yaml")
+	if len(dep.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("Containers = %+v, want exactly one", dep.Spec.Template.Spec.Containers)
+	}
+	limits := dep.Spec.Template.Spec.Containers[0].Resources.Limits
+	mem, ok := limits[corev1.ResourceMemory]
+	if !ok {
+		t.Fatalf("resources.limits = %v, want a memory limit", limits)
+	}
+	if got, want := mem.Value(), cfg.PGOMemoryBytes(); got != want {
+		t.Errorf("resources.limits.memory = %d bytes, want %d from the ConfigMap's own pgo.limits", got, want)
 	}
 }
