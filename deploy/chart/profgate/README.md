@@ -51,7 +51,7 @@ On a connected machine, pull the chart as a file and the image as an archive:
 ```bash
 helm pull oci://ghcr.io/arloliu/charts/profgate --version X.Y.Z
 skopeo copy --all docker://ghcr.io/arloliu/profgate:vX.Y.Z \
-  oci-archive:profgate-vX.Y.Z.tar:profgate:vX.Y.Z
+  oci-archive:profgate-vX.Y.Z.tar
 ```
 
 That leaves `profgate-X.Y.Z.tgz` and `profgate-vX.Y.Z.tar` to carry across.
