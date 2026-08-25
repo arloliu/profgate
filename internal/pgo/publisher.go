@@ -12,16 +12,6 @@ import (
 	"github.com/arloliu/profgate/internal/natskv"
 )
 
-// Trigger is what asked for a publication, carried as extra context on the
-// transition records the publisher emits.
-type Trigger string
-
-// The two triggers: a scheduler tick, or a POST /collections request.
-const (
-	TriggerSchedule Trigger = "schedule"
-	TriggerAPI      Trigger = "api"
-)
-
 // createdBySchedule is the createdBy of a scheduled Collection.
 // A scheduled Collection has no requesting principal, and the field is a
 // principal everywhere else, so it names the scheduler rather than borrowing
@@ -46,7 +36,6 @@ type PublishInput struct {
 	Namespace string
 	Service   string
 	Origin    Origin
-	Trigger   Trigger
 	// Slot is the slot that created it; the zero time for an api Collection.
 	Slot time.Time
 	// ClaimBy is now + every for a scheduled Collection, now + 1h for an api one.
@@ -209,8 +198,8 @@ func (p *Publisher) resolved(ctx context.Context, jobs natskv.KV, id string, ref
 		return true
 	}
 
-	gone, err := jobAbsentOrTerminal(ctx, jobs, id)
-	if err != nil || !gone {
+	rec, gone, err := readJob(ctx, jobs, id)
+	if err != nil || (!gone && !terminal(rec.State)) {
 		return false
 	}
 
@@ -230,25 +219,6 @@ func (p *Publisher) resolved(ctx context.Context, jobs natskv.KV, id string, ref
 	}
 
 	return v.ID != id
-}
-
-// jobAbsentOrTerminal reads job.<id> fresh and reports whether it is gone or
-// in a state a Collection never leaves.
-// An unreadable record is neither, so its reservation stays held.
-func jobAbsentOrTerminal(ctx context.Context, jobs natskv.KV, id string) (bool, error) {
-	e, err := jobs.Get(ctx, jobKey(id))
-	if errors.Is(err, natskv.ErrKeyNotFound) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	var rec Record
-	if err := json.Unmarshal(e.Value, &rec); err != nil {
-		return false, fmt.Errorf("pgo: read record %s: %w", id, err)
-	}
-
-	return terminal(rec.State), nil
 }
 
 // Publish performs the three writes of one publication in the order that
@@ -290,7 +260,7 @@ func (p *Publisher) Publish(
 
 		return id, "", fmt.Errorf("pgo: create record %s: %w", id, err)
 	}
-	p.logTransition(rec, in.Trigger)
+	logTransition(p.log, p.instance, rec, slog.String("trigger", string(rec.Origin)))
 
 	activeErr := p.createActive(ctx, jobs, id, now, in)
 	if errors.Is(activeErr, natskv.ErrKeyExists) {
@@ -314,7 +284,7 @@ func (p *Publisher) Publish(
 	if _, err := jobs.Update(ctx, jobKey(id), pending, rev); err != nil {
 		return id, "", fmt.Errorf("pgo: publish record %s: %w", id, err)
 	}
-	p.logTransition(rec, in.Trigger)
+	logTransition(p.log, p.instance, rec, slog.String("trigger", string(rec.Origin)))
 
 	return id, OutcomeWon, nil
 }
@@ -371,21 +341,4 @@ func (p *Publisher) discardLostRecord(
 		p.log.Warn("pgo: discard of a lost collection record failed", "collection", id, "error", err)
 	}
 	res.Release()
-}
-
-// logTransition emits the one transition record for a state the publisher
-// commits, with trigger as extra context.
-// Every other transition is logged by whichever component commits it, so no
-// transition is recorded twice.
-func (p *Publisher) logTransition(rec Record, trigger Trigger) {
-	p.log.Info("collection transition",
-		"collection", rec.ID,
-		"namespace", rec.Namespace,
-		"service", rec.Service,
-		"state", string(rec.State),
-		"attempt", rec.Attempt,
-		"reason", rec.Reason,
-		"instance", p.instance,
-		"trigger", string(trigger),
-	)
 }

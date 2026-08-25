@@ -184,7 +184,6 @@ func (s *server) serveCollectionCreate(
 		Namespace:      rt.namespace,
 		Service:        rt.service,
 		Origin:         pgo.OriginAPI,
-		Trigger:        pgo.TriggerAPI,
 		ClaimBy:        sess.Now().Add(pgo.APIClaimGrace),
 		ConfigRevision: configRevision,
 		Policy:         snapshot,

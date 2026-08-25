@@ -228,7 +228,6 @@ func (s *Scheduler) consider(
 		Namespace:      ref.Namespace,
 		Service:        ref.Service,
 		Origin:         OriginSchedule,
-		Trigger:        TriggerSchedule,
 		Slot:           slot,
 		ClaimBy:        now.Add(every),
 		ConfigRevision: stored.Revision,

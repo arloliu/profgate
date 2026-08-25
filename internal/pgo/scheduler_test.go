@@ -471,7 +471,7 @@ func TestSchedulerAndOnDemandRace(t *testing.T) {
 		<-start
 		_, apiOutcome, apiErr = r.pub.Publish(ctx, r.jobsView(), res, PublishInput{
 			Namespace: "payment", Service: "payment-api",
-			Origin: OriginAPI, Trigger: TriggerAPI,
+			Origin:  OriginAPI,
 			ClaimBy: slotBase.Add(time.Hour), Policy: schedulerDefaults(t), CreatedBy: "tester",
 		})
 	}()
@@ -615,7 +615,7 @@ func TestSchedulerTransitionLogs(t *testing.T) {
 			for key, want := range map[string]any{
 				"namespace": "payment",
 				"service":   "payment-api",
-				"trigger":   string(TriggerSchedule),
+				"trigger":   string(OriginSchedule),
 				"instance":  "replica",
 				"attempt":   int64(0),
 				"reason":    "",

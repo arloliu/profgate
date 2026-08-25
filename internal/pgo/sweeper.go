@@ -240,7 +240,7 @@ func (s *Sweeper) flipExpired(ctx context.Context, jobs natskv.KV, key string, j
 	if _, err := jobs.Update(ctx, key, value, job.Revision); err != nil {
 		return
 	}
-	s.logTransition(rec)
+	logTransition(s.log, s.owner.Instance, rec)
 	s.recorder.Collection(string(StateExpired))
 }
 
@@ -325,7 +325,11 @@ func (s *Sweeper) sweepOrphans(
 			// A name this version does not write is left alone.
 			continue
 		}
-		if !s.orphaned(ctx, stores.Jobs, id, o.Name) {
+		rec, gone, err := readJob(ctx, stores.Jobs, id)
+		if err != nil {
+			continue
+		}
+		if !gone && (!terminal(rec.State) || (rec.Artifact != nil && rec.Artifact.Object == o.Name)) {
 			continue
 		}
 		if err := stores.Artifacts.Delete(ctx, o.Name); err != nil {
@@ -335,28 +339,6 @@ func (s *Sweeper) sweepOrphans(
 		}
 		s.recorder.SweeperDelete(sweepOrphan)
 	}
-}
-
-// orphaned reads the Collection an object's name encodes, fresh, and reports
-// whether the object belongs to nobody.
-// An unavailable read answers no, so the object survives to the next pass.
-func (s *Sweeper) orphaned(ctx context.Context, jobs natskv.KV, id, object string) bool {
-	e, err := jobs.Get(ctx, jobKey(id))
-	if errors.Is(err, natskv.ErrKeyNotFound) {
-		return true
-	}
-	if err != nil {
-		return false
-	}
-	var rec Record
-	if err := json.Unmarshal(e.Value, &rec); err != nil {
-		return false
-	}
-	if !terminal(rec.State) {
-		return false
-	}
-
-	return rec.Artifact == nil || rec.Artifact.Object != object
 }
 
 // sweepActive releases a Service whose Collection has ended without releasing
@@ -370,7 +352,8 @@ func (s *Sweeper) sweepActive(ctx context.Context, jobs natskv.KV) {
 	active := s.caches.activeEntries()
 	for _, ref := range sortedRefs(active) {
 		a := active[ref]
-		if !s.orphanedActive(ctx, jobs, a.ID) {
+		rec, gone, err := readJob(ctx, jobs, a.ID)
+		if err != nil || (!gone && !terminal(rec.State)) {
 			continue
 		}
 		if err := jobs.Delete(ctx, activeKey(ref.Namespace, ref.Service), a.Revision); err != nil {
@@ -378,23 +361,6 @@ func (s *Sweeper) sweepActive(ctx context.Context, jobs natskv.KV) {
 		}
 		s.recorder.SweeperDelete(sweepActive)
 	}
-}
-
-// orphanedActive reports whether the Collection an active key names has ended.
-func (s *Sweeper) orphanedActive(ctx context.Context, jobs natskv.KV, id string) bool {
-	e, err := jobs.Get(ctx, jobKey(id))
-	if errors.Is(err, natskv.ErrKeyNotFound) {
-		return true
-	}
-	if err != nil {
-		return false
-	}
-	var rec Record
-	if err := json.Unmarshal(e.Value, &rec); err != nil {
-		return false
-	}
-
-	return terminal(rec.State)
 }
 
 // sweepProbes removes what a preflight that died between a probe's create and
@@ -440,20 +406,6 @@ func (s *Sweeper) sweepProbes(
 		}
 		s.recorder.SweeperDelete(sweepProbe)
 	}
-}
-
-// logTransition emits the one transition record for the state this sweeper
-// commits, and nothing else does.
-func (s *Sweeper) logTransition(rec Record) {
-	s.log.Info("collection transition",
-		"collection", rec.ID,
-		"namespace", rec.Namespace,
-		"service", rec.Service,
-		"state", string(rec.State),
-		"attempt", rec.Attempt,
-		"reason", rec.Reason,
-		"instance", s.owner.Instance,
-	)
 }
 
 // objectNames is the set of names one listing showed.

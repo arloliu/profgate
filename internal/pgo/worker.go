@@ -280,7 +280,7 @@ func (w *Worker) terminate(ctx context.Context, jobs natskv.KV, rec Record, rev 
 	if _, err := jobs.Update(ctx, jobKey(rec.ID), value, rev); err != nil {
 		return
 	}
-	w.logTransition(rec)
+	logTransition(w.log, w.owner.Instance, rec)
 	w.recorder.Collection(string(StateFailed))
 	w.releaseActive(ctx, jobs, rec)
 }
@@ -356,7 +356,7 @@ func (w *Worker) claim(ctx context.Context, stores natskv.Stores, rec Record, re
 		return
 	}
 
-	w.logTransition(rec)
+	logTransition(w.log, w.owner.Instance, rec)
 	w.recorder.CollectionsActive(1)
 	w.startOwner(stores, rec, newRev)
 }
@@ -584,7 +584,7 @@ func (w *Worker) finish(
 		return
 	}
 
-	w.logTransition(proposed)
+	logTransition(w.log, w.owner.Instance, proposed)
 	w.recorder.Collection(string(proposed.State))
 	if proposed.State == StateCompleted && proposed.StartedAt != nil {
 		w.recorder.CollectionDuration(now.Sub(*proposed.StartedAt))
@@ -623,20 +623,6 @@ func (w *Worker) logLostRecord(kv natskv.KV, entry Record) {
 	}
 	w.log.Info("pgo: collection moved under its owner",
 		"collection", entry.ID, "state", string(rec.State), "reason", rec.Reason, "instance", w.owner.Instance)
-}
-
-// logTransition emits the one transition record for a state this worker
-// commits, and nothing else does.
-func (w *Worker) logTransition(rec Record) {
-	w.log.Info("collection transition",
-		"collection", rec.ID,
-		"namespace", rec.Namespace,
-		"service", rec.Service,
-		"state", string(rec.State),
-		"attempt", rec.Attempt,
-		"reason", rec.Reason,
-		"instance", w.owner.Instance,
-	)
 }
 
 // leaseCutoff cancels the work context when the committed lease is about to

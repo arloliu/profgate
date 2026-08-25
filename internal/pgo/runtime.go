@@ -3,6 +3,7 @@ package pgo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -271,16 +272,53 @@ func (s *Session) ReleaseActive(ctx context.Context, rec Record) {
 // Whichever conditional update wins owns them, so no transition is counted
 // twice however many replicas raced for it.
 func (s *Session) RecordTransition(rec Record) {
-	s.b.Log.Info("collection transition",
+	logTransition(s.b.Log, s.b.Instance, rec)
+	s.b.Recorder.Collection(string(rec.State))
+}
+
+// logTransition emits the one transition record for a state its caller has
+// committed.
+// Every transition is logged by whichever component commits it and by nothing
+// else, so no transition is recorded twice.
+// extra carries what a single caller adds: the publisher names what asked for
+// the publication, and no other caller passes anything.
+func logTransition(log *slog.Logger, instance string, rec Record, extra ...slog.Attr) {
+	args := []any{
 		"collection", rec.ID,
 		"namespace", rec.Namespace,
 		"service", rec.Service,
 		"state", string(rec.State),
 		"attempt", rec.Attempt,
 		"reason", rec.Reason,
-		"instance", s.b.Instance,
-	)
-	s.b.Recorder.Collection(string(rec.State))
+		"instance", instance,
+	}
+	for _, a := range extra {
+		args = append(args, a)
+	}
+	log.Info("collection transition", args...)
+}
+
+// readJob reads job.<id> fresh, past every cache, and reports whether the
+// record is gone.
+// gone is true only for a record that no longer exists, which is the one
+// absence a caller may act on;
+// an error means the read said nothing at all, and every caller keeps what it
+// holds, so a record it could not read never gives up a reservation, an active
+// key, or an artifact.
+func readJob(ctx context.Context, jobs natskv.KV, id string) (Record, bool, error) {
+	e, err := jobs.Get(ctx, jobKey(id))
+	if errors.Is(err, natskv.ErrKeyNotFound) {
+		return Record{}, true, nil
+	}
+	if err != nil {
+		return Record{}, false, err
+	}
+	var rec Record
+	if err := json.Unmarshal(e.Value, &rec); err != nil {
+		return Record{}, false, fmt.Errorf("pgo: read record %s: %w", id, err)
+	}
+
+	return rec, false, nil
 }
 
 // releaseActive deletes a Service's active key when it names this Collection.

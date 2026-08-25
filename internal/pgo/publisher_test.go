@@ -27,7 +27,7 @@ func (r *replica) publishOne(t *testing.T, jobs natskv.KV, ns, svc string) (stri
 
 	return r.pub.Publish(ctx, jobs, res, PublishInput{
 		Namespace: ns, Service: svc,
-		Origin: OriginAPI, Trigger: TriggerAPI,
+		Origin:    OriginAPI,
 		ClaimBy:   r.clock.Now().Add(time.Hour),
 		Policy:    schedulerDefaults(t),
 		CreatedBy: "tester",
