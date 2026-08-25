@@ -27,6 +27,15 @@ var scenarios = [...]Scenario{
 	{Name: "rbac"},
 	{Name: "replicas agree", NeedsPodReach: true},
 	{Name: "api outage", NeedsPodReach: true, NeedsNetworkPolicy: true},
+	{Name: "pgo-on-demand", NeedsPodReach: true},
+	{Name: "pgo-scheduled-slot", NeedsPodReach: true},
+	{Name: "pgo-cancel", NeedsPodReach: true},
+	{Name: "pgo-version-conflict", NeedsPodReach: true},
+	{Name: "pgo-reclaim", NeedsPodReach: true},
+	{Name: "pgo-realm-flags"},
+	{Name: "pgo-disabled"},
+	{Name: "pgo-clusterrole"},
+	{Name: "pgo-preflight-negative"},
 }
 
 // Scenarios returns a copy of the complete, ordered scenario metadata.

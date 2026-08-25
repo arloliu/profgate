@@ -897,7 +897,17 @@ func deleteReducedGateway(t *testing.T, h *Harness, name string) {
 	check("clusterrole", h.Client.RbacV1().ClusterRoles().Delete(ctx, name, opts))
 }
 
-// waitCrashLoop polls until a Pod matching selector reports CrashLoopBackOff and returns its name.
+// waitCrashLoop polls until a Pod matching selector is crash-looping and returns its name.
+//
+// Looping is read as: the container has been restarted more than once, its last
+// run ended non-zero, and it is not sitting in a finished run right now —
+// it is either running again or held back by the kubelet.
+// The CrashLoopBackOff waiting reason alone is not something to wait for,
+// because a container that lives a few seconds before it exits spends its whole
+// backoff reported as terminated and never carries that reason.
+// Waiting for a moment when the container is not terminated is also what the
+// callers need: they read the previous run's log, and while the current run is
+// itself finished that run is one further back than the node keeps.
 func waitCrashLoop(t *testing.T, h *Harness, ns, selector string) string {
 	t.Helper()
 	var name string
@@ -908,7 +918,8 @@ func waitCrashLoop(t *testing.T, h *Harness, ns, selector string) string {
 		}
 		for _, p := range list.Items {
 			for _, cs := range p.Status.ContainerStatuses {
-				if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+				last := cs.LastTerminationState.Terminated
+				if cs.RestartCount > 1 && last != nil && last.ExitCode != 0 && cs.State.Terminated == nil {
 					name = p.Name
 					return true, nil
 				}
@@ -918,7 +929,7 @@ func waitCrashLoop(t *testing.T, h *Harness, ns, selector string) string {
 	})
 	if err != nil {
 		_ = h.kubectl(t.Context(), "get", "pods", "-n", ns, "-l", selector, "-o", "wide")
-		t.Fatalf("no Pod matching %s reached CrashLoopBackOff within %s: %v", selector, crashDeadline, err)
+		t.Fatalf("no Pod matching %s crash-looped within %s: %v", selector, crashDeadline, err)
 	}
 	return name
 }

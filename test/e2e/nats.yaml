@@ -1,0 +1,85 @@
+# The NATS JetStream server the PGO scenarios keep their control-plane state
+# in. It carries no namespace: the harness applies it into the gateway
+# namespace for the shared gateways, and the preflight scenario applies a
+# second copy into its own namespace so it can re-provision a bucket without
+# disturbing gateways that are watching one.
+#
+# The server runs in operator mode against an account the harness mints for the
+# run; nats-config holds that configuration and the harness creates it before
+# this manifest is applied. JetStream, its file store, and the monitoring
+# listener come from the arguments, so the ConfigMap carries authentication and
+# nothing else.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  labels:
+    app.kubernetes.io/name: nats
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nats
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nats
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.11-alpine
+          args:
+            - "--config"
+            - "/etc/nats/nats.conf"
+            - "--jetstream"
+            - "--store_dir"
+            - "/data"
+            - "--http_port"
+            - "8222"
+          ports:
+            - name: client
+              containerPort: 4222
+              protocol: TCP
+            - name: monitor
+              containerPort: 8222
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            periodSeconds: 1
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nats
+              readOnly: true
+            - name: store
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: nats-config
+        # The file store lives and dies with the Pod: every run mints a new
+        # account, so nothing a previous run wrote could be read anyway.
+        - name: store
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  labels:
+    app.kubernetes.io/name: nats
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: client
+      protocol: TCP
+    - name: monitor
+      port: 8222
+      targetPort: monitor
+      protocol: TCP

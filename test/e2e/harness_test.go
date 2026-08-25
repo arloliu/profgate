@@ -3,8 +3,10 @@
 package e2e
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,14 +15,20 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nkeys"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +45,11 @@ const (
 	gatewayNamespace = "profgate"
 	// gatewayDeployment is the shipped Deployment's name.
 	gatewayDeployment = "profgate"
+	// gatewayConfigMap is the shipped ConfigMap the Deployment reads its
+	// configuration from.
+	gatewayConfigMap = "profgate-config"
+	// gatewayContainer is the container the shipped Deployment runs the gateway in.
+	gatewayContainer = "profgate"
 	// gatewaySelector selects the shared gateway Pods.
 	gatewaySelector = "app.kubernetes.io/name=profgate"
 	// gatewayReplicas is how many gateway Pods the shipped base runs; the harness port-forwards to each.
@@ -51,6 +64,36 @@ const (
 	gatewayAPIPort = "8080"
 	gatewayOpsPort = "9090"
 	testAppPort    = "6060"
+
+	// natsImage is the JetStream server the PGO scenarios keep their state in.
+	// TestMain pulls it and loads it onto the node itself, so no node pulls it
+	// and no lane depends on a registry for it.
+	natsImage = "nats:2.11-alpine"
+	// natsName is the Deployment, Service, and label value in nats.yaml.
+	natsName = "nats"
+	// natsManifest is applied into a namespace by the harness; paths resolve
+	// from the module root.
+	natsManifest = "test/e2e/nats.yaml"
+	// natsConfigMap is the ConfigMap nats.yaml mounts the server configuration
+	// from; the harness writes it, because it holds the run's account.
+	natsConfigMap = "nats-config"
+
+	natsClientPort  = "4222"
+	natsMonitorPort = "8222"
+
+	// credsSecret is the Secret deploy/base mounts, credsSecretKey the entry in
+	// it, and credsFile where the pair appears in the container.
+	credsSecret    = "profgate-nats-creds" //nolint:gosec // the Secret's name, not its contents
+	credsSecretKey = "nats.creds"
+	credsFile      = "/etc/profgate/nats/nats.creds" //nolint:gosec // a path, not a credential
+
+	// The three stores of the bucket contract.
+	configBucket    = "PROFGATE_CONFIG"
+	jobsBucket      = "PROFGATE_JOBS"
+	artifactsBucket = "PROFGATE_ARTIFACTS"
+
+	// natsDeadline bounds one harness call against NATS.
+	natsDeadline = 30 * time.Second
 
 	// rolloutTimeout bounds the wait for the gateway Deployment, including image start on a cold node.
 	rolloutTimeout = 3 * time.Minute
@@ -68,7 +111,10 @@ type Harness struct {
 	Cluster  string               // kind cluster name
 	Client   kubernetes.Interface // tester kubeconfig
 	Gateways [2]*http.Client      // through standing port-forwards opened in TestMain
+	NATS     *natsServer          // the JetStream server the PGO scenarios run against
 	scenario *Scenario            // set by TestScenarios before Run
+
+	stopGateways func() // closes the standing gateway forwards; RefreshGateways replaces them
 
 	root       string // module root, where ko and kustomize paths resolve
 	kubeconfig string // the tester's kubeconfig, written by kind
@@ -94,6 +140,15 @@ func runners() map[string]func(t *testing.T, h *Harness) {
 		"rbac":                           scenarioRBAC,
 		"replicas agree":                 scenarioReplicasAgree,
 		"api outage":                     scenarioAPIOutage,
+		"pgo-on-demand":                  scenarioPGOOnDemand,
+		"pgo-scheduled-slot":             scenarioPGOScheduledSlot,
+		"pgo-cancel":                     scenarioPGOCancel,
+		"pgo-version-conflict":           scenarioPGOVersionConflict,
+		"pgo-reclaim":                    scenarioPGOReclaim,
+		"pgo-realm-flags":                scenarioPGORealmFlags,
+		"pgo-disabled":                   scenarioPGODisabled,
+		"pgo-clusterrole":                scenarioPGOClusterRole,
+		"pgo-preflight-negative":         scenarioPGOPreflightNegative,
 	}
 }
 
@@ -143,6 +198,9 @@ func TestMain(m *testing.M) {
 	if err := h.kind(ctx, "load", "docker-image", "--name", h.Cluster, gatewayImage, testAppImage); err != nil {
 		fail("kind load", err)
 	}
+	if err := h.loadNATSImage(ctx); err != nil {
+		fail("load nats image", err)
+	}
 
 	kubeconfigDir, err := os.MkdirTemp("", "profgate-e2e-")
 	if err != nil {
@@ -151,11 +209,36 @@ func TestMain(m *testing.M) {
 	if err := h.connect(ctx, filepath.Join(kubeconfigDir, "kubeconfig")); err != nil {
 		fail("connect", err)
 	}
+	// The stores must exist and hold the run's credentials before any gateway
+	// starts: NATS preflight is fatal, so a gateway that came up first would
+	// exit instead of waiting.
+	if err := h.createNamespace(ctx, gatewayNamespace); err != nil {
+		fail("gateway namespace", err)
+	}
+	nsrv, err := h.deployNATS(ctx, gatewayNamespace)
+	if err != nil {
+		fail("deploy nats", err)
+	}
+	h.NATS = nsrv
+	if err := nsrv.provisionStores(ctx, 0); err != nil {
+		fail("provision stores", err)
+	}
+	pub, sub, err := gatewayPermissions(h.root)
+	if err != nil {
+		fail("gateway nats permissions", err)
+	}
+	user, err := nsrv.ID.user("profgate", pub, sub)
+	if err != nil {
+		fail("gateway nats user", err)
+	}
+	if err := h.applyCredsSecret(ctx, gatewayNamespace, user.Creds); err != nil {
+		fail("gateway credentials", err)
+	}
 	if err := h.deployGateway(ctx); err != nil {
 		h.dumpGateway(ctx)
 		fail("deploy gateway", err)
 	}
-	stopForwards, err := h.forwardGateways(ctx)
+	h.stopGateways, err = h.forwardGateways(ctx)
 	if err != nil {
 		fail("port-forward gateways", err)
 	}
@@ -163,7 +246,8 @@ func TestMain(m *testing.M) {
 	harness = h
 	code := m.Run()
 
-	stopForwards()
+	h.stopGateways()
+	nsrv.close()
 	_ = os.RemoveAll(kubeconfigDir)
 	if !keep {
 		if err := h.kind(ctx, "delete", "cluster", "--name", h.Cluster); err != nil {
@@ -259,6 +343,86 @@ func (h *Harness) buildImages(ctx context.Context) error {
 	return nil
 }
 
+// loadNATSImage pulls the NATS server and loads it onto the node.
+// The two images ko builds carry one platform each and go in directly, but
+// nats is published as a multi-platform index: a plain export of it names
+// every platform's manifest while the daemon holds only the blobs of the one
+// it pulled, and the node's import rejects the archive for the digests that
+// are missing.
+// Exporting the node's own platform alone leaves an archive whose every
+// reference resolves.
+// That export still carries the attestation manifest attached to the platform
+// manifest, which older node containerd unpacks as an image and rejects, so
+// the archive goes to the node without its OCI index.
+func (h *Harness) loadNATSImage(ctx context.Context) error {
+	if err := h.run(ctx, nil, "docker", "pull", natsImage); err != nil {
+		return fmt.Errorf("pull %s: %w", natsImage, err)
+	}
+	dir, err := os.MkdirTemp("", "profgate-e2e-image-")
+	if err != nil {
+		return fmt.Errorf("image archive directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	archive := filepath.Join(dir, "nats.tar")
+	if err := h.run(ctx, nil, "docker", "save", "--platform", "linux/"+runtime.GOARCH,
+		"--output", archive, natsImage); err != nil {
+		return fmt.Errorf("save %s: %w", natsImage, err)
+	}
+	loadable := filepath.Join(dir, "nats-docker.tar")
+	if err := dropOCIIndex(archive, loadable); err != nil {
+		return fmt.Errorf("rewrite %s archive: %w", natsImage, err)
+	}
+	if err := h.kind(ctx, "load", "image-archive", "--name", h.Cluster, loadable); err != nil {
+		return fmt.Errorf("load %s: %w", natsImage, err)
+	}
+	return nil
+}
+
+// ociIndexMembers are the archive entries that make a Docker export an OCI
+// layout. Dropping them leaves manifest.json as the only entry point, which
+// names the image and none of the manifests attached to it.
+var ociIndexMembers = map[string]bool{"index.json": true, "oci-layout": true}
+
+// dropOCIIndex copies the tar at src to dst without the OCI index members.
+func dropOCIIndex(src, dst string) error {
+	in, err := os.Open(src) //nolint:gosec // src is the archive the harness just wrote
+	if err != nil {
+		return fmt.Errorf("open archive: %w", err)
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.Create(dst) //nolint:gosec // dst is a path in the harness's own temporary directory
+	if err != nil {
+		return fmt.Errorf("create archive: %w", err)
+	}
+	defer func() { _ = out.Close() }()
+
+	tr := tar.NewReader(in)
+	tw := tar.NewWriter(out)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read archive: %w", err)
+		}
+		if ociIndexMembers[path.Clean(hdr.Name)] {
+			continue
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return fmt.Errorf("write %s: %w", hdr.Name, err)
+		}
+		if _, err := io.CopyN(tw, tr, hdr.Size); err != nil && !errors.Is(err, io.EOF) {
+			return fmt.Errorf("copy %s: %w", hdr.Name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("close archive: %w", err)
+	}
+
+	return out.Close()
+}
+
 // connect writes the cluster's kubeconfig to path and builds the tester's client from it.
 func (h *Harness) connect(ctx context.Context, path string) error {
 	kubeconfig, err := h.output(ctx, "mise", "x", "kind@"+h.Lane.Kind, "--", "kind", "get", "kubeconfig", "--name", h.Cluster)
@@ -292,7 +456,8 @@ func (h *Harness) deployGateway(ctx context.Context) error {
 	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("get deployment %s: %w", gatewayDeployment, err)
 	}
-	if err := h.apply(ctx, gatewayNamespace, "default"); err != nil {
+	cfg := gatewayConfig(gatewayConfigOptions{NATSURL: natsURL(gatewayNamespace), RealmPGO: true})
+	if err := h.apply(ctx, gatewayNamespace, "default", configPatch(gatewayConfigMap, cfg)); err != nil {
 		return err
 	}
 	if existed {
@@ -497,16 +662,30 @@ func (h *Harness) waitNamespaceGone(ctx context.Context, name string) error {
 // Apply renders the named overlay under test/e2e/overlays into namespace ns and applies it.
 // Cluster-scoped objects keep their names, so two tests applying the same overlay would collide;
 // the reduced overlays are named apart from the base for that reason.
-func (h *Harness) Apply(t *testing.T, ns, overlay string) {
+func (h *Harness) Apply(t *testing.T, ns, overlay string, patches ...patch) {
 	t.Helper()
-	if err := h.apply(t.Context(), ns, overlay); err != nil {
+	if err := h.apply(t.Context(), ns, overlay, patches...); err != nil {
 		t.Fatal(err)
 	}
 }
 
+// patch is one kustomize patch applied over an overlay: the file name it is
+// written under, the resource it selects, and the manifest fragment it holds.
+// The selector is written out rather than left to the fragment's own metadata,
+// because a resource the overlay inherits from deploy/base already carries a
+// namespace and one written in the overlay does not,
+// so a fragment that matched by its metadata would have to know which it is.
+type patch struct {
+	file string
+	kind string
+	name string
+	body string
+}
+
 // apply wraps the overlay in a kustomization that sets the namespace,
 // which also rewrites the ServiceAccount namespace in the overlay's ClusterRoleBinding subjects.
-func (h *Harness) apply(ctx context.Context, ns, overlay string) error {
+// The patches, when any are given, are written beside the wrapper and merged over the overlay.
+func (h *Harness) apply(ctx context.Context, ns, overlay string, patches ...patch) error {
 	dir, err := os.MkdirTemp("", "profgate-overlay-")
 	if err != nil {
 		return fmt.Errorf("overlay dir: %w", err)
@@ -518,6 +697,15 @@ func (h *Harness) apply(ctx context.Context, ns, overlay string) error {
 		return fmt.Errorf("overlay path: %w", err)
 	}
 	wrapper := fmt.Sprintf("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nnamespace: %s\nresources:\n  - %s\n", ns, target)
+	if len(patches) > 0 {
+		wrapper += "patches:\n"
+		for _, p := range patches {
+			wrapper += fmt.Sprintf("  - path: %s\n    target:\n      kind: %s\n      name: %s\n", p.file, p.kind, p.name)
+			if err := os.WriteFile(filepath.Join(dir, p.file), []byte(p.body), 0o600); err != nil {
+				return fmt.Errorf("write patch %s: %w", p.file, err)
+			}
+		}
+	}
 	if err := os.WriteFile(filepath.Join(dir, "kustomization.yaml"), []byte(wrapper), 0o600); err != nil {
 		return fmt.Errorf("write kustomization: %w", err)
 	}
@@ -525,6 +713,117 @@ func (h *Harness) apply(ctx context.Context, ns, overlay string) error {
 		return fmt.Errorf("apply overlay %s into %s: %w", overlay, ns, err)
 	}
 	return nil
+}
+
+// gatewayConfigOptions is what varies between the gateways the suite runs.
+type gatewayConfigOptions struct {
+	// NATSURL turns PGO on: an empty one leaves out both the nats and the pgo
+	// block, which is a gateway with PGO disabled.
+	NATSURL string
+	// RealmPGO writes the realm's three PGO flags as true.
+	// A realm without the block has every flag false.
+	RealmPGO bool
+}
+
+// gatewayConfig renders the configuration one gateway runs with:
+// the shipped base's, with the realm wide open, plus what PGO needs.
+// minEvery is a minute so a scheduled slot fires inside a test rather than a
+// quarter of an hour later, leaseTTL the lowest the ceiling admits so a reclaim
+// waits thirty seconds rather than a minute, the default jitter is the smallest
+// value that is not the zero one the loader reads as unset,
+// and the sampling defaults are seconds so a Collection that names none finishes
+// while the test watches it.
+func gatewayConfig(o gatewayConfigOptions) string {
+	var b strings.Builder
+	b.WriteString(`server:
+  listen: ":8080"
+  opsListen: ":9090"
+discovery:
+  versionLabel: app.kubernetes.io/version
+  pprof:
+    port: 6060
+limits:
+  cpuSeconds: 60
+  traceSeconds: 60
+  maxConcurrentProfiles: 16
+auth:
+  mode: disabled
+  anonymousRealm: developer
+`)
+	if o.NATSURL != "" {
+		fmt.Fprintf(&b, `nats:
+  url: %s
+  credsFile: %s
+pgo:
+  enabled: true
+  configAPI: enabled
+  leaseTTL: 30s
+  limits:
+    minEvery: 1m
+  defaults:
+    schedule:
+      every: 1m
+      jitter: 1s
+    sampling:
+      duration: 2s
+      rounds: 1
+      roundInterval: 1s
+`, o.NATSURL, credsFile)
+	}
+	b.WriteString(`realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
+`)
+	if o.RealmPGO {
+		b.WriteString(`    pgo:
+      read: true
+      collect: true
+      configure: true
+`)
+	}
+	return b.String()
+}
+
+// credsMountPatch adds the credentials mount deploy/base carries to a gateway
+// Deployment an overlay wrote without one.
+// A gateway configured for PGO refuses to start when the file its configuration
+// names is not readable, so an overlay that gains the configuration needs the
+// mount with it.
+func credsMountPatch(deployment string) patch {
+	return patch{file: "deployment.yaml", kind: "Deployment", name: deployment, body: fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %s
+spec:
+  template:
+    spec:
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: profgate
+          volumeMounts:
+            - name: %s
+              mountPath: %s
+              readOnly: true
+      volumes:
+        - name: %s
+          secret:
+            secretName: %s
+            defaultMode: 0440
+            optional: true
+`, deployment, credsSecret, filepath.Dir(credsFile)+"/", credsSecret, credsSecret)}
+}
+
+// configPatch replaces the configuration in the named gateway ConfigMap.
+func configPatch(name, cfg string) patch {
+	var body strings.Builder
+	fmt.Fprintf(&body, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\ndata:\n  config.yaml: |\n", name)
+	for _, line := range strings.Split(strings.TrimRight(cfg, "\n"), "\n") {
+		body.WriteString("    " + line + "\n")
+	}
+	return patch{file: "configmap.yaml", kind: "ConfigMap", name: name, body: body.String()}
 }
 
 // ForwardTestApp opens a port-forward to a test-app Pod's pprof port and returns the local base URL.
@@ -616,6 +915,38 @@ func poll(ctx context.Context, timeout time.Duration, check func(context.Context
 	}
 }
 
+// CrashGateway stops the named gateway Pod's container without letting the
+// gateway drain.
+// Deleting the Pod does not stop the gateway: it is a SIGTERM the gateway
+// answers by draining, and a drain keeps the worker running, so an owner whose
+// kubelet lets the drain run its course finishes or fails its in-flight
+// Collection instead of leaving a live lease behind.
+// The container's exit is the crash the reclaim path is about.
+func (h *Harness) CrashGateway(t *testing.T, pod string) {
+	t.Helper()
+	ctx := t.Context()
+	p, err := h.Client.CoreV1().Pods(gatewayNamespace).Get(ctx, pod, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("read pod %s: %v", pod, err)
+	}
+	// kind runs a node in a Docker container of the node's own name, so the
+	// Pod's node names the container its crictl is reached through.
+	node := p.Spec.NodeName
+	ids, err := h.output(ctx, "docker", "exec", node, "crictl", "ps", "--quiet",
+		"--label", "io.kubernetes.pod.name="+pod,
+		"--label", "io.kubernetes.container.name="+gatewayContainer)
+	if err != nil {
+		t.Fatalf("list containers of %s on %s: %v", pod, node, err)
+	}
+	// An empty list is a container that is already gone, which is the state the
+	// caller asked for.
+	for _, id := range strings.Fields(ids) {
+		if err := h.run(ctx, nil, "docker", "exec", node, "crictl", "stop", "--timeout", "0", id); err != nil {
+			t.Fatalf("stop container %s of %s: %v", id, pod, err)
+		}
+	}
+}
+
 // kind runs the lane's pinned kind binary through mise.
 func (h *Harness) kind(ctx context.Context, args ...string) error {
 	return h.run(ctx, nil, "mise", append([]string{"x", "kind@" + h.Lane.Kind, "--", "kind"}, args...)...)
@@ -656,4 +987,518 @@ func (h *Harness) output(ctx context.Context, name string, args ...string) (stri
 		return "", fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return stdout.String(), nil
+}
+
+// natsIdentity is the operator, the system account, and the PROFGATE account
+// the harness mints for one NATS server.
+// Users are signed by the account key, so a scenario can mint one with reduced
+// permissions against a server that is already running:
+// the memory resolver holds the account, and every user the account signs is
+// accepted without touching the server's configuration.
+type natsIdentity struct {
+	operatorJWT string
+	sysPub      string
+	sysJWT      string
+	accountPub  string
+	accountJWT  string
+	accountKey  nkeys.KeyPair
+}
+
+// newNATSIdentity mints one run's operator, system account, and PROFGATE
+// account, with JetStream unlimited on the account that owns the stores.
+func newNATSIdentity() (*natsIdentity, error) {
+	operatorKey, err := nkeys.CreateOperator()
+	if err != nil {
+		return nil, fmt.Errorf("operator key: %w", err)
+	}
+	operatorPub, err := operatorKey.PublicKey()
+	if err != nil {
+		return nil, fmt.Errorf("operator key: %w", err)
+	}
+	sysKey, err := nkeys.CreateAccount()
+	if err != nil {
+		return nil, fmt.Errorf("system account key: %w", err)
+	}
+	sysPub, err := sysKey.PublicKey()
+	if err != nil {
+		return nil, fmt.Errorf("system account key: %w", err)
+	}
+	accountKey, err := nkeys.CreateAccount()
+	if err != nil {
+		return nil, fmt.Errorf("account key: %w", err)
+	}
+	accountPub, err := accountKey.PublicKey()
+	if err != nil {
+		return nil, fmt.Errorf("account key: %w", err)
+	}
+
+	sysClaims := jwt.NewAccountClaims(sysPub)
+	sysClaims.Name = "SYS"
+	sysJWT, err := sysClaims.Encode(operatorKey)
+	if err != nil {
+		return nil, fmt.Errorf("system account jwt: %w", err)
+	}
+	accountClaims := jwt.NewAccountClaims(accountPub)
+	accountClaims.Name = "PROFGATE"
+	// Without an explicit grant JetStream is off for the account and every
+	// store operation fails as if the buckets did not exist.
+	accountClaims.Limits.DiskStorage = -1
+	accountClaims.Limits.MemoryStorage = -1
+	accountClaims.Limits.Streams = -1
+	accountJWT, err := accountClaims.Encode(operatorKey)
+	if err != nil {
+		return nil, fmt.Errorf("account jwt: %w", err)
+	}
+	operatorClaims := jwt.NewOperatorClaims(operatorPub)
+	operatorClaims.Name = "profgate-e2e"
+	operatorClaims.SystemAccount = sysPub
+	operatorJWT, err := operatorClaims.Encode(operatorKey)
+	if err != nil {
+		return nil, fmt.Errorf("operator jwt: %w", err)
+	}
+
+	return &natsIdentity{
+		operatorJWT: operatorJWT,
+		sysPub:      sysPub,
+		sysJWT:      sysJWT,
+		accountPub:  accountPub,
+		accountJWT:  accountJWT,
+		accountKey:  accountKey,
+	}, nil
+}
+
+// serverConf is the nats-server configuration: who signs users, which account
+// is the system account, and the two account JWTs, resolved from memory.
+// JetStream, its store directory, and the monitoring listener are arguments in
+// nats.yaml, so this file carries authentication and nothing else.
+func (id *natsIdentity) serverConf() string {
+	return fmt.Sprintf(`operator: %q
+system_account: %q
+resolver: MEMORY
+resolver_preload: {
+  %s: %q
+  %s: %q
+}
+`, id.operatorJWT, id.sysPub, id.sysPub, id.sysJWT, id.accountPub, id.accountJWT)
+}
+
+// natsUser is one minted user: the credentials file a gateway mounts and the
+// JWT and seed the harness's own connections authenticate with directly.
+type natsUser struct {
+	Creds []byte
+	jwt   string
+	seed  string
+}
+
+// user mints a user of the PROFGATE account with exactly the permissions given.
+func (id *natsIdentity) user(name string, pub, sub []string) (natsUser, error) {
+	key, err := nkeys.CreateUser()
+	if err != nil {
+		return natsUser{}, fmt.Errorf("user key %s: %w", name, err)
+	}
+	userPub, err := key.PublicKey()
+	if err != nil {
+		return natsUser{}, fmt.Errorf("user key %s: %w", name, err)
+	}
+	seed, err := key.Seed()
+	if err != nil {
+		return natsUser{}, fmt.Errorf("user seed %s: %w", name, err)
+	}
+	claims := jwt.NewUserClaims(userPub)
+	claims.Name = name
+	claims.Pub.Allow = pub
+	claims.Sub.Allow = sub
+	userJWT, err := claims.Encode(id.accountKey)
+	if err != nil {
+		return natsUser{}, fmt.Errorf("user jwt %s: %w", name, err)
+	}
+	creds, err := jwt.FormatUserConfig(userJWT, seed)
+	if err != nil {
+		return natsUser{}, fmt.Errorf("user credentials %s: %w", name, err)
+	}
+	return natsUser{Creds: creds, jwt: userJWT, seed: string(seed)}, nil
+}
+
+// gatewayPermissions returns the publish and subscribe subjects
+// deploy/nats/account.conf grants.
+// The end-to-end gateway user is exactly the set the repository ships, so a
+// subject the gateway needs and the fragment omits fails the suite instead of
+// passing against a copy of the list that has drifted.
+func gatewayPermissions(root string) (pub, sub []string, err error) {
+	path := filepath.Join(root, "deploy", "nats", "account.conf")
+	b, err := os.ReadFile(path) //nolint:gosec // the path is composed from the module root
+	if err != nil {
+		return nil, nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var into *[]string
+	for _, line := range strings.Split(string(b), "\n") {
+		text := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(text, "publish:"):
+			into = &pub
+		case strings.HasPrefix(text, "subscribe:"):
+			into = &sub
+		case strings.HasPrefix(text, `"`) && strings.HasSuffix(text, `"`) && into != nil:
+			*into = append(*into, strings.Trim(text, `"`))
+		}
+	}
+	if len(pub) == 0 || len(sub) == 0 {
+		return nil, nil, fmt.Errorf("%s granted %d publish and %d subscribe subjects", path, len(pub), len(sub))
+	}
+	return pub, sub, nil
+}
+
+// without returns subjects with one entry removed, and fails when the entry was
+// not there: a reduced user must be reduced by something the full set granted.
+func without(subjects []string, drop string) ([]string, error) {
+	out := make([]string, 0, len(subjects))
+	for _, s := range subjects {
+		if s != drop {
+			out = append(out, s)
+		}
+	}
+	if len(out) == len(subjects) {
+		return nil, fmt.Errorf("deploy/nats/account.conf does not grant %q, so removing it reduces nothing", drop)
+	}
+	return out, nil
+}
+
+// natsServer is a running NATS Deployment: the identity its users are minted
+// from, an administrative connection through a standing port-forward, and the
+// monitoring endpoint the connection count is read from.
+type natsServer struct {
+	Namespace string
+	ID        *natsIdentity
+
+	conn    *nats.Conn
+	js      jetstream.JetStream
+	monitor string // http://127.0.0.1:<local port>
+	stop    func()
+}
+
+// natsURL is the in-cluster address of the server in ns.
+func natsURL(ns string) string {
+	return "nats://" + natsName + "." + ns + ".svc:" + natsClientPort
+}
+
+// deployNATS writes the server configuration, applies nats.yaml into ns, waits
+// for the rollout, and opens the administrative connection through a
+// port-forward.
+// A Deployment that already existed is restarted: every run mints a new
+// account, and a Pod still holding the previous one would reject every
+// connection this run makes.
+func (h *Harness) deployNATS(ctx context.Context, ns string) (*natsServer, error) {
+	id, err := newNATSIdentity()
+	if err != nil {
+		return nil, err
+	}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: natsConfigMap, Namespace: ns},
+		Data:       map[string]string{"nats.conf": id.serverConf()},
+	}
+	if err := h.applyConfigMap(ctx, ns, cm); err != nil {
+		return nil, err
+	}
+	_, err = h.Client.AppsV1().Deployments(ns).Get(ctx, natsName, metav1.GetOptions{})
+	existed := err == nil
+	if err != nil && !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("get deployment %s: %w", natsName, err)
+	}
+	if err := h.kubectl(ctx, "apply", "-n", ns, "-f", natsManifest); err != nil {
+		return nil, err
+	}
+	if existed {
+		if err := h.kubectl(ctx, "rollout", "restart", "deployment/"+natsName, "-n", ns); err != nil {
+			return nil, err
+		}
+	}
+	if err := h.kubectl(ctx, "rollout", "status", "deployment/"+natsName, "-n", ns,
+		"--timeout="+rolloutTimeout.String()); err != nil {
+		return nil, err
+	}
+	pod, err := h.waitOnePod(ctx, ns, "app.kubernetes.io/name="+natsName)
+	if err != nil {
+		return nil, err
+	}
+	ports, stop, err := h.forward(ctx, ns, pod, []string{"0:" + natsClientPort, "0:" + natsMonitorPort})
+	if err != nil {
+		return nil, fmt.Errorf("port-forward %s: %w", pod, err)
+	}
+	admin, err := id.user("harness", []string{">"}, []string{">"})
+	if err != nil {
+		stop()
+		return nil, err
+	}
+	conn, err := nats.Connect("nats://"+net.JoinHostPort("127.0.0.1", strconv.Itoa(int(ports[0]))),
+		nats.UserJWTAndSeed(admin.jwt, admin.seed), nats.Name("profgate-e2e-harness"))
+	if err != nil {
+		stop()
+		return nil, fmt.Errorf("connect to nats in %s: %w", ns, err)
+	}
+	js, err := jetstream.New(conn)
+	if err != nil {
+		conn.Close()
+		stop()
+		return nil, fmt.Errorf("jetstream in %s: %w", ns, err)
+	}
+	h.log.Info("nats", "namespace", ns, "pod", pod, "client", ports[0], "monitor", ports[1])
+
+	return &natsServer{
+		Namespace: ns,
+		ID:        id,
+		conn:      conn,
+		js:        js,
+		monitor:   "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(int(ports[1]))),
+		stop:      stop,
+	}, nil
+}
+
+// close ends the administrative connection and its port-forward.
+func (s *natsServer) close() {
+	s.conn.Close()
+	s.stop()
+}
+
+// provisionStores creates the three stores with the configuration of the bucket
+// contract: file storage, no TTL, and no size ceiling.
+// jobsTTL is zero for every caller but the preflight scenario, which provisions
+// a bucket the contract forbids on purpose.
+func (s *natsServer) provisionStores(ctx context.Context, jobsTTL time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, natsDeadline)
+	defer cancel()
+	buckets := []struct {
+		name string
+		ttl  time.Duration
+	}{{configBucket, 0}, {jobsBucket, jobsTTL}}
+	for _, b := range buckets {
+		_, err := s.js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+			Bucket:       b.name,
+			Storage:      jetstream.FileStorage,
+			History:      1,
+			TTL:          b.ttl,
+			MaxBytes:     -1,
+			MaxValueSize: -1,
+		})
+		if err != nil {
+			return fmt.Errorf("provision %s: %w", b.name, err)
+		}
+	}
+	_, err := s.js.CreateOrUpdateObjectStore(ctx, jetstream.ObjectStoreConfig{
+		Bucket:   artifactsBucket,
+		Storage:  jetstream.FileStorage,
+		TTL:      0,
+		MaxBytes: -1,
+	})
+	if err != nil {
+		return fmt.Errorf("provision %s: %w", artifactsBucket, err)
+	}
+	return nil
+}
+
+// purgeStores removes every key and object so the next scenario starts empty.
+// The buckets themselves are left alone: the gateways' watches and consumers
+// belong to the streams that exist now, and a recreated stream would leave them
+// watching nothing.
+func (s *natsServer) purgeStores(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, natsDeadline)
+	defer cancel()
+	for _, bucket := range []string{configBucket, jobsBucket} {
+		kv, err := s.js.KeyValue(ctx, bucket)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", bucket, err)
+		}
+		keys, err := kv.Keys(ctx)
+		if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+			return fmt.Errorf("list %s: %w", bucket, err)
+		}
+		for _, key := range keys {
+			if err := kv.Purge(ctx, key); err != nil {
+				return fmt.Errorf("purge %s %s: %w", bucket, key, err)
+			}
+		}
+	}
+	obs, err := s.js.ObjectStore(ctx, artifactsBucket)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", artifactsBucket, err)
+	}
+	infos, err := obs.List(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoObjectsFound) {
+		return fmt.Errorf("list %s: %w", artifactsBucket, err)
+	}
+	for _, info := range infos {
+		if err := obs.Delete(ctx, info.Name); err != nil {
+			return fmt.Errorf("delete %s %s: %w", artifactsBucket, info.Name, err)
+		}
+	}
+	return nil
+}
+
+// keys lists the keys of one KV bucket, empty when it holds none.
+func (s *natsServer) keys(ctx context.Context, bucket string) ([]string, error) {
+	kv, err := s.js.KeyValue(ctx, bucket)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", bucket, err)
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, fmt.Errorf("list %s: %w", bucket, err)
+	}
+	return keys, nil
+}
+
+// objects lists the names in the artifact store, empty when it holds none.
+func (s *natsServer) objects(ctx context.Context) ([]string, error) {
+	obs, err := s.js.ObjectStore(ctx, artifactsBucket)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", artifactsBucket, err)
+	}
+	infos, err := obs.List(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoObjectsFound) {
+		return nil, fmt.Errorf("list %s: %w", artifactsBucket, err)
+	}
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		names = append(names, info.Name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// recordsOf returns the Collection records of one Service, read from
+// PROFGATE_JOBS directly.
+// The API answers from a watched cache; a scenario that counts what the
+// schedulers wrote reads the durable keys instead.
+func (s *natsServer) recordsOf(ctx context.Context, ns, service string) ([]collectionRecord, error) {
+	kv, err := s.js.KeyValue(ctx, jobsBucket)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", jobsBucket, err)
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, fmt.Errorf("list %s: %w", jobsBucket, err)
+	}
+	var out []collectionRecord
+	for _, key := range keys {
+		if !strings.HasPrefix(key, "job.") {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("read %s %s: %w", jobsBucket, key, err)
+		}
+		var rec collectionRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			return nil, fmt.Errorf("decode %s %s: %w", jobsBucket, key, err)
+		}
+		if rec.Namespace == ns && rec.Service == service {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+// connections is the server's current client connection count, from the
+// monitoring endpoint.
+func (s *natsServer) connections(ctx context.Context) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.monitor+"/varz", nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("varz: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var varz struct {
+		Connections int `json:"connections"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&varz); err != nil {
+		return 0, fmt.Errorf("varz: %w", err)
+	}
+	return varz.Connections, nil
+}
+
+// applyConfigMap creates cm, or replaces the data of one that already exists.
+func (h *Harness) applyConfigMap(ctx context.Context, ns string, cm *corev1.ConfigMap) error {
+	api := h.Client.CoreV1().ConfigMaps(ns)
+	_, err := api.Create(ctx, cm, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = api.Update(ctx, cm, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		return fmt.Errorf("apply configmap %s/%s: %w", ns, cm.Name, err)
+	}
+	return nil
+}
+
+// applyCredsSecret creates or replaces the NATS credentials Secret in ns.
+// The harness holds the cluster's administrative kubeconfig; the gateway reads
+// the file through a mounted volume and needs no Secrets permission for it.
+func (h *Harness) applyCredsSecret(ctx context.Context, ns string, creds []byte) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: credsSecret, Namespace: ns},
+		Type:       corev1.SecretTypeOpaque,
+		Data:       map[string][]byte{credsSecretKey: creds},
+	}
+	api := h.Client.CoreV1().Secrets(ns)
+	_, err := api.Create(ctx, secret, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = api.Update(ctx, secret, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		return fmt.Errorf("apply secret %s/%s: %w", ns, credsSecret, err)
+	}
+	return nil
+}
+
+// waitOnePod blocks until exactly one ready, non-terminating Pod matches
+// selector and returns its name.
+func (h *Harness) waitOnePod(ctx context.Context, ns, selector string) (string, error) {
+	var name string
+	err := poll(ctx, rolloutTimeout, func(ctx context.Context) (bool, error) {
+		list, err := h.Client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		if err != nil {
+			return false, err
+		}
+		var ready []string
+		for i := range list.Items {
+			if list.Items[i].DeletionTimestamp == nil && podReady(&list.Items[i]) {
+				ready = append(ready, list.Items[i].Name)
+			}
+		}
+		if len(ready) != 1 {
+			return false, nil
+		}
+		name = ready[0]
+		return true, nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("wait for one ready pod matching %s in %s: %w", selector, ns, err)
+	}
+	return name, nil
+}
+
+// RefreshGateways reopens the standing port-forwards against the gateway Pods
+// running now.
+// A scenario that deletes a gateway Pod leaves its forward pointing at a Pod
+// that no longer exists, and every later scenario reads both replicas.
+// The context is the process's, not the test's:
+// the scenario that needs this calls it from a cleanup, which runs after the
+// test's context is cancelled, and the forwards it opens serve every scenario
+// after this one.
+func (h *Harness) RefreshGateways(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	if err := poll(ctx, rolloutTimeout, func(ctx context.Context) (bool, error) {
+		_, err := h.gatewayPods(ctx)
+		return err == nil, nil
+	}); err != nil {
+		t.Fatalf("gateways never returned to %d ready replicas: %v", gatewayReplicas, err)
+	}
+	h.stopGateways()
+	stop, err := h.forwardGateways(ctx)
+	if err != nil {
+		t.Fatalf("reopen gateway port-forwards: %v", err)
+	}
+	h.stopGateways = stop
 }

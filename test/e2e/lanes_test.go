@@ -217,6 +217,25 @@ func TestScenariosRegistry(t *testing.T) {
 		t.Fatal("\"convergence on ready\" flips readiness through the test app, so it must declare NeedsPodReach")
 	}
 
+	// The PGO scenarios that need the gateway to complete a proxy to a test-app
+	// Pod carry the same flag; nothing about NATS needs NetworkPolicy, so no PGO
+	// scenario declares that one and every lane runs all nine.
+	pgoPodReach := []string{"pgo-on-demand", "pgo-scheduled-slot", "pgo-cancel", "pgo-version-conflict", "pgo-reclaim"}
+	for _, name := range pgoPodReach {
+		j := slices.IndexFunc(all, func(s Scenario) bool { return s.Name == name })
+		if j < 0 {
+			t.Fatalf("no scenario named %q", name)
+		}
+		if !all[j].NeedsPodReach {
+			t.Fatalf("%q profiles a test-app Pod through the gateway, so it must declare NeedsPodReach", name)
+		}
+	}
+	for _, s := range all {
+		if strings.HasPrefix(s.Name, "pgo-") && s.NeedsNetworkPolicy {
+			t.Fatalf("%q declares NeedsNetworkPolicy; NATS needs none, so every lane must run it", s.Name)
+		}
+	}
+
 	// Scenarios hands out a copy: mutating it must not reach the registry.
 	all[i].Name = "mutated"
 	if Scenarios()[i].Name != "convergence on ready" {
@@ -233,7 +252,10 @@ func TestScenarioSkips(t *testing.T) {
 		{
 			name: "degraded lane skips every scenario that needs Pod reach",
 			lane: Lane{Name: "1.23", Frozen: true, Degraded: true, NetworkPolicy: true},
-			want: []string{"ineligible pods", "convergence on ready", "profiles parse", "replicas agree", "api outage"},
+			want: []string{
+				"ineligible pods", "convergence on ready", "profiles parse", "replicas agree", "api outage",
+				"pgo-on-demand", "pgo-scheduled-slot", "pgo-cancel", "pgo-version-conflict", "pgo-reclaim",
+			},
 		},
 		{
 			name: "lane without NetworkPolicy enforcement skips only api outage",

@@ -1,0 +1,15 @@
+# A one-replica gateway a PGO scenario owns, so it can run a configuration the
+# shared gateways must not have: PGO disabled, a realm without the PGO flags, or
+# credentials and stores that make NATS preflight fail.
+# Everything is named profgate-pgo and the ClusterRoleBinding reuses the shipped
+# ClusterRole, so the gateway's Kubernetes access is exactly the shipped one.
+# The scenario wraps this overlay in a kustomization that sets the namespace and
+# replaces the configuration; only one scenario may run it at a time, because
+# the ClusterRoleBinding is cluster-scoped.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - clusterrolebinding.yaml
+  - configmap.yaml
+  - deployment.yaml
