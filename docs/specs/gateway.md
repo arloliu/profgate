@@ -66,6 +66,13 @@ which is what makes the profiled replica predictable.
   Each is designed for in a later revision of this document;
   PGO collection is designed in [`pgo.md`](pgo.md).
   The seams that make them additive are called out where they occur.
+  Re-reading the API listener's certificate is not configuration hot-reload:
+  the two paths are fixed at startup and only the bytes they point at are read again (section 10).
+- Client-certificate authentication, ACME in the gateway process, TLS to application pprof ports,
+  and a redirect from plaintext to HTTPS.
+  A client certificate identifies a caller and therefore belongs to `auth.mode` (section 7.1),
+  not to the transport;
+  the certificate the API listener serves is produced by cert-manager or an operator and consumed from a mounted Secret.
 
 ---
 
@@ -74,7 +81,7 @@ which is what makes the profiled replica predictable.
 ```text
               Developers / CI
                      |
-                HTTP / HTTPS        (TLS terminates at the Ingress)
+                HTTP / HTTPS        (TLS terminates at the Ingress by default)
                      v
             +-----------------+
             | Ingress / LB    |
@@ -105,6 +112,14 @@ Two listeners:
 the **API listener** (`server.listen`, default `:8080`) serves `/v1` and is what the Ingress routes to;
 the **ops listener** (`server.opsListen`, default `:9090`) serves `/healthz`, `/readyz`, and `/metrics`,
 is reached only by the kubelet and the metrics scraper, and is never routed by the Ingress.
+
+The API listener serves plaintext HTTP unless `server.tls` names a certificate and a key (section 10),
+in which case it serves HTTPS on the same port under the same name.
+Ingress or mesh termination stays the shipped topology;
+`server.tls` is for the deployment that has no Ingress in front of the gateway,
+or a cluster that requires encryption in transit end to end.
+The ops listener is always plaintext, for the reason section 7.5 gives:
+its protection is a network property, and the kubelet's probe would skip verification anyway.
 
 ---
 
@@ -196,6 +211,14 @@ Ingress → API listener;
 kubelet and metrics scraper → ops listener;
 gateway → Kubernetes API;
 gateway → `PodIP:pprofPort`.
+
+The first flow is HTTPS when `server.tls` is configured and plaintext otherwise;
+the port and its name do not change with the scheme, so nothing else in this section moves.
+The other three are plaintext: the ops listener by the decision in section 7.5,
+and the pprof connections because application pprof endpoints are HTTP by convention.
+The certificate reaches the container through a mounted Secret,
+so the kubelet reads it and the gateway's ServiceAccount does not:
+serving HTTPS adds no Kubernetes permission and leaves section 3.1's seven tuples as they are.
 
 Application pprof ports must not be routed by application Ingress resources.
 Where the cluster enforces NetworkPolicy, the pprof port should admit only the gateway's namespace and Pod selector;
@@ -789,6 +812,13 @@ and refuses to proxy (section 5.6), which is the correct behavior, not a reason 
 | `profgate_confirm_total` (counter) | `result` (`ok`/`changed`/`unavailable`) |
 | `profgate_profiles_in_flight` (gauge) | — |
 | `profgate_discovery_synced` (gauge) | — |
+| `profgate_tls_reloads_total` (counter) | `result` (`applied`/`unchanged`/`failed`) |
+| `profgate_tls_certificate_expiry_seconds` (gauge) | — |
+
+The two TLS metrics exist only while `server.tls` is configured.
+`profgate_tls_certificate_expiry_seconds` holds the served leaf's `notAfter` as a Unix timestamp.
+A rotation that quietly stopped working is alertable from it,
+while the certificate the gateway still serves is valid.
 
 `profgate_request_duration_seconds` uses buckets `0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300` seconds,
 wide enough for the durations `limits.cpuSeconds` and `limits.traceSeconds` allow (section 6.3)
@@ -908,13 +938,29 @@ Because the overall request budget already includes confirmation, the drain boun
   invalid limits, unknown realm reference,
   and a request paused between realm evaluation and discovery while the config pointer is swapped,
   proving the request uses one snapshot.
+- `internal/tlscert` against files in a temporary directory:
+  the first load serves the leaf the files hold and `GetCertificate` reads no file afterwards;
+  rewriting both files with a second authority's pair and refreshing once serves the new leaf;
+  a rotation performed the way the kubelet performs one —
+  writing `..data_a` and `..data_b` directories and renaming a `..data` symlink over the old one —
+  is followed;
+  a mismatched or truncated pair on disk leaves the previous certificate in place and counts a `failed` reload;
+  and a refresh over unchanged files re-parses nothing.
+- `internal/config`: `server.tls` with both keys, neither, and one of the two;
+  a `certFile` naming a path that does not exist is fatal;
+  a `minVersion` outside `1.2` and `1.3` is rejected.
+- A handshake test on the API listener as `serve` builds it,
+  proving a client that pins the certificate's authority completes a handshake
+  and that replacing the files on disk changes which authority is accepted.
+  It is the one test that binds a loopback port ([`300-testing.md`](../../.agents/rules/300-testing.md)).
 - The golden ClusterRole test (section 3.1) parses `deploy/` and compares rule tuples.
 - A manifest test pins the gateway NetworkPolicy's selectors and ports and the Service's port list;
   the kind lanes cannot prove NetworkPolicy enforcement, only that the manifest is shaped as specified.
 - Chart tests render `deploy/chart/profgate` with the `helm` binary mise pins, and assert on the objects:
   the derived memory limit equals `PGOMemoryBytes` applied to the rendered ConfigMap loaded through `internal/config`,
   which also proves the rendered configuration parses;
-  `checksum/config` moves with a configuration change and stays put for an unrelated one;
+  `checksum/config` moves with a configuration change, with `tls.enabled`, and stays put for an unrelated one;
+  `tls.enabled` renders the certificate volume, its read-only mount, `defaultMode: 0440`, and a non-optional Secret;
   a null `fsGroup` renders no key;
   the ClusterRole rules match the base's;
   and `helm lint` passes.
@@ -1041,7 +1087,12 @@ Why kind rather than k3s for the old versions:
 9. With the gateway's egress to the API server blocked by a NetworkPolicy (`needsNetworkPolicy`),
    `/readyz` on both replicas stays `200`, the targets endpoint still answers from cache,
    and a profile request returns `503 discovery_unavailable` without the test app receiving a connection (`needsPodReach`, to read the test app's request counter).
-10. Every scenario runs on every lane whose capabilities it does not exclude;
+10. A gateway configured with `server.tls` serves `/v1` over HTTPS,
+    a client pinning a different authority is refused,
+    and replacing the Secret's contents with a certificate from a second authority makes the gateway serve the new one,
+    while the Pod's UID and restart count stay as they were.
+    The scenario reaches no application Pod: it exercises the gateway's own listener.
+11. Every scenario runs on every lane whose capabilities it does not exclude;
     a lane skips a scenario only by `degraded` or `networkPolicy`, and the skip is logged by scenario name.
 
 ### 9.5 Continuous integration
@@ -1086,6 +1137,9 @@ so a later hot-reload (`fuda/watcher`) is one goroutine and no change to request
 | `server.opsListen` | `PROFGATE_OPS_LISTEN` | `:9090` | restart | host:port, distinct from `listen` |
 | `server.logLevel` | `PROFGATE_LOG_LEVEL` | `info` | restart | `debug`, `info`, `warn`, `error` |
 | `server.drainDelay` | `PROFGATE_DRAIN_DELAY` | `5s` | restart | 0s–60s |
+| `server.tls.certFile` | `PROFGATE_TLS_CERT_FILE` | — | restart (path) | a readable file; set with `keyFile` or not at all |
+| `server.tls.keyFile` | `PROFGATE_TLS_KEY_FILE` | — | restart (path) | a readable file; pairs with `certFile` |
+| `server.tls.minVersion` | `PROFGATE_TLS_MIN_VERSION` | `1.2` | restart | `1.2`, `1.3` |
 | `discovery.versionLabel` | `PROFGATE_VERSION_LABEL` | `app.kubernetes.io/version` | restart | valid label key |
 | `discovery.pprof.port` | `PROFGATE_PPROF_PORT` | `6060` when `portName` is also absent | restart | 1–65535; exactly one of `port`/`portName` after normalization |
 | `discovery.pprof.portName` | `PROFGATE_PPROF_PORT_NAME` | — | restart | IANA service name (the Kubernetes container-port name rule) |
@@ -1122,6 +1176,8 @@ realms:
 
 `hot` marks a field a future reload may change in place;
 `restart` marks a field whose change requires a process restart.
+`restart (path)` marks a field whose path is fixed for the life of the process
+while the file's contents are read again: a rotated certificate is served without a restart.
 Only access policy (`realms`, `auth.anonymousRealm`) is hot:
 discovery fields are read inside `Targets()` and would otherwise need a snapshot threaded through the seam,
 the duration limits are coupled to the Deployment's grace period,
@@ -1135,6 +1191,28 @@ because a file that names the pprof port through `portName` leaves `port` absent
 and fuda fills an absent field from its `default` tag.
 
 Validation failures are fatal at startup and reported by `profgate config validate`.
+
+**`server.tls` is presence-implied**, like `nats.credsFile` and unlike `pgo.enabled`:
+it carries two paths and starts no subsystem, so there is no `enabled` flag to disagree with them.
+Neither path set is plaintext, which is the shipped default;
+both set is HTTPS on the API listener;
+exactly one set is a validation error naming the missing key.
+Both files are opened during validation, and the pair they hold is parsed at startup.
+A path that does not exist, or a certificate that does not match its key, exits the process,
+rather than leaving a listener that fails every handshake.
+
+**The certificate is re-read while the process runs.**
+The gateway keeps the parsed pair behind an atomic pointer and serves it from `tls.Config.GetCertificate`,
+so a handshake reads no file.
+A goroutine re-reads both paths every 30 seconds, hashes their contents,
+and parses and swaps only when the hash differs;
+a read or parse that fails leaves the previous pair in place, logs at warn, and counts a `failed` reload.
+The files are polled rather than watched.
+The kubelet replaces a Secret volume by writing a new `..data_<timestamp>` directory,
+then renaming the `..data` symlink over the old one,
+which leaves a watch armed on the file path pointing at the old inode.
+Polling also keeps the dependency set unchanged (section 11.1).
+The end-to-end delay after a Secret is updated is dominated by the kubelet's own sync period, not by this interval.
 
 ---
 
@@ -1151,6 +1229,11 @@ Validation failures are fatal at startup and reported by `profgate config valida
   a NetworkPolicy for the gateway Pods that admits the API port from the Ingress controller's namespace
   and the ops port from the monitoring namespace (both namespace selectors are kustomize-patched per cluster),
   and an example NetworkPolicy for application pprof ports.
+- The kustomize base serves plaintext HTTP.
+  `deploy/secret-tls-example.yaml` is a commented example of the `kubernetes.io/tls` Secret an operator creates,
+  next to the commented NATS one and outside `deploy/base` for the same reason.
+  A base that mounted a Secret nobody had created would make `kubectl apply -k deploy/base` produce a Pod
+  that never starts.
 - When PGO collection is enabled ([`pgo.md`](pgo.md)),
   the operator creates the NATS credentials Secret alongside the NATS account;
   `deploy/` ships a commented example Secret
@@ -1174,6 +1257,19 @@ Validation failures are fatal at startup and reported by `profgate config valida
     for a cluster that assigns its own ranges through a security context constraint.
   - Release-scoped ClusterRole and ClusterRoleBinding names, so two releases in one cluster do not collide,
     over rules identical to the base's.
+
+  `tls.enabled` gates the certificate volume, its mount, and the `server.tls` keys in the rendered configuration.
+  The chart needs the flag because Helm needs a boolean to render a conditional;
+  the configuration file stays presence-implied,
+  the same way `pgo.enabled` gates the credentials volume while `nats.credsFile` is presence-implied.
+  The Secret is the operator's to create, from cert-manager or by hand, and the chart never creates it.
+  The volume is not optional, unlike the credentials one:
+  `tls.enabled` asserts that the certificate exists,
+  so a missing Secret holds the Pod at mount time with an event naming it,
+  rather than starting a Pod that exits over a file it cannot open.
+  There is deliberately no `checksum/tls-secret` annotation.
+  Adding one for symmetry with `checksum/config` would roll the Deployment on every renewal
+  and defeat the re-read the gateway does for exactly that reason.
 
 ### 11.1 Dependencies
 
@@ -1200,6 +1296,7 @@ internal/proxy/      upstream HTTP to PodIP:Port, transport, budget, error mappi
 internal/httpapi/    routing, realm checks, handlers, error bodies, audit log
 internal/config/     fuda-loaded Config, strict pre-parse, validation, hot/restart classification
 internal/metrics/    Recorder interface and the Prometheus implementation
+internal/tlscert/    the API listener's certificate: load, re-read on a ticker, GetCertificate
 internal/admit/      the admission gate shared by interactive requests and Collections
 deploy/              kustomize base and Helm chart
 test/e2e/            harness, versions.yaml, testapp, overlays
@@ -1220,3 +1317,5 @@ test/e2e/            harness, versions.yaml, testapp, overlays
 | Gateway replica crashes mid-profile | the client's connection drops; no state to recover |
 | Target Pod dies mid-profile | `502` if headers were not yet sent; otherwise a truncated body and `upstream_stream_failed` in the audit log |
 | Configuration invalid | process exits at startup with the validation error |
+| TLS certificate rotated in place | the new pair is served within the refresh interval; no restart, no dropped connection |
+| TLS files unreadable or mismatched while running | the previous pair stays in use; a warning is logged and a `failed` reload counted |

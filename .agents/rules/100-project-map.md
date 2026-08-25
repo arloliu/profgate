@@ -64,6 +64,7 @@ internal/proxy/        // upstream HTTP to PodIP:port, timeouts, error mapping
 internal/httpapi/      // routing, realm checks, handlers, audit log
 internal/config/       // fuda-loaded Config and validation
 internal/metrics/      // Recorder interface, Prometheus implementation
+internal/tlscert/      // the API listener's certificate, re-read while the process runs
 internal/admit/        // the admission gate shared by interactive requests and Collections
 internal/natskv/       // the NATS seam; sole non-test importer of nats.go
 internal/pgo/          // policy, publisher, scheduler, worker, merge, sweeper
