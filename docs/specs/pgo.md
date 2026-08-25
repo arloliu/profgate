@@ -1864,8 +1864,17 @@ No namespace, Service, or Collection identifier becomes a label.
 ### 12.4 Shutdown
 
 On `SIGTERM` the scheduler and sweeper stop at once.
-The worker stops claiming and finishes its in-flight Collections inside the grace period when it can;
-a Collection that cannot finish stops renewing and is reclaimed by another replica's scan once `leaseTTL + skewMargin` has passed.
+The worker stops claiming and finishes its in-flight Collections inside the grace period,
+as long as its Kubernetes credentials stay valid:
+the gateway authenticates with a projected ServiceAccount token bound to its own Pod object,
+and a graceful delete leaves that Pod object in place until termination completes,
+so the token is valid for the whole drain.
+A force deletion (`GracePeriodSeconds: 0`) removes the Pod object immediately instead:
+every `Confirm` in the next round fails `discovery_unavailable`, the round has zero successful samples,
+and the worker ends the Collection `failed no_samples` rather than finishing it;
+the next schedule slot collects the Service again.
+A Collection that cannot finish because the worker process itself dies stops renewing;
+another replica's scan reclaims it once `leaseTTL + skewMargin` has passed.
 Drain waits for every work goroutine to exit, up to the Collection's `deadline`,
 because `Merge`, `Compact`, and `Write` cannot be interrupted (section 8.4);
 the grace period must therefore cover the deadline formula of section 8.2 at the configured ceilings,
