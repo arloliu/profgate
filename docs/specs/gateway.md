@@ -848,6 +848,11 @@ which covers the drain delay and the default limits (60s) with margin.
 An operator who raises either limit must raise the grace period with it:
 at least `server.drainDelay` plus the larger limit plus 60s,
 which `profgate config validate` prints.
+A second `SIGTERM` or `SIGINT` during the drain ends the process at once with a non-zero exit,
+logging that it did not finish:
+the drain's own waits are the ones the work legitimately needs,
+so only the operator can say it has gone on long enough.
+
 A listener that fails is fatal:
 the process logs the failure, drains the interactive requests, and exits 1.
 It never waits for the Collection drain of [`pgo.md`](pgo.md) section 12.4,

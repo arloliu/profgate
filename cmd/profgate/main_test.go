@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestRun(t *testing.T) {
@@ -70,5 +73,34 @@ func TestRun(t *testing.T) {
 				t.Fatalf("run(%v) stderr = %q, want it to contain %q", tc.args, stderr.String(), tc.wantStderr)
 			}
 		})
+	}
+}
+
+// TestWatchSignals proves the escalation an operator gets by signalling twice:
+// the first signal asks for the drain, and the second gives up on it rather
+// than leaving the operator with a process that ignores them.
+func TestWatchSignals(t *testing.T) {
+	sigCh := make(chan os.Signal, 2)
+	stop := make(chan struct{})
+	escalated := make(chan struct{})
+	go watchSignals(sigCh, stop, func() { close(escalated) })
+
+	sigCh <- syscall.SIGTERM
+	select {
+	case <-stop:
+	case <-time.After(time.Second):
+		t.Fatal("the first signal did not request the drain")
+	}
+	select {
+	case <-escalated:
+		t.Fatal("the first signal ended the process instead of draining")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	sigCh <- syscall.SIGTERM
+	select {
+	case <-escalated:
+	case <-time.After(time.Second):
+		t.Fatal("the second signal did not end the drain")
 	}
 }
