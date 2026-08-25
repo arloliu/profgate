@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
+	"github.com/arloliu/profgate/internal/natskv"
 	"github.com/arloliu/profgate/internal/proxy"
 )
 
@@ -41,8 +43,9 @@ const (
 	fixturePod       = "payment-api-1"
 	fixtureIP        = "10.0.0.5"
 
-	targetsPath = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/targets"
-	heapPath    = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/profiles/heap"
+	targetsPath     = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/targets"
+	heapPath        = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/profiles/heap"
+	collectionsPath = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/collections"
 
 	// pollInterval is how often the waiters re-check their condition.
 	pollInterval = 10 * time.Millisecond
@@ -93,11 +96,12 @@ func (f *fakeUpstream) Do(_ context.Context, w http.ResponseWriter, _ proxy.Requ
 	return proxy.Outcome{Code: "ok", Status: http.StatusOK, Committed: true}
 }
 
-// recorder remembers every DiscoverySynced call and ignores the rest.
+// recorder remembers every DiscoverySynced and NATSConnected call and ignores the rest.
 type recorder struct {
 	metrics.Noop
-	mu     sync.Mutex
-	synced []bool
+	mu        sync.Mutex
+	synced    []bool
+	connected []bool
 }
 
 func (r *recorder) DiscoverySynced(v bool) {
@@ -111,6 +115,19 @@ func (r *recorder) syncedCalls() []bool {
 	defer r.mu.Unlock()
 
 	return append([]bool(nil), r.synced...)
+}
+
+func (r *recorder) NATSConnected(up bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.connected = append(r.connected, up)
+}
+
+func (r *recorder) connectedCalls() []bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]bool(nil), r.connected...)
 }
 
 // fixtureObjects is one Service with one ready Pod behind one EndpointSlice,
@@ -191,8 +208,18 @@ type limits struct{ cpu, trace, maxConcurrent int }
 
 func defaultLimits() limits { return limits{cpu: 60, trace: 60, maxConcurrent: 16} }
 
+// pgoBlock is the top-level configuration a gateway with PGO collection on carries.
+// The URL is never dialled: every serve row reaches NATS through the preflight seam.
+const pgoBlock = `nats:
+  url: "nats://127.0.0.1:4222"
+pgo:
+  enabled: true
+`
+
 // writeConfig writes a valid configuration listening on the two addresses.
-func writeConfig(t *testing.T, listen, opsListen string, l limits) string {
+// The realm always carries every PGO flag,
+// so a route that answers 501 or 503 answers it for the reason under test and not for the realm.
+func writeConfig(t *testing.T, listen, opsListen string, l limits, enablePGO bool) string {
 	t.Helper()
 
 	body := fmt.Sprintf(`server:
@@ -214,7 +241,14 @@ realms:
     namespaces: ["*"]
     services: ["*"]
     profiles: ["*"]
+    pgo:
+      read: true
+      collect: true
+      configure: true
 `, listen, opsListen, l.cpu, l.trace, l.maxConcurrent)
+	if enablePGO {
+		body += pgoBlock
+	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -247,9 +281,26 @@ type gateway struct {
 	exited  chan int
 }
 
-// startGateway runs serve over cs in a goroutine and returns once it is running.
-// The subtest stops it through gw.stop; cleanup stops it anyway and releases the upstream.
+// pgoOpts turns PGO collection on for one gateway
+// and carries the seams the lifecycle rows drive it through: the NATS preflight and the Collection worker.
+type pgoOpts struct {
+	enabled   bool
+	preflight *preflightStub
+	worker    *stubWorker
+}
+
+// startGateway runs serve over cs with PGO off.
 func startGateway(t *testing.T, cs *fake.Clientset, l limits) *gateway {
+	t.Helper()
+
+	return startGatewayWith(t, cs, l, pgoOpts{})
+}
+
+// startGatewayWith runs serve over cs in a goroutine and returns once it is running.
+// The subtest stops it through gw.stop;
+// cleanup stops it anyway, releases the upstream, and releases the worker drain,
+// so a failed assertion reports itself instead of timing out.
+func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o pgoOpts) *gateway {
 	t.Helper()
 
 	gw := &gateway{
@@ -262,7 +313,7 @@ func startGateway(t *testing.T, cs *fake.Clientset, l limits) *gateway {
 		stop:    make(chan struct{}),
 		exited:  make(chan int, 1),
 	}
-	cfgPath := writeConfig(t, gw.apiAddr, gw.opsAddr, l)
+	cfgPath := writeConfig(t, gw.apiAddr, gw.opsAddr, l, o.enabled)
 	registry := prometheus.NewRegistry()
 	deps := serveDeps{
 		namespaceFile: namespaceFile(t),
@@ -270,14 +321,24 @@ func startGateway(t *testing.T, cs *fake.Clientset, l limits) *gateway {
 			return k8s.NewRuntimeWithClientset(cs, opts), nil
 		},
 		upstream: gw.up,
+		sampler:  proxy.New(proxy.Options{}),
 		registry: registry,
 		recorder: gw.rec,
 		stop:     gw.stop,
+	}
+	if o.preflight != nil {
+		deps.natsPreflight = o.preflight.fn()
+	}
+	if o.worker != nil {
+		deps.pgoWorker = o.worker
 	}
 	go func() { gw.exited <- serve(context.Background(), cfgPath, deps, gw.stdout, gw.stderr) }()
 	t.Cleanup(func() {
 		gw.stopOnce()
 		gw.releaseOnce()
+		if o.worker != nil {
+			o.worker.releaseDrain()
+		}
 		select {
 		case <-gw.exited:
 		case <-time.After(time.Minute):
@@ -577,6 +638,386 @@ func TestServe(t *testing.T) {
 		}
 		if elapsed < 30*time.Second || elapsed > 35*time.Second {
 			t.Fatalf("serve exited after %s, want max(cpu,trace)+30s = 31s: the drain waits for the bound and then closes", elapsed)
+		}
+	})
+}
+
+// emptyKV is a bucket holding nothing.
+// The PGO serve rows read store state, they never write it,
+// so every mutation is the unavailability a caller would see with the bucket unreachable.
+type emptyKV struct{}
+
+func (emptyKV) Get(context.Context, string) (natskv.Entry, error) {
+	return natskv.Entry{}, natskv.ErrKeyNotFound
+}
+
+func (emptyKV) Create(context.Context, string, []byte) (uint64, error) {
+	return 0, natskv.ErrUnavailable
+}
+
+func (emptyKV) Update(context.Context, string, []byte, uint64) (uint64, error) {
+	return 0, natskv.ErrUnavailable
+}
+
+func (emptyKV) Delete(context.Context, string, uint64) error { return natskv.ErrUnavailable }
+
+func (emptyKV) Keys(context.Context, string) ([]string, error) { return nil, nil }
+
+// Watch delivers the replay marker of an empty prefix and then nothing until the caller's context ends,
+// which is what closes the channel.
+func (emptyKV) Watch(ctx context.Context, _ string) (<-chan natskv.Entry, error) {
+	ch := make(chan natskv.Entry, 1)
+	ch <- natskv.Entry{Synced: true, Generation: fakeGeneration}
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
+
+	return ch, nil
+}
+
+// emptyObjects is an Object Store holding nothing.
+type emptyObjects struct{}
+
+func (emptyObjects) Put(context.Context, string, io.Reader) error { return natskv.ErrUnavailable }
+
+func (emptyObjects) Get(context.Context, string) (io.ReadCloser, error) {
+	return nil, natskv.ErrObjectNotFound
+}
+
+func (emptyObjects) Delete(context.Context, string) error { return natskv.ErrUnavailable }
+
+func (emptyObjects) List(context.Context) ([]natskv.ObjectInfo, error) { return nil, nil }
+
+// fakeGeneration is the one connection generation every PGO serve row runs under.
+const fakeGeneration = uint64(1)
+
+// fakeNATS is the connection the preflight seam hands back:
+// empty buckets, and a replay barrier the subtest opens when it chooses,
+// so a row can hold the gateway between "preflight passed" and "the watches have replayed".
+type fakeNATS struct {
+	synced atomic.Bool
+	stores natskv.Stores
+}
+
+func newFakeNATS(synced bool) *fakeNATS {
+	f := &fakeNATS{stores: natskv.Stores{Config: emptyKV{}, Jobs: emptyKV{}, Artifacts: emptyObjects{}}}
+	f.synced.Store(synced)
+
+	return f
+}
+
+func (f *fakeNATS) Connected() bool    { return true }
+func (f *fakeNATS) Generation() uint64 { return fakeGeneration }
+func (f *fakeNATS) Synced(uint64) bool { return f.synced.Load() }
+
+func (f *fakeNATS) View(gen uint64) (natskv.Stores, error) {
+	if gen != fakeGeneration {
+		return natskv.Stores{}, natskv.ErrUnavailable
+	}
+
+	return f.stores, nil
+}
+
+// preflightResult is what one preflight attempt answers.
+type preflightResult struct {
+	client natskv.Client
+	err    error
+}
+
+// preflightStub answers the NATS preflight with a scripted sequence, repeating its last result,
+// and counts the attempts the lifecycle made.
+type preflightStub struct {
+	mu      sync.Mutex
+	calls   int
+	results []preflightResult
+}
+
+func newPreflightStub(results ...preflightResult) *preflightStub {
+	return &preflightStub{results: results}
+}
+
+func (p *preflightStub) fn() natsPreflightFunc {
+	return func(_ context.Context, opts natskv.Options, _ string, _ *slog.Logger) (natskv.Client, error) {
+		p.mu.Lock()
+		res := p.results[min(p.calls, len(p.results)-1)]
+		p.calls++
+		p.mu.Unlock()
+
+		if res.err != nil {
+			return nil, res.err
+		}
+		// natskv.Preflight reports the connection before it probes;
+		// without that call the connected gauge would read zero until the first reconnect,
+		// so the stub owes the caller the same report.
+		if opts.OnConnectionChange != nil {
+			opts.OnConnectionChange(true)
+		}
+
+		return res.client, nil
+	}
+}
+
+func (p *preflightStub) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.calls
+}
+
+// stubWorker stands in for the Collection worker
+// so the shutdown rows can see which context each of the two waits was given.
+// The real worker's per-Collection drain bound is proved where it lives, in internal/pgo;
+// what serve owes it is a context of its own.
+type stubWorker struct {
+	ran      chan struct{}
+	runEnded chan struct{}
+	entered  chan struct{}
+	release  chan struct{}
+
+	mu            sync.Mutex
+	runs          int
+	drainDone     bool  // the drain context had a Done channel
+	drainErr      error // the drain context's error when Drain was entered
+	drainDeadline bool  // the drain context carried a deadline
+}
+
+func newStubWorker() *stubWorker {
+	return &stubWorker{
+		ran:      make(chan struct{}),
+		runEnded: make(chan struct{}),
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+}
+
+// Run claims until the lifecycle stops claiming.
+func (s *stubWorker) Run(ctx context.Context) {
+	s.mu.Lock()
+	s.runs++
+	first := s.runs == 1
+	s.mu.Unlock()
+	if first {
+		close(s.ran)
+	}
+	<-ctx.Done()
+	close(s.runEnded)
+}
+
+// Drain records the context it was handed and blocks until the subtest releases it,
+// standing in for a Collection that is still merging.
+func (s *stubWorker) Drain(ctx context.Context) error {
+	s.mu.Lock()
+	s.drainDone = ctx.Done() != nil
+	s.drainErr = ctx.Err()
+	_, s.drainDeadline = ctx.Deadline()
+	s.mu.Unlock()
+	close(s.entered)
+
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+	}
+
+	return nil
+}
+
+func (s *stubWorker) runCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.runs
+}
+
+func (s *stubWorker) drainContext() (done bool, deadline bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.drainDone, s.drainDeadline, s.drainErr
+}
+
+func (s *stubWorker) releaseDrain() {
+	select {
+	case <-s.release:
+	default:
+		close(s.release)
+	}
+}
+
+// closed reports whether ch has been closed, without blocking on it.
+func closed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// pgoCode returns the status and error code a PGO route answered with.
+func pgoCode(t *testing.T, addr, path string) (int, string) {
+	t.Helper()
+
+	status, body := mustGet(t, addr, path)
+	var parsed struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		return status, body
+	}
+
+	return status, parsed.Code
+}
+
+func TestServePGO(t *testing.T) {
+	t.Run("disabled reaches no NATS and answers 501", func(t *testing.T) {
+		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			pgoOpts{enabled: false, preflight: pf})
+		gw.waitReady(t, waitTimeout)
+
+		if status, code := pgoCode(t, gw.apiAddr, collectionsPath); status != http.StatusNotImplemented || code != "pgo_disabled" {
+			t.Fatalf("collections with pgo off = %d %q, want 501 pgo_disabled", status, code)
+		}
+		if got := pf.callCount(); got != 0 {
+			t.Fatalf("NATS preflight attempts = %d, want 0: pgo.enabled false constructs nothing NATS-related", got)
+		}
+	})
+
+	t.Run("nats down leaves readyz 503 and the interactive routes serving", func(t *testing.T) {
+		pf := newPreflightStub(preflightResult{err: fmt.Errorf("dial nats: %w", natskv.ErrUnavailable)})
+		worker := newStubWorker()
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			pgoOpts{enabled: true, preflight: pf, worker: worker})
+
+		waitFor(t, waitTimeout, "the targets route answering 200", func() bool {
+			code, _, err := get(gw.apiAddr, targetsPath)
+
+			return err == nil && code == http.StatusOK
+		})
+		if code, _ := mustGet(t, gw.opsAddr, "/readyz"); code != http.StatusServiceUnavailable {
+			t.Fatalf("/readyz with NATS down = %d, want 503: readyz requires the NATS preflight to have passed", code)
+		}
+		if status, code := pgoCode(t, gw.apiAddr, collectionsPath); status != http.StatusServiceUnavailable || code != "pgo_unavailable" {
+			t.Fatalf("collections with NATS down = %d %q, want 503 pgo_unavailable", status, code)
+		}
+		if got := worker.runCount(); got != 0 {
+			t.Fatalf("worker started %d times before the preflight passed, want 0", got)
+		}
+	})
+
+	t.Run("a connection failure is retried until it passes", func(t *testing.T) {
+		down := preflightResult{err: fmt.Errorf("dial nats: %w", natskv.ErrUnavailable)}
+		pf := newPreflightStub(down, down, preflightResult{client: newFakeNATS(true)})
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			pgoOpts{enabled: true, preflight: pf, worker: newStubWorker()})
+
+		gw.waitReady(t, backoffWaitTimeout)
+		var attempts int
+		for _, rec := range gw.records(t) {
+			if rec["msg"] == "nats preflight attempt" {
+				attempts++
+			}
+		}
+		if attempts != 2 {
+			t.Fatalf("nats preflight attempt records = %d, want 2:\n%s", attempts, gw.stdout.String())
+		}
+	})
+
+	t.Run("a contract violation ends startup naming the bucket and field", func(t *testing.T) {
+		violation := errors.New("nats preflight: bucket PROFGATE_JOBS: field TTL is 1h0m0s, the contract requires no TTL")
+		pf := newPreflightStub(preflightResult{err: violation})
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			pgoOpts{enabled: true, preflight: pf, worker: newStubWorker()})
+
+		if code := gw.exitCode(t, waitTimeout); code != 1 {
+			t.Fatalf("exit code = %d, want 1: a bucket outside the contract is a crash", code)
+		}
+		if got := pf.callCount(); got != 1 {
+			t.Fatalf("NATS preflight attempts = %d, want 1: only a connection failure is retried", got)
+		}
+		var named bool
+		for _, rec := range gw.records(t) {
+			text := fmt.Sprint(rec["error"])
+			if strings.Contains(text, "PROFGATE_JOBS") && strings.Contains(text, "field TTL") {
+				named = true
+			}
+		}
+		if !named {
+			t.Fatalf("no record naming the bucket and the field in stdout:\n%s", gw.stdout.String())
+		}
+	})
+
+	t.Run("readyz does not wait for the replay barrier", func(t *testing.T) {
+		nats := newFakeNATS(false)
+		pf := newPreflightStub(preflightResult{client: nats})
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			pgoOpts{enabled: true, preflight: pf, worker: newStubWorker()})
+
+		gw.waitReady(t, waitTimeout)
+		if status, code := pgoCode(t, gw.apiAddr, collectionsPath); status != http.StatusServiceUnavailable || code != "pgo_unavailable" {
+			t.Fatalf("collections while the watches replay = %d %q, want 503 pgo_unavailable", status, code)
+		}
+		if code, _ := mustGet(t, gw.opsAddr, "/readyz"); code != http.StatusOK {
+			t.Fatalf("/readyz while the watches replay = %d, want 200: a replaying replica still serves interactive requests", code)
+		}
+
+		nats.synced.Store(true)
+		waitFor(t, waitTimeout, "the collections route passing the barrier", func() bool {
+			code, _, err := get(gw.apiAddr, collectionsPath)
+
+			return err == nil && code == http.StatusOK
+		})
+	})
+
+	t.Run("the connected gauge reports the initial connection", func(t *testing.T) {
+		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			pgoOpts{enabled: true, preflight: pf, worker: newStubWorker()})
+
+		gw.waitReady(t, waitTimeout)
+		waitFor(t, waitTimeout, "NATSConnected(true)", func() bool { return len(gw.rec.connectedCalls()) > 0 })
+		if got := gw.rec.connectedCalls(); len(got) != 1 || !got[0] {
+			t.Fatalf("NATSConnected calls = %v, want exactly [true]", got)
+		}
+	})
+
+	t.Run("shutdown stops claiming and drains the two waits separately", func(t *testing.T) {
+		worker := newStubWorker()
+		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			pgoOpts{enabled: true, preflight: pf, worker: worker})
+		gw.waitReady(t, waitTimeout)
+		waitFor(t, waitTimeout, "the worker starting", func() bool { return worker.runCount() == 1 })
+
+		// One interactive profile is held open, so the API drain cannot finish
+		// while the worker drain is observed.
+		go func() { _, _, _ = getCtx(context.Background(), gw.apiAddr, heapPath) }()
+		waitFor(t, waitTimeout, "the profile request reaching the upstream", func() bool { return gw.up.calls.Load() == 1 })
+
+		gw.stopOnce()
+		waitFor(t, waitTimeout, "the worker drain starting", func() bool { return closed(worker.entered) })
+		if !closed(worker.runEnded) {
+			t.Fatal("the worker was still claiming after the stop request: SIGTERM cancels the claiming context at once")
+		}
+		done, deadline, err := worker.drainContext()
+		if done || deadline || err != nil {
+			t.Fatalf("Drain context: done=%v deadline=%v err=%v, want a context of its own that nothing cuts off: "+
+				"a Collection deadline can far exceed the interactive drain bound", done, deadline, err)
+		}
+
+		// The API drain finishes on its own bound while the worker drain holds.
+		gw.releaseOnce()
+		waitFor(t, waitTimeout, "the API listener refusing connections", func() bool { return refuses(gw.apiAddr) })
+		select {
+		case <-gw.exited:
+			t.Fatal("serve exited while the worker was still draining")
+		default:
+		}
+
+		worker.releaseDrain()
+		if code := gw.exitCode(t, waitTimeout); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
 		}
 	})
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
+	"github.com/arloliu/profgate/internal/natskv"
 	"github.com/arloliu/profgate/internal/proxy"
 )
 
@@ -87,6 +88,10 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 	}
 
 	_, _ = fmt.Fprintf(stdout, "required terminationGracePeriodSeconds: %d\n", int(cfg.RequiredGracePeriod().Seconds()))
+	_, _ = fmt.Fprintf(stdout, "required terminationGracePeriodSeconds for pgo: %d\n", int(cfg.RequiredPGOGracePeriod().Seconds()))
+	_, _ = fmt.Fprintln(stdout, "  the worst case over every policy pgo.limits admits, so that a Collection finishes in place;")
+	_, _ = fmt.Fprintln(stdout, "  a shorter period loses no work: a Collection cut short stops renewing its lease and another replica reclaims it")
+	_, _ = fmt.Fprintf(stdout, "pgo memory bytes: %d\n", cfg.PGOMemoryBytes())
 	return 0
 }
 
@@ -108,13 +113,18 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	sigCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	registry := prometheus.NewRegistry()
+	// One proxy serves both callers:
+	// an interactive request and a Collection sample are the same fetch from the same pprof port.
+	upstream := proxy.New(proxy.Options{})
 	deps := serveDeps{
 		namespaceFile: serviceAccountNamespaceFile,
 		runtime:       k8s.NewRuntime,
-		upstream:      proxy.New(proxy.Options{}),
+		upstream:      upstream,
+		sampler:       upstream,
 		registry:      registry,
 		recorder:      metrics.NewPrometheus(registry),
 		stop:          sigCtx.Done(),
+		natsPreflight: natskv.Preflight,
 	}
 
 	return serve(context.Background(), *path, deps, stdout, stderr)

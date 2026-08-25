@@ -11,7 +11,7 @@ func TestRun(t *testing.T) {
 		name            string
 		args            []string
 		wantCode        int
-		wantStdout      string
+		wantStdout      []string
 		wantStdoutExact string
 		wantStderr      string
 	}{
@@ -22,10 +22,15 @@ func TestRun(t *testing.T) {
 			wantStdoutExact: "profgate dev\n",
 		},
 		{
-			name:       "validate good",
-			args:       []string{"config", "validate", "--config", "testdata/good.yaml"},
-			wantCode:   0,
-			wantStdout: "required terminationGracePeriodSeconds: 120",
+			name:     "validate good",
+			args:     []string{"config", "validate", "--config", "testdata/good.yaml"},
+			wantCode: 0,
+			wantStdout: []string{
+				"required terminationGracePeriodSeconds: 120",
+				"required terminationGracePeriodSeconds for pgo: 122460",
+				"another replica reclaims it",
+				"pgo memory bytes: 4294967296",
+			},
 		},
 		{
 			name:       "validate bad",
@@ -53,8 +58,10 @@ func TestRun(t *testing.T) {
 			if code != tc.wantCode {
 				t.Fatalf("run(%v) code = %d, want %d (stdout=%q stderr=%q)", tc.args, code, tc.wantCode, stdout.String(), stderr.String())
 			}
-			if tc.wantStdout != "" && !strings.Contains(stdout.String(), tc.wantStdout) {
-				t.Fatalf("run(%v) stdout = %q, want it to contain %q", tc.args, stdout.String(), tc.wantStdout)
+			for _, want := range tc.wantStdout {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("run(%v) stdout = %q, want it to contain %q", tc.args, stdout.String(), want)
+				}
 			}
 			if tc.wantStdoutExact != "" && stdout.String() != tc.wantStdoutExact {
 				t.Fatalf("run(%v) stdout = %q, want exactly %q", tc.args, stdout.String(), tc.wantStdoutExact)
