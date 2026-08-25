@@ -155,6 +155,12 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
+	// The informers run under a context of their own, cancelled once both
+	// drains have ended, because discovery is what the drain still needs:
+	// an in-flight Collection re-resolves its targets every round, and a
+	// profile request confirms its Pod before it dials.
+	informerCtx, cancelInformers := context.WithCancel(ctx)
+	defer cancelInformers()
 	preflightCh := make(chan error, 1)
 	go func() { preflightCh <- preflight(runCtx, rt, logger) }()
 	syncedCh := make(chan struct{}, 1)
@@ -177,8 +183,9 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	shutdown := func() {
 		draining.Store(true)
 		// Stops the scheduler, the sweeper, and the worker's claiming.
-		// No work context descends from it: an in-flight Collection finishes
-		// when it can, and is reclaimed by another replica when it cannot.
+		// The informers are the one thing that outlives it, until the waits
+		// below have ended: an in-flight Collection finishes when it can, and
+		// is reclaimed by another replica when it cannot.
 		cancelRun()
 
 		// Readiness is 503 from here, and the API listener stays open for the
@@ -220,6 +227,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 			}()
 		}
 		wg.Wait()
+		cancelInformers()
 
 		opsCtx, cancelOps := context.WithTimeout(context.Background(), opsDrainTimeout)
 		defer cancelOps()
@@ -243,7 +251,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 				return 1
 			}
 			logger.Info("preflight passed; starting informers")
-			go cluster.Run(runCtx)
+			go cluster.Run(informerCtx)
 			go waitSynced(runCtx, cluster, syncedCh)
 		case <-syncedCh:
 			deps.recorder.DiscoverySynced(true)

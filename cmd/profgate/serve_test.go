@@ -42,6 +42,8 @@ const (
 	fixtureService   = "payment-api"
 	fixturePod       = "payment-api-1"
 	fixtureIP        = "10.0.0.5"
+	secondPod        = "payment-api-2"
+	secondIP         = "10.0.0.6"
 
 	targetsPath     = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/targets"
 	heapPath        = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/profiles/heap"
@@ -173,6 +175,48 @@ func fixtureObjects() []runtime.Object {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// addSecondPod adds one more ready Pod to the fixture Service and lists it in
+// the EndpointSlice, which is a discovery change only a running informer sees.
+func addSecondPod(t *testing.T, cs *fake.Clientset) {
+	t.Helper()
+
+	const uid = types.UID("u2")
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: fixtureNamespace,
+			Name:      secondPod,
+			UID:       uid,
+			Labels:    map[string]string{"app": "payment", "app.kubernetes.io/version": "1.0"},
+		},
+		Spec: corev1.PodSpec{NodeName: "worker-2"},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodRunning,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+			PodIPs:     []corev1.PodIP{{IP: secondIP}},
+		},
+	}
+	if _, err := cs.CoreV1().Pods(fixtureNamespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create %s: %v", secondPod, err)
+	}
+
+	slice, err := cs.DiscoveryV1().EndpointSlices(fixtureNamespace).Get(ctx, "payment-api-abc", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get the EndpointSlice: %v", err)
+	}
+	slice.Endpoints = append(slice.Endpoints, discoveryv1.Endpoint{
+		Addresses:  []string{secondIP},
+		Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+		TargetRef: &corev1.ObjectReference{
+			Kind: "Pod", Namespace: fixtureNamespace, Name: secondPod, UID: uid,
+		},
+	})
+	if _, err := cs.DiscoveryV1().EndpointSlices(fixtureNamespace).Update(ctx, slice, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update the EndpointSlice: %v", err)
+	}
+}
 
 // forbidden is the 403 the API server returns for a missing RBAC tuple.
 func forbidden(resource string) error {
@@ -656,6 +700,25 @@ func TestServe(t *testing.T) {
 		if code := gw.exitCode(t, waitTimeout); code != 0 {
 			t.Fatalf("exit code = %d, want 0", code)
 		}
+	})
+
+	t.Run("discovery keeps resolving through the drain", func(t *testing.T) {
+		const delay = 8 * time.Second
+		cs := fake.NewClientset(fixtureObjects()...)
+		gw := startGatewayWith(t, cs, defaultLimits(), gatewayOpts{drainDelay: delay})
+		gw.waitReady(t, waitTimeout)
+
+		gw.stopOnce()
+		gw.waitStatus(t, waitTimeout, gw.opsAddr, "/readyz", http.StatusServiceUnavailable)
+		addSecondPod(t, cs)
+		// Discovery outlives the stop request because the drain still needs it:
+		// an in-flight Collection re-resolves its targets every round, and a
+		// cache frozen at SIGTERM would hand it Pods that have since gone.
+		waitFor(t, delay-2*time.Second, "the draining gateway resolving the new Pod", func() bool {
+			code, body, err := get(gw.apiAddr, targetsPath)
+
+			return err == nil && code == http.StatusOK && strings.Contains(body, secondPod)
+		})
 	})
 
 	t.Run("drain bound", func(t *testing.T) {
