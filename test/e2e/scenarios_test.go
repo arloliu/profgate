@@ -212,18 +212,27 @@ func waitTargets(t *testing.T, h *Harness, ns, service string, want []string) {
 	want = slices.Clone(want)
 	slices.Sort(want)
 	var last [gatewayReplicas][]string
+	var lastErr error
 	err := poll(t.Context(), settleDeadline, func(ctx context.Context) (bool, error) {
 		for i, c := range h.Gateways {
 			names, err := tryTargetNames(ctx, c, ns, service)
 			if err != nil {
-				return false, err
+				// A Service the gateway's own watch has not delivered yet
+				// answers 404, and a Service just created is exactly what this
+				// wait is for: the convergence this measures is the informer
+				// catching up, so an answer that is not the wanted one keeps
+				// the wait going rather than ending it.
+				lastErr = err
+
+				return false, nil
 			}
 			last[i] = names
 		}
 		return slices.Equal(last[0], want) && slices.Equal(last[1], want), nil
 	})
 	if err != nil {
-		t.Fatalf("gateways never reported targets %v for %s/%s: %v (last %v)", want, ns, service, err, last)
+		t.Fatalf("gateways never reported targets %v for %s/%s: %v (last %v, last error %v)",
+			want, ns, service, err, last, lastErr)
 	}
 }
 
