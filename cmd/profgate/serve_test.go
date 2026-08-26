@@ -1450,3 +1450,125 @@ func TestServePGO(t *testing.T) {
 		}
 	})
 }
+
+// TestWaitSynced covers the one wait whose progress the lifecycle loop does
+// not log itself: a slow informer sync says so from waitSynced, at the
+// injected cadence, and a fast one stays silent.
+func TestWaitSynced(t *testing.T) {
+	const reportEvery = 30 * time.Millisecond
+	const progressMsg = "still waiting for informer caches to sync"
+
+	parseRecords := func(t *testing.T, buf *syncBuffer) []map[string]any {
+		t.Helper()
+
+		var out []map[string]any
+		for line := range strings.SplitSeq(strings.TrimSpace(buf.String()), "\n") {
+			if line == "" {
+				continue
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatalf("log line %q is not JSON: %v", line, err)
+			}
+			out = append(out, rec)
+		}
+
+		return out
+	}
+
+	t.Run("a slow sync reports progress until it lands", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var buf syncBuffer
+		logger := slog.New(slog.NewJSONHandler(&buf, nil))
+		var synced atomic.Bool
+		syncedCh := make(chan struct{}, 1)
+		go waitSynced(ctx, synced.Load, syncedCh, reportEvery, logger)
+
+		// Three records prove the reporting repeats at the cadence rather
+		// than firing once; a one-shot regression would stop after the first.
+		waitFor(t, waitTimeout, "three progress records", func() bool {
+			return strings.Count(buf.String(), progressMsg) >= 3
+		})
+		synced.Store(true)
+		select {
+		case <-syncedCh:
+		case <-time.After(waitTimeout):
+			t.Fatal("waitSynced did not report the sync after HasSynced turned true")
+		}
+		records := parseRecords(t, &buf)
+		if len(records) < 3 {
+			t.Fatalf("got %d progress records, want at least 3", len(records))
+		}
+		var prev time.Duration
+		for _, rec := range records {
+			if rec["msg"] != progressMsg {
+				t.Fatalf("unexpected record %v, want only %q", rec, progressMsg)
+			}
+			if rec["level"] != "WARN" {
+				t.Fatalf("progress record level = %v, want WARN", rec["level"])
+			}
+			raw, ok := rec["elapsed"].(string)
+			if !ok || raw == "" {
+				t.Fatalf("progress record elapsed = %v, want a duration string", rec["elapsed"])
+			}
+			// elapsed is rounded to whole seconds, so at this cadence
+			// successive records may repeat a value; going backwards would
+			// mean the wait lost track of its start time.
+			elapsed, err := time.ParseDuration(raw)
+			if err != nil {
+				t.Fatalf("progress record elapsed %q is not a duration: %v", raw, err)
+			}
+			if elapsed < prev {
+				t.Fatalf("progress record elapsed %v went backwards from %v", elapsed, prev)
+			}
+			prev = elapsed
+		}
+	})
+
+	t.Run("cancellation while unsynced exits without a sync report", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var buf syncBuffer
+		logger := slog.New(slog.NewJSONHandler(&buf, nil))
+		syncedCh := make(chan struct{}, 1)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			waitSynced(ctx, func() bool { return false }, syncedCh, reportEvery, logger)
+		}()
+
+		// A first progress record pins the cancel to mid-wait, after the
+		// loop is running, rather than racing the goroutine's startup.
+		waitFor(t, waitTimeout, "a progress record", func() bool {
+			return strings.Contains(buf.String(), progressMsg)
+		})
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(waitTimeout):
+			t.Fatal("waitSynced did not return after its context was cancelled")
+		}
+		select {
+		case <-syncedCh:
+			t.Fatal("waitSynced sent on syncedCh after cancellation while unsynced")
+		default:
+		}
+	})
+
+	t.Run("a sync that lands before the first report logs nothing", func(t *testing.T) {
+		var buf syncBuffer
+		logger := slog.New(slog.NewJSONHandler(&buf, nil))
+		syncedCh := make(chan struct{}, 1)
+		waitSynced(context.Background(), func() bool { return true }, syncedCh, reportEvery, logger)
+
+		select {
+		case <-syncedCh:
+		default:
+			t.Fatal("waitSynced returned without sending on syncedCh")
+		}
+		if got := strings.TrimSpace(buf.String()); got != "" {
+			t.Fatalf("fast sync logged %q, want nothing", got)
+		}
+	})
+}

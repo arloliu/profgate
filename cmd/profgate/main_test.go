@@ -31,7 +31,8 @@ func TestRun(t *testing.T) {
 			wantStdout: []string{
 				"required terminationGracePeriodSeconds: 125",
 				"required terminationGracePeriodSeconds for pgo: 122465",
-				"another replica reclaims it",
+				"  the worst case over every policy pgo.limits admits: drain waits through each Collection's deadline and abandons work still running there;",
+				"  a shorter period discards the interrupted attempt's samples: another replica retries from round zero only if the lease expires before the Collection's deadline and an attempt remains (pgo.maxAttempts); otherwise the Collection fails as deadline_exceeded or attempts_exhausted",
 				"pgo memory bytes: 4294967296",
 			},
 		},

@@ -133,7 +133,7 @@ type Manifest struct {
 	VersionLabel    string   `json:"versionLabel"`
 	Sampling        Sampling `json:"sampling"`
 	Attempt         int      `json:"attempt"`
-	Truncated       bool     `json:"truncated"` // a round had more eligible Pods than maxTargetsPerRound
+	Truncated       bool     `json:"truncated"` // a round had more eligible Pods than it sampled
 	Gateway         string   `json:"gateway"`
 	Samples         []Sample `json:"samples,omitempty"`
 }

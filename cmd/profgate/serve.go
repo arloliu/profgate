@@ -45,6 +45,8 @@ const (
 	readHeaderTimeout = 10 * time.Second
 	// syncedPollInterval is how often the lifecycle re-checks HasSynced after the informers start.
 	syncedPollInterval = 50 * time.Millisecond
+	// syncedReportInterval is how often an informer sync still waiting says so.
+	syncedReportInterval = 15 * time.Second
 	// instanceSuffixBytes is how much randomness separates two instances
 	// that a Pod name reused across restarts would otherwise conflate.
 	instanceSuffixBytes = 4
@@ -374,7 +376,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 			}
 			logger.Info("preflight passed; starting informers")
 			go cluster.Run(informerCtx)
-			go waitSynced(runCtx, cluster, syncedCh)
+			go waitSynced(runCtx, cluster.HasSynced, syncedCh, syncedReportInterval, logger)
 		case <-syncedCh:
 			deps.recorder.DiscoverySynced(true)
 			logger.Info("discovery synced; ready")
@@ -603,18 +605,29 @@ func instanceOwner(logger *slog.Logger) pgo.Owner {
 	return pgo.Owner{Instance: pod + "/" + hex.EncodeToString(suffix[:]), Pod: pod}
 }
 
-// waitSynced sends once on syncedCh when the informers have synced, or returns when ctx ends.
-func waitSynced(ctx context.Context, cluster *k8s.Cluster, syncedCh chan<- struct{}) {
+// waitSynced sends once on syncedCh when hasSynced reports true, or returns when ctx ends.
+// A wait that outlives reportEvery says so at that cadence,
+// so a running Pod that is not Ready names this wait in its own logs
+// the way the retrying preflights name theirs;
+// a sync that lands before the first report logs nothing.
+// Production passes syncedReportInterval; tests shorten it.
+func waitSynced(ctx context.Context, hasSynced func() bool, syncedCh chan<- struct{}, reportEvery time.Duration, logger *slog.Logger) {
+	start := time.Now()
 	ticker := time.NewTicker(syncedPollInterval)
 	defer ticker.Stop()
+	report := time.NewTicker(reportEvery)
+	defer report.Stop()
 	for {
-		if cluster.HasSynced() {
+		if hasSynced() {
 			syncedCh <- struct{}{}
 
 			return
 		}
 		select {
 		case <-ticker.C:
+		case <-report.C:
+			logger.Warn("still waiting for informer caches to sync",
+				"elapsed", time.Since(start).Round(time.Second).String())
 		case <-ctx.Done():
 			return
 		}

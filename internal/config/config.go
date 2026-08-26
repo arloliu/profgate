@@ -278,10 +278,16 @@ func (c *Config) PGOMemoryBytes() int64 {
 // maxTargetsPerRound / maxParallel because pgo.limits.maxParallel only caps a
 // policy from above: a policy may sample one Pod at a time, which is the
 // slowest a Collection can legally run.
-// A grace period below this number loses no work — a Collection the kubelet
-// kills mid-merge stops renewing its lease and another replica reclaims it —
-// so this is the period that lets every admissible Collection finish in place,
-// not a floor below which the gateway is unsafe.
+// This period lets drain wait through any admissible Collection's deadline;
+// work still running at its deadline is abandoned, so the figure bounds the
+// wait rather than guaranteeing completion, and it is not a floor below
+// which the gateway is unsafe.
+// A grace period below this number discards the interrupted attempt's
+// samples: a Collection the kubelet kills mid-merge stops renewing its
+// lease, and another replica reclaims it and retries from round zero only
+// if the lease expires before the deadline fixed at the first claim and an
+// attempt remains under pgo.maxAttempts; otherwise the Collection ends
+// failed as deadline_exceeded or attempts_exhausted, whichever bound wins.
 func (c *Config) RequiredPGOGracePeriod() time.Duration {
 	l := c.PGO.Limits
 	batches := time.Duration(l.MaxTargetsPerRound)
