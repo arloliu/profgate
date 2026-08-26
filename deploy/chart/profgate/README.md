@@ -135,7 +135,7 @@ for a cluster whose quota or LimitRange demands requests or a CPU limit.
 which is what makes the NATS credentials Secret readable.
 Setting it to `null` renders no pod `securityContext` key at all,
 which is what a cluster that assigns its own ranges through a security context constraint needs.
-The container `securityContext` is not a knob:
+The container `securityContext` is not configurable:
 non-root, no privilege escalation, read-only root filesystem, all capabilities dropped.
 
 **Two releases can share a cluster.**
@@ -176,11 +176,29 @@ A key set in both places takes the raw block's value.
 A key set in neither takes the binary's own default,
 which is why the rendered file is short.
 
+Two families of keys are the exception,
+because the Deployment couples them to something else it renders.
+The keys the memory limit is derived from —
+`pgo.enabled` and the four sizing ceilings under `pgo.limits`
+(`maxParallel`, `maxSampleBytes`, `maxMergedBytes`, `maxActiveCollections`) —
+are rejected in the raw block and as `PROFGATE_` overrides in `extraEnv`,
+because the chart reads them from the `pgo` values before either hatch applies,
+and a value arriving there would leave the rendered `limits.memory` sized for different ceilings.
+The file-path keys the Secret mounts follow —
+`nats.credsFile`, `server.tls.certFile`, and `server.tls.keyFile` —
+are rejected in both hatches too,
+because the credentials mount follows `nats.credsFile` and the certificate mount follows `tls.enabled`,
+so a path arriving there can name a file nothing mounts
+and startup validation would end the Pod over it.
+Set the `pgo`, `nats`, and `tls` values instead;
+everything else, `pgo.configAPI` and `server.tls.minVersion` included,
+stays free to override through both hatches.
+
 `server.listen` and `server.opsListen` are rendered by the chart to match the container ports it declares;
 overriding them through the raw block moves the listener without moving the readiness probe or the Service.
 
 The binary also applies `PROFGATE_`-prefixed environment overrides on top of the file,
-so `extraEnv` changes one key without re-rendering:
+so `extraEnv` changes one key without putting it in the raw config block or the rendered ConfigMap:
 
 ```yaml
 extraEnv:
@@ -188,8 +206,8 @@ extraEnv:
     value: debug
 ```
 
-An override set that way is invisible to the ConfigMap checksum,
-so changing it does not restart Pods on its own.
+The overrides land in the pod template,
+so changing `extraEnv` rolls the Deployment on upgrade the way any other pod-template change does.
 
 ## Readiness and shutdown
 
@@ -198,7 +216,7 @@ There is no `livenessProbe`, by design.
 so probing it can only restart a Pod that has stopped answering entirely.
 Readiness is the mechanism:
 `/readyz` turns 200 once the informer caches have synced,
-and, with `pgo.enabled`, once the NATS stores have opened.
+and, with `pgo.enabled`, once the NATS preflight has passed.
 
 A new Pod therefore cannot become Ready while NATS is down and `pgo.enabled` is set.
 The rollout stalls at `maxUnavailable: 0` instead of replacing a working replica with one that cannot collect,
@@ -213,10 +231,16 @@ The gateway waits it out in process because the image is distroless and has no s
 and the `sleep` lifecycle action is newer than the Kubernetes baseline the gateway supports.
 The ops listener keeps answering `/readyz`, `/healthz`, and `/metrics` for the whole drain.
 A Collection can run far longer than that,
-and `profgate config validate` prints the period that lets every Collection the ceilings admit finish in place.
+and `profgate config validate` prints the period that lets a drain wait through any admissible Collection's deadline;
+work still running at that deadline is abandoned,
+so the figure bounds the wait rather than guaranteeing completion.
 Raising the grace period to that number is a tradeoff rather than a requirement:
-a Collection the kubelet kills mid-merge loses no work,
-its lease expires and another replica reclaims it.
+a shorter period discards the interrupted attempt's samples;
+another replica reclaims the Collection and retries from round zero,
+but only if the lease expires before the Collection's deadline
+and an attempt remains under `pgo.maxAttempts`;
+otherwise the Collection ends `failed` as `deadline_exceeded` or `attempts_exhausted`,
+whichever bound wins.
 
 ## HTTPS on the API port
 
@@ -281,15 +305,30 @@ so changing them rolls the Pods through `checksum/config`, as any other configur
 ## NATS credentials
 
 The chart never creates credentials, the NATS account, or the JetStream stores.
-With `pgo.enabled` it mounts the Secret named by `nats.existingSecret`, `profgate-nats-creds` by default,
+With `pgo.enabled` and a non-empty `nats.credsFile` it mounts the Secret named by `nats.existingSecret`,
+`profgate-nats-creds` by default,
 read-only at `nats.mountPath` with mode 0440.
 
-Create the Secret before turning `pgo.enabled` on.
+When `nats.credsFile` is set, create the Secret before turning `pgo.enabled` on.
 Startup validation opens the file `nats.credsFile` names,
 so a gateway that cannot find it exits and the Pod restarts in a loop.
-The volume itself is optional, which is what lets the Secret be replaced under a running Pod.
+The volume itself is optional so the Pod can be created before the Secret exists;
+once the Secret appears, the kubelet projects it into the volume and the next restart finds the file.
 That is a different failure from an unreachable NATS,
 where the Pod runs and never becomes Ready.
+
+The credentials file and its Secret belong to a NATS in operator mode.
+With server-configuration accounts, the username and password ride in `nats.url` instead,
+and a NATS deployment without authentication needs neither.
+On both of those paths:
+
+```yaml
+nats:
+  credsFile: ""
+```
+
+mounts nothing and renders no `credsFile` key, so the gateway sends no JWT credentials;
+authentication, if any, rides in the URL.
 
 [`../../nats/README.md`](../../nats/README.md) holds the commands
 that provision the buckets, the account, and the Secret.
@@ -301,11 +340,11 @@ that provision the buckets, the account, and the Secret.
 | `image.repository`, `image.tag`, `image.digest`, `image.pullPolicy` | `ghcr.io/arloliu/profgate`, appVersion, none, `IfNotPresent` | The image. A digest wins over a tag. |
 | `imagePullSecrets` | `[]` | Registry credentials. |
 | `nameOverride`, `fullnameOverride` | `""` | The generated resource names. |
-| `replicaCount` | `2` | Replicas, for availability during a rollout. |
+| `replicaCount` | `2` | Replicas, primarily for availability; more replicas also add aggregate capacity, since the admission gate and the PGO limits are per replica. |
 | `serviceAccount.create`, `.name`, `.annotations` | `true`, generated, `{}` | The ServiceAccount. |
 | `rbac.create` | `true` | The ClusterRole and ClusterRoleBinding. |
 | `service.type`, `.port`, `.annotations` | `ClusterIP`, `8080`, `{}` | The Service. The ops port stays out of it. |
-| `podDisruptionBudget.enabled`, `.minAvailable`, `.maxUnavailable` | `true`, `1`, unset | Voluntary disruption budget. |
+| `podDisruptionBudget.enabled`, `.minAvailable`, `.maxUnavailable` | `true`, `1`, unset | Voluntary disruption budget. Set exactly one of the two bounds and clear the other (`""` and `null` both mean unset); zero is a real bound (`maxUnavailable: 0` forbids voluntary disruption). Setting both fails rendering, as does enabling the budget with neither set. |
 | `configChecksumAnnotation` | `true` | The `checksum/config` annotation. |
 | `podSecurityContext` | `{fsGroup: 65532}` | Pod security context; `fsGroup: null` renders no key. |
 | `securityContext` | hardened | Container security context. |
@@ -327,6 +366,6 @@ that provision the buckets, the account, and the Secret.
 | `config` | `{}` | Raw configuration merged over everything above. |
 
 The NetworkPolicy is off by default because the namespaces that reach the two ports differ per cluster.
-[`../../base/networkpolicy-app-example.yaml`](../../base/networkpolicy-app-example.yaml)
+[`../../networkpolicy-app-example.yaml`](../../networkpolicy-app-example.yaml)
 is the matching policy an application namespace needs to admit the gateway to its pprof port;
 the chart does not render it, because it belongs to the application's namespace rather than to this release.

@@ -3,7 +3,7 @@ profgate {{ .Chart.AppVersion }} is installed as {{ include "profgate.fullname" 
 Check these three things first.
 
 1. The gateway is Ready. /readyz turns 200 only once the informer caches have
-   synced{{ if .Values.pgo.enabled }} and the NATS stores have opened{{ end }}, so a Pod that stays unready is
+   synced{{ if include "profgate.pgoEnabled" . }} and the NATS preflight has passed{{ end }}, so a Pod that stays unready is
    reporting a real problem rather than a slow start:
 
      kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "profgate.fullname" . }}
@@ -22,13 +22,16 @@ Check these three things first.
 3. Reach the API through the Service, which carries the API port only:
 
      kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "profgate.fullname" . }} 8080:{{ .Values.service.port }}
-{{- if .Values.tls.enabled }}
-     curl --cacert ca.crt --resolve <name>:8080:127.0.0.1 \
-       https://<name>:8080/v1/targets?namespace=<ns>&service=<svc>
+{{- if include "profgate.tlsEnabled" . }}
+     curl --cacert ca.crt --resolve "<name>:8080:127.0.0.1" \
+       "https://<name>:8080/v1/namespaces/<ns>/services/<svc>/targets"
 
    The API port serves HTTPS. <name> has to be a name the certificate is issued
    for, which is why the URL names it and --resolve sends it to the forwarded
    port: an address the certificate has no SAN for fails verification.
+   ca.crt is the CA bundle that issued the certificate, exported from the
+   issuer; a certificate chaining to an OS-trusted authority needs no
+   --cacert.
 
    The certificate comes from the Secret {{ .Values.tls.existingSecret }} in namespace {{ .Release.Namespace }}, holding keys
    {{ .Values.tls.certKey }} and {{ .Values.tls.keyKey }}, mounted at {{ .Values.tls.mountPath }}. Create it before this release,
@@ -36,27 +39,51 @@ Check these three things first.
    picked up without a restart. The ops port stays plain HTTP, which is what
    the readiness probe and the metrics scraper use.
 {{- else }}
-     curl localhost:8080/v1/targets?namespace=<ns>&service=<svc>
+     curl "localhost:8080/v1/namespaces/<ns>/services/<svc>/targets"
 {{- end }}
 
-{{ if .Values.pgo.enabled }}
+{{ if include "profgate.pgoEnabled" . }}
+{{- if .Values.nats.credsFile }}
 PGO collection is on. The gateway does not create its NATS stores, its account,
 or its credentials: it opens them at startup and exits when one is missing.
 This release expects the Secret {{ .Values.nats.existingSecret }} in namespace {{ .Release.Namespace }}, holding key
-{{ .Values.nats.secretKey }}, mounted at {{ .Values.nats.credsFile }}, against {{ .Values.nats.url }}.
+{{ .Values.nats.secretKey }}, mounted at {{ .Values.nats.credsFile }}, against {{ include "profgate.natsURL" . }}.
+
+If that provisioning is already done, the Pods come up on their own. If not,
+the failure mode names the missing piece:
+
+A Pod restarting in a loop failed a startup check that waiting cannot fix:
+it cannot read the credentials file, or a store is missing, misconfigured,
+or denied to the account. The last log line before the exit names which. A
+missing Secret is created with
 
      kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.nats.existingSecret }} \
        --from-file={{ .Values.nats.secretKey }}=profgate.creds
 
-Provision the buckets and the account first; deploy/nats/README.md in the
-source repository holds the commands.
+and the store and account provisioning commands are in
+{{- else }}
+PGO collection is on. The gateway does not create its NATS stores: it opens
+them at startup and exits when one is missing. nats.credsFile is empty, so
+this release connects to {{ include "profgate.natsURL" . }} without a credentials file and
+mounts no Secret; authentication, if any, rides in the URL.
 
-Create the Secret first. Startup validation opens the file nats.credsFile
-names, so a gateway that cannot find it exits and the Pod restarts in a loop.
+If the stores are already provisioned, the Pods come up on their own. If not,
+the failure mode names the missing piece:
 
-With the credentials in place and NATS unreachable, the Pod runs and never
-becomes Ready. A rollout stalls there rather than replacing a working replica,
-which is the safe failure and does mean a NATS outage blocks upgrades.
+A Pod restarting in a loop failed a startup check that waiting cannot fix: a
+store is missing, misconfigured, or denied to the account. The last log line
+before the exit names which. The store provisioning commands are in
+{{- end }}
+
+     https://github.com/arloliu/profgate/blob/{{ if eq .Chart.AppVersion "latest" }}main{{ else }}{{ .Chart.AppVersion }}{{ end }}/deploy/nats/README.md
+
+A Pod that runs but never becomes Ready is still waiting on a check the
+gateway retries: the Kubernetes API preflight, the informer cache sync, or
+the PGO-specific case, a NATS connection it cannot make. The Pod logs name
+which of the three is still retrying. For NATS, check nats.url and the
+path to it. A rollout stalls there rather than replacing a working
+replica, which is the safe failure and does mean a NATS outage blocks
+upgrades.
 {{- else }}
 PGO collection is off. Nothing in this release talks to NATS, and the memory
 limit is the static {{ .Values.memoryLimitWithoutPGO }} rather than the figure derived from pgo.limits.

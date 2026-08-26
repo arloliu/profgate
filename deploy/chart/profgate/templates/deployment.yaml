@@ -1,3 +1,4 @@
+{{- include "profgate.validateNoDerivedOverrides" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,7 +27,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        {{- if .Values.configChecksumAnnotation }}
+        {{- if include "profgate.boolValue" (dict "key" "configChecksumAnnotation" "value" .Values.configChecksumAnnotation) }}
         # The binary reads its configuration once at startup. This hash is what
         # turns a configuration change into a rollout.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
@@ -63,7 +64,9 @@ spec:
           # There is no livenessProbe: /healthz answers 200 whenever the HTTP
           # server is up, so probing it can only restart a Pod that has stopped
           # answering entirely. /readyz is the mechanism that keeps traffic off
-          # a gateway whose informers, or NATS connection, are not usable.
+          # a gateway whose informers have not synced or whose initial NATS
+          # preflight has not passed; a later NATS disconnect leaves the
+          # replica Ready while the PGO routes answer 503.
           readinessProbe:
             httpGet:
               path: /readyz
@@ -81,32 +84,38 @@ spec:
             - name: config
               mountPath: /etc/profgate
               readOnly: true
-            {{- if .Values.pgo.enabled }}
+            {{- if and (include "profgate.pgoEnabled" .) .Values.nats.credsFile }}
             - name: nats-creds
-              mountPath: {{ .Values.nats.mountPath }}
+              # Quoted, like the tls mountPath below: the configuration
+              # carries the same path verbatim and quoted, so an unquoted
+              # render here would let YAML reinterpret part of the path -- a
+              # " #" starts a comment -- and mount somewhere the
+              # configuration does not name.
+              mountPath: {{ .Values.nats.mountPath | quote }}
               readOnly: true
             {{- end }}
-            {{- if .Values.tls.enabled }}
+            {{- if include "profgate.tlsEnabled" . }}
             - name: tls
-              mountPath: {{ .Values.tls.mountPath }}
+              mountPath: {{ .Values.tls.mountPath | quote }}
               readOnly: true
             {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "profgate.configMapName" . }}
-        {{- if .Values.pgo.enabled }}
+        {{- if and (include "profgate.pgoEnabled" .) .Values.nats.credsFile }}
         # The operator creates this Secret from their NATS account
-        # credentials; the chart never does. It is optional so a Pod starts
-        # before the Secret exists, and 0440 with the pod fsGroup is the
-        # narrowest mode the non-root image can read.
+        # credentials; the chart never does. An empty nats.credsFile means
+        # no JWT credentials file, so nothing is mounted at all. It is
+        # optional so a Pod starts before the Secret exists, and 0440 with
+        # the pod fsGroup is the narrowest mode the non-root image can read.
         - name: nats-creds
           secret:
-            secretName: {{ .Values.nats.existingSecret }}
+            secretName: {{ .Values.nats.existingSecret | quote }}
             defaultMode: 0440
             optional: true
         {{- end }}
-        {{- if .Values.tls.enabled }}
+        {{- if include "profgate.tlsEnabled" . }}
         # The operator, or cert-manager, creates this Secret; the chart never
         # does. It is not optional: tls.enabled asserts the certificate
         # exists, so a missing Secret should hold the Pod here with an event
@@ -119,7 +128,7 @@ spec:
         # the Deployment on every renewal and defeat that.
         - name: tls
           secret:
-            secretName: {{ .Values.tls.existingSecret }}
+            secretName: {{ .Values.tls.existingSecret | quote }}
             defaultMode: 0440
             optional: false
         {{- end }}

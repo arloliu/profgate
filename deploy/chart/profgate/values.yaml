@@ -18,8 +18,10 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# The gateway holds no state, so replicas exist for availability during a
-# rollout, not for capacity.
+# Two replicas primarily buy availability through a rollout or a replica
+# failure. More replicas also add aggregate capacity: the interactive
+# admission gate (limits.maxConcurrentProfiles) and the PGO limits are per
+# replica.
 replicaCount: 2
 
 serviceAccount:
@@ -46,7 +48,10 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 1
   # Set maxUnavailable instead of minAvailable to express the same budget the
-  # other way around. Exactly one of the two is rendered; minAvailable wins.
+  # other way around. Set exactly one and clear the other ("" and null both
+  # mean unset); zero is a real bound (maxUnavailable: 0 forbids voluntary
+  # disruption). Setting both fails rendering, as does enabling the budget
+  # with neither set.
   maxUnavailable: ""
 
 # Add checksum/config to the pod template, holding a hash of the rendered
@@ -96,16 +101,22 @@ memoryLimitWithoutPGO: 512Mi
 # requests, whose longest is limits.cpuSeconds or limits.traceSeconds plus 60
 # seconds of slack: 125 seconds at the shipped values.
 # With PGO on, a Collection can run far longer than this, and
-# `profgate config validate` prints the period that lets every Collection the
-# ceilings admit finish in place. Raising this to that number is a tradeoff,
-# not a requirement: a Collection the kubelet kills mid-merge loses no work,
-# its lease expires and another replica reclaims it.
+# `profgate config validate` prints the period that lets a drain wait through
+# any admissible Collection's deadline; work still running at its deadline is
+# abandoned, so that figure bounds the wait rather than guaranteeing
+# completion. Raising this to that number is a tradeoff, not a requirement:
+# a Collection the kubelet kills mid-merge loses that attempt's samples —
+# another replica reclaims it and retries from round zero only if the lease
+# expires before the Collection's deadline and an attempt remains under
+# pgo.maxAttempts; otherwise the Collection fails as deadline_exceeded or
+# attempts_exhausted, whichever bound wins.
 terminationGracePeriodSeconds: 125
 
 # There is no livenessProbe, by design. /healthz answers 200 as soon as the
 # HTTP server is up and does not depend on Kubernetes or NATS, so a liveness
-# probe on it can only restart a Pod whose HTTP server has stopped answering
-# at all -- a case the kubelet already handles by other means. Readiness is
+# probe on it could detect nothing but an HTTP server that has stopped
+# answering at all, and restarting over a dependency outage would be worse.
+# The accepted cost is that nothing restarts a hung process. Readiness is
 # the mechanism that keeps traffic off a gateway that cannot serve.
 readinessProbe:
   initialDelaySeconds: 0
@@ -115,12 +126,23 @@ readinessProbe:
 
 # Extra environment variables on the container, as a list of core/v1 EnvVar.
 # The binary applies PROFGATE_-prefixed overrides on top of the configuration
-# file, so this is the way to change one key without re-rendering the chart:
+# file, so this is the way to change one key without putting it in the raw
+# config block or the rendered ConfigMap:
 #   extraEnv:
 #     - name: PROFGATE_LOG_LEVEL
 #       value: debug
-# An override set here is invisible to the ConfigMap checksum, so a change to
-# it does not restart Pods on its own.
+# An override set here lands in the Pod template, so changing it rolls the
+# Deployment on upgrade.
+# The overrides for the keys the memory limit is derived from are rejected at
+# render time: PROFGATE_PGO_ENABLED, PROFGATE_PGO_LIMIT_MAX_PARALLEL,
+# PROFGATE_PGO_LIMIT_MAX_SAMPLE_BYTES, PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES,
+# and PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS. A value arriving here would
+# change PGO's memory use without moving the rendered limits.memory;
+# set the pgo values below instead.
+# The file-path keys the Secret mounts follow are rejected too:
+# PROFGATE_NATS_CREDS_FILE, PROFGATE_TLS_CERT_FILE, and
+# PROFGATE_TLS_KEY_FILE. A path arriving here can name a file nothing
+# mounts; set the nats and tls values below instead.
 extraEnv: []
 
 podAnnotations: {}
@@ -133,7 +155,7 @@ topologySpreadConstraints: []
 # An ingress NetworkPolicy for the gateway Pods. It is off by default because
 # the namespaces that reach the two ports differ per cluster;
 # deploy/base/networkpolicy-gateway.yaml is the same policy as plain YAML,
-# and deploy/base/networkpolicy-app-example.yaml is the matching policy an
+# and deploy/networkpolicy-app-example.yaml is the matching policy an
 # application namespace needs to admit the gateway to its pprof port.
 networkPolicy:
   enabled: false
@@ -209,16 +231,32 @@ tls:
 # provisioned.
 nats:
   # Comma-separated nats:// or tls:// URLs. Required when pgo.enabled.
+  # The URL must be here or in the raw config block's nats.url: an extraEnv
+  # PROFGATE_NATS_URL cannot satisfy the requirement, because rendering
+  # cannot see environment values.
+  # A user:password in the URL is rendered verbatim into the ConfigMap and
+  # printed in the install notes; to keep it out of both, set a
+  # credential-free URL here and override it at runtime with an extraEnv
+  # PROFGATE_NATS_URL valued from a Secret.
   url: ""
-  # Where the credentials file appears in the container. It is the mount path
-  # below joined with the Secret key.
+  # Where the credentials file appears in the container. It must equal the
+  # mountPath below joined with secretKey, because that join is the only path
+  # the mounted Secret puts a file at; rendering fails when the three values
+  # disagree. "" mounts no Secret and renders no credsFile key, so the
+  # gateway sends no JWT credentials; a user:password carried in the URL
+  # still authenticates it.
   credsFile: /etc/profgate/nats/nats.creds
   # The Secret the operator created from their NATS account credentials.
   # Create it before turning pgo.enabled on: startup validation opens the
   # file credsFile names, so a gateway whose Secret does not exist yet exits
-  # rather than running without it. The volume itself is optional, which is
-  # what lets the Secret be replaced under a running Pod.
+  # rather than running without it. The volume itself is optional, which only
+  # lets a Pod start before the Secret exists -- startup keeps failing until
+  # the file appears. A rotation is a different matter: the kubelet projects
+  # an update to the Secret into the volume of a running Pod whether or not
+  # the volume is optional.
   existingSecret: profgate-nats-creds
+  # The Secret key and the mount path it appears under. credsFile above must
+  # be their join.
   secretKey: nats.creds
   mountPath: /etc/profgate/nats
 
@@ -263,7 +301,22 @@ pgo:
 #       maxConcurrentProfiles: 16
 #
 # It is also where a key the structured values model can be overridden outright,
-# server.tls included: a value set here wins over what the tls block rendered.
+# server.tls.minVersion included: a value set here wins over what the
+# structured blocks rendered.
+#
+# The keys the memory limit is derived from are the exception: pgo.enabled and
+# the four sizing ceilings under pgo.limits (maxParallel, maxSampleBytes,
+# maxMergedBytes, maxActiveCollections) are rejected here at render time,
+# because the chart reads them from the pgo block above before this block is
+# merged, and a value here would leave limits.memory sized for different
+# ceilings. Set the pgo block instead.
+# The file-path keys the Secret mounts follow are rejected too: nats.credsFile,
+# server.tls.certFile, and server.tls.keyFile, because the credentials mount
+# follows nats.credsFile and the certificate mount follows tls.enabled, so a
+# path set here can name a file nothing mounts. Set the nats and tls blocks
+# instead. server, server.tls, and nats set here must be mappings, the way
+# pgo and pgo.limits must: a null or scalar would wipe the block the chart
+# rendered them into.
 #
 # A key left out here and out of the structured values above takes the
 # binary's own default. server.listen and server.opsListen are the exception:

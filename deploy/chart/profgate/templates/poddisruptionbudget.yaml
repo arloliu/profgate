@@ -1,4 +1,15 @@
-{{- if .Values.podDisruptionBudget.enabled }}
+{{- if include "profgate.boolValue" (dict "key" "podDisruptionBudget.enabled" "value" .Values.podDisruptionBudget.enabled) }}
+{{- /* A bound is set unless it is null or "". Zero is a real bound: maxUnavailable: 0 forbids voluntary disruption. A set bound has to be an integer the field's int32 can hold or a percentage; profgate.pdbBound fails the render on every other shape rather than emit a budget Kubernetes cannot decode, and prints the bound normalized -- a numeric bound as a plain integer -- which is what renders below. */}}
+{{- $min := include "profgate.pdbBound" (dict "key" "minAvailable" "value" .Values.podDisruptionBudget.minAvailable) }}
+{{- $max := include "profgate.pdbBound" (dict "key" "maxUnavailable" "value" .Values.podDisruptionBudget.maxUnavailable) }}
+{{- $minSet := ne $min "" }}
+{{- $maxSet := ne $max "" }}
+{{- if and $minSet $maxSet }}
+{{- fail "podDisruptionBudget.minAvailable and podDisruptionBudget.maxUnavailable express the same budget, so set exactly one and clear the other (minAvailable: \"\")" }}
+{{- end }}
+{{- if not (or $minSet $maxSet) }}
+{{- fail "podDisruptionBudget is enabled with neither minAvailable nor maxUnavailable, so set exactly one (0 counts) or turn it off (podDisruptionBudget.enabled: false)" }}
+{{- end }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -7,10 +18,10 @@ metadata:
   labels:
     {{- include "profgate.labels" . | nindent 4 }}
 spec:
-  {{- if .Values.podDisruptionBudget.minAvailable }}
-  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
-  {{- else if .Values.podDisruptionBudget.maxUnavailable }}
-  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- if $minSet }}
+  minAvailable: {{ $min }}
+  {{- else }}
+  maxUnavailable: {{ $max }}
   {{- end }}
   selector:
     matchLabels:
