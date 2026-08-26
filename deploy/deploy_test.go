@@ -44,13 +44,20 @@ func ptr[T any](v T) *T { return &v }
 // so struct tags and defaulting behave the same way the API server sees them.
 func decode[T any](t *testing.T, name string) T {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(baseDir, name)) //nolint:gosec // name is a fixed literal from each test, not external input
+	return decodePath[T](t, filepath.Join(baseDir, name))
+}
+
+// decodePath is decode for a file outside deploy/base, addressed relative to
+// this package directory.
+func decodePath[T any](t *testing.T, path string) T {
+	t.Helper()
+	b, err := os.ReadFile(path) //nolint:gosec // path is a fixed literal from each test, not external input
 	if err != nil {
-		t.Fatalf("read %s: %v", name, err)
+		t.Fatalf("read %s: %v", path, err)
 	}
 	var v T
 	if err := yaml.Unmarshal(b, &v); err != nil {
-		t.Fatalf("unmarshal %s: %v", name, err)
+		t.Fatalf("unmarshal %s: %v", path, err)
 	}
 	return v
 }
@@ -307,8 +314,25 @@ func TestGatewayNetworkPolicy(t *testing.T) {
 	checkRule(t, np.Spec.Ingress[1], 9090, "monitoring")
 }
 
+// TestAppExampleNetworkPolicy covers the application-side policy template.
+// The file is a template for the application's namespace, so it lives outside
+// deploy/base and must never be applied by `kubectl apply -k deploy/base`:
+// the base would otherwise mutate whatever workload matches the example
+// selector in the target namespace.
 func TestAppExampleNetworkPolicy(t *testing.T) {
-	np := decode[networkingv1.NetworkPolicy](t, "networkpolicy-app-example.yaml")
+	const file = "networkpolicy-app-example.yaml"
+
+	if _, err := os.Stat(filepath.Join(baseDir, file)); err == nil {
+		t.Errorf("%s is inside deploy/base, where the resource list would have to name it", file)
+	}
+	k := decode[kustomization](t, "kustomization.yaml")
+	for _, r := range k.Resources {
+		if r == file {
+			t.Errorf("kustomization.yaml resources name %s; the example must not be applied with the base", file)
+		}
+	}
+
+	np := decodePath[networkingv1.NetworkPolicy](t, file)
 
 	if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 		t.Fatalf("PolicyTypes = %v, want exactly [Ingress]", np.Spec.PolicyTypes)

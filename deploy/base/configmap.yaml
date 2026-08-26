@@ -52,8 +52,10 @@ data:
     # number `profgate config validate` prints for this configuration. That is
     # the worst case over every policy the ceilings admit -- one Pod at a time,
     # the longest sample, the most rounds -- so it is large. An operator who
-    # does not want to wait that long can leave the grace period lower: a
-    # Collection cut short by SIGKILL is not lost, its lease expires and
-    # another replica reclaims it. The base stays at 125, which covers the
-    # gateway's own drain with PGO off: server.drainDelay, the longest profile,
-    # and 60 seconds of slack.
+    # does not want to wait that long can leave the grace period lower:
+    # SIGKILL discards the interrupted attempt's samples, and another replica
+    # reclaims the Collection and retries from round zero only if the lease
+    # expires before the Collection's deadline and an attempt remains;
+    # otherwise it fails as deadline_exceeded or attempts_exhausted. The base
+    # stays at 125, which covers the gateway's own drain with PGO off:
+    # server.drainDelay, the longest profile, and 60 seconds of slack.

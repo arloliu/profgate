@@ -8,4 +8,3 @@ resources:
   - deployment.yaml
   - service.yaml
   - networkpolicy-gateway.yaml
-  - networkpolicy-app-example.yaml
