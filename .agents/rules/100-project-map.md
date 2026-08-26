@@ -66,6 +66,7 @@ internal/config/       // fuda-loaded Config and validation
 internal/metrics/      // Recorder interface, Prometheus implementation
 internal/tlscert/      // the API listener's certificate, re-read while the process runs
 internal/admit/        // the admission gate shared by interactive requests and Collections
+internal/auth/         // Authenticator; basic, oidc, disabled; sole non-test importer of go-jose and x/crypto
 internal/natskv/       // the NATS seam; sole non-test importer of nats.go
 internal/pgo/          // policy, publisher, scheduler, worker, merge, sweeper
 internal/ops/          // liveness, readiness, and the Prometheus /metrics listener
@@ -96,6 +97,15 @@ The accepted PGO design ([`docs/specs/pgo.md`](../../docs/specs/pgo.md)) adds:
 /v1/collections/{id}
 /v1/collections/{id}/profile
 /v1/collections/{id}/cancel
+```
+
+The accepted authentication design ([`docs/specs/auth.md`](../../docs/specs/auth.md)) adds,
+only when its browser flow is configured:
+
+```
+/auth/login
+/auth/callback
+/auth/logout
 ```
 
 ## Documentation

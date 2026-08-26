@@ -47,7 +47,8 @@ which is what makes the profiled replica predictable.
 6. **Kubernetes 1.23 is the compatibility baseline**;
    only API fields present in the 1.23 `discovery.k8s.io/v1` schema are read.
 7. **Authentication is optional and static.**
-   This design defines the `disabled` mode and the authorization structure every mode shares.
+   This design defines the `disabled` mode and the authorization structure every mode shares;
+   [`auth.md`](auth.md) defines `basic` and `oidc` on that structure.
 8. **Authorization is static access realms** loaded from process configuration.
 9. **Nothing the gateway itself emits reveals a Pod IP, a pprof port, or a name the client's realm denies.**
    Hiding the direct path to the pprof endpoint is part of what the gateway is for.
@@ -62,9 +63,8 @@ which is what makes the profiled replica predictable.
   Grafana Pyroscope and Parca exist for that and are not dependencies of this design.
 - Profiling languages other than Go.
 - Reaching Pods through `pods/exec`, `pods/portforward`, or a sidecar.
-- Hot-reloading configuration, Basic Auth, OIDC.
-  Each is designed for in a later revision of this document;
-  PGO collection is designed in [`pgo.md`](pgo.md).
+- Hot-reloading configuration is designed for in a later revision of this document;
+  PGO collection is designed in [`pgo.md`](pgo.md) and authentication modes in [`auth.md`](auth.md).
   The seams that make them additive are called out where they occur.
   Re-reading the API listener's certificate is not configuration hot-reload:
   the two paths are fixed at startup and only the bytes they point at are read again (section 10).
@@ -210,7 +210,9 @@ Required flows:
 Ingress → API listener;
 kubelet and metrics scraper → ops listener;
 gateway → Kubernetes API;
-gateway → `PodIP:pprofPort`.
+gateway → `PodIP:pprofPort`;
+gateway → OpenID Connect issuer, HTTPS, when `auth.mode` is `oidc` ([`auth.md`](auth.md));
+`deploy/` ships a commented egress rule for it.
 
 The first flow is HTTPS when `server.tls` is configured and plaintext otherwise;
 the port and its name do not change with the scheme, so nothing else in this section moves.
@@ -244,7 +246,10 @@ a Kubernetes Secret volume holding the NATS credentials file at `/etc/profgate/n
 mounted `readOnly: true` with `defaultMode: 0440`;
 the Deployment's pod `securityContext` sets `fsGroup: 65532`
 so the non-root gateway's group owns the volume and can read the file.
-The kubelet mounts the Secret;
+When `auth.basic.usersFile`, `auth.oidc.caFile`, `auth.oidc.browser.clientSecretFile`,
+or `auth.oidc.browser.cookieKeyFile` is configured ([`auth.md`](auth.md)),
+a second Secret volume at `/etc/profgate/auth/` is mounted the same way, under the same `fsGroup`.
+The kubelet mounts each Secret;
 the gateway's ServiceAccount needs no Secrets API permission,
 and the RBAC table is unchanged.
 No host namespaces, host paths, `SYS_PTRACE`, or privileged mode.
@@ -255,6 +260,11 @@ It can read Service, Pod, and EndpointSlice metadata cluster-wide,
 and open HTTP connections to any Pod IP on the configured pprof port that NetworkPolicy admits.
 It cannot exec into Pods, read Secrets or logs, port-forward, mutate any Kubernetes object,
 or reach the host.
+Under `basic` authentication it holds bcrypt hashes, not passwords.
+Under `oidc` it holds the issuer's public keys, the cookie key, and, if configured, a client secret;
+with those it can mint a session cookie for any principal and realm it already serves,
+which is no more than it can already do by ignoring authentication.
+It holds no refresh token and cannot obtain a token from the issuer on its own.
 Profiling output is sensitive production data
 (stack traces, package names, request strings) and is treated as such in the audit log.
 
@@ -485,7 +495,8 @@ and its response contains nothing a client could connect to.
 
 ## 6. HTTP API
 
-All paths are under `/v1` on the API listener.
+All paths are under `/v1` on the API listener,
+except the three `/auth/` routes that [`auth.md`](auth.md) adds when its browser flow is configured.
 The product name does not appear in any path.
 Every response carries `Cache-Control: no-store`.
 
@@ -493,32 +504,36 @@ Every response carries `Cache-Control: no-store`.
 
 Every `/v1` request passes through these steps in order;
 the first failing step produces the response.
-Steps 7–9 differ by endpoint.
+Steps 8–10 differ by endpoint.
 
 1. **Route.** Unknown path → `404 route_unknown`; unknown `{profile}` → `404 profile_unknown`.
    Path segments for `{namespace}` and `{service}` must be DNS-1123 labels, otherwise `404 route_unknown`.
 2. **Method.** A method the route does not accept → `405 method_not_allowed` with `Allow` listing those it does;
    the two routes defined here accept `GET` only.
 3. **Readiness.** `HasSynced()` false → `503 not_ready`.
-4. **Authentication.** Resolve the principal (section 7.1).
-5. **Realm.** Namespace, then Service, then (profile endpoint only) profile → `403 realm_denied`.
-6. **Parameters.**
+4. **Credential placement.**
+   `access_token` as a query parameter → `400 invalid_parameter`.
+5. **Authentication.**
+   Resolve the principal and its realm per `auth.mode`
+   → `401 unauthenticated`, `429 too_many_auth`, `503 auth_unavailable`, or a `302` to login ([`auth.md`](auth.md)).
+6. **Realm.** Namespace, then Service, then (profile endpoint only) profile → `403 realm_denied`.
+7. **Parameters.**
    Targets endpoint: any query parameter → `400 invalid_parameter`.
    Profile endpoint: validate every parameter per section 6.3 → `400 invalid_parameter` or `400 seconds_exceeds_limit`.
-7. **Discovery.** `Targets()` → `404 service_not_found`, `422 service_selectorless`.
-8. **Filter and select.**
+8. **Discovery.** `Targets()` → `404 service_not_found`, `422 service_selectorless`.
+9. **Filter and select.**
    Targets endpoint: respond `200` with the full list, sorted (section 6.2).
    Profile endpoint: apply `version`;
    if `pod` is present and no remaining target has that name → `404 pod_not_found`;
    if `pod` is absent and no target remains → `503 no_targets`;
    otherwise pick `pod`, or one target by `strategy` (`random` when absent).
-9. **Admit** (profile endpoint only).
+10. **Admit** (profile endpoint only).
    Acquire one of `limits.maxConcurrentProfiles` slots from the shared admission gate (`internal/admit`) without waiting;
    none free → `429 too_many_profiles`.
    The slot is held through confirmation and proxying and released when the response completes.
    The overall request budget (section 6.4) starts here.
-10. **Confirm** (profile endpoint only, section 5.6) → `503 target_changed`, `503 discovery_unavailable`.
-11. **Proxy** (profile endpoint only, section 6.4).
+11. **Confirm** (profile endpoint only, section 5.6) → `503 target_changed`, `503 discovery_unavailable`.
+12. **Proxy** (profile endpoint only, section 6.4).
 
 Realm denial precedes discovery,
 so a caller denied a namespace receives the same `403` whether or not the Service exists.
@@ -661,13 +676,14 @@ The complete set of gateway-generated codes:
 | Status | `code` |
 |---|---|
 | 400 | `invalid_parameter`, `seconds_exceeds_limit` |
+| 401 | `unauthenticated` |
 | 403 | `realm_denied` |
 | 404 | `route_unknown`, `service_not_found`, `pod_not_found`, `profile_unknown` |
 | 405 | `method_not_allowed` |
 | 422 | `service_selectorless` |
-| 429 | `too_many_profiles` |
+| 429 | `too_many_profiles`, `too_many_auth` |
 | 502 | `upstream_unreachable`, `upstream_redirect` |
-| 503 | `not_ready`, `no_targets`, `target_changed`, `discovery_unavailable` |
+| 503 | `not_ready`, `no_targets`, `target_changed`, `discovery_unavailable`, `auth_unavailable` |
 | 504 | `upstream_timeout` |
 
 Upstream non-`2xx` responses are not gateway errors:
@@ -682,7 +698,10 @@ and one filtered out by `version`.
 
 ## 7. Authentication and Authorization
 
-Both are static process configuration (section 10), never runtime state.
+Both are static process configuration (section 10), never runtime state;
+[`auth.md`](auth.md) keeps that true for its two modes,
+whose only runtime-acquired trust state is the issuer's public keys;
+users, mappings, secrets, and cookie keys are configuration-derived snapshots.
 
 ### 7.1 Principals and realms
 
@@ -704,7 +723,8 @@ At startup the gateway logs, at warning level:
 authentication disabled; access is controlled only by network boundary and static realm policy
 ```
 
-Later modes (Basic, OIDC) add a principal → realm mapping step and change nothing below it.
+[`auth.md`](auth.md) defines the `basic` and `oidc` modes;
+each resolves a principal and a realm and changes nothing below it.
 
 ### 7.2 Realm structure
 
@@ -769,6 +789,7 @@ deployments that need non-disclosure against in-cluster callers must run an enfo
 ```text
 profgate serve --config <path>
 profgate config validate --config <path>
+profgate auth hash
 profgate version
 ```
 
@@ -783,6 +804,11 @@ Every `/v1` request emits one record on completion:
 principal, namespace, service, pod, profile, seconds, status, code, duration_ms
 ```
 
+`auth_reason` is added on authentication failures and login redirects,
+with the values [`auth.md`](auth.md) lists;
+one of them, `internal`, marks an authenticator error the gateway could not classify, answered `503 auth_unavailable`.
+The `/auth/` routes write a line with no namespace or Service ([`auth.md`](auth.md)).
+
 `code` is `ok` for a successful proxy, the gateway error code, or the upstream code from section 6.4.
 This is the audit trail.
 Records never contain a Pod IP.
@@ -794,7 +820,7 @@ Both paths are on the ops listener and have no authentication or realm check.
 | Path | `200` when |
 |---|---|
 | `/healthz` | the process is serving HTTP |
-| `/readyz` | preflight has passed and `HasSynced()` is true |
+| `/readyz` | issuer discovery and the initial key fetch have succeeded when `auth.mode` is `oidc` ([`auth.md`](auth.md)), preflight has passed, and `HasSynced()` is true |
 
 `/readyz` reflects the initial sync of the informers as a whole.
 It does not track API reachability afterwards:
@@ -814,6 +840,13 @@ and refuses to proxy (section 5.6), which is the correct behavior, not a reason 
 | `profgate_discovery_synced` (gauge) | — |
 | `profgate_tls_reloads_total` (counter) | `result` (`applied`/`unchanged`/`failed`) |
 | `profgate_tls_certificate_expiry_seconds` (gauge) | — |
+| `profgate_auth_failures_total` (counter) | `mode`, `reason` ([`auth.md`](auth.md)) |
+| `profgate_auth_sessions_issued_total` (counter) | — |
+| `profgate_oidc_jwks_refresh_total` (counter) | `result` (`ok`/`failed`) |
+| `profgate_oidc_jwks_keys` (gauge) | — |
+| `profgate_oidc_jwks_age_seconds` (gauge) | — |
+| `profgate_auth_file_reload_total` (counter) | `file` (`users`/`cookie_key`), `result` (`ok`/`failed`) |
+| `profgate_auth_cookie_key_info` (gauge) | `fingerprint`, `role` (`current`/`previous`) |
 
 The two TLS metrics exist only while `server.tls` is configured.
 `profgate_tls_certificate_expiry_seconds` holds the served leaf's `notAfter` as a Unix timestamp.
@@ -840,6 +873,9 @@ start
   v
 [listening]   both listeners open; /healthz 200; /readyz 503; /v1 -> 503 not_ready
   |
+  v
+[discovering] only when auth.mode is oidc: fetch issuer discovery and the JWKS (auth.md)
+  |   failure: retry with backoff for auth.oidc.discoveryTimeout, then exit 1
   v
 [preflight]   list+watch each resource (section 3.1)
   |   403 on any tuple ------------------------------> log pair, exit 1
@@ -980,6 +1016,10 @@ No end-to-end framework; the reasoning is recorded in
 [`../decisions/e2e-without-framework.md`](../decisions/e2e-without-framework.md).
 `controller-runtime/envtest` is not used: it runs no controller-manager and no kubelet,
 so it cannot produce real EndpointSlices or reachable Pods.
+
+**Authentication**: `internal/auth` unit tests, the `internal/httpapi` integration tests,
+and the two end-to-end lanes — `oidc` with the browser flow against Dex, and `basic` over TLS —
+are specified in [`auth.md`](auth.md).
 
 ### 9.2 Cluster matrix
 
@@ -1149,8 +1189,8 @@ so a later hot-reload (`fuda/watcher`) is one goroutine and no change to request
 | `limits.cpuSeconds` | `PROFGATE_LIMIT_CPU_SECONDS` | `60` | restart | 1–86400 |
 | `limits.traceSeconds` | `PROFGATE_LIMIT_TRACE_SECONDS` | `60` | restart | 1–86400 |
 | `limits.maxConcurrentProfiles` | `PROFGATE_LIMIT_MAX_CONCURRENT_PROFILES` | `16` | restart | 1–1024 |
-| `auth.mode` | `PROFGATE_AUTH_MODE` | `disabled` | restart | `disabled` |
-| `auth.anonymousRealm` | `PROFGATE_ANONYMOUS_REALM` | — | hot | names an entry in `realms` |
+| `auth.mode` | `PROFGATE_AUTH_MODE` | `disabled` | restart | `disabled`, `basic`, `oidc`; the mode-specific keys are in [`auth.md`](auth.md) |
+| `auth.anonymousRealm` | `PROFGATE_ANONYMOUS_REALM` | — | hot | required in `disabled`, forbidden otherwise; names an entry in `realms` |
 | `realms` | — | — | hot | at least one; entries per section 7.2 |
 
 ```yaml
@@ -1178,6 +1218,8 @@ realms:
 ```
 
 `hot` marks a field a future reload may change in place;
+no reloader ships yet, and the users file and the cookie key file of [`auth.md`](auth.md)
+are the only values re-read while the process runs.
 `restart` marks a field whose change requires a process restart.
 `restart (path)` marks a field whose path is fixed for the life of the process
 while the file's contents are read again: a rotated certificate is served without a restart.
@@ -1237,6 +1279,10 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
   next to the commented NATS one and outside `deploy/base` for the same reason.
   A base that mounted a Secret nobody had created would make `kubectl apply -k deploy/base` produce a Pod
   that never starts.
+- When an authentication mode needs files ([`auth.md`](auth.md)),
+  `deploy/` ships a commented example Secret for `/etc/profgate/auth/`,
+  the Deployment's volume and mount for it, an egress NetworkPolicy rule to the issuer,
+  and Helm values for each, pinned by the manifest test.
 - When PGO collection is enabled ([`pgo.md`](pgo.md)),
   the operator creates the NATS credentials Secret alongside the NATS account;
   `deploy/` ships a commented example Secret
@@ -1284,6 +1330,9 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
 | `github.com/prometheus/client_golang` | metrics |
 | `github.com/nats-io/nats.go` | PGO coordination and artifacts (only in `internal/natskv`) |
 | `github.com/google/pprof` | profile merge ([`pgo.md`](pgo.md)) and tests: parsing fetched profiles |
+| `github.com/go-jose/go-jose/v4` | JWS verification and JWK parsing (only in `internal/auth`; [`auth.md`](auth.md)) |
+| `golang.org/x/crypto` | `bcrypt` (only in `internal/auth`) |
+| `golang.org/x/term` | reading a password without echo for `profgate auth hash` (only in `cmd/profgate`) |
 | `sigs.k8s.io/yaml` | tests only: golden ClusterRole and `versions.yaml` |
 
 Everything else is the standard library.
@@ -1301,6 +1350,7 @@ internal/config/     fuda-loaded Config, strict pre-parse, validation, hot/resta
 internal/metrics/    Recorder interface and the Prometheus implementation
 internal/tlscert/    the API listener's certificate: load, re-read on a ticker, GetCertificate
 internal/admit/      the admission gate shared by interactive requests and Collections
+internal/auth/       Authenticator; basic, oidc, and disabled modes; JWKS cache; browser flow
 deploy/              kustomize base and Helm chart
 test/e2e/            harness, versions.yaml, testapp, overlays
 ```
@@ -1322,3 +1372,8 @@ test/e2e/            harness, versions.yaml, testapp, overlays
 | Configuration invalid | process exits at startup with the validation error |
 | TLS certificate rotated in place | the new pair is served within the refresh interval; no restart, no dropped connection |
 | TLS files unreadable or mismatched while running | the previous pair stays in use; a warning is logged and a `failed` reload counted |
+| Issuer unreachable at startup (`oidc`) | discovery retries for `auth.oidc.discoveryTimeout`, then the process exits |
+| JWKS refresh fails while running | the previous keys stay in use; a warning is logged and a `failed` refresh counted; `503 auth_unavailable` after `jwksMaxStale` |
+| Issuer rotates its signing keys | tokens under the new key verify within `jwksRefreshMin` of the first one arriving |
+| Issuer token endpoint down | browser logins answer `503 auth_unavailable`; existing sessions and bearer tokens unaffected |
+| Users file or cookie key file unreadable while running | the previous contents stay in use; a warning is logged and a `failed` reload counted |

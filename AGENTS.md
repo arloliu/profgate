@@ -13,12 +13,14 @@ Kubernetes 1.23 is the compatibility baseline.
 The gateway alone is stateless and uses no NATS;
 PGO collection, when it arrives, adds NATS JetStream KV for control-plane state while profile bytes stay ephemeral.
 
-## Two Specs, One Accepted
+## Three Specs, All Accepted
 
 [`docs/specs/gateway.md`](docs/specs/gateway.md) is `Accepted`:
 the design of record for the pprof gateway — discovery, proxying, realms, configuration, testing — with no NATS on the interactive path.
 [`docs/specs/pgo.md`](docs/specs/pgo.md) is `Accepted`:
 PGO collection layered on the gateway — scheduling, NATS coordination, in-memory merge, artifacts — changing none of the gateway's interactive behavior.
+[`docs/specs/auth.md`](docs/specs/auth.md) is `Accepted`:
+`basic` and `oidc` authentication layered on the gateway's realm step, with an optional stateless browser login.
 Read a draft for context and revise it freely;
 implement only from an `Accepted` spec.
 Full authority order:

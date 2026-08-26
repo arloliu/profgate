@@ -91,6 +91,18 @@ tooling, which is why the grep excludes that tree.
 `github.com/nats-io/nats.go`;
 `mise run check` runs the same grep shape as for client-go.
 
+### One Importer of the Authentication Libraries
+
+`internal/auth` is the only non-test importer of
+`github.com/go-jose/go-jose/v4` and `golang.org/x/crypto`;
+`mise run check` runs the same grep shape.
+`cmd/profgate` is the only importer of `golang.org/x/term`,
+which `profgate auth hash` uses to read a password without echo;
+the same grep shape, `check_term_importers` in `scripts/check-repo.py`,
+lands with the change that first imports it.
+Everything else in authentication is standard library
+([`docs/specs/auth.md`](../../docs/specs/auth.md)).
+
 ### Golden ClusterRole
 
 The shipped ClusterRole manifest is pinned by a golden test.

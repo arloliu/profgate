@@ -12,6 +12,7 @@
   (.agents/rules/800-security-invariant.md).
 - k8s.io/client-go, k8s.io/api, and k8s.io/apimachinery share one minor version.
 - Only internal/natskv imports github.com/nats-io/nats.go outside tests and test/.
+- Only internal/auth imports github.com/go-jose/go-jose and golang.org/x/crypto outside tests and test/.
 
 Checks whose subject does not exist yet stay silent rather than failing.
 The golden ClusterRole test (.agents/rules/800-security-invariant.md) lives in
@@ -145,6 +146,19 @@ def check_nats_importers(root):
     return bad
 
 
+def check_auth_importers(root):
+    bad = []
+    for path in root.rglob("*.go"):
+        rel = path.relative_to(root).as_posix()
+        if rel.endswith("_test.go") or rel.startswith("test/") or rel.startswith("internal/auth/"):
+            continue
+        text = path.read_text()
+        for mod in ('"github.com/go-jose/go-jose', '"golang.org/x/crypto'):
+            if mod in text:
+                bad.append(f"{rel}: imports {mod[1:]} outside internal/auth")
+    return bad
+
+
 def main():
     errors = []
     check_links(errors)
@@ -154,6 +168,7 @@ def main():
     errors.extend(check_clientgo_importers(root))
     errors.extend(check_k8s_minor_alignment(root))
     errors.extend(check_nats_importers(root))
+    errors.extend(check_auth_importers(root))
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
