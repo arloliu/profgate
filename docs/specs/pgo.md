@@ -1459,7 +1459,7 @@ Stored inside the record as `manifest` once the Collection completes:
 No Pod IP or port appears in it.
 It answers "is this profile safe for build X" (version, label, per-sample identity),
 "why is it smaller than expected" (failed samples),
-and "is this the whole fleet" (`truncated`, set when a round had more eligible Pods than `maxTargetsPerRound`).
+and "is this the whole fleet" (`truncated`, set when a round had more eligible Pods than it sampled).
 
 ---
 
