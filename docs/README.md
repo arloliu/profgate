@@ -1,7 +1,18 @@
 # Documentation
 
-Organized by how each document ages, because what decides whether a document
-can still be trusted is its lifecycle, not its topic.
+Start with the guide for your task:
+
+- **Pull a profile:** [`api.md`](api.md) — the HTTP API: routes, parameters, errors.
+- **Deploy and operate the gateway:** [`deployment.md`](deployment.md).
+- **Configure the gateway:** [`configuration.md`](configuration.md).
+- **Enable PGO collection:** [`pgo.md`](pgo.md).
+
+These guides live at the top of `docs/` and carry no `Status:` field;
+they age by being kept true against the code.
+
+The rest of `docs/` serves contributors,
+organized by how each document ages,
+because what decides whether a document can still be trusted is its lifecycle, not its topic.
 
 | Path | Holds | How it ages |
 |---|---|---|
@@ -9,11 +20,11 @@ can still be trusted is its lifecycle, not its topic.
 | `plans/` | Executable work orders | Living while `Approved` or `In Progress`; frozen history once `Done` |
 | `decisions/` | One decision that is expensive to revisit, per file | Immutable once accepted; superseded rather than edited |
 
-`plans/` does not exist yet; it is created along with its first document.
+`plans/` holds the gateway and PGO implementation plans, both `Done`.
 
 Review reports and working notes stay in `tmp/`, which is not tracked.
-They are byproducts of producing the documents above, not documents in their
-own right.
+They are byproducts of producing the documents above,
+not documents in their own right.
 
 ## The Status Field
 
@@ -31,12 +42,12 @@ and records an `Outcome:` line naming what shipped.
 `mise run check` verifies both fields and every relative link here — see
 [`.agents/rules/900-design-and-review-loops.md`](../.agents/rules/900-design-and-review-loops.md).
 
-## Where to Start
+## Where Contributors Start
 
 - **Understanding what Profgate is:** [`specs/gateway.md`](specs/gateway.md),
   the accepted gateway design.
   [`specs/pgo.md`](specs/pgo.md) is the accepted PGO collection design layered on it;
   [`specs/profgate-design.md`](specs/profgate-design.md) is the superseded combined original, kept for history.
 - **Why a choice was made:** [`decisions/`](decisions/), one file per topic.
-- **Changing anything:** [`.agents/rules/`](../.agents/rules/) holds the rules
-  in force, indexed by [`.agents/rules/AGENTS.md`](../.agents/rules/AGENTS.md).
+- **Changing anything:** [`.agents/rules/`](../.agents/rules/) holds the rules in force,
+  indexed by [`.agents/rules/AGENTS.md`](../.agents/rules/AGENTS.md).
