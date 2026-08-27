@@ -6,8 +6,8 @@ This document is the design of record for the gateway:
 a Kubernetes-aware pprof proxy with no PGO, no NATS, and no durable state.
 Profile-Guided Optimization collection is a separate, additive design in
 [`pgo.md`](pgo.md); it builds on what is defined here and changes none of it.
-[`profgate-design.md`](profgate-design.md) is the superseded original draft
-that covered both.
+The original draft that covered both, `docs/specs/profgate-design.md`,
+is superseded by this document and recoverable from git history.
 
 ---
 

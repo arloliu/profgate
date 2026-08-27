@@ -5,10 +5,15 @@ executing one, or working through a review round.
 
 ## The Status Contract
 
-Specs and plans live at one stable path each.
+Specs and plans each live at one stable path while they are living documents.
 Their lifecycle is a `Status:` field in the document, never a directory —
 moving a file to record a state change breaks every link that cites it and
 truncates its history for anyone who forgets `git log --follow`.
+A document that reaches a terminal state is deleted rather than moved:
+a move breaks those same links and leaves the finished text in every search,
+while a deletion breaks them and takes the text out of the tree,
+with a lookup that reads it back.
+[Deleting a Finished Document](#deleting-a-finished-document) gives the protocol.
 
 Line 3 of every `docs/specs/*.md` and `docs/plans/*.md` is exactly:
 
@@ -48,6 +53,40 @@ hunk that review catches, rather than a memory failure nobody notices.
 
 The same applies to a plan that dies: `Abandoned` plus a line saying what
 replaced it, in the change that walks away from it.
+
+### Deleting a Finished Document
+
+**A plan that reaches `Done` or `Abandoned`,
+and a spec that reaches `Superseded`,
+are then deleted from the tree, in two commits.**
+
+The first commit is the change described above, with the document still in place:
+it flips `Status:` and adds the line that says where the work went —
+`Outcome:` naming the commit or tag for a `Done` plan,
+the replacement for an `Abandoned` one,
+and for a `Superseded` spec the specs that replace it.
+`check_status` validates that tree exactly as it always has.
+The second commit is the next commit that touches the file:
+it deletes the document and rewrites every link that cited it,
+which `check_links` enforces.
+One commit cannot do both,
+because the tree a commit writes either holds the finished document or does not.
+
+`scripts/check-repo.py` inspects the files present in the tree,
+so a deleted plan is no longer checked at all.
+The first commit is where the evidence lives:
+its tree holds the finished `Status:` and the line below it under the checks,
+and its diff shows both.
+No check reads history, and this protocol adds none.
+
+Nothing enforces the line an `Abandoned` plan carries,
+or the one a `Superseded` spec carries:
+`check_status` requires `Outcome:` on line 4 of a `Done` plan and nothing more.
+Review is what holds those two cases.
+
+Why deletion rather than an archive directory,
+and how to read a deleted document back out of git:
+[`finished-documents-leave-the-tree.md`](../../docs/decisions/finished-documents-leave-the-tree.md).
 
 ### Naming
 

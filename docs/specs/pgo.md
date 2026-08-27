@@ -9,7 +9,8 @@ configuration, testing — is assumed and not restated;
 this document adds scheduling, collection, merge,
 and the NATS state that coordinates gateway replicas.
 Gateway sections are cited by heading name.
-[`profgate-design.md`](profgate-design.md) is the superseded original draft.
+The original draft, `docs/specs/profgate-design.md`,
+is superseded by this document and recoverable from git history.
 
 ---
 

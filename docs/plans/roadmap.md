@@ -160,13 +160,18 @@ Spec: `docs/specs/pgo.md` for the identifier grammar; none otherwise.
 
 `docs/specs/profgate-design.md` is `Superseded` and five plans are `Done`;
 together they are most of the Markdown in the repository and compete with the living specs in every search.
-`docs/README.md` today keeps finished plans as frozen history.
+`docs/README.md` and `.agents/rules/900-design-and-review-loops.md` state the policy already;
+the documents themselves are still in the tree.
 
-- [ ] Write a decision record that finished plans and superseded specs are removed in the change that supersedes them,
-  with `git log --follow` as their history.
-- [ ] Apply it.
+- [x] Write a decision record:
+  a finished plan and a superseded spec are deleted in the commit after the one that records their status,
+  and git reads a deleted one back —
+  `git log --all --diff-filter=D --format=%H -- <path>`,
+  then `git show <that-commit>^:<path>`.
+- [x] Apply it.
 
-Spec: none; the decision record changes `docs/README.md`.
+Spec: none;
+the decision record changes `docs/README.md` and `.agents/rules/900-design-and-review-loops.md`.
 
 ### 10. OIDC transport from a library
 
