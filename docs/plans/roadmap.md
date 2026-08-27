@@ -9,6 +9,7 @@
 > and only then gets a plan of its own under `docs/plans/`.
 > Items that change no behavior — a release, a chart template, a docs repair — need no spec and are executed directly.
 > Checkboxes track which items have started.
+> A ticked spec bullet means the revision is in the spec; the implementation plan and the code follow it.
 
 **Goal:** turn what the gateway already does into something a person can install from a release,
 reach from a terminal under `oidc`, diagnose when a Service yields no target,
@@ -81,7 +82,7 @@ and the CLI in item 4 should be written against the final model.
 Under `oidc`, `go tool pprof` cannot attach a bearer token,
 and `docs/authentication.md` sends the user to another tool for one.
 
-- [ ] Write `docs/specs/cli.md`:
+- [x] Write `docs/specs/cli.md`:
   `login` by OIDC device code with a local token cache,
   `namespaces`, `services`, `targets`, `profile` (with `--open` running `go tool pprof -http`),
   `collect --wait`, `collections`, and `download`;
@@ -97,41 +98,41 @@ which already defers token acquisition to this document.
 an empty answer cannot distinguish no Ready Pod, a selector that matches nothing,
 a named port no Pod declares, a terminating Pod, or a cache not yet synced.
 
-- [ ] Revise `docs/specs/gateway.md`:
+- [x] Revise `docs/specs/gateway.md`:
   `GET .../targets?explain=true` adds aggregate exclusion reasons with counts,
   never Pod identity beyond what the plain listing shows,
   guarded by the same realm check.
-- [ ] Revise `docs/specs/ui.md` so the console's empty state shows those reasons.
-- [ ] The CLI's `targets` prints them.
+- [x] Revise `docs/specs/ui.md` so the console's empty state shows those reasons.
+- [x] The CLI's `targets` prints them.
 
 Spec: `docs/specs/gateway.md` and `docs/specs/ui.md` (revisions required).
 
 ### 6. A machine contract automation can build on
 
-- [ ] `X-Request-Id`: accepted from the client or generated, echoed on every response,
+- [x] `X-Request-Id`: accepted from the client or generated, echoed on every response,
   and carried in the audit record (`internal/httpapi/audit.go`).
-- [ ] Structured error details:
+- [x] Structured error details:
   `limit_exceeded` today names the violating fields only in its message (`internal/httpapi/pgo_policy.go`);
   add a `details` array to the error envelope (`internal/httpapi/errors.go`), leaving `message` free to change.
-- [ ] `Idempotency-Key` on `POST .../collections`.
-- [ ] `GET /v1/collections/{id}?wait=<duration>` long-poll that returns at completion or at the deadline.
-- [ ] `GET .../services/{svc}/collections/latest` — the newest completed record and its artifact —
+- [x] `Idempotency-Key` on `POST .../collections`.
+- [x] `GET /v1/collections/{id}?wait=<duration>` long-poll that returns at completion or at the deadline.
+- [x] `GET .../services/{svc}/collections/latest` — the newest completed record and its artifact —
   and `state`, `since`, and `origin` filters plus a cursor on the listing.
-- [ ] Revisit the `pgo.artifact.retention` default (2h) against `jobRetention` (168h),
+- [x] Revisit the `pgo.artifact.retention` default (2h) against `jobRetention` (168h),
   which leaves records that outlive their artifact by a wide margin.
-- [ ] An OpenAPI document generated from the routes, served at a fixed path, and checked in CI against the router.
+- [x] An OpenAPI document generated from the routes, served at a fixed path, and checked in CI against the router.
 
 Spec: `docs/specs/gateway.md` and `docs/specs/pgo.md` (revisions required).
 
 ### 7. Console: write paths, browser tests, stable asset paths
 
-- [ ] Start and cancel a Collection from the console;
+- [x] Start and cancel a Collection from the console;
   the policy editor stays out until conflict handling is designed.
-- [ ] A small browser-driven test layer that executes `app.js`:
+- [x] A small browser-driven test layer that executes `app.js`:
   the login-to-profile happy path, the `oidc` 401 redirect and return,
   Collection list and download, and hostile strings rendered as text only.
   The spec records that no test runs `app.js` today.
-- [ ] Replace the content-hashed asset tree (`internal/ui/ui.go`, `treeHash`) with stable paths,
+- [x] Replace the content-hashed asset tree (`internal/ui/ui.go`, `treeHash`) with stable paths,
   an `ETag`, and `Cache-Control: no-cache`;
   this removes the rolling-update failure `docs/console.md` documents.
 
@@ -158,10 +159,9 @@ Spec: `docs/specs/pgo.md` for the identifier grammar; none otherwise.
 
 ### 9. Superseded and finished documents leave the tree
 
-`docs/specs/profgate-design.md` is `Superseded` and five plans are `Done`;
-together they are most of the Markdown in the repository and compete with the living specs in every search.
-`docs/README.md` and `.agents/rules/900-design-and-review-loops.md` state the policy already;
-the documents themselves are still in the tree.
+`docs/specs/profgate-design.md` was `Superseded` and five plans were `Done`;
+together they were most of the Markdown in the repository and competed with the living specs in every search.
+They are deleted; git history is their record.
 
 - [x] Write a decision record:
   a finished plan and a superseded spec are deleted in the commit after the one that records their status,
@@ -191,11 +191,11 @@ The scheduler, worker, sweeper, and their stores run in every gateway replica wh
 and `profgate config validate` reports a termination grace period and memory budget
 that an operator must carry into the Deployment by hand.
 
-- [ ] Revise `docs/specs/pgo.md`:
+- [x] Revise `docs/specs/pgo.md`:
   the collector runs as a separate Deployment or subcommand,
   the twelve `pgo.limits.*` keys collapse into named presets with an escape hatch,
   and the grace-period and memory arithmetic moves inside the chart.
-- [ ] Decide, in the same revision, whether one collector replica suffices;
+- [x] Decide, in the same revision, whether one collector replica suffices;
   if it does, the lease, claim, and orphan-sweep machinery can be removed with the multi-replica guarantee.
 
 Spec: `docs/specs/pgo.md` (revision required).

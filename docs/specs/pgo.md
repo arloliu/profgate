@@ -997,7 +997,9 @@ publish(ns, svc, origin, claimBy, key, principal):          // caller holds one 
       if rerr is ErrKeyExists:
           existing := jobs.Get("idem.<hash>")
           if existing.id == id: rerr = nil                  // the earlier attempt landed
-          else: jobs.Delete("idem.<hash>", existing.revision), then Create again   // a stale receipt
+          else if jobs.Get("job." + existing.id) is absent:  // a stale receipt: its record is gone
+              jobs.Delete("idem.<hash>", existing.revision), then Create again
+          else: rerr stays ErrKeyExists                     // a live receipt for another create; withdraw below
       if rerr != nil:                                       // withdraw: nothing keyed becomes claimable unbound
           jobs.Delete("job.<id>", rev); jobs.Delete("active.<ns>.<svc>", the revision Create returned)
           answer 503 pgo_unavailable; return
