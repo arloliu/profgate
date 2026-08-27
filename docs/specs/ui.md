@@ -1,6 +1,6 @@
 # Profgate Console
 
-**Status:** Draft
+**Status:** Accepted
 
 This document designs a thin operator console for the gateway
 ([`gateway.md`](gateway.md)):
