@@ -1,0 +1,1075 @@
+# Profgate Console
+
+**Status:** Draft
+
+This document designs a thin operator console for the gateway
+([`gateway.md`](gateway.md)):
+a static page served by the gateway itself,
+plus four read-only listing endpoints the page needs and a command-line client can use as well.
+Everything in the gateway design — permission boundary, discovery seam, request algorithm, realms,
+non-disclosure, configuration, testing — is assumed and not restated;
+the browser flow, session cookie, and `Sec-Fetch` rules of [`auth.md`](auth.md) are assumed the same way,
+and the PGO routes of [`pgo.md`](pgo.md) are read by the console and never changed.
+Sections of this document and of the other specs are cited by heading name.
+
+---
+
+## 1. Overview
+
+The gateway's documented clients are `curl` and `go tool pprof`.
+Both need the caller to already know a namespace and a Service name,
+and neither tells the caller what their realm admits.
+The console closes that gap and nothing more:
+pick a namespace, then a Service, then a profile and, optionally, a Pod, a version, a port, and a duration;
+download the profile, or copy the URL that `go tool pprof` fetches it from;
+see who you are and what your realm admits;
+and, when PGO collection is enabled, read the Collections of a Service and download a finished artifact.
+
+The console is a page, not a product surface.
+It renders no profile, draws no flamegraph, and stores nothing;
+the profile bytes it hands out are the same bytes the profile endpoint streams to `curl`,
+through the same request algorithm, and the browser saves them as a file.
+
+### 1.1 Core decisions
+
+1. **The console is a client of the API, not a second API.**
+   It calls `/v1` with `fetch` the way a script would,
+   is authenticated the way a browser already is under [`auth.md`](auth.md),
+   and holds no credential of its own.
+   Every fact it shows came from a `/v1` response that a realm bounded.
+2. **Four listing endpoints, all read-only, all realm-filtered.**
+   The four are:
+   `GET /v1/namespaces`, `GET /v1/namespaces/{namespace}/services`, `GET /v1/whoami`, and `GET /v1/limits`.
+   They exist so the console can offer choices instead of a blank text field.
+   They read informer caches and configuration, never the API server,
+   and they add no Kubernetes capability.
+3. **Nothing outside the caller's realm is disclosed, existence included.**
+   A namespace the realm denies is absent from the namespace list and answers `403 realm_denied` on its Service list,
+   the same `403` whether or not the namespace holds a Service.
+   A Service the realm denies is absent from every list.
+   No listing response carries a Pod IP or a port number a Pod declares.
+4. **No build step, no network at runtime.**
+   Preact, htm, and Pico CSS are vendored as files under `internal/ui/static/`
+   and compiled into the binary with `go:embed`;
+   the page loads nothing from a CDN, and the deployment topology of the gateway does not change.
+5. **Strict Content Security Policy, and no HTML built from a response.**
+   `default-src 'none'` with each source the page needs listed by name,
+   no inline script, no inline style, no `eval`,
+   and every value a response carries reaches the DOM as text and never as markup
+   (*Rendering response values*),
+   so a bug in the page cannot become a way to run someone else's code against the caller's session.
+6. **Off by default.**
+   `ui.enabled` is `false`; a gateway that does not set it serves `/ui/` as `404 route_unknown`,
+   exactly as it does today.
+7. **The interactive request algorithm does not change.**
+   The targets and profile endpoints run the same steps in the same order with the same outcomes;
+   the listing endpoints run a prefix of that algorithm and stop at the cache.
+
+### 1.2 Non-goals
+
+- Rendering profiles: flamegraphs, call graphs, diffs, top tables.
+  `go tool pprof -http` renders a downloaded profile;
+  Grafana Pyroscope and Parca exist for continuous profiling and are not dependencies of this design.
+- Continuous or scheduled profiling from the console.
+  Scheduled CPU collection is PGO collection ([`pgo.md`](pgo.md)) and the console only reads its state.
+- Writing PGO state: creating, cancelling, or configuring Collections.
+  Those are `curl` operations with request bodies and preconditions;
+  a later revision may add them once the read-only console has earned its place.
+- Any change to the gateway's authentication.
+  The console logs in through the browser flow of [`auth.md`](auth.md) under `oidc`,
+  through the browser's native dialog under `basic`,
+  and not at all under `disabled`.
+  It never holds, stores, or forwards a bearer token.
+- Cross-origin use.
+  The page and the API are one origin;
+  there is no CORS header, no API key, and no embedding in another site.
+- Accessibility and localisation work beyond what Pico CSS and plain HTML give for free.
+  Every control is a native `<select>`, `<input>`, `<button>`, or `<a>`.
+- A browser-driven test of the page.
+  The toolchain pins no JavaScript runtime and no browser, and this design adds neither;
+  *What is not proven* says what that leaves unproven and why the trade is accepted.
+
+---
+
+## 2. Routes
+
+The API listener gains a static route family and four `/v1` routes.
+The ops listener is unchanged.
+
+| Route | Methods | Authentication | Realm | Exists when |
+|---|---|---|---|---|
+| `/ui/` | `GET`, `HEAD` | none | none | `ui.enabled` |
+| `/ui/static/{hash}/{file}` | `GET`, `HEAD` | none | none | `ui.enabled` |
+| `/` | `GET`, `HEAD` | none | none | `ui.enabled`; `302` to `/ui/` |
+| `/v1/whoami` | `GET` | yes | none | always |
+| `/v1/limits` | `GET` | yes | none | always |
+| `/v1/namespaces` | `GET` | yes | filter | always |
+| `/v1/namespaces/{namespace}/services` | `GET` | yes | namespace check, then filter | always |
+
+The static routes and `/` accept `HEAD` because they serve files,
+and a `HEAD` is how a proxy or a monitor asks about a file;
+`HEAD` answers the headers of the `GET`, the `302` and its `Location` included, with no body,
+and any other method is `405 method_not_allowed` with `Allow: GET, HEAD`.
+The four `/v1` routes accept `GET` only, like the other `GET`-only `/v1` routes,
+and answer `405` with `Allow: GET` otherwise.
+
+The four `/v1` routes exist whether or not `ui.enabled` is set:
+they are useful to a script,
+and a route that appears and disappears with a page would make the API's shape depend on a display option.
+
+### 2.1 Why the page itself is not authenticated
+
+The shell — `index.html`, `app.js`, `app.css`, and the vendored files — is the same bytes for every caller
+and discloses no cluster data:
+no namespace, Service, Pod, realm, or principal appears in it, and its source is in this repository.
+Only the `/v1` endpoints the page calls are authenticated,
+and every fact the page shows came from one of them.
+
+Serving the shell without an authentication step keeps `basic` mode free of special cases:
+the page loads, its first `fetch` answers `401` with `WWW-Authenticate: Basic`,
+and the browser's native dialog does the rest (*Signing in and out*).
+Under `oidc` the page learns it is signed out from the same `401` on `/v1/whoami`
+and navigates to `/auth/login` itself (*Signing in and out*).
+The return from login needs nothing from the shell either way:
+the callback answers a landing page whose refresh starts a navigation from the gateway's own origin
+([`auth.md`](auth.md) *The `/auth/` routes*),
+so the request that brings the browser back to `/ui/` arrives `same-origin`
+and would pass the session rule even if the shell checked it.
+
+The cost is that an unauthenticated caller can download the console's source from a gateway that enables it.
+That is the same source anyone can read here.
+
+### 2.2 Request algorithm for the listing endpoints
+
+The four `/v1` routes run the gateway *Request algorithm* as [`auth.md`](auth.md) *Request algorithm* composes it,
+in the order `internal/httpapi` runs it today, and stop at the cache:
+
+1. **Route.** The path is one of the four; `{namespace}` must be a DNS-1123 label → `404 route_unknown`.
+2. **Method.** `GET` only → `405 method_not_allowed` with `Allow: GET`.
+3. **Readiness.** `HasSynced()` false → `503 not_ready`, for all four,
+   so a client learns the gateway's readiness from every `/v1` route in the same way.
+4. **Credential placement.**
+   `access_token` as a query parameter → `400 invalid_parameter`.
+5. **Authentication.** Per `auth.mode` → `401 unauthenticated`, `429 too_many_auth`, `503 auth_unavailable`,
+   or `302` to login for a navigation under the browser flow.
+6. **Realm.** Service list only: the realm's `namespaces` must admit `{namespace}` → `403 realm_denied`.
+   The other three have no realm step to fail:
+   `whoami` and `limits` describe the caller, and the namespace list is filtered rather than refused.
+7. **Parameters.** Any query parameter → `400 invalid_parameter`.
+   None of the four takes one.
+8. **Read.** `whoami` and `limits` answer `200` from the configuration snapshot the request loaded at entry.
+   The namespace and Service lists call `Catalog` on the seam (*Package layout*),
+   apply the realm filter (*The realm filter*), and answer `200`;
+   an error from `Catalog` → `503 discovery_unavailable`,
+   the same mapping `internal/httpapi` gives every unclassified `Targets` error today,
+   and never an empty `200`.
+
+The realm check precedes the read for the same reason it precedes discovery on the interactive routes:
+a caller denied a namespace learns nothing from a malformed query, and causes no read of the cache;
+the denial happens before `Catalog` is called, which a unit test proves (*Unit*).
+Nothing after the read exists:
+no discovery call, no admission slot, no confirmation, no API server round trip.
+
+### 2.3 The realm filter
+
+A realm's `namespaces`, `services`, and `profiles` are each a list of exact strings or the single entry `"*"`
+(gateway *Realm structure*; `config.Realm` in `internal/config`).
+`internal/httpapi` evaluates each list with one predicate, `listAllows(list, value)` in `realm.go`:
+the list admits a value when it contains `"*"` or contains the value itself;
+there is no prefix, glob, or pattern matching.
+The filter is that predicate applied to what the Service cache holds, list by list:
+
+- A **Service** is listed when it has a non-empty `spec.selector`,
+  `realm.namespaces` admits its namespace, and `realm.services` admits its name.
+- A **namespace** is listed when `realm.namespaces` admits it
+  and it holds at least one Service that is listed by the rule above —
+  a namespace whose only selector-bearing Services are all outside `realm.services` is absent,
+  because listing it would disclose that the namespace exists.
+- A **profile** is offered when `realm.profiles` admits it;
+  `["*"]` therefore expands to every name `/v1/limits` returns,
+  and an explicit list is intersected with it in the order `/v1/limits` uses.
+
+The two lists are independent, so the four combinations are all real configurations:
+
+| `namespaces` | `services` | Namespace list | Service list for an admitted namespace |
+|---|---|---|---|
+| `["*"]` | `["*"]` | every namespace holding a Service with a selector | every Service with a selector |
+| `["*"]` | names | every namespace holding a named Service with a selector | the named Services that exist there with a selector |
+| names | `["*"]` | the named namespaces that hold a Service with a selector | every Service with a selector |
+| names | names | the named namespaces that hold a named Service with a selector | the named Services that exist there with a selector |
+
+A selectorless Service is omitted from every list.
+The gateway's first eligibility rule refuses it with `422 service_selectorless` whatever else is true,
+so it is the one kind of Service a profile request is guaranteed to fail against;
+omitting it removes guaranteed failures and nothing else.
+A listed Service is not a promise that a profile request succeeds:
+it may have no Ready Pod, no Pod declaring the selected port, or a Pod that dies mid-profile,
+and those answer through the interactive algorithm as they do for `curl`.
+Selector presence is the only criterion.
+`spec.type` is not read: `Targets` does not read it either,
+and a Service of type `ExternalName` carries no selector in practice and falls under the same rule.
+
+A realm that names a namespace the cache does not hold gets a namespace list without it,
+and a Service list for it of `[]` with `200`.
+There is no `namespace_not_found`:
+the gateway observes no Namespace objects — its RBAC has no `namespaces` tuple and this design adds none —
+so "the namespace exists but holds no Service" and "the namespace does not exist" are the same fact to it,
+and a `200` with an empty list states exactly that fact.
+The realm's own configured lists, typos included, are what `/v1/whoami` returns (*Who am I*),
+so an operator can tell a misspelled realm entry from an empty namespace.
+
+The filter reads the Service informer cache and nothing else.
+It is as old as the cache,
+which the gateway *Informers* section already states as the contract for everything selection reads.
+
+---
+
+## 3. Response shapes
+
+Every successful listing response and every gateway error envelope is `application/json`,
+carries `Cache-Control: no-store`, and sorts its lists by name;
+arrays are `[]` and never `null` when empty.
+The one response on these routes that is not JSON is inherited from [`auth.md`](auth.md) *What is redirected*:
+under `oidc`, a browser navigation to one of the four routes without a session —
+a URL typed or pasted into the address bar —
+is a bodyless `302` to `/auth/login`,
+as it is on every `/v1` route.
+The console never receives it, because a `fetch` is not a navigation.
+No response names a Pod, a Pod IP, a node, or a port a Pod declares.
+
+### 3.1 Namespaces
+
+```http
+GET /v1/namespaces
+```
+
+```json
+{"namespaces": ["orders", "payments"]}
+```
+
+### 3.2 Services
+
+```http
+GET /v1/namespaces/payments/services
+```
+
+```json
+{"namespace": "payments", "services": ["checkout", "ledger"]}
+```
+
+### 3.3 Who am I
+
+```http
+GET /v1/whoami
+```
+
+```json
+{
+  "principal": "alice",
+  "realm": {
+    "name": "payments-dev",
+    "namespaces": ["payments"],
+    "services": ["*"],
+    "profiles": ["cpu", "heap", "goroutine"],
+    "pgo": {"read": true, "collect": false, "configure": false}
+  },
+  "auth": {"mode": "oidc", "logout": "/auth/logout"}
+}
+```
+
+`realm` is the caller's realm exactly as configured — the wildcard as `"*"`, explicit names as written —
+so the page can say what the caller may ask for before it asks.
+It is the caller's own realm and discloses nothing about any other.
+`auth.mode` is one of `disabled`, `basic`, `oidc`;
+`auth.logout` is present only when the browser flow is configured and is always `/auth/logout`,
+so the page shows a logout link exactly when one would do something.
+Under `disabled` the principal is `anonymous`, as everywhere else.
+
+### 3.4 Limits
+
+```http
+GET /v1/limits
+```
+
+```json
+{
+  "cpuSeconds": 60,
+  "traceSeconds": 60,
+  "profiles": ["cpu", "trace", "heap", "allocs", "goroutine", "mutex", "block", "threadcreate"],
+  "pprof": {
+    "default": {"port": 6060},
+    "allowedPorts": [6060, 6061],
+    "allowedPortNames": ["pprof", "pprof-alt"]
+  },
+  "pgo": {"enabled": true}
+}
+```
+
+`cpuSeconds` and `traceSeconds` are `limits.cpuSeconds` and `limits.traceSeconds`,
+so the page can bound its duration input instead of learning the bound from `400 seconds_exceeds_limit`.
+`profiles` is the eight profile names in the gateway's order, before the realm filters them;
+the page applies `realm.profiles` from `/v1/whoami` to it as *The realm filter* says.
+`pprof.default` is `{"port": N}` or `{"portName": "name"}`, whichever `discovery.pprof` sets.
+`pprof.allowedPorts` and `pprof.allowedPortNames` are the two allowlists as configured,
+each `[]` when empty, which the page presents as a free-form field rather than a choice (*Controls*).
+`pgo.enabled` is `pgo.enabled`, and is how the page learns whether PGO collection is enabled;
+`/v1/whoami` says nothing about it.
+The page offers the Collections view (*Collections, read-only*) exactly when `pgo.enabled` is `true`
+and `realm.pgo.read` from `/v1/whoami` is `true`.
+
+**`/v1/limits` deliberately discloses these values to every authenticated caller.**
+The response carries the allowlists and the default themselves,
+not a marker that a value exists, so the page can offer them as choices;
+that is a decision to disclose, and the argument for it is this.
+A caller could already learn, by sending a value and reading `400 port_not_allowed`,
+whether that one value is allowlisted (gateway *Non-disclosure*, third observation);
+what the caller could not learn by probing is the full list without guessing its members,
+and which permitted value is the default when several are permitted.
+`/v1/limits` gives both.
+The exposure is acceptable because the values are global operator configuration and not cluster state:
+they say which values any client may name, not which port any Pod exposes,
+and knowing them grants nothing —
+every profile request the caller can make with the list in hand is one the caller could make without it,
+bounded by the same realm, the same allowlists, and the same NetworkPolicy.
+What stays hidden stays hidden:
+the number a `portName` resolves to on a particular Pod, and which Pods declare which names,
+are Pod state and are not in this response.
+The endpoint requires authentication, so an unauthenticated probe still learns nothing but `401`.
+The gateway *Non-disclosure* section gains this as a fourth listed observation (*Changes to the accepted designs*).
+
+### 3.5 Collections, read-only
+
+The read-only Collections view is part of the first console,
+shown only when `/v1/limits` reports `pgo.enabled` and `/v1/whoami` reports `realm.pgo.read`.
+The console lists Collections through the existing `GET /v1/namespaces/{namespace}/services/{service}/collections`
+and reads one through `GET /v1/collections/{id}`, both defined in [`pgo.md`](pgo.md) *HTTP API*,
+and downloads a finished artifact by navigating to `GET /v1/collections/{id}/profile`.
+It sends no `POST`, `PUT`, or `DELETE`.
+`state` is a closed set and `origin` and `reason` are open sets, as that document says;
+the page shows an unrecognized `origin` or `reason` verbatim, as text, rather than failing on it.
+What the view shows and when the download link appears is in *Controls*.
+
+---
+
+## 4. The page
+
+### 4.1 Flow
+
+```text
+/ui/?ns=payments&svc=checkout
+  |
+  |-- GET /v1/whoami ------> principal, realm, auth mode; "not signed in" -> Signing in and out
+  |-- GET /v1/limits ------> duration bounds, port choices, pgo.enabled
+  |-- GET /v1/namespaces --> namespace <select>
+  |         (ns chosen)
+  |-- GET /v1/namespaces/{ns}/services ----------------> service <select>
+  |         (svc chosen)
+  |-- GET /v1/namespaces/{ns}/services/{svc}/targets?[port=|portName=] --> pod <select>, versions
+  |-- GET .../collections   (only when pgo.enabled and realm.pgo.read)     --> collections table
+  |
+  |-- profile <select> from limits.profiles filtered by realm.profiles
+  |-- seconds <input>, 1..limit, shown for cpu and trace only
+  |-- pod <select>, version <select>, port <select> and/or <input>
+  v
+  URL = /v1/namespaces/{ns}/services/{svc}/profiles/{profile}?[seconds=&pod=&version=&port=|portName=]
+  [Download]  = <a href=URL download>         a navigation; the browser saves the file
+  [Copy URL]  = absolute URL on the clipboard  for `go tool pprof <url>`; the URL is also shown as text
+```
+
+The selection lives in the page's query string, `?ns=&svc=`, and nothing else is remembered:
+the browser flow seals the return path as path plus query and drops the fragment
+([`auth.md`](auth.md) *Wire values and bounds*),
+so state kept in `#fragment` would not survive a login round trip and state kept in the query does.
+The return path the page sends is `/ui/?ns=<label>&svc=<label>`:
+two DNS-1123 labels keep it far under the 1024-byte bound that document checks before decoding,
+and it holds no `.` or `..` segment, so it is sealed as sent and never replaced by `/`.
+A reload, a bookmark, and a return from login all land on the same selection.
+
+The download is an ordinary navigation to the profile endpoint.
+It carries the session cookie with `Sec-Fetch-Site: same-origin` under `oidc`,
+the browser's remembered credential under `basic`, and nothing under `disabled`,
+and it runs the full interactive request algorithm, admission and confirmation included.
+The response's `Content-Disposition`, which Go's pprof handler sets and the gateway passes through,
+is what makes the browser save rather than display it.
+The page cannot read `X-Pprof-Target-*` on a navigation,
+so a user who wants to know which Pod served a profile picks the Pod explicitly from the targets list.
+
+The copied URL is the profile URL made absolute with the page's own origin, and carries no credential.
+Under `disabled` it works as is;
+under `basic` the user adds `user:password@` or uses `curl -u`,
+which [`auth.md`](auth.md) *Clients* documents with its caveats;
+under `oidc` it works only with a bearer token that `go tool pprof` cannot send,
+which is the asymmetry that document's first core decision records rather than works around.
+The page says which of the three applies, from `auth.mode`, next to the button.
+`navigator.clipboard` exists only in a secure context,
+and a gateway under `disabled`, or under `basic` with plaintext explicitly permitted, can serve the page over HTTP;
+the page therefore always shows the URL in a read-only `<input>` the user can select and copy by hand,
+feature-detects `navigator.clipboard.writeText`, and renders the copy button only when it exists.
+
+### 4.2 Controls
+
+The controls, their defaults, and what each change does,
+so the behavior is a contract and not an implementation guess:
+
+| Control | Choices | Default | Sent as | On change |
+|---|---|---|---|---|
+| namespace | `/v1/namespaces` | the page's `ns`, when listed; else none | page query `ns` | fetch the Service list; clear Service, Pod, version, Collections |
+| Service | `/v1/namespaces/{ns}/services` | the page's `svc`, when listed; else none | page query `svc` | fetch targets and, when offered, Collections; clear Pod and version |
+| profile | `limits.profiles` filtered by `realm.profiles` | `cpu` when offered, else the first offered | path segment | show or hide the duration input |
+| seconds | integer, `1` to the profile's limit | the gateway's upstream default (`30` for `cpu`, `1` for `trace`), or the limit when it is lower | `seconds=`, always sent for `cpu` and `trace` | none |
+| port | see below | `default` | `port=` or `portName=`, nothing for `default` | refetch targets; clear Pod and version |
+| Pod | `targets[].pod` | `any` | `pod=`, nothing for `any` | none |
+| version | the distinct `targets[].version` values | `any` | `version=`, nothing for `any` | none |
+
+`seconds` is always sent explicitly for `cpu` and `trace`,
+so the request never depends on an upstream default that could exceed the configured limit;
+the input's `min` is `1` and its `max` is the profile's limit,
+and a value outside that range disables the download link and names the bound next to the input.
+
+The port control follows the two allowlists, which are independent (gateway *Port resolution*):
+
+- A `<select>` always exists.
+  It offers `default`, which sends nothing and resolves under `pprof.default`,
+  then every number in `allowedPorts` and every name in `allowedPortNames`, in the configured order.
+- For each allowlist that is empty, a free-form `<input>` for that kind exists beside the select:
+  a numeric field when `allowedPorts` is empty, a name field when `allowedPortNames` is empty.
+  An empty allowlist accepts any value of its parameter, so there is nothing to choose from.
+- One selection is sent.
+  A non-empty free-form field wins over the select;
+  typing in one free-form field clears the other, so `port` and `portName` are never sent together.
+  A number goes as `port=`, anything else as `portName=`;
+  the gateway validates the grammar and answers `400 invalid_parameter` for a value outside it.
+
+A bookmarked `ns` or `svc` that is not in the fetched list — the realm changed, the Service went away,
+the label was typed by hand — leaves the control with no selection and shows
+"`<value>` is not listed" beside it, as text;
+the page query keeps the value until the user picks another, so a reload retries it.
+The other controls are per-load state and are never serialized.
+
+The Collections view, when offered, is a table of the list entries [`pgo.md`](pgo.md) *List Collections* returns,
+newest first as returned, with the columns
+`id`, `origin`, `state`, `attempt`, `resolvedVersion`, `createdAt`, `finishedAt`, and `expiresAt`.
+Selecting a row fetches `GET /v1/collections/{id}` and shows the record's
+`state`, `reason`, `progress`, `createdBy`, `createdAt`, `startedAt`, `finishedAt`, `expiresAt`,
+and `artifact.bytes`, as labelled text.
+The download link, `GET /v1/collections/{id}/profile`, is rendered only from the detail record,
+and only when its `state` is `completed` and its `artifact` is not `null`;
+the list entry carries no `artifact` field, so a row alone never offers a download.
+Every other state shows no link, and `reason` beside `failed` and `cancelled`.
+An `id` is placed in a path only after it matches the identifier grammar of [`pgo.md`](pgo.md) *Identifier*;
+a record whose `id` does not is shown and not linked.
+
+### 4.3 Rendering response values
+
+The page renders values it did not write — principal, realm entries, namespace and Service names,
+Pod names, versions, error messages, Collection fields, `origin`, `reason` —
+and an OIDC principal or a PGO `reason` can hold any character.
+These rules are normative, and the source-scan unit test (*Unit*) enforces the ones a scan can:
+
+1. **Every response-derived value is a Preact text child.**
+   It is interpolated into an htm template as `${value}` in child position or as an attribute value,
+   which Preact sets through `textContent` or the DOM property and never parses as markup.
+2. **No HTML injection interface.**
+   `innerHTML`, `outerHTML`, `dangerouslySetInnerHTML`, `insertAdjacentHTML`, `document.write`,
+   and `DOMParser` are forbidden in `app.js`;
+   the scan fails on any of those names.
+   The vendored Preact module contains `innerHTML` in the `dangerouslySetInnerHTML` code path
+   and is exempt from that one token by path, and only that one.
+3. **URLs are built, not concatenated.**
+   Every URL the page fetches, navigates to, or offers as a link is built with `new URL(path, location.origin)`,
+   with each path segment passed through `encodeURIComponent`
+   and every query built with `URLSearchParams`.
+   The page never places a response string into a `href` or a `fetch` argument by string concatenation;
+   the scan fails on a template literal or a `+` expression whose left operand is a string starting with `/v1`,
+   `/ui`, or `/auth` outside the one URL-building module, `urls.js`.
+4. **Every link stays on the page's origin.**
+   The page has no link to another origin;
+   `href` values are built by rule 3, and `Referrer-Policy: no-referrer` covers any link it gains.
+
+Together with the policy of *Response headers and CSP*, the rules hold even if one is broken:
+a value that reached the DOM as markup could load no script and no stylesheet,
+and could start no request but an `img` or a form submission,
+which `img-src data:` and `form-action 'none'` close.
+
+### 4.4 Signing in and out
+
+The page never holds a credential.
+It calls `fetch` with `credentials: 'same-origin'` and lets the browser attach what it has:
+the `__Host-profgate_session` cookie under `oidc`,
+a remembered Basic credential under `basic`,
+nothing under `disabled`.
+Every `fetch` is initiated by the page,
+so it carries `Sec-Fetch-Site: same-origin` and `Sec-Fetch-Mode: cors` or `same-origin`,
+which is what [`auth.md`](auth.md) *What is redirected* calls a `fetch`-shaped request:
+it is never redirected and answers `401` when it is not signed in.
+
+Under **`oidc`**, the page calls `/v1/whoami` first on every load.
+A `401` from it, or from any later `fetch`, makes the page navigate to
+`/auth/login?return=<path and query of the page>`;
+the callback answers `200` with a landing page,
+its `<meta http-equiv="refresh">` sends the browser back to the same selection,
+and that navigation starts from the gateway's own document and arrives `same-origin`
+([`auth.md`](auth.md) *The `/auth/` routes*).
+The page does this once per load;
+a `401` that follows a fresh return from login is shown as an error rather than looped,
+because a loop between a page and a login that keeps failing is worse than an error the user can read.
+The console requires the browser flow under `oidc`:
+without it every browser request is `401` and `/auth/login` is `404 route_unknown`,
+so a configuration that sets `ui.enabled` under `auth.mode: oidc` without an `auth.oidc.browser` block is rejected
+(*Configuration*).
+The logout link is `/auth/logout` and is shown exactly when `/v1/whoami` returned `auth.logout`;
+the gateway answers it with `302` to the issuer's end-session endpoint or to `/`,
+and `/` is `302` to `/ui/` while `ui.enabled` (*Routes*), so logout lands back on a signed-out console.
+
+Under **`basic`**, the browser's own dialog is the login.
+When a same-origin `fetch` receives `401` with `WWW-Authenticate: Basic realm="profgate"`,
+the browser prompts for a name and password and retries the request with them,
+and it keeps sending that credential on later requests to the same origin and protection space,
+navigations included — the download link therefore works after the first prompt.
+This is the Fetch standard's behavior for a same-origin request with `credentials: 'same-origin'`,
+and the browsers named in [`auth.md`](auth.md) *Non-goals* implement it.
+A user who cancels the dialog leaves the `fetch` with a `401`,
+which the page shows as "sign in required" with a button that retries the request, prompting again.
+There is no logout under `basic`, and the page says so where the logout link would be:
+how long a browser keeps a Basic credential is the browser's decision —
+some forget it when the last window closes, some sooner, some later —
+and neither the gateway nor the page can end it, so neither promises to.
+
+Under **`disabled`**, every request is `anonymous` in `auth.anonymousRealm`,
+and the page shows that principal and realm with no sign-in or sign-out control.
+
+### 4.5 Errors
+
+The page shows every gateway error as its `code` and `error` from the envelope, as text,
+plus a one-line hint for the codes a user can act on:
+
+| `code` | Hint |
+|---|---|
+| `not_ready` | the gateway is still syncing; the page retries every 2 seconds |
+| `realm_denied` | your realm does not admit this; the whoami panel shows what it does |
+| `service_not_found` | the Service left the cache since the list was fetched; the page refreshes the Service list |
+| `no_targets` | no Ready Pod declares the selected port |
+| `port_not_allowed` | the value is outside the allowlist shown in the port control |
+| `seconds_exceeds_limit` | the limit the duration input was bounded by |
+| `discovery_unavailable` | the gateway could not read its cache or confirm the Pod; retry |
+| `pgo_disabled`, `pgo_unavailable` | the Collections view is hidden or shows the code |
+
+Every other code is shown as is.
+The page never rewrites a message the gateway generated, and never shows a message the gateway did not send.
+
+A failed `fetch` does not always carry the envelope.
+An Ingress can answer with its own HTML, a connection can drop mid-body, a proxy can strip the body,
+and a gateway of another version can answer a shape this page does not know.
+The page reads the body as the envelope only when the response's `Content-Type` is `application/json`
+and the body decodes to an object with string `error` and `code` fields;
+otherwise it shows `HTTP <status> <statusText>` and nothing from the body.
+A rejected `fetch` — no response at all — shows "request failed" with a retry button.
+In every case what reaches the DOM is text under the rules of *Rendering response values*;
+a response body is never shown as HTML.
+
+---
+
+## 5. Static assets
+
+### 5.1 Layout and embedding
+
+```text
+internal/ui/static/
+  index.html                 the shell: <link> to the stylesheet, <script type="module"> to app.js, one <main>
+  app.js                     the console; an ES module importing ./urls.js, ./vendor/preact/preact.module.js,
+                             and ./vendor/htm/htm.module.js
+  urls.js                    the URL builders of Rendering response values; the only module that spells a /v1 path
+  app.css                    the console's own rules, a few dozen lines on top of Pico
+  vendor/
+    MANIFEST                 one line per file: name, version, license, source URL, SHA-256
+    preact/
+      preact.module.js       Preact, the ES module build
+      LICENSE                MIT
+    htm/
+      htm.module.js          htm, the standalone ES module build
+      LICENSE                Apache-2.0; htm ships no NOTICE, and one is vendored here if a release adds it
+    pico/
+      pico.min.css           Pico CSS, the class-less build
+      LICENSE                MIT
+```
+
+`internal/ui` embeds the directory with `//go:embed static`.
+Its constructor, not an `init` function (`200-coding-standards.md` forbids `init`),
+walks the embedded tree once, hashes it, and renders the shell:
+
+- The **tree hash** is the SHA-256 over every embedded file's path and bytes in path order,
+  truncated to its first 16 hex digits.
+  Every asset is served under `/ui/static/<tree hash>/<path>`,
+  so a change to any file changes every asset URL and a page never mixes files from two builds.
+  Hashing the tree rather than each file keeps the relative `import` paths inside the modules valid as written;
+  hashing per file would mean rewriting them.
+- The **shell** is `index.html` with its two placeholders — the stylesheet path and the script path —
+  replaced by the hashed paths.
+  It is rendered once and held in memory;
+  no template runs per request.
+- Any path under `/ui/static/` whose hash segment is not this binary's, or whose file does not exist,
+  is `404 route_unknown`.
+  During a rolling update the replicas serve two hashes,
+  and every request a page makes — the shell, the script, the stylesheet, each module — may land on either build;
+  a page can therefore fail to load, and fail again on reload, until the rollout converges,
+  which *Failure scenarios* records.
+
+The shell references exactly two assets; every other file loads through a relative `import` from `app.js`
+or a relative `url()` from the stylesheet.
+There is no import map:
+an import map is an inline script under CSP,
+and the vendored modules are chosen so none uses a bare specifier (*Vendoring rule*).
+
+### 5.2 Headers
+
+| Path | `Cache-Control` | `Content-Type` |
+|---|---|---|
+| `/ui/` | `no-store` | `text/html; charset=utf-8` |
+| `/ui/static/<hash>/*.js` | `public, max-age=31536000, immutable` | `text/javascript; charset=utf-8` |
+| `/ui/static/<hash>/*.css` | `public, max-age=31536000, immutable` | `text/css; charset=utf-8` |
+| `/ui/static/<hash>/*` (other) | `public, max-age=31536000, immutable` | by extension, `application/octet-stream` otherwise |
+
+The shell is `no-store` because it is the one file whose content changes what the browser fetches next;
+the hashed assets are immutable because their URL changes when they do.
+`ETag` and `Last-Modified` are not set:
+an immutable asset is never revalidated and the shell is never cached.
+`Content-Length` is set from the embedded size, and `HEAD` is answered as `GET` without a body (*Routes*).
+The `Content-Type` for a module script is `text/javascript`, which is what a browser requires for `type="module"`.
+
+### 5.3 Vendoring rule
+
+A vendored file is accepted only when:
+
+1. it is the upstream's published ES module or CSS build, byte for byte, with its SHA-256 recorded in `MANIFEST`;
+2. every `import` in it names a relative path, so it resolves under the hashed prefix without an import map;
+3. its license text, and its `NOTICE` when the project ships one,
+   sit in its directory under `vendor/` and its license is recorded in `MANIFEST`.
+
+Rule 2 is why the vendored set is Preact's core module and htm's standalone module,
+and not `preact/hooks` or `htm/preact`,
+whose published builds import `preact` by bare specifier.
+The console therefore uses Preact class components for state and binds htm to Preact's `h` itself;
+a thin console needs nothing hooks give.
+A unit test enforces rules 1 and 2 (*Unit*).
+Updating a vendored file is a commit that changes the file, the manifest line,
+and the license or `NOTICE` text when the release changed it.
+
+---
+
+## 6. Response headers and CSP
+
+Every response under `/ui/` carries:
+
+| Header | Value |
+|---|---|
+| `Content-Security-Policy` | `default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'` |
+| `X-Frame-Options` | `DENY` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `no-referrer` |
+| `Cross-Origin-Opener-Policy` | `same-origin` |
+| `Cross-Origin-Resource-Policy` | `same-origin` |
+| `Cache-Control` | *Headers* |
+
+`default-src 'none'` with the sources the page needs listed by name,
+so a directive nobody listed cannot fall back to something broader,
+and each listed source is the narrowest the finished page needs:
+
+- `img-src data:` and not `'self'`.
+  The page has no `<img>`;
+  the only images are the `data:` SVG backgrounds inside Pico's stylesheet, and `img-src` governs those.
+  Leaving `'self'` out means a stray `<img src="/v1/...">` cannot issue an authenticated `GET`,
+  which the session cookie and `Sec-Fetch-Site: same-origin` would otherwise let through.
+- `form-action 'none'`.
+  The page submits no form: the download is an `<a>`, the retry is a button with a listener.
+  A stray `<form action=...>` can therefore submit nowhere.
+- `connect-src 'self'` is what `fetch` needs and the only network the page has.
+
+**No inline anything.**
+The shell has no inline `<script>`, no `<style>` element, no `style=` attribute, and no `on*=` attribute;
+`app.js` renders no `style` prop and attaches handlers through Preact's properties,
+which are DOM event listeners and not attributes.
+Pico CSS is a stylesheet and needs no inline style;
+its theme switch is a `data-theme` attribute, which CSP does not govern.
+htm is a tagged-template parser and uses no `eval` or `Function`,
+and Preact needs neither,
+so `script-src 'self'` without `'unsafe-inline'` or `'unsafe-eval'` is sufficient.
+A unit test scans the shell and the vendored files for the four inline forms and for `eval(` and `new Function(`,
+so an upgrade that introduced one fails before it ships.
+
+`Referrer-Policy: no-referrer` matters because the page's URLs carry namespace and Service names,
+and a link out of the page would otherwise send them to wherever it points;
+the page has no links out, and the header makes that true of any it gains.
+`X-Frame-Options` duplicates `frame-ancestors` for the browsers that read only one.
+`Cross-Origin-Resource-Policy` on the assets keeps another origin from loading the console's script as its own resource.
+
+The `/v1` responses are unchanged:
+`Cache-Control: no-store` and `Content-Type: application/json`, as the gateway *HTTP API* section states.
+They gain no CORS header; the console is same-origin by construction.
+
+---
+
+## 7. Errors
+
+The listing endpoints reuse the gateway's codes with their meanings:
+
+| Status | `code` | When |
+|---|---|---|
+| 400 | `invalid_parameter` | any query parameter, or `access_token` in the query |
+| 401 | `unauthenticated` | [`auth.md`](auth.md) *Failure responses* |
+| 403 | `realm_denied` | Service list for a namespace the realm denies; identical for a present and an absent namespace |
+| 404 | `route_unknown` | a `{namespace}` that is not a DNS-1123 label; any `/ui/` path this build does not serve |
+| 405 | `method_not_allowed` | `Allow: GET` on the four `/v1` routes; `Allow: GET, HEAD` under `/ui/` and on `/` |
+| 429 | `too_many_auth` | [`auth.md`](auth.md) *`basic` mode* |
+| 503 | `not_ready`, `auth_unavailable` | as on every `/v1` route |
+| 503 | `discovery_unavailable` | `Catalog` returned an error on the namespace or Service list; never an empty `200` |
+
+No new code is needed.
+`404 route_unknown` covers every `/ui/` miss, a stale hash included,
+because from the gateway's side a URL from another build is a route it does not have.
+`/ui/` routes never generate the JSON envelope for a success and always do for a failure,
+so a fetch of a missing asset reads the same envelope every gateway error carries.
+
+---
+
+## 8. Audit and metrics
+
+**Audit.**
+Each of the four listing routes writes the gateway *Logging* record on completion:
+`principal`, `namespace` (the Service list only), empty `service`, `pod`, `profile`, `port`, zero `seconds`,
+`status`, `code`, and `duration_ms`.
+`auth_reason` appears on authentication failures as it does elsewhere.
+Requests under `/ui/` and to `/` write no audit line:
+they carry no principal, name nothing a realm bounds, and one page load is several of them;
+they are counted, not narrated.
+
+**Metrics.**
+`profgate_requests_total{endpoint,profile,code}` gains `endpoint` values
+`namespaces`, `services`, `whoami`, `limits`, and `ui`,
+with `profile` fixed to `none` for all five.
+`ui` covers `/ui/`, every path under it, and `/`;
+its `code` is `ok` for a `200` or the `302`, `route_unknown`, or `method_not_allowed`,
+derived by `internal/httpapi` from the status the console handler wrote (*Package layout*),
+and its histogram bucket is the first one in practice.
+The tree hash is not a label and neither is a file name:
+`code` and `endpoint` stay closed sets, and the label cardinality rule of the gateway *Metrics* section holds.
+
+---
+
+## 9. Failure scenarios
+
+| Event | Behavior |
+|---|---|
+| `ui.enabled` false | `/ui/` and `/` are `404 route_unknown`; the four listing routes still answer |
+| Gateway not yet synced | the shell loads; every `fetch` is `503 not_ready`; the page retries every 2 seconds until the first `200` |
+| Session cookie expires while the page is open | the next `fetch` is `401`; the page navigates to `/auth/login?return=` with its current query, and the callback's landing page brings it back to the same selection |
+| Login fails after the redirect | the callback answers `401` as a page; nothing on the console side loops back to login |
+| Basic dialog cancelled | the `fetch` resolves `401`; the page shows "sign in required" and a retry button that prompts again |
+| Issuer token endpoint down | login answers `503 auth_unavailable` on the callback; existing sessions keep working |
+| Rolling update in progress | each request a page makes may reach either build; an asset the answering replica lacks is `404 route_unknown` and the page does not render; a reload can fail the same way; the console is unavailable for some loads until the rollout converges and every replica serves one hash, after which a reload recovers |
+| Service deleted between listing and download | `404 service_not_found` from the profile endpoint; the page refreshes the Service list |
+| Namespace in the realm holds no Service | absent from the namespace list; its Service list is `200` with `[]`; `/v1/whoami` still names it |
+| Namespace in the realm whose Services are all outside `realm.services` | absent from the namespace list; its Service list is `200` with `[]` |
+| Namespace not in the realm | absent from the namespace list; its Service list is `403 realm_denied`, present or not, and `Catalog` is not called |
+| Cache read fails on a listing route | `503 discovery_unavailable`; never an empty `200` |
+| Kubernetes API unreachable while running | listings serve the cache unchanged; downloads fail at confirmation with `503 discovery_unavailable`, as the gateway *Failure Scenarios* section states |
+| Page served over HTTP (`disabled`, or `basic` with plaintext permitted) | `navigator.clipboard` is absent in an insecure context; the copy button is not rendered and the URL is shown for manual copying |
+| A `fetch` answers without the envelope: HTML from an Ingress, an empty body, truncated JSON | the page shows `HTTP <status> <statusText>` and nothing from the body |
+| A `fetch` is rejected: network failure, connection reset | the page shows "request failed" with a retry button |
+| A vendored file is edited or replaced | the manifest hash test fails; the tree hash changes and every asset URL with it |
+
+---
+
+## 10. Configuration
+
+Added rows in the gateway *Configuration* table:
+
+| Key | Env | Default | Reload | Validation |
+|---|---|---|---|---|
+| `ui.enabled` | `PROFGATE_UI_ENABLED` | `false` | restart | boolean; under `auth.mode: oidc` requires `auth.oidc.browser` |
+
+`ui.enabled` is restart-only because it decides which routes the handler registers,
+like `server.listen` and unlike a realm.
+The `oidc` rule exists because a console that cannot log a browser in serves nobody (*Signing in and out*);
+`basic` and `disabled` need nothing.
+Nothing else is configurable:
+the path is `/ui/`, the assets are the embedded ones, and the theme follows the browser.
+An operator whose Ingress routes only `/v1` adds `/ui/`, `/auth/`, and `/` to it;
+the shipped manifests ship no Ingress, and the NetworkPolicy, Service, and container security context do not change.
+
+The Helm chart gains a top-level `ui.enabled` value, default `false`,
+beside `tls.enabled`, `pgo.enabled`, and `auth.mode`,
+and renders it into the ConfigMap so `checksum/config` moves when it changes and the Deployment rolls.
+The raw `config:` block refuses `config.ui.enabled` at render time
+and requires `config.ui`, when present, to be a mapping,
+with the same guard the chart applies to `pgo.enabled` and the `tls` and `auth` file paths:
+a value arriving through the raw block would bypass the structured value the chart's own text documents.
+
+---
+
+## 11. Testing
+
+### 11.1 Unit
+
+`internal/ui`, against the embedded tree:
+
+- the tree hash is stable across two constructions and changes when one byte of one file changes;
+- `/ui/` serves the shell with every header of *Response headers and CSP* and `Cache-Control: no-store`;
+- each asset serves under the current hash with its `Content-Type`, `Content-Length`, and the immutable `Cache-Control`;
+  the same path under another hash is `404 route_unknown`,
+  and so is a path that traverses (`..`, an absolute path, a backslash);
+  `HEAD` answers the headers without a body; `POST` is `405` with `Allow: GET, HEAD`;
+- every vendored file's SHA-256 equals its `MANIFEST` line, and every file in `vendor/` has a line;
+- no vendored module, `app.js`, or `urls.js` contains an `import` or dynamic `import(`
+  whose specifier does not start with `./` or `../`;
+- the shell and every `.js` file contain no `<script>` with a body, no `<style>`, no `style=`, no `on[a-z]+=`,
+  no `eval(`, and no `new Function(`;
+- the source scan of *Rendering response values*:
+  `app.js` and `urls.js` contain none of `innerHTML`, `outerHTML`, `dangerouslySetInnerHTML`,
+  `insertAdjacentHTML`, `document.write`, or `DOMParser`;
+  `app.js` contains no string literal beginning with `/v1`, `/ui`, or `/auth`;
+  `urls.js` contains `encodeURIComponent` and `URLSearchParams` and no `+` between a string literal and an expression;
+  the test runs against fixture strings that must fail as well as against the real files,
+  so a scan that matches nothing is itself caught.
+
+`internal/httpapi`, against the fake `Discovery` extended with a namespace and Service catalog:
+
+- a table over the four routes and every step of *Request algorithm for the listing endpoints*:
+  each method, `?access_token=`, readiness false, an unknown query parameter, a `{namespace}` that is not a label;
+- realm filtering, over all four combinations of the *The realm filter* table and a fake that holds,
+  in three namespaces, a Service the realm names, one it does not, and one without a selector:
+  each combination lists exactly the namespaces and Services the table says;
+  a namespace whose only selector-bearing Services are outside `realm.services` is absent;
+  an explicit realm omits a named namespace the cache lacks;
+  a selectorless Service is absent from its namespace's list,
+  and when it is the namespace's only Service the namespace is absent too;
+  the Service list of a denied namespace is `403` with an identical body whether the fake holds the namespace or not,
+  and the fake records that `Catalog` was not called;
+  the Service list of an admitted namespace the fake lacks is `200` with `[]`;
+  a fake whose `Catalog` returns an error yields `503 discovery_unavailable` on both list routes;
+  lists are sorted and empty ones encode as `[]`;
+- `/v1/whoami` returns the configured lists verbatim, the wildcard included, the three `pgo` flags,
+  `auth.mode`, and `auth.logout` only under the browser flow;
+- `/v1/limits` reflects each of `cpuSeconds`, `traceSeconds`, a numeric default, a named default, and both allowlists,
+  empty and non-empty;
+- no listing response contains a string that matches an IP address, a `podIP` field, or a port number,
+  with the fake holding Pods that have both;
+- hostile names survive encoding:
+  a principal, a namespace, and a Service name that carry HTML metacharacters (`<`, `>`, `&`, `"`, `'`)
+  are JSON-escaped in the responses and decode to the configured strings unchanged,
+  so the page's text rendering receives exactly the configured string;
+- `ui.enabled` false: `/ui/`, `/ui/static/<hash>/app.js`, and `/` are `404 route_unknown`;
+  true: `GET /` and `HEAD /` are `302` with `Location: /ui/`, the `HEAD` without a body;
+- the audit line for each listing route carries the principal and, for the Service list, the namespace;
+  `/ui/` writes none;
+  the recorder sees `endpoint` `namespaces`, `services`, `whoami`, `limits`, or `ui` with `profile` `none`,
+  and for `ui` the `code` `ok` on `200` and `302`, `route_unknown` on `404`, `method_not_allowed` on `405`.
+
+`internal/k8s`, against the fake clientset with real informers:
+
+- `Catalog` reads only the Service lister;
+  the recording transport of the gateway *Layers* section sees no request beyond the seven tuples when it runs;
+- a Service without a selector is not listed, whatever its `spec.type`;
+  a Service that appears or disappears in the fake is reflected once the informer delivers it;
+  `Catalog` with a namespace returns that namespace's entries and `[]` for one the cache lacks.
+
+`internal/config`: `ui.enabled` from file and from `PROFGATE_UI_ENABLED`; a non-boolean value rejected;
+`ui.enabled` with `auth.mode: oidc` and no `browser` block rejected, and accepted with one.
+
+`deploy/chart`, in the chart's render tests: `ui.enabled` renders `ui.enabled: true` into the ConfigMap;
+`config.ui.enabled` and a scalar `config.ui` fail rendering.
+
+### 11.2 What is not proven
+
+No test runs `app.js`.
+The repository's toolchain (`mise.toml`) pins Go, `golangci-lint`, `helm`, `kind`, `ko`, and `kubectl`;
+it pins no Node.js and no browser, and the end-to-end harness drives the gateway with Go's HTTP client.
+Running the console in a real engine would mean one of two additions:
+a Go-driven headless Chromium (`chromedp` or similar),
+which is a new Go module plus a Chromium binary on every machine and CI runner that runs the suite;
+or a Node.js test runner with a DOM, which is a second toolchain for a page of a few hundred lines.
+This design adds neither.
+The console is small enough to read, its rendering rules are four, and a scan can enforce most of them;
+a second toolchain to prove the rest would cost more than the page it guards.
+
+What that leaves unproven, stated plainly:
+that `app.js` as executed renders a hostile principal, error message, version, `origin`, or `reason` as text;
+that the URLs it builds at runtime are the ones *Rendering response values* describes;
+that the non-envelope fallback of *Errors* behaves as written on malformed JSON, an empty body, or a rejected `fetch`.
+The source scan proves the page contains no interface that could render markup and no hand-built `/v1` path;
+the `internal/httpapi` tests prove the JSON the page receives carries hostile strings intact;
+the end-to-end scenarios prove the shell, the headers, and the listing responses over the wire.
+The gap between "contains no way to do it wrong" and "was seen doing it right" is closed by review,
+on every change to `app.js` and `urls.js`,
+which is why both stay small and why `urls.js` is a separate file.
+If the page grows past what a reviewer can hold, adding the browser-driven test becomes the right call,
+and this section is where that decision is revised.
+
+### 11.3 End to end
+
+Two scenarios, added to the lanes [`auth.md`](auth.md) *Testing* defines, both against a gateway with `ui.enabled`:
+
+- **Browser flow under Dex.**
+  With no cookie, `GET /ui/` is `200` with the shell and the *Response headers and CSP* headers,
+  and `HEAD /ui/` is `200` with the same headers and no body;
+  `GET /v1/whoami` with `Sec-Fetch-Mode: cors` and no cookie is `401`, not `302`;
+  the login walk of that document's scenario, started from `GET /auth/login?return=/ui/?ns=x`,
+  ends in a `200` landing page whose refresh and `Continue` link both name `/ui/?ns=x`;
+  `GET /ui/?ns=x` with the cookie is `200` whatever `Sec-Fetch-Site` says,
+  because the shell has no authentication step (*Why the page itself is not authenticated*);
+  then, with the cookie and `Sec-Fetch-Site: same-origin`,
+  `GET /v1/whoami`, `/v1/limits`, `/v1/namespaces`, and `/v1/namespaces/<test ns>/services` are each `200`,
+  `whoami` names the Dex user and its mapped realm,
+  and the Service list holds the test app's Service;
+  `GET /auth/logout` with the cookie is `302` to `/` and `GET /` is `302` to `/ui/`.
+- **`basic` over TLS.**
+  `GET /ui/` without a credential is `200`;
+  `GET /v1/namespaces` without one is `401` with `WWW-Authenticate: Basic realm="profgate"`
+  and with `-u` is `200` and lists the test namespace;
+  `GET /v1/limits` with `-u` reports the lane's configured limits.
+  The browser's native dialog cannot be driven without a browser and is not proven here;
+  what is proven is the pair of responses it reacts to.
+
+A scenario that reaches no application Pod declares nothing;
+the Service list reads the cache, so neither scenario needs `needsPodReach`.
+
+---
+
+## 12. Dependencies
+
+No Go module is added.
+`embed`, `crypto/sha256`, `mime`, and `net/http` are the standard library.
+No test dependency is added either; *What is not proven* records that decision.
+
+Vendored browser code, pinned in `internal/ui/static/vendor/MANIFEST`:
+
+| File | Project | Version | License | Size |
+|---|---|---|---|---|
+| `preact.module.js` | Preact | 10.29.8 | MIT | about 11 KiB |
+| `htm.module.js` | htm | 3.1.1 | Apache-2.0 | about 1 KiB |
+| `pico.min.css` | Pico CSS | 2.1.1 | MIT | about 80 KiB |
+
+Versions are those published on the npm registry as `latest` on the day this document was drafted;
+the implementation pins what it reviews and updates this table.
+Preact is MIT, Pico CSS is MIT, and htm is Apache-2.0.
+Apache-2.0 asks that the license text and any `NOTICE` travel with the file:
+htm's `LICENSE` is vendored beside it under `internal/ui/static/vendor/htm/`,
+htm ships no `NOTICE`, and one is vendored there if a later release adds it.
+The two MIT license texts are vendored the same way under `vendor/preact/` and `vendor/pico/`.
+
+Every vendored file is the upstream's published build, unmodified, which is what makes the manifest hash meaningful.
+
+---
+
+## 13. Package layout
+
+```text
+internal/ui/           the console: embedded static tree, tree hash, rendered shell, asset handler, headers
+internal/ui/static/    index.html, app.js, urls.js, app.css, vendor/
+internal/httpapi/      gains the four listing routes, the /ui/ and / dispatch, and the endpoint labels
+internal/k8s/          gains Catalog on the Discovery interface, reading the Service lister
+internal/config/       gains the ui block
+internal/metrics/      gains the five Endpoint values
+cmd/profgate/          constructs internal/ui when ui.enabled and passes it to httpapi
+```
+
+The seam grows by one method and one type:
+
+```go
+// ServiceRef names one Service in the cache.
+type ServiceRef struct {
+    Namespace, Name string
+}
+
+type Discovery interface {
+    Targets(ctx context.Context, namespace, service string, port PortSelection) ([]Target, error)
+    HasSynced() bool
+    Confirm(ctx context.Context, t Target) error
+    // Catalog lists the Services with a non-empty selector from the cache,
+    // sorted by namespace then name.
+    // An empty namespace means every namespace; a namespace the cache lacks is an empty list, not an error.
+    // It issues no request; an error means the lister could not be read.
+    Catalog(ctx context.Context, namespace string) ([]ServiceRef, error)
+}
+```
+
+`Catalog` returns Services, not namespaces, because the namespace list depends on `realm.services`
+(*The realm filter*) and the seam does not know realms;
+`internal/httpapi` derives the namespace list from the filtered Services and never asks the seam for one.
+`Catalog` reads the Service informer cache and issues no request,
+so the set of things Profgate can do to Kubernetes — the point of keeping the interface small
+([`800-security-invariant.md`](../../.agents/rules/800-security-invariant.md)) — is unchanged:
+the seven RBAC tuples stay seven, the golden ClusterRole test stays green, and the recording transport sees nothing new.
+The interface is one method longer, which is the visible cost that rule asks for.
+
+The console reaches `internal/httpapi` through one field:
+
+```go
+type Deps struct {
+    // ...
+    // Console serves /ui/ and /; nil means ui.enabled is false and both are 404 route_unknown.
+    Console http.Handler
+}
+```
+
+Ownership is split as follows, so each concern lives in exactly one package:
+
+- `internal/httpapi` owns **dispatch**: a path under `/ui/` or exactly `/` goes to `Console` when it is non-nil,
+  before the `/v1` route regular expressions and the way `/auth/` is dispatched today,
+  and is `404 route_unknown` through the ordinary envelope when `Console` is nil.
+  It owns the **metrics row** for those requests:
+  it wraps the `ResponseWriter`, reads the status `Console` wrote, and maps it to the `ui` codes of *Audit and metrics*.
+  It writes no audit line for them.
+- `internal/ui` owns everything inside that dispatch:
+  **path matching** under `/ui/static/<hash>/` and the shell at `/ui/`,
+  the **method check** (`GET` and `HEAD`; `405` with `Allow: GET, HEAD` otherwise),
+  the **`302`** from `/` to `/ui/`,
+  every **security header** of *Response headers and CSP*, and the `Cache-Control` and `Content-Type` of *Headers*.
+- The **error envelope** is written once, by `internal/httpapi`,
+  which exports its writer as `httpapi.WriteError` with the signature its unexported writer has today;
+  `internal/ui` calls it for its `404` and `405`,
+  so there is no shared envelope package and no second copy of the writer.
+
+`internal/ui` imports `internal/httpapi` for the writer;
+`internal/httpapi` takes an `http.Handler` and imports nothing of `internal/ui`,
+so the import runs one way, and `cmd/profgate` constructs both.
+
+---
+
+## 14. Changes to the accepted designs
+
+Accepting this document amends the following text in the same change.
+Each row names the heading it edits.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *HTTP API* | "except the three `/auth/` routes that [`auth.md`](auth.md) adds when its browser flow is configured" gains "and the `/ui/` and `/` routes of [`ui.md`](ui.md) when `ui.enabled`"; the four listing routes are named as `/v1` routes defined in [`ui.md`](ui.md) |
+| `docs/specs/gateway.md` | *Request algorithm* | the sentence introducing the endpoint-specific tail gains the four listing routes of [`ui.md`](ui.md): they run route, method, readiness, credential placement, authentication, and parameter checks as the interactive routes do; the realm check refuses only the Service list (a namespace the realm does not admit), while the namespace list is filtered and `whoami` and `limits` describe the caller; after that they read the cache, with no discovery, admission, confirmation, or proxy step; the method rule that the interactive routes accept `GET` only stays true of them |
+| `docs/specs/gateway.md` | *List targets* | a following subsection, *Listing endpoints*, pointing to [`ui.md`](ui.md) *Response shapes* for the four response shapes |
+| `docs/specs/gateway.md` | *Errors* | `503 discovery_unavailable` also covers a cache read that fails on a listing route; `405` under `/ui/` and on `/` carries `Allow: GET, HEAD` |
+| `docs/specs/gateway.md` | *The seam* | `ServiceRef` and `Catalog`, reading the Service cache and issuing no request |
+| `docs/specs/gateway.md` | *Non-disclosure* | a fourth listed observation: `/v1/limits` returns both allowlists and the default to any authenticated caller, with the argument of [`ui.md`](ui.md) *Limits* |
+| `docs/specs/gateway.md` | *Logging* | the listing routes write the record with `namespace` on the Service list only and the other target fields empty; requests under `/ui/` and to `/` write no record |
+| `docs/specs/gateway.md` | *Metrics* | `endpoint` gains `namespaces`, `services`, `whoami`, `limits`, `ui`; the `ui` codes |
+| `docs/specs/gateway.md` | *Layers* | unit rows for `internal/ui`, the listing routes, `Catalog`, and the `ui.enabled` validation, per [`ui.md`](ui.md) *Unit* |
+| `docs/specs/gateway.md` | *What end-to-end proves* | the two scenarios of [`ui.md`](ui.md) *End to end* |
+| `docs/specs/gateway.md` | *Configuration* | the `ui.enabled` row |
+| `docs/specs/gateway.md` | *Build and Deployment* | the vendored browser files under `internal/ui/static/vendor/` are embedded by `go:embed` and pinned by `MANIFEST`; the chart's `ui.enabled` value and raw-block guard |
+| `docs/specs/gateway.md` | *Dependencies* | a closing sentence: no Go module for the console; the vendored browser code is listed in [`ui.md`](ui.md) *Dependencies* |
+| `docs/specs/gateway.md` | *Package Layout* | `internal/ui/` |
+| `docs/specs/gateway.md` | *Failure Scenarios* | rows for a cache read failing on a listing route, a rolling update with two asset hashes, and `ui.enabled` false |
+| `docs/specs/auth.md` | *Non-goals* | "A UI, and the listing endpoints it would need, is a later document" becomes a pointer to this one |
+| `docs/specs/auth.md` | *The `/auth/` routes* | logout's fallback `302` to `/` lands on `/ui/` when `ui.enabled` |
+| `docs/specs/auth.md` | *What is redirected* | "a future UI's JSON requests" names this document |
+| `docs/specs/auth.md` | *Testing* | the two lanes gain the scenarios of [`ui.md`](ui.md) *End to end* |
+| `.agents/rules/100-project-map.md` | *Planned Structure* | `internal/ui/` |
+| `.agents/rules/100-project-map.md` | *External HTTP API* | the four listing routes; `/ui/`, `/ui/static/{hash}/{file}`, and `/`, present only when `ui.enabled` |
+| `AGENTS.md` | *Three Specs, All Accepted* | four, adding this document |
+| `docs/README.md` | *Where Contributors Start* | [`specs/ui.md`](ui.md) beside the PGO and authentication specs |
+
+The stale `302` this document once assumed from the callback is gone:
+[`auth.md`](auth.md) *Amendments* records the landing page, and *Signing in and out* here describes that flow.
+
+Updated with the implementation: `docs/api.md` (the listing endpoints), `docs/configuration.md` (`ui.enabled`),
+`docs/deployment.md` (Ingress paths),
+`deploy/chart/profgate/values.yaml` and `deploy/chart/profgate/README.md`
+(the `ui.enabled` value and the raw-block guard).
