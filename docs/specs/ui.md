@@ -68,8 +68,11 @@ through the same request algorithm, and the browser saves them as a file.
 6. **Off by default.**
    `ui.enabled` is `false`; a gateway that does not set it serves `/ui/` as `404 route_unknown`,
    exactly as it does today.
-7. **The interactive request algorithm does not change.**
-   The targets and profile endpoints run the same steps in the same order with the same outcomes;
+7. **The interactive request algorithm keeps its shape.**
+   The profile endpoint is untouched, step for step and outcome for outcome.
+   The targets endpoint keeps its own steps, their order, and its realm boundary,
+   and gains the diagnostic parameters of gateway *List targets*,
+   which the console sends and reads (*Targets, with reasons*);
    the listing endpoints run a prefix of that algorithm and stop at the cache.
 
 ### 1.2 Non-goals
@@ -247,7 +250,9 @@ a URL typed or pasted into the address bar —
 is a bodyless `302` to `/auth/login`,
 as it is on every `/v1` route.
 The console never receives it, because a `fetch` is not a navigation.
-No response names a Pod, a Pod IP, a node, or a port a Pod declares.
+No response of the four names a Pod, a Pod IP, a node, or a port a Pod declares;
+the targets response of the gateway (*Targets, with reasons*) names Pods and nodes as it always has,
+and no response on any route the console reads names a Pod IP or a port a Pod declares.
 
 ### 3.1 Namespaces
 
@@ -365,6 +370,47 @@ It sends no `POST`, `PUT`, or `DELETE`.
 the page shows an unrecognized `origin` or `reason` verbatim, as text, rather than failing on it.
 What the view shows and when the download link appears is in *Controls*.
 
+### 3.6 Targets, with reasons
+
+```http
+GET /v1/namespaces/{namespace}/services/{service}/targets?explain=true
+```
+
+The targets endpoint is the gateway's rather than one of the four,
+and the gateway *List targets* section defines every field of its response.
+The console sends `explain=true` on every targets fetch, not only when it expects an empty list:
+on a gateway that accepts `explain`, one request then answers both which Pods can be profiled and why none can,
+and a request sent after seeing an empty list would read a cache that has moved.
+It sends the port selection beside it (*Controls*) and never `version=` or `pod=`,
+because those two controls are filled from this response
+and sending them back would narrow the choices it offers.
+
+Beyond `targets` the page reads `selectorMatched`, the Pods the Service selects before eligibility,
+and `excluded`, the reasons with a non-zero count in the gateway's vocabulary order.
+The response carries no other field the page reads.
+
+`reason` is a closed set the gateway writes from its own vocabulary (gateway *Eligibility*),
+never a value a caller sent, and `count` is a number,
+so those two are the values the page can recognize in full rather than merely render.
+The rest of the body is the ordinary target listing —
+namespace, Service, Pod, node, and version strings —
+which the page renders as text like every other response value (*Rendering response values*),
+and a `reason` outside the vocabulary is rendered as text for exactly that reason.
+
+**A replica that does not know the parameter.**
+Mid-rollout a targets fetch can reach a gateway older than this design,
+which answers `explain=true` with `400 invalid_parameter`,
+the answer it gives any parameter it does not know.
+The page retries that one fetch once, without `explain` and with the port selection unchanged,
+and renders the plain body the retry returns.
+The rule is narrow enough to state without exceptions:
+once per fetch, on the targets route only, only for a request that carried `explain=true`,
+and only on a `400` whose envelope `code` is `invalid_parameter`.
+Any other status, any other code, and a second failure are ordinary errors and reach *Errors* unchanged.
+A `400 invalid_parameter` a current gateway earned on the port selection is retried too
+and fails the same way the second time,
+which costs one request and keeps the rule from needing a second clause.
+
 ---
 
 ## 4. The page
@@ -380,7 +426,7 @@ What the view shows and when the download link appears is in *Controls*.
   |         (ns chosen)
   |-- GET /v1/namespaces/{ns}/services ----------------> service <select>
   |         (svc chosen)
-  |-- GET /v1/namespaces/{ns}/services/{svc}/targets?[port=|portName=] --> pod <select>, versions
+  |-- GET .../services/{svc}/targets?explain=true[&port=|&portName=] --> pod <select>, versions, empty state
   |-- GET .../collections   (only when pgo.enabled and realm.pgo.read)     --> collections table
   |
   |-- profile <select> from limits.profiles filtered by realm.profiles
@@ -475,6 +521,51 @@ and they are the one part of the page a test executes (*What is not proven*):
   A non-empty free-form field wins over the select;
   typing in one free-form field clears the other, so `port` and `portName` are never sent together.
   The gateway validates the grammar and answers `400 invalid_parameter` for a value outside it.
+
+**The empty state.**
+When `targets` is empty, the Pod and version controls have nothing to offer,
+and the page puts the reasons the response counted in their place:
+one row per `excluded` entry, in the order the gateway sent them, each row the count beside a fixed wording.
+
+| `reason` | Wording |
+|---|---|
+| `pod_terminating` | Pods being deleted |
+| `pod_not_running` | Pods not in phase Running |
+| `pod_not_ready` | Pods whose Ready condition is not True |
+| `endpoint_missing` | Pods with no trusted EndpointSlice entry naming the current Pod identity |
+| `endpoint_not_ready` | Pods whose EndpointSlice entry is not ready |
+| `endpoint_address_mismatch` | Pods whose EndpointSlice address is not one the Pod holds |
+| `endpoint_address_conflict` | Pods whose EndpointSlice entries disagree on the address |
+| `port_name_not_declared` | Pods declaring no TCP container port of the effective pprof port name |
+| `version_mismatch` | Pods carrying another version |
+| `pod_name_mismatch` | Pods with another name |
+
+The wording is plural whatever the count is, so the page carries no grammar rule.
+The last two rows are reached only by a request carrying `version=` or `pod=`,
+which this page never sends on a targets fetch (*Targets, with reasons*);
+they are in the table because the wording belongs to the vocabulary and not to who sent the request.
+An empty `targets` with `selectorMatched` of `0` reads "the Service's selector matches no Pod" instead,
+which is the one empty answer no reason describes;
+an empty `targets` with a non-zero `selectorMatched` and an empty `excluded` cannot occur,
+because the gateway's counts add up (gateway *List targets*).
+A response with no `excluded` field at all leaves the plain empty state and no reasons:
+that is the shape a fetch that fell back to no `explain` returns (*Targets, with reasons*),
+and the shape to render if the field is ever absent for another reason.
+An entry whose `reason` is not in the table is shown as that name, as text,
+the way an unrecognized Collection `origin` is (*Collections, read-only*);
+a rolling update is again the only way it arrives.
+
+The rows above, and the query the page sends to get them,
+are three pure functions in `targetmodel.js`, built and tested the way `portmodel.js` is:
+one turns the port control's state into the targets query, `explain=true` included;
+one decides whether a failed targets fetch is repeated without `explain`;
+and one turns a targets response into the Pod menu, the version menu, and the empty state's ordered rows.
+None of the three touches the DOM or the network, and a test executes all three (*Unit*).
+The mapping is short, and every branch of it is a decision a reader does not see going wrong:
+a row dropped because its reason is unrecognized rather than shown as text,
+rows re-sorted out of the gateway's vocabulary order,
+a `selectorMatched` of `0` rendered as a list of nothing,
+or a query that quietly stopped asking for `explain`.
 
 A bookmarked `ns` or `svc` that is not in the fetched list — the realm changed, the Service went away,
 the label was typed by hand — leaves the control with no selection and shows
@@ -622,10 +713,11 @@ a response body is never shown as HTML.
 ```text
 internal/ui/static/
   index.html                 the shell: <link> to the stylesheet, <script type="module"> to app.js, one <main>
-  app.js                     the console; an ES module importing ./urls.js, ./portmodel.js,
+  app.js                     the console; an ES module importing ./urls.js, ./portmodel.js, ./targetmodel.js,
                              ./vendor/preact/preact.module.js, and ./vendor/htm/htm.module.js
   urls.js                    the URL builders of Rendering response values; the only module that spells a /v1 path
   portmodel.js               the port control's two pure functions, importing nothing so a test can evaluate them
+  targetmodel.js             the targets query, the retry rule, and the target summary, importing nothing either
   app.css                    the console's own rules, a few dozen lines on top of Pico
   vendor/
     MANIFEST                 one line per file: name, version, license, source URL, SHA-256
@@ -820,6 +912,9 @@ The tree hash is not a label and neither is a file name:
 | Issuer token endpoint down | login answers `503 auth_unavailable` on the callback; existing sessions keep working |
 | Rolling update in progress | each request a page makes may reach either build; an asset the answering replica lacks is `404 route_unknown` and the page does not render; a reload can fail the same way; the console is unavailable for some loads until the rollout converges and every replica serves one hash, after which a reload recovers |
 | Service deleted between listing and download | `404 service_not_found` from the profile endpoint; the page refreshes the Service list |
+| Service with no eligible target | the Pod and version controls are replaced by the counted reasons of *Controls*, in the order the gateway sent them |
+| Service whose selector matches no Pod | the same empty state says the selector matches no Pod, from `selectorMatched` of `0`, and lists no reason |
+| Targets fetch refused `400 invalid_parameter` by a replica older than this design | retried once without `explain`, keeping the port selection; the plain body renders with no reasons and no error, and a second failure is an ordinary error |
 | Namespace in the realm holds no Service | absent from the namespace list; its Service list is `200` with `[]`; `/v1/whoami` still names it |
 | Namespace in the realm whose Services are all outside `realm.services` | absent from the namespace list; its Service list is `200` with `[]` |
 | Namespace not in the realm | absent from the namespace list; its Service list is `403 realm_denied`, present or not, and `Catalog` is not called |
@@ -876,16 +971,20 @@ a value arriving through the raw block would bypass the structured value the cha
 - every vendored file's SHA-256 equals its `MANIFEST` line, and every file in `vendor/` has a line;
 - no vendored module, `app.js`, or `urls.js` contains an `import` or dynamic `import(`
   whose specifier does not start with `./` or `../`,
-  and `portmodel.js` contains neither at all;
+  and `portmodel.js` and `targetmodel.js` contain neither at all;
 - the shell and every `.js` file contain no `<script>` with a body, no `<style>`, no `style=`, no `on[a-z]+=`,
   no `eval(`, and no `new Function(`;
 - the source scan of *Rendering response values*:
-  `app.js`, `urls.js`, and `portmodel.js` contain none of `innerHTML`, `outerHTML`,
+  `app.js`, `urls.js`, `portmodel.js`, and `targetmodel.js` contain none of `innerHTML`, `outerHTML`,
   `dangerouslySetInnerHTML`, `insertAdjacentHTML`, `document.write`, or `DOMParser`;
   `app.js` contains no string literal beginning with `/v1`, `/ui`, or `/auth`;
   `urls.js` contains `encodeURIComponent` and `URLSearchParams` and no `+` between a string literal and an expression;
   the test runs against fixture strings that must fail as well as against the real files,
-  so a scan that matches nothing is itself caught.
+  so a scan that matches nothing is itself caught;
+- `targetmodel.js` contains every reason name of the gateway's exclusion vocabulary
+  (gateway *Eligibility*) as a literal,
+  the ten names written out in the Go test rather than derived from the page,
+  so a reason added to the gateway without wording on the console turns the suite red.
 
 `internal/ui`, against the port-control model:
 
@@ -915,6 +1014,35 @@ a value arriving through the raw block would bypass the structured value the cha
   `123` in the name field sends `portName=123` and never `port=123`;
   a non-empty field wins over the menu;
   and setting one field clears the other, so no input produces both parameters.
+
+`internal/ui`, against the target-summary model:
+
+- `targetmodel.js` satisfies the shape assertion `portmodel.js` does
+  and is evaluated the same way, its one trailing `export` cut off and its functions read as globals.
+- a table-driven test drives all three functions in the same interpreter.
+  The query, over each state the port control can be in:
+  `default` sends `explain=true` alone,
+  a numeric selection sends `port=` beside it and a named one `portName=`,
+  `explain=true` is present in every case,
+  and neither `version=` nor `pod=` is ever sent.
+  The retry rule: a `400` whose envelope `code` is `invalid_parameter`,
+  on a fetch that carried `explain=true`, is retried once without it;
+  a second failure is not retried;
+  a `400` with another code, a `403`, a `404`, and a `503` are not retried;
+  and a fetch that carried no `explain` is not retried.
+  The summary, over a response with targets:
+  the Pod menu holds each `targets[].pod` and the version menu the distinct `targets[].version` values,
+  in the order the response listed them,
+  and no empty state is produced even when `excluded` is non-empty.
+  The summary, over a response with no targets:
+  each `excluded` entry becomes one row of its count beside the wording of *Controls*;
+  the ten reasons in the gateway's vocabulary order come back in that order,
+  and the same ten shuffled come back in the order they arrived, never re-sorted;
+  a `reason` the table does not hold becomes a row carrying that name as its own text, dropped by nothing;
+  `selectorMatched` of `0` produces the selector message and no rows, whatever `excluded` holds;
+  a body with no `excluded` field, and one whose `excluded` is `[]`,
+  each produce the plain empty state and no rows;
+  and a `count` of `1` reads the same plural wording as a count of `9`.
 
 `internal/httpapi`, against the fake `Discovery` extended with a namespace and Service catalog:
 
@@ -972,7 +1100,7 @@ a value arriving through the raw block would bypass the structured value the cha
 
 ### 11.2 What is not proven
 
-No test runs `app.js`, and `portmodel.js` is the exception that marks where the line falls.
+No test runs `app.js`, and `portmodel.js` and `targetmodel.js` are the exceptions that mark where the line falls.
 The repository's toolchain (`mise.toml`) pins Go, `golangci-lint`, `helm`, `kind`, `ko`, and `kubectl`;
 it pins no Node.js and no browser, and the end-to-end harness drives the gateway with Go's HTTP client.
 Running `app.js` itself would mean one of two additions:
@@ -983,12 +1111,16 @@ This design adds neither.
 The console is small enough to read, its rendering rules are four, and a scan can enforce most of them;
 a second toolchain to prove the rest would cost more than the page it guards.
 
-The port control is the part that argument does not cover, which is why it is a module of its own.
-It is a decision table rather than a rendering:
+The port control and the target summary are the parts that argument does not cover,
+which is why each is a module of its own.
+Each is a decision table rather than a rendering:
 pure, DOM-free, and wrong in ways a reader does not see —
-an option that duplicates the default, a value serialized under the kind it was not typed as —
-where being wrong sends the caller's request under a parameter the caller did not choose.
-Executing it costs a third thing the two rejected options did not offer:
+an option that duplicates the default, a value serialized under the kind it was not typed as,
+a counted reason dropped instead of shown, rows re-sorted out of the gateway's order,
+a query that stopped asking for `explain` —
+where being wrong sends the caller's request under a parameter the caller did not choose,
+or tells an operator a Service has no Pods when the gateway said why it has none.
+Executing them costs a third thing the two rejected options did not offer:
 a pure-Go ECMAScript interpreter, used by tests only,
 which runs wherever `go test` runs and puts no binary and no second toolchain on any machine or runner.
 That is what this design takes, and gateway *Dependencies* lists the module
@@ -1001,13 +1133,14 @@ that `app.js` as executed renders a hostile principal, error message, version, `
 that the URLs it builds at runtime are the ones *Rendering response values* describes;
 that the non-envelope fallback of *Errors* behaves as written on malformed JSON, an empty body, or a rejected `fetch`;
 and that `app.js` hands `portmodel.js` what the caller typed in the fields it renders,
-the model itself being proven apart from the widget.
+hands `targetmodel.js` the response it fetched, and repeats a fetch when that model says to,
+both models being proven apart from the widget and apart from the network.
 The source scan proves the page contains no interface that could render markup and no hand-built `/v1` path;
 the `internal/httpapi` tests prove the JSON the page receives carries hostile strings intact;
 the end-to-end scenarios prove the shell, the headers, and the listing responses over the wire.
 The gap between "contains no way to do it wrong" and "was seen doing it right" is closed by review,
-on every change to `app.js`, `urls.js`, and `portmodel.js`,
-which is why all three stay small and why `urls.js` and `portmodel.js` are separate files.
+on every change to `app.js`, `urls.js`, `portmodel.js`, and `targetmodel.js`,
+which is why all four stay small and why the three besides `app.js` are separate files.
 If the page grows past what a reviewer can hold, adding the browser-driven test becomes the right call,
 and this section is where that decision is revised.
 
@@ -1046,7 +1179,8 @@ the Service list reads the cache, so neither proof adds `needsPodReach` to its s
 
 No Go module is added to the gateway binary.
 `embed`, `crypto/sha256`, `mime`, and `net/http` are the standard library.
-One module is added to the tests: the pure-Go ECMAScript interpreter that evaluates `portmodel.js`,
+One module is added to the tests:
+the pure-Go ECMAScript interpreter that evaluates `portmodel.js` and `targetmodel.js`,
 listed in gateway *Dependencies* and argued for in *What is not proven*.
 
 Vendored browser code, pinned in `internal/ui/static/vendor/MANIFEST`:
@@ -1073,7 +1207,7 @@ Every vendored file is the upstream's published build, unmodified, which is what
 
 ```text
 internal/ui/           the console: embedded static tree, tree hash, rendered shell, asset handler, headers
-internal/ui/static/    index.html, app.js, urls.js, portmodel.js, app.css, vendor/
+internal/ui/static/    index.html, app.js, urls.js, portmodel.js, targetmodel.js, app.css, vendor/
 internal/httpapi/      gains the four listing routes, the /ui/ and / dispatch, and the endpoint labels
 internal/k8s/          gains Catalog on the Discovery interface, reading the Service lister
 internal/config/       gains the ui block
@@ -1081,7 +1215,9 @@ internal/metrics/      gains the five Endpoint values
 cmd/profgate/          constructs internal/ui when ui.enabled and passes it to httpapi
 ```
 
-The seam grows by one method and one type:
+What the console adds to the seam is one method and one type.
+The snippet below is that addition and not the whole interface,
+which gateway *The seam* holds in full — `Explain`, `Explanation`, and `Exclusion` beside these:
 
 ```go
 // ServiceRef names one Service in the cache.
@@ -1089,10 +1225,9 @@ type ServiceRef struct {
     Namespace, Name string
 }
 
+// The console's delta; gateway The seam has the complete interface.
 type Discovery interface {
-    Targets(ctx context.Context, namespace, service string, port PortSelection) ([]Target, error)
-    HasSynced() bool
-    Confirm(ctx context.Context, t Target) error
+    // ... Targets, HasSynced, Confirm, and Explain as that document defines them
     // Catalog lists the Services with a non-empty selector from the cache,
     // sorted by namespace then name.
     // An empty namespace means every namespace; a namespace the cache lacks is an empty list, not an error.
@@ -1156,7 +1291,7 @@ Each row names the heading it edits.
 | `docs/specs/gateway.md` | *List targets* | a following subsection, *Listing endpoints*, pointing to [`ui.md`](ui.md) *Response shapes* for the four response shapes |
 | `docs/specs/gateway.md` | *Errors* | `503 discovery_unavailable` also covers a cache read that fails on a listing route; `405` under `/ui/` and on `/` carries `Allow: GET, HEAD` |
 | `docs/specs/gateway.md` | *The seam* | `ServiceRef` and `Catalog`, reading the Service cache and issuing no request |
-| `docs/specs/gateway.md` | *Non-disclosure* | a fourth listed observation: `/v1/limits` returns `allowedSelections` and the default to any authenticated caller, with the argument of [`ui.md`](ui.md) *Limits* |
+| `docs/specs/gateway.md` | *Non-disclosure* | a fourth listed observation: `/v1/limits` returns `allowedSelections` and the default to every request the configured `auth.mode` admits, anonymous requests under `disabled` included, with the argument of [`ui.md`](ui.md) *Limits* |
 | `docs/specs/gateway.md` | *Logging* | the listing routes write the record with `namespace` on the Service list only and the other target fields empty; requests under `/ui/` and to `/` write no record |
 | `docs/specs/gateway.md` | *Metrics* | `endpoint` gains `namespaces`, `services`, `whoami`, `limits`, `ui`; the `ui` codes |
 | `docs/specs/gateway.md` | *Layers* | unit rows for `internal/ui`, the listing routes, `Catalog`, and the `ui.enabled` validation, per [`ui.md`](ui.md) *Unit* |
@@ -1202,3 +1337,8 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Core decisions*, *Request algorithm for the listing endpoints*, *Limits* | the namespace and Service catalogs are realm-filtered, `whoami` is caller-specific, and `/v1/limits` is global operator configuration answered to every request the configured `auth.mode` admits, anonymous requests under `disabled` included |
 | *Controls* | the control a value came from decides whether it is sent as `port=` or `portName=`, never the value itself; a menu entry equal to `pprof.default` is left out while `/v1/limits` still reports it |
 | *Controls*, *Layout and embedding*, *Unit*, *What is not proven*, *Dependencies*, *Package layout* | the port control's rules are two pure functions in `portmodel.js`, driven by a table-driven test in a pure-Go ECMAScript interpreter; that interpreter is the one test-only module the toolchain argument now admits |
+| *Response shapes*, *Flow*, *Targets, with reasons* | the console sends `explain=true` on every targets fetch and never `version=` or `pod=`; the preamble's non-disclosure sentence is scoped to the four listing routes, the targets response having always named Pods and nodes |
+| *Core decisions*, *Targets, with reasons* | the profile endpoint is unchanged while the targets endpoint keeps its steps, ordering, and realm boundary and gains diagnostics; a targets fetch a replica older than this design refuses `400 invalid_parameter` is retried once without `explain` |
+| *Controls*, *Failure scenarios* | an empty target list is replaced by the gateway's counted reasons in a fixed wording, `selectorMatched` of `0` reading as a selector that matches no Pod, and a body without `excluded` leaving the plain empty state |
+| *Controls*, *Layout and embedding*, *Unit*, *What is not proven*, *Dependencies*, *Package layout* | the targets query, the retry rule, and the target summary are three pure functions in `targetmodel.js`, executed by the interpreter that already runs `portmodel.js`; the scan pins the ten reason names there |
+| *Package layout* | the `Discovery` snippet is labelled as the console's delta rather than the whole interface, which gateway *The seam* holds |

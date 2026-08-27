@@ -350,6 +350,19 @@ type ServiceRef struct {
     Namespace, Name string
 }
 
+// Exclusion counts the Pods one reason kept out of a Service's target list.
+type Exclusion struct {
+    Reason string // one of the eligibility reason names
+    Count  int
+}
+
+// Explanation is what Explain reports about one Service.
+type Explanation struct {
+    Targets         []Target    // what Targets returns for the same arguments
+    SelectorMatched int         // Pods in the namespace whose labels match spec.selector
+    Excluded        []Exclusion // the reasons with a non-zero count, in vocabulary order
+}
+
 type Discovery interface {
     // Targets returns the currently eligible backends of a Service
     // whose pprof port resolves under port.
@@ -365,12 +378,38 @@ type Discovery interface {
     // An empty namespace means every namespace; a namespace the cache lacks is an empty list, not an error.
     // It issues no request; an error means the lister could not be read.
     Catalog(ctx context.Context, namespace string) ([]ServiceRef, error)
+    // Explain returns the targets of a Service beside the reasons its other selected Pods were dropped,
+    // from one captured list of the namespace's selected Pods and the EndpointSlice pass Targets makes.
+    // It counts Pods and names none.
+    Explain(ctx context.Context, namespace, service string, port PortSelection) (Explanation, error)
 }
 ```
 
 `Catalog` serves the listing routes of [`ui.md`](ui.md).
 It reads the Service informer cache and issues no request,
 so the RBAC table of section 3.1 does not change for it.
+
+`Explain` serves `explain=true` on the targets endpoint (*List targets*)
+and returns `ErrServiceNotFound` and `ErrServiceSelectorless` where `Targets` returns them.
+It reads the Pod, Service, and EndpointSlice informer caches and issues no request,
+so the seven RBAC tuples stay seven, the golden ClusterRole test stays green,
+and the recording transport of *Layers* sees nothing new.
+What it costs is one namespace-wide read of the Pod cache that `Targets` does not pay,
+bounded by the number of Pods in the namespace;
+`internal/httpapi` cannot do that read instead, because reading a lister means importing client-go,
+which the import check keeps out of every package but this one.
+That read happens once.
+`Explain` lists the namespace's Pods under the Service's selector and indexes them by name,
+then resolves every endpoint against that one captured map rather than reading the Pod cache again,
+so the population it counts and the Pods it resolves endpoints against are the same snapshot.
+A failure of that read is an error and never a zero count:
+`Explain` wraps it and returns it, and the HTTP layer answers `503 discovery_unavailable`,
+the answer any discovery error that is neither sentinel already gets.
+It returns the target list beside the counts because both come from one pass:
+a caller that asked for the list and the counts separately could read a cache that moved between the two,
+and a Pod would then be counted twice or not at all.
+The interface is one method longer, which is the visible cost
+[`800-security-invariant.md`](../../.agents/rules/800-security-invariant.md) asks a new capability to carry.
 
 Sentinel errors, matched with `errors.Is`:
 
@@ -382,9 +421,11 @@ Sentinel errors, matched with `errors.Is`:
 | `ErrDiscoveryUnavailable` | `Confirm` could not reach the API server within its timeout | `503 discovery_unavailable` |
 
 There is no `GetPod` method.
-A `?pod=` request is validated by searching the `Targets` result,
-so naming a Pod that is not a backend of the Service is rejected without an additional API call,
+A `?pod=` request is answered from the `Targets` result,
+so a Pod that is not a backend of the Service is disposed of without an additional API call,
 and the interface stays one method narrower.
+On the profile endpoint that disposal is a rejection, `404 pod_not_found`;
+on the targets endpoint, which reports rather than selects, it is an empty list (*List targets*).
 
 `Target` carries no `Labels` map.
 When [`pgo.md`](pgo.md) needs build identity, the struct grows a named field;
@@ -464,6 +505,87 @@ Address family:
 when the Service has slices with `addressType: IPv4`, only those are read;
 when it has only `IPv6` slices, those are read.
 `PodIP` is the endpoint's first address; `Node` is the Pod's `spec.nodeName`.
+
+**Why a Pod is not a target.**
+`explain=true` on the targets endpoint (*List targets*) counts the Pods the rules above dropped.
+
+The counted population is the Pods of the Service's namespace whose labels match `spec.selector`,
+read from the Pod cache in one list.
+A slice entry naming a Pod the selector does not match (rule 4) is counted nowhere:
+it is not a Pod of the Service.
+
+A **trusted endpoint** of such a Pod is an endpoint that carries that Pod's identity:
+it sits in an EndpointSlice of the Service whose `addressType` is the family the Service is read under,
+its `targetRef` is `kind: Pod` in the Service's namespace,
+and its `targetRef.name` and `targetRef.uid` are the Pod's name and `metadata.uid`.
+Rules 2 and 3 are that definition.
+An entry naming another kind, another namespace, a name no selected Pod carries,
+or a UID a recreated Pod no longer holds is nobody's trusted endpoint:
+the gateway will not follow it, and it says nothing about the Pod it names.
+A trusted endpoint is **eligible** when rules 5, 7, and 8 also hold for it and its Pod.
+
+Attribution runs per Pod, over that Pod's trusted endpoints as a group:
+
+- A Pod with at least one eligible trusted endpoint is a target,
+  unless two of its eligible trusted endpoints name different addresses it holds.
+  That is the conflict the deduplication above excludes, and it is counted as `endpoint_address_conflict`.
+- Every other counted Pod is attributed to the first reason in this table that holds for it.
+  A reason describing an endpoint holds when at least one of the Pod's trusted endpoints satisfies it;
+  a reason describing the Pod holds from the Pod's own object.
+
+| Reason | A Pod the Service selects, and | Rule |
+|---|---|---|
+| `pod_terminating` | `metadata.deletionTimestamp` is set | 6 |
+| `pod_not_running` | `status.phase` is not `Running` | 6 |
+| `pod_not_ready` | the Pod's `Ready` condition is not `True` | 6 |
+| `endpoint_missing` | it has no trusted endpoint at all | 2, 3 |
+| `endpoint_not_ready` | a trusted endpoint of it carries `conditions.ready: false` | 5 |
+| `endpoint_address_mismatch` | a trusted endpoint of it carries no address, or a first address that is not one of the Pod's `status.podIPs` | 7 |
+| `endpoint_address_conflict` | two trusted endpoints that each satisfy rules 5 and 7 name it with different addresses it holds, whether or not a pprof port resolves | the deduplication above |
+| `port_name_not_declared` | the effective pprof port name matches no TCP container port of the Pod | 8 |
+| `version_mismatch` | the request carried `version=` and the Pod's version label holds another value | the filter step of *Request algorithm* |
+| `pod_name_mismatch` | the request carried `pod=` and the Pod has another name | the filter step of *Request algorithm* |
+
+Every counted Pod is either a target or attributed to exactly one reason,
+so the number of targets plus the counts add up to the number of selected Pods.
+The table's order attributes; it decides no eligibility,
+which stays the rules above evaluated as they are written.
+Nothing in it depends on the order the caches hand things over:
+reversing the slices of a Service, the endpoints within a slice, or the Pod list changes no attribution,
+and two replicas holding identical cached objects answer identically.
+Two replicas holding different snapshots may differ while the newer one is still arriving,
+which is what a cache-derived answer means everywhere else in this document.
+
+The table reads Pod state before endpoint state
+because a terminating or unready Pod explains its own endpoint,
+while the endpoint explains nothing about the Pod.
+`endpoint_address_conflict` has a population of its own and needs no tie broken:
+an eligible endpoint requires a running, ready, not-terminating Pod,
+so a conflicted Pod satisfies none of the three Pod-state reasons.
+
+`endpoint_missing` covers a Pod no slice names,
+a Pod named by a stale UID (rule 3),
+and a Pod named by an entry whose kind or namespace is wrong.
+One reason covers all of them because the answer is the same:
+no endpoint the gateway trusts names this Pod.
+In the last two cases the entry exists and is untrusted, which is what the count says.
+
+`endpoint_address_conflict` needs one Pod holding more than one address of the family the Service is read under,
+because two entries that both pass rule 7 must both name an address the Pod's `status.podIPs` lists.
+Ordinary dual-stack operation does not produce it:
+a Service with any IPv4 slice is read as IPv4 and its IPv6 slices are never read,
+so entries of the two families never meet.
+The reason is defensive.
+It covers a Pod whose networking gives it several addresses of one family,
+and slices that disagree about which of them is current,
+and the gateway excludes such a Pod rather than guess which address is its.
+
+The last two rows are the filter step of *Request algorithm* rather than eligibility.
+`Explain` never produces them: it is passed no `version` and no `pod`.
+`internal/httpapi` applies those two filters to the targets `Explain` returned
+and moves each target they drop into the matching count,
+so a Pod stays attributed once and the sum still holds.
+A request carrying neither parameter can never reach either row.
 
 ### 5.4 Port resolution
 
@@ -597,14 +719,19 @@ Steps 8–10 differ by endpoint.
    → `401 unauthenticated`, `429 too_many_auth`, `503 auth_unavailable`, or a `302` to login ([`auth.md`](auth.md)).
 6. **Realm.** Namespace, then Service, then (profile endpoint only) profile → `403 realm_denied`.
 7. **Parameters.**
-   Targets endpoint: any query parameter other than `port` or `portName` → `400 invalid_parameter`.
+   Targets endpoint: `port` or `portName`, `version`, `pod`, and `explain`, validated per *List targets*;
+   any other name → `400 invalid_parameter`.
    Profile endpoint: validate every parameter per section 6.3 → `400 invalid_parameter` or `400 seconds_exceeds_limit`.
    Both endpoints: `port` or `portName` outside its grammar, or both given → `400 invalid_parameter`;
    a value `discovery.pprof.allowedSelections` does not admit → `400 port_not_allowed` (section 5.4).
    A refused port never reaches discovery.
-8. **Discovery.** `Targets()` with the request's port selection → `404 service_not_found`, `422 service_selectorless`.
+8. **Discovery.** `Targets()` with the request's port selection,
+   or `Explain()` when the targets endpoint was sent `explain=true` (*The seam*)
+   → `404 service_not_found`, `422 service_selectorless`, `503 discovery_unavailable` for a cache read that fails.
 9. **Filter and select.**
-   Targets endpoint: respond `200` with the full list, sorted (section 6.2).
+   Targets endpoint: apply `version`, then `pod`, and respond `200` with the list that remains,
+   sorted (*List targets*);
+   a `pod` no eligible target carries leaves an empty array, never `404 pod_not_found`.
    Profile endpoint: apply `version`;
    if `pod` is present and no remaining target has that name → `404 pod_not_found`;
    if `pod` is absent and no target remains → `503 no_targets`;
@@ -645,13 +772,95 @@ GET /v1/namespaces/{namespace}/services/{service}/targets
 }
 ```
 
-The endpoint takes the optional `port` or `portName` parameter of section 6.3 and no other;
-the list then holds the Pods eligible under that port.
 `targets` is sorted by `pod` name;
 the response `Content-Type` is `application/json`, as it is for every gateway error body.
 A Service with no eligible backends returns `200` with an empty array.
 `ip` and `port` are never included.
 `version` is present and empty when the Pod has no version label.
+
+The endpoint takes these parameters and no others:
+
+| Parameter | Grammar | Meaning |
+|---|---|---|
+| `port` | as in *Fetch a profile* | eligibility resolves the pprof port under it, in place of the configured default |
+| `portName` | as in *Fetch a profile* | the same, by container-port name; excludes `port` |
+| `version` | non-empty string | keep only the targets carrying this version |
+| `pod` | DNS-1123 subdomain | keep only the target of this name |
+| `explain` | `true` or `false` | `true` adds the exclusion counts below; `false` is accepted and adds nothing |
+
+`version` and `pod` mean what they mean on the profile endpoint
+and are applied in that order at the filter step of *Request algorithm*,
+with one difference:
+this endpoint reports where the profile endpoint selects,
+so a `pod` no eligible target carries is `200` with an empty array rather than `404 pod_not_found`.
+An endpoint that answered `404` here would make "that Pod is not a target" indistinguishable from a typo,
+which is the confusion `explain` exists to end.
+Neither filter is a new audit field.
+`pod` in the audit record keeps its meaning — the upstream Pod a profile request selected —
+and a targets request writes it empty however its query filtered;
+`version` has never been a field of that record (*Logging*).
+The parameter set is a fixed query grammar rather than operator configuration,
+so `/v1/limits` neither reports it nor changes.
+Parameters are validated in name order, so a query with several faults reports the same one every time.
+A parameter given more than once, one with an empty value, one outside its grammar,
+and a name the table does not hold are each `400 invalid_parameter`;
+`explain` with any value but `true` or `false` is that answer too.
+`port` and `portName` together are `400 invalid_parameter` as they are on the profile endpoint,
+and either one `discovery.pprof.allowedSelections` does not admit is `400 port_not_allowed`, before discovery.
+
+**Exclusion counts.**
+With `explain=true` the response keeps `targets` exactly as it is above and adds two fields:
+
+```json
+{
+  "namespace": "payment",
+  "service": "payment-api",
+  "targets": [
+    {"pod": "payment-api-7c8f8c9b9-xabcd", "node": "worker-07", "version": "1.42.3"}
+  ],
+  "selectorMatched": 6,
+  "excluded": [
+    {"reason": "pod_not_ready", "count": 2},
+    {"reason": "endpoint_missing", "count": 1},
+    {"reason": "port_name_not_declared", "count": 2}
+  ]
+}
+```
+
+`selectorMatched` is the number of Pods in the namespace whose labels match the Service's `spec.selector`,
+counted before eligibility runs.
+`0` is how the response says the selector matches no Pod, which no reason describes and no count could.
+
+`excluded` holds one entry per reason with a non-zero count, in the vocabulary order of *Eligibility*,
+and is `[]` — never `null` — when every selected Pod is a target.
+`reason` is one of that section's names and nothing else:
+a closed set the gateway writes from its own vocabulary, never a value the client sent and never a Pod's own text.
+`count` is a number.
+The two rows a request produces by filtering, `version_mismatch` and `pod_name_mismatch`,
+are added here rather than by the seam:
+`internal/httpapi` applies `version` and then `pod` to the targets `Explain` returned
+and counts each target it drops under the matching reason,
+in the same vocabulary order as the rest.
+
+`selectorMatched` always equals the length of `targets` plus the sum of the counts,
+because every selected Pod is a target or carries exactly one reason.
+A client can rely on that; `internal/httpapi` asserts it in the unit cases of *Layers*.
+
+There is no field for a Service that was found or a cache that has synced.
+A body proves both by existing:
+a Service the cache does not hold is `404 service_not_found` at the discovery step,
+a Service without a selector is `422 service_selectorless` there too,
+and caches that have not synced are `503 not_ready` at the readiness step.
+A `cacheSynced: true` would also invite the reading it cannot support —
+that the cache is current — when initial sync is all it could ever report,
+and a later API outage leaves a synced cache serving data as old as the outage (*Informers*).
+
+`explain` changes no status code, no other field, and no eligibility decision;
+it reports what the same request without it already did.
+The gateway pays for it with the Pod-cache read of *The seam*, which a request without it does not make.
+The response names no Pod, address, node, or version beyond what `targets` already lists:
+what *Non-disclosure* says about the plain listing holds for the counts,
+and the counts are what its fifth observation records.
 
 #### Listing endpoints
 
@@ -904,6 +1113,18 @@ listed here so nobody mistakes them for leaks the design closes:
   they say which values any client may name, not which port any Pod exposes,
   and the number a `portName` resolves to on a Pod stays hidden;
   the argument is in [`ui.md`](ui.md) *Limits*.
+- `explain=true` on the targets endpoint reports how many Pods of an admitted Service are not targets, and why,
+  which is fleet size inside a realm that already admits the Service.
+  The plain listing names every eligible Pod of that Service with its node and version,
+  so what the counts add is the size of the ineligible set —
+  the Pods a caller who polled the endpoint across a rollout would watch become eligible one by one anyway,
+  and, unlike that poll, a number rather than a name.
+  What is genuinely new is the Service's Pod count when some of its Pods never become eligible:
+  a workload whose replicas crash-loop reports them as a count where the listing reports nothing.
+  That is accepted: the count is the size of a workload the realm already admits profiling,
+  it names no Pod, no address, and no node,
+  and a realm that should not disclose a Service's size is a realm that should not admit the Service.
+  A caller the realm denies learns none of it: the realm step precedes discovery, `explain` included.
 
 What an authorized upstream response carries — the profile bytes, a pass-through error body,
 an allowlisted upstream header such as `Content-Disposition` — is the application's to control;
@@ -954,6 +1175,13 @@ for a name it is the name and never the number it resolved to.
 When the selection is malformed, repeated, or both parameters are present,
 the field is empty and the request fails `invalid_parameter`;
 a disallowed value is recorded as sent with `port_not_allowed`.
+`explain` is added to the record of a targets request that carried `explain=true`, with the value `true`,
+the way `auth_reason` is added rather than always present.
+A request that omitted the parameter, sent `false`, or was refused for a value outside the grammar writes no `explain`.
+The targets endpoint's `version` and `pod` filters add no field and overload none.
+`pod` keeps the one meaning it has, the upstream Pod a profile request selected,
+so a targets request writes it empty whatever it filtered on,
+and `version` is a field of no record on either endpoint.
 `code` is `ok` for a successful proxy, the gateway error code, or the upstream code from section 6.4.
 This is the audit trail.
 Records never contain a Pod IP.
@@ -1012,6 +1240,9 @@ and its `code` is `ok` for a `200` or the `302`, `route_unknown`, `method_not_al
 or `internal_error` for any other status the console wrote.
 The client's port selection is not a label either;
 it is client-controlled and would add a series per value.
+`explain` is not a label either:
+it would double every `targets` series to record a parameter the audit line already carries,
+and the label sets stay the closed ones above.
 Namespace and Service names never become labels:
 they are client-controlled path segments, and under a wildcard realm a caller could mint one series per request.
 Those names live in the audit log, where they cost nothing after the line is written.
@@ -1150,6 +1381,54 @@ Because the overall request budget already includes confirmation, the drain boun
   and the value as sent with `port_not_allowed` for a refused one;
   a `portName` selection never logs the resolved number,
   and no response or header carries the number a `portName` resolved to.
+- Target exclusion diagnostics, split by where each reason is decided:
+  the eight cache-derived reasons in `internal/k8s` against the fake clientset,
+  the two filter-derived reasons in `internal/httpapi` against the fake `Discovery`.
+  `Explain` cannot produce the filter-derived pair, because it is passed no `version` and no `pod`.
+  `internal/k8s`, one case per cache-derived reason,
+  each built from the fixture that already exercises that eligibility rule,
+  asserting the reason, its count, and that no other reason is reported.
+  `endpoint_missing` is exercised on every branch that leaves a Pod without a trusted endpoint:
+  no slice entry at all, a `nil` `targetRef`, a `targetRef` of another kind,
+  a `targetRef` naming another namespace, a name no Pod in the cache carries, and a stale UID.
+  `endpoint_address_mismatch` is exercised for an endpoint with no address
+  and for one whose first address is not in `status.podIPs`;
+  `port_name_not_declared` for a Pod with no port of the name, for one declaring it over UDP,
+  and for the configured default name as well as a request `portName`;
+  `endpoint_address_conflict` for one Pod carrying two addresses of the read family named by two eligible entries,
+  which is the same-family case the reason is defensive against.
+  Every existing eligibility rejection fixture asserts the attribution its rejection earns
+  and that the target count plus the sum of the counts equals `SelectorMatched`,
+  so a rule tested for exclusion is tested for its explanation in the same place.
+  A Pod satisfying several reasons is attributed to the first in the vocabulary,
+  asserted for a terminating Pod that is also unready
+  and for an unready Pod whose endpoint also carries `ready: false`.
+  A multi-Pod fixture inserts its reasons in an order the vocabulary does not use,
+  and the report comes back in the vocabulary's order regardless.
+  Reversing the EndpointSlice list, the endpoints within a slice, or the Pod list changes no count and no attribution,
+  and two `Explain` calls over identical cached objects return identical `Excluded` slices.
+  `SelectorMatched` is `0` for a Service whose selector matches no Pod;
+  a Pod the selector does not match, present in a slice, is counted under no reason;
+  a Service the cache lacks is `ErrServiceNotFound` and a selectorless one `ErrServiceSelectorless`, as for `Targets`;
+  a Pod lister that fails returns an error rather than an empty count;
+  the recording transport sees no request while any of it runs.
+  The HTTP layer: `explain=true` adds `selectorMatched` and `excluded`,
+  `excluded` encodes as `[]` and never `null`, and no body carries a `serviceFound` or `cacheSynced` field;
+  `explain=false` and an absent `explain` produce today's body unchanged;
+  `explain=1`, `explain=TRUE`, `explain=yes`, a repeated `explain`, and an empty value are `400 invalid_parameter`;
+  `version=` and `pod=` narrow `targets` and add `version_mismatch` and `pod_name_mismatch`,
+  leaving the counts the seam reported as they were,
+  each added entry appearing in vocabulary order,
+  and a `pod=` naming no eligible target is `200` with an empty array rather than `404 pod_not_found`;
+  the sum invariant of *List targets* holds across those combinations, including both filters at once;
+  a realm-denied request is `403 realm_denied` with the same body whether or not the Service exists,
+  and the fake records that `Explain` was not called;
+  readiness false is `503 not_ready` and writes no explain body, which is the only answer an unsynced cache has;
+  a fake whose `Explain` fails is `503 discovery_unavailable`;
+  no response, header, or audit line names a Pod beyond `targets` or carries an address;
+  the audit line carries `explain` only for an accepted `explain=true`,
+  writes an empty `pod` for a targets request that carried `pod=`, and carries no `version` field,
+  and the recorder sees the `targets` endpoint with no label the parameter added.
 - `internal/config`: every environment override, unknown keys at each nesting level,
   numeric-only, name-only, both, and neither of `port`/`portName` (neither normalizes to 6060),
   `allowedSelections` from file and from its comma-separated environment variable,
@@ -1332,6 +1611,11 @@ Why kind rather than k3s for the old versions:
    a manual slice with a wrong address does not add or alter a target.
 2. NotReady Pods, terminating Pods, and Pods of a `publishNotReadyAddresses` Service are never targets
    (`needsPodReach`, for the readiness flip).
+   The same request with `?explain=true` counts the NotReady Pod under `pod_not_ready`,
+   the first reason it satisfies, and names no Pod outside `targets`.
+   Both replicas are polled until each reports that count,
+   because until the Pod update reaches a replica that has already seen the endpoint update,
+   that replica reports `endpoint_not_ready`, which is the correct answer to the cache it holds.
 3. After a Pod is deleted, both replicas converge on the new target set within 10 seconds;
    the same holds after a Pod becomes ready (`needsPodReach`, because readiness is flipped through the test app).
    The two halves are separate scenarios in the registry so a degraded lane skips only the second.
@@ -1341,8 +1625,12 @@ Why kind rather than k3s for the old versions:
 5. A namespace outside the realm returns `403` identically for an existing and a missing Service;
    an unknown Service in an allowed namespace `404`;
    a selectorless Service with a manual Pod-backed slice `422`;
-   `?pod=` naming a Pod of another Service `404`.
-6. `?version=` filters correctly and excludes Pods without the label.
+   `?pod=` naming a Pod of another Service is `404` on the profile endpoint,
+   while the same `?pod=` on the targets endpoint is `200` with an empty array,
+   and with `?explain=true` beside it the Service's own eligible Pods are counted under `pod_name_mismatch`.
+6. `?version=` on the profile endpoint filters correctly and excludes Pods without the label;
+   on the targets endpoint the same value lists only the Pods carrying it,
+   and with `?explain=true` the rest are counted under `version_mismatch`.
 7. On the 1.24 lane the gateway runs with no Secret-backed ServiceAccount token in the namespace,
    proving the projected token is sufficient.
    The shipped ClusterRole lets the gateway start;
@@ -1696,6 +1984,10 @@ test/e2e/            harness, versions.yaml, testapp, overlays
 | Client denied by realm names a refused port | `403 realm_denied`; `allowedSelections` is never evaluated |
 | Client names an admitted numeric port that is not a pprof listener | the dial or the upstream response decides: `502`/`504` from section 6.4, or the upstream's own status passed through as `upstream_<status>` |
 | Client names a `portName` some or all Pods lack | Pods without it are ineligible; the targets list shrinks to those that declare it, and a profile request with none left is `503 no_targets` |
+| Client sends `explain=true` on the targets endpoint | the counts of *List targets* are added; the caller learns how many selected Pods are not targets and why, and no Pod name beyond `targets` |
+| Service whose selector matches no Pod, with `explain=true` | `targets` is `[]`, `selectorMatched` is `0`, and `excluded` is `[]`: there is nothing to exclude, which no reason would have said |
+| Caches not synced when `explain=true` is sent | `503 not_ready` at the readiness step; no explain body is written, and no field of any body reports the condition |
+| Console sends `explain=true` to a replica older than this design, mid-rollout | `400 invalid_parameter`, the answer any unknown parameter gets; the console retries the fetch once without it ([`ui.md`](ui.md)) |
 | Service cache read fails on a listing route | `503 discovery_unavailable`; never an empty `200` ([`ui.md`](ui.md)) |
 | Rolling update with two console asset hashes | each request a page makes may reach either build; an asset the answering replica lacks is `404 route_unknown` and the page does not render until the rollout converges, after which a reload recovers ([`ui.md`](ui.md)) |
 | `ui.enabled` false | `/ui/` and `/` are `404 route_unknown`; the four listing routes still answer |
@@ -1806,3 +2098,40 @@ amends the following text.
 
 Updated with the implementation: `docs/deployment.md`,
 whose invariant paragraph and pprof-port prose still describe the two fail-open lists that ship today.
+
+Target exclusion diagnostics —
+`explain=true` on the targets endpoint, the `version` and `pod` parameters beside it,
+and the closed reason vocabulary they report —
+amend the following text.
+The first table lists the edits made in the same change as this block;
+the second lists the documents that describe shipped behavior and are updated when the implementation lands;
+the third names a document that reads this endpoint and is revised on its own.
+
+Amended now:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *The seam* | `Explain`, `Explanation`, and `Exclusion`: one cache pass over one captured Pod list, no request, no new RBAC tuple, and a failed Pod-cache read answered `503 discovery_unavailable` |
+| `docs/specs/gateway.md` | *Eligibility* | the trusted endpoint, the closed reason vocabulary and its order, the counted population, and the per-Pod rule that attributes each counted Pod to one reason |
+| `docs/specs/gateway.md` | *Request algorithm* | the parameter step takes `version`, `pod`, and `explain` on the targets endpoint; the discovery step calls `Explain`; the filter step narrows the listing and answers an empty array for a `pod` no target carries |
+| `docs/specs/gateway.md` | *List targets* | the parameter table, the `explain=true` response, `selectorMatched`, `excluded`, the sum invariant, and where the two filter-derived reasons are counted |
+| `docs/specs/gateway.md` | *Non-disclosure* | a fifth observation: the counts state how many selected Pods are not targets, inside a realm that already admits the Service |
+| `docs/specs/gateway.md` | *Logging* | the audit field `explain`, added only for an accepted `explain=true`; the targets filters overload no field, `pod` staying the selected upstream Pod |
+| `docs/specs/gateway.md` | *Metrics* | no label for `explain` |
+| `docs/specs/gateway.md` | *Layers* | the eight cache-derived reasons in `internal/k8s` and the two filter-derived ones in `internal/httpapi`, attribution on every existing rejection fixture, order independence, the sum invariant, the parameter grammar, realm denial before `Explain`, and readiness before any explain body |
+| `docs/specs/gateway.md` | *What end-to-end proves* | the ineligible-Pods proof asserts the `pod_not_ready` count on both replicas; the error and version proofs say which endpoint each assertion is about |
+| `docs/specs/gateway.md` | *Failure Scenarios* | rows for an `explain` request, a selector matching no Pod, caches that have not synced, and an older replica refusing the parameter |
+| `docs/specs/ui.md` | *Targets, with reasons*, *Controls*, *Failure scenarios*, *Unit*, *What is not proven*, *Layout and embedding*, *Dependencies*, *Package layout* | the console sends `explain=true` on every targets fetch, retries once without it on `400 invalid_parameter`, and turns an empty list into counted reasons in fixed wording, through a `targetmodel.js` the tests execute |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `docs/api.md` | the targets section: `version`, `pod`, and `explain`, `selectorMatched`, the `excluded` array, and the reason table |
+| `docs/console.md` | the empty state showing counted reasons |
+
+Reads this endpoint and is revised on its own, not here:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/cli.md` | *`targets`* | `--explain` sends `explain=true` and prints the `excluded` rows beside the list; that document is `Draft` and its text is not edited by this change |
