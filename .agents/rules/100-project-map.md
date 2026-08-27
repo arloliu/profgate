@@ -70,6 +70,7 @@ internal/auth/         // Authenticator; basic, oidc, disabled; sole non-test im
 internal/natskv/       // the NATS seam; sole non-test importer of nats.go
 internal/pgo/          // policy, publisher, scheduler, worker, merge, sweeper
 internal/ops/          // liveness, readiness, and the Prometheus /metrics listener
+internal/ui/           // the console: embedded page and vendored browser libraries; sole user of go:embed
 deploy/                // kustomize base: RBAC, Deployment, NetworkPolicy
 test/e2e/              // kind harness, versions.yaml, testapp, overlays, cmd/lanes (CI lane matrix)
 scripts/               // repository checks; check-repo.py
@@ -106,6 +107,23 @@ only when its browser flow is configured:
 /auth/login
 /auth/callback
 /auth/logout
+```
+
+The accepted console design ([`docs/specs/ui.md`](../../docs/specs/ui.md)) adds four read-only listing routes that always exist:
+
+```
+/v1/namespaces
+/v1/namespaces/{namespace}/services
+/v1/whoami
+/v1/limits
+```
+
+and three routes present only when `ui.enabled`:
+
+```
+/ui/
+/ui/static/{hash}/{file}
+/
 ```
 
 ## Documentation

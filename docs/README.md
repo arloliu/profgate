@@ -7,6 +7,7 @@ Start with the guide for your task:
 - **Configure the gateway:** [`configuration.md`](configuration.md).
 - **Authenticate users:** [`authentication.md`](authentication.md).
 - **Enable PGO collection:** [`pgo.md`](pgo.md).
+- **Use the console:** [`console.md`](console.md).
 
 These guides live at the top of `docs/` and carry no `Status:` field;
 they age by being kept true against the code.
@@ -21,7 +22,7 @@ because what decides whether a document can still be trusted is its lifecycle, n
 | `plans/` | Executable work orders | Living while `Approved` or `In Progress`; frozen history once `Done` |
 | `decisions/` | One decision that is expensive to revisit, per file | Immutable once accepted; superseded rather than edited |
 
-`plans/` holds the gateway, PGO, client-selected pprof port, and authentication implementation plans.
+`plans/` holds the gateway, PGO, client-selected pprof port, authentication, and console implementation plans.
 
 Review reports and working notes stay in `tmp/`, which is not tracked.
 They are byproducts of producing the documents above,
@@ -47,7 +48,9 @@ and records an `Outcome:` line naming what shipped.
 
 - **Understanding what Profgate is:** [`specs/gateway.md`](specs/gateway.md),
   the accepted gateway design.
-  [`specs/pgo.md`](specs/pgo.md) is the accepted PGO collection design layered on it;
+  [`specs/pgo.md`](specs/pgo.md) is the accepted PGO collection design layered on it,
+  [`specs/auth.md`](specs/auth.md) the accepted authentication design,
+  and [`specs/ui.md`](specs/ui.md) the accepted console design;
   [`specs/profgate-design.md`](specs/profgate-design.md) is the superseded combined original, kept for history.
 - **Why a choice was made:** [`decisions/`](decisions/), one file per topic.
 - **Changing anything:** [`.agents/rules/`](../.agents/rules/) holds the rules in force,

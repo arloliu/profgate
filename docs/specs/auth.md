@@ -99,7 +99,7 @@ Nothing after realm resolution changes.
   every browser released since 2020 sends them.
 - A web UI.
   The browser flow authenticates a browser; what the browser then sees is the API.
-  A UI, and the listing endpoints it would need, is a later document.
+  The console, and the listing endpoints it needs, are designed in [`ui.md`](ui.md).
 
 ---
 
@@ -536,8 +536,8 @@ a client without Fetch Metadata could not use the session it would be sent to ob
 
 The distinction is what keeps `curl` from being sent to a login page:
 a script gets `401` and a `WWW-Authenticate` header, a browser gets a login.
-`fetch()` calls from a page — a future UI's JSON requests — have `Sec-Fetch-Mode: cors` or `same-origin`,
-are not navigations, and get `401`;
+`fetch()` calls from a page — the console's JSON requests ([`ui.md`](ui.md)) —
+have `Sec-Fetch-Mode: cors` or `same-origin`, are not navigations, and get `401`;
 the page decides whether to navigate to `/auth/login`.
 
 ### 6.3 Cookie key
@@ -661,6 +661,8 @@ It is not redirected back to login, because a loop between two failing endpoints
 **`GET /auth/logout`** deletes the session cookie and answers `302` to the issuer's `end_session_endpoint`
 with `post_logout_redirect_uri=<scheme://host of redirectURL>/` and `client_id`, when discovery published one,
 and `302` to `/` otherwise.
+When `ui.enabled`, `/` is itself `302` to `/ui/` ([`ui.md`](ui.md) *Routes*),
+so the fallback lands on a signed-out console.
 Logout is a `GET` because a bookmark or a link must be able to trigger it;
 a cross-site request that logs a user out is a nuisance, not a breach.
 
@@ -959,7 +961,17 @@ End to end, under `//go:build e2e`:
   then pull the same profile with an ID token obtained from Dex's password connector as a bearer.
   The lane then rotates Dex's signing key by restarting Dex with a new key,
   and a token signed with the new key verifies within `jwksRefreshMin` without restarting the gateway.
+  With `ui.enabled`, the same scenario also proves the console steps of [`ui.md`](ui.md) *End to end*:
+  `/ui/` serves the shell and its headers with no cookie,
+  a `fetch`-shaped `/v1/whoami` without a cookie is `401` and not `302`,
+  a login started from `/auth/login?return=/ui/?ns=x` lands back on that path,
+  the four listing routes answer `200` with the cookie,
+  and logout is `302` to `/` and `/` is `302` to `/ui/`.
 - One lane runs `basic` mode over TLS and pulls a profile with `go tool pprof` and a userinfo URL.
+  With `ui.enabled`, the same scenario also proves the console steps of [`ui.md`](ui.md) *End to end*:
+  `/ui/` is `200` without a credential,
+  `/v1/namespaces` is `401` with `WWW-Authenticate: Basic realm="profgate"` without one and `200` with one,
+  and `/v1/limits` reports the lane's configured limits.
 
 ---
 
@@ -1076,3 +1088,4 @@ Edits made to this document after it was accepted, each in the change that made 
 |---|---|
 | *The `/auth/` routes*, *The session*, *Audit and metrics*, *Testing* | a successful callback answers `200` with a landing page that sends the browser to the return path, instead of `302`: a browser computes `Sec-Fetch-Site` over the whole redirect chain, so the redirect delivered the first request of every login as `cross-site` and the session rule refused it with `csrf`; the audit status of a successful callback is `200`; the unit and Dex tests send what a browser sends |
 | *Wire values and bounds* | the 1024-byte bound on the return path applies to the value as received, before percent-decoding, and a path with a `.` or `..` segment is refused: the bound is checked before anything is parsed, and a dot segment would reach a route the client did not name |
+| *Non-goals*, *What is redirected*, *The `/auth/` routes*, *Testing* | the console of [`ui.md`](ui.md): the UI non-goal points to that document; the `fetch` sentence names the console; logout's fallback `302` to `/` lands on `/ui/` when `ui.enabled`; the two end-to-end lanes gain the console steps of that document's *End to end* |

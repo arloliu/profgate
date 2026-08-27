@@ -146,7 +146,10 @@ in the order `internal/httpapi` runs it today, and stop at the cache:
 
 1. **Route.** The path is one of the four; `{namespace}` must be a DNS-1123 label → `404 route_unknown`.
 2. **Method.** `GET` only → `405 method_not_allowed` with `Allow: GET`.
-3. **Readiness.** `HasSynced()` false → `503 not_ready`, for all four,
+3. **Readiness.** The readiness `internal/httpapi` composes for every `/v1` route —
+   discovery synced and, under `oidc`, the issuer discovered with its first keys fetched
+   ([`auth.md`](auth.md) *Request algorithm*; `Deps.Ready` in `internal/httpapi`) —
+   false → `503 not_ready`, for all four,
    so a client learns the gateway's readiness from every `/v1` route in the same way.
 4. **Credential placement.**
    `access_token` as a query parameter → `400 invalid_parameter`.
@@ -380,9 +383,11 @@ The selection lives in the page's query string, `?ns=&svc=`, and nothing else is
 the browser flow seals the return path as path plus query and drops the fragment
 ([`auth.md`](auth.md) *Wire values and bounds*),
 so state kept in `#fragment` would not survive a login round trip and state kept in the query does.
-The return path the page sends is `/ui/?ns=<label>&svc=<label>`:
-two DNS-1123 labels keep it far under the 1024-byte bound that document checks before decoding,
+The return path the page sends is `/ui/?ns=<label>&svc=<label>&returned=1`:
+two DNS-1123 labels and a fixed marker keep it far under the 1024-byte bound that document checks before decoding,
 and it holds no `.` or `..` segment, so it is sealed as sent and never replaced by `/`.
+The `returned` marker is how the page tells a return from login from a plain load (*Signing in and out*);
+it holds no credential and no state, and the page drops it from the address bar as soon as it has read it.
 A reload, a bookmark, and a return from login all land on the same selection.
 
 The download is an ordinary navigation to the profile endpoint.
@@ -505,14 +510,20 @@ it is never redirected and answers `401` when it is not signed in.
 
 Under **`oidc`**, the page calls `/v1/whoami` first on every load.
 A `401` from it, or from any later `fetch`, makes the page navigate to
-`/auth/login?return=<path and query of the page>`;
+`/auth/login?return=<path and query of the page, plus returned=1>`;
 the callback answers `200` with a landing page,
 its `<meta http-equiv="refresh">` sends the browser back to the same selection,
 and that navigation starts from the gateway's own document and arrives `same-origin`
 ([`auth.md`](auth.md) *The `/auth/` routes*).
-The page does this once per load;
-a `401` that follows a fresh return from login is shown as an error rather than looped,
-because a loop between a page and a login that keeps failing is worse than an error the user can read.
+The page navigates at most once per load, and never on a load whose query carries the `returned` marker:
+that load is the return from a login, and a `401` on it — the session the callback set was not accepted,
+or the login never completed — is shown as "sign in required" with a **Sign in again** button
+that starts another login only when the user presses it,
+because a loop between a page and a login that keeps failing is worse than a message the user can read.
+The page drops the marker from the address bar with `history.replaceState` before its first request,
+so a reload is a plain load that may navigate again, and a bookmark never carries the marker.
+The marker is the only thing the page reads from its query besides the selection;
+it uses no `sessionStorage` or `localStorage`, so "nothing else is remembered" (*Flow*) stays true.
 The console requires the browser flow under `oidc`:
 without it every browser request is `401` and `/auth/login` is `404 route_unknown`,
 so a configuration that sets `ui.enabled` under `auth.mode: oidc` without an `auth.oidc.browser` block is rejected
@@ -589,7 +600,7 @@ internal/ui/static/
       htm.module.js          htm, the standalone ES module build
       LICENSE                Apache-2.0; htm ships no NOTICE, and one is vendored here if a release adds it
     pico/
-      pico.min.css           Pico CSS, the class-less build
+      pico.classless.min.css Pico CSS, the class-less build, under its published name
       LICENSE                MIT
 ```
 
@@ -597,8 +608,12 @@ internal/ui/static/
 Its constructor, not an `init` function (`200-coding-standards.md` forbids `init`),
 walks the embedded tree once, hashes it, and renders the shell:
 
-- The **tree hash** is the SHA-256 over every embedded file's path and bytes in path order,
-  truncated to its first 16 hex digits.
+- The **tree hash** is the SHA-256 over every embedded file in path order,
+  each framed as its length-prefixed path followed by its length-prefixed content,
+  so no two trees share a hash by shifting bytes between a path and a file;
+  the digest is truncated to its first 16 hex digits.
+  `index.html` is hashed with the rest and has no hashed serving route:
+  it is served only as the rendered shell at `/ui/`.
   Every asset is served under `/ui/static/<tree hash>/<path>`,
   so a change to any file changes every asset URL and a page never mixes files from two builds.
   Hashing the tree rather than each file keeps the relative `import` paths inside the modules valid as written;
@@ -747,9 +762,11 @@ they are counted, not narrated.
 `namespaces`, `services`, `whoami`, `limits`, and `ui`,
 with `profile` fixed to `none` for all five.
 `ui` covers `/ui/`, every path under it, and `/`;
-its `code` is `ok` for a `200` or the `302`, `route_unknown`, or `method_not_allowed`,
+its `code` is `ok` for a `200` or the `302`, `route_unknown`, `method_not_allowed`,
+or `internal_error` for any status the console wrote outside `2xx`, `3xx`, `404`, and `405`,
 derived by `internal/httpapi` from the status the console handler wrote (*Package layout*),
 and its histogram bucket is the first one in practice.
+The set is closed at those four values.
 The tree hash is not a label and neither is a file name:
 `code` and `endpoint` stay closed sets, and the label cardinality rule of the gateway *Metrics* section holds.
 
@@ -836,12 +853,12 @@ a value arriving through the raw block would bypass the structured value the cha
 - a table over the four routes and every step of *Request algorithm for the listing endpoints*:
   each method, `?access_token=`, readiness false, an unknown query parameter, a `{namespace}` that is not a label;
 - realm filtering, over all four combinations of the *The realm filter* table and a fake that holds,
-  in three namespaces, a Service the realm names, one it does not, and one without a selector:
+  in three namespaces, a Service the realm names and one it does not
+  (the fake holds no selectorless Service: `ServiceRef` carries no selector,
+  so what the HTTP layer receives is already selector-independent):
   each combination lists exactly the namespaces and Services the table says;
-  a namespace whose only selector-bearing Services are outside `realm.services` is absent;
+  a namespace whose only Services are outside `realm.services` is absent;
   an explicit realm omits a named namespace the cache lacks;
-  a selectorless Service is absent from its namespace's list,
-  and when it is the namespace's only Service the namespace is absent too;
   the Service list of a denied namespace is `403` with an identical body whether the fake holds the namespace or not,
   and the fake records that `Catalog` was not called;
   the Service list of an admitted namespace the fake lacks is `200` with `[]`;
@@ -851,8 +868,11 @@ a value arriving through the raw block would bypass the structured value the cha
   `auth.mode`, and `auth.logout` only under the browser flow;
 - `/v1/limits` reflects each of `cpuSeconds`, `traceSeconds`, a numeric default, a named default, and both allowlists,
   empty and non-empty;
-- no listing response contains a string that matches an IP address, a `podIP` field, or a port number,
+- no Service or namespace listing exposes a Pod-discovered or selected backend port,
+  and no listing response contains a string that matches an IP address or a `podIP` field,
   with the fake holding Pods that have both;
+  `/v1/limits` returns the configured allowlists and default by design (*Limits*),
+  and the two list responses are asserted to contain no `6060`;
 - hostile names survive encoding:
   a principal, a namespace, and a Service name that carry HTML metacharacters (`<`, `>`, `&`, `"`, `'`)
   are JSON-escaped in the responses and decode to the configured strings unchanged,
@@ -862,13 +882,16 @@ a value arriving through the raw block would bypass the structured value the cha
 - the audit line for each listing route carries the principal and, for the Service list, the namespace;
   `/ui/` writes none;
   the recorder sees `endpoint` `namespaces`, `services`, `whoami`, `limits`, or `ui` with `profile` `none`,
-  and for `ui` the `code` `ok` on `200` and `302`, `route_unknown` on `404`, `method_not_allowed` on `405`.
+  and for `ui` the `code` `ok` on `200` and `302`, `route_unknown` on `404`, `method_not_allowed` on `405`,
+  and `internal_error` on any other status the console wrote.
 
 `internal/k8s`, against the fake clientset with real informers:
 
 - `Catalog` reads only the Service lister;
   the recording transport of the gateway *Layers* section sees no request beyond the seven tuples when it runs;
-- a Service without a selector is not listed, whatever its `spec.type`;
+- a Service without a selector is not listed, whatever its `spec.type`,
+  and when it is the namespace's only Service that namespace yields no entry;
+  selector presence is decided here and nowhere else;
   a Service that appears or disappears in the fake is reflected once the informer delivers it;
   `Catalog` with a namespace returns that namespace's entries and `[]` for one the cache lacks.
 
@@ -906,7 +929,8 @@ and this section is where that decision is revised.
 
 ### 11.3 End to end
 
-Two scenarios, added to the lanes [`auth.md`](auth.md) *Testing* defines, both against a gateway with `ui.enabled`:
+Two proofs, each run inside the existing authentication scenario of its lane
+([`auth.md`](auth.md) *Testing*), both against a gateway with `ui.enabled`:
 
 - **Browser flow under Dex.**
   With no cookie, `GET /ui/` is `200` with the shell and the *Response headers and CSP* headers,
@@ -930,7 +954,7 @@ Two scenarios, added to the lanes [`auth.md`](auth.md) *Testing* defines, both a
   what is proven is the pair of responses it reacts to.
 
 A scenario that reaches no application Pod declares nothing;
-the Service list reads the cache, so neither scenario needs `needsPodReach`.
+the Service list reads the cache, so neither proof adds `needsPodReach` to its scenario.
 
 ---
 
@@ -946,7 +970,7 @@ Vendored browser code, pinned in `internal/ui/static/vendor/MANIFEST`:
 |---|---|---|---|---|
 | `preact.module.js` | Preact | 10.29.8 | MIT | about 11 KiB |
 | `htm.module.js` | htm | 3.1.1 | Apache-2.0 | about 1 KiB |
-| `pico.min.css` | Pico CSS | 2.1.1 | MIT | about 80 KiB |
+| `pico.classless.min.css` | Pico CSS | 2.1.1 | MIT | about 69 KiB |
 
 Versions are those published on the npm registry as `latest` on the day this document was drafted;
 the implementation pins what it reviews and updates this table.
@@ -1037,7 +1061,7 @@ so the import runs one way, and `cmd/profgate` constructs both.
 
 ## 14. Changes to the accepted designs
 
-Accepting this document amends the following text in the same change.
+The following text is amended to match this document.
 Each row names the heading it edits.
 
 | File | Section | Change |
@@ -1073,3 +1097,20 @@ Updated with the implementation: `docs/api.md` (the listing endpoints), `docs/co
 `docs/deployment.md` (Ingress paths),
 `deploy/chart/profgate/values.yaml` and `deploy/chart/profgate/README.md`
 (the `ui.enabled` value and the raw-block guard).
+
+---
+
+## 15. Amendments
+
+Edits made to this document after it was accepted, each in the change that made it.
+
+| Section | Change |
+|---|---|
+| *Layout and embedding*, *Dependencies* | the Pico file is `pico.classless.min.css`, the class-less build's published name, and its size is about 69 KiB |
+| *Layout and embedding* | the tree hash frames each file as its length-prefixed path and length-prefixed content; `index.html` is hashed but has no hashed serving route |
+| *Request algorithm for the listing endpoints* | the readiness step is the readiness `internal/httpapi` composes for every `/v1` route — discovery synced and, under `oidc`, the issuer discovered — not `HasSynced()` alone |
+| *Unit* | the `internal/httpapi` fake holds no selectorless Service, because `ServiceRef` carries no selector; the selectorless cases live in the `internal/k8s` bullet, where selector presence is decided; the non-disclosure assertion says no list exposes a Pod-discovered or selected backend port and no listing response carries an IP address or `podIP`, since `/v1/limits` returns the allowlists and default by design |
+| *Audit and metrics*, *Unit* | the `ui` code set gains `internal_error` for any status the console wrote outside `2xx`, `3xx`, `404`, and `405`; the set stays closed |
+| *End to end* | the two proofs run inside the existing authentication scenarios rather than as scenarios of their own |
+| *Changes to the accepted designs* | the table describes edits already made, not edits acceptance would make |
+| *Flow*, *Signing in and out* | the return path carries a `returned=1` marker; a load that starts with it never navigates to login on its own and shows a **Sign in again** button on `401` instead, which is what bounds the once-per-load rule across the round trip |

@@ -342,6 +342,11 @@ type PortSelection struct {
     PortName string
 }
 
+// ServiceRef names one Service in the cache.
+type ServiceRef struct {
+    Namespace, Name string
+}
+
 type Discovery interface {
     // Targets returns the currently eligible backends of a Service
     // whose pprof port resolves under port.
@@ -352,8 +357,17 @@ type Discovery interface {
     // Confirm re-reads the Pod behind t from the API server and reports
     // whether t is still an accurate description of it (section 5.6).
     Confirm(ctx context.Context, t Target) error
+    // Catalog lists the Services with a non-empty selector from the cache,
+    // sorted by namespace then name.
+    // An empty namespace means every namespace; a namespace the cache lacks is an empty list, not an error.
+    // It issues no request; an error means the lister could not be read.
+    Catalog(ctx context.Context, namespace string) ([]ServiceRef, error)
 }
 ```
+
+`Catalog` serves the listing routes of [`ui.md`](ui.md).
+It reads the Service informer cache and issues no request,
+so the RBAC table of section 3.1 does not change for it.
 
 Sentinel errors, matched with `errors.Is`:
 
@@ -543,7 +557,11 @@ and its response contains nothing a client could connect to.
 ## 6. HTTP API
 
 All paths are under `/v1` on the API listener,
-except the three `/auth/` routes that [`auth.md`](auth.md) adds when its browser flow is configured.
+except the three `/auth/` routes that [`auth.md`](auth.md) adds when its browser flow is configured
+and the `/ui/` and `/` routes of [`ui.md`](ui.md) when `ui.enabled`.
+The four listing routes of [`ui.md`](ui.md) —
+`/v1/namespaces`, `/v1/namespaces/{namespace}/services`, `/v1/whoami`, and `/v1/limits` —
+are `/v1` routes defined in that document.
 The product name does not appear in any path.
 Every response carries `Cache-Control: no-store`.
 
@@ -588,6 +606,15 @@ Steps 8–10 differ by endpoint.
 Realm denial precedes discovery,
 so a caller denied a namespace receives the same `403` whether or not the Service exists.
 
+The four listing routes of [`ui.md`](ui.md) run the route, method, readiness, credential-placement,
+and authentication steps as written;
+the realm step refuses only the Service list, for a namespace the realm does not admit,
+while the namespace list is filtered and `whoami` and `limits` describe the caller;
+the parameter step refuses any query parameter;
+then they read the Service cache, with no discovery, admission, confirmation, or proxy step
+([`ui.md`](ui.md) *Request algorithm for the listing endpoints*).
+They accept `GET` only, like the two routes defined here.
+
 ### 6.2 List targets
 
 ```http
@@ -611,6 +638,12 @@ the response `Content-Type` is `application/json`, as it is for every gateway er
 A Service with no eligible backends returns `200` with an empty array.
 `ip` and `port` are never included.
 `version` is present and empty when the Pod has no version label.
+
+#### Listing endpoints
+
+Four routes list what the caller's realm admits and describe the caller:
+`GET /v1/namespaces`, `GET /v1/namespaces/{namespace}/services`, `GET /v1/whoami`, and `GET /v1/limits`.
+Their response shapes are defined in [`ui.md`](ui.md) *Response shapes*.
 
 ### 6.3 Fetch a profile
 
@@ -753,6 +786,11 @@ and one filtered out by `version`.
 `port_not_allowed` names only the value the client sent, never a port a Pod exposes;
 receiving it does tell the client that the value is outside the allowlist (section 7.5).
 
+`discovery_unavailable` also covers a Service cache read that fails on a listing route of [`ui.md`](ui.md);
+such a route never answers an empty `200` in its place.
+`405 method_not_allowed` under `/ui/` and on `/` carries `Allow: GET, HEAD`,
+because those routes serve files and accept `HEAD`.
+
 ---
 
 ## 7. Authentication and Authorization
@@ -834,7 +872,7 @@ Of ports, the guarantee is narrower:
 no response carries the port number a `portName` selection resolved to,
 and the `X-Pprof-Target-*` headers never carry a port;
 a `400 port_not_allowed` body names only the value the client sent.
-Choosing ports still lets an authorized client observe three things,
+Choosing ports, and reading `/v1/limits`, still lets an authorized client observe four things,
 listed here so nobody mistakes them for leaks the design closes:
 
 - `portName` on the targets endpoint changes per-Pod eligibility,
@@ -846,6 +884,12 @@ listed here so nobody mistakes them for leaks the design closes:
   bounded by the realm, `allowedPorts`, and NetworkPolicy, and nothing else.
 - `400 port_not_allowed` reveals that a value is outside the allowlist.
   It reveals nothing about Pods: realm evaluation precedes it and discovery never runs.
+- `/v1/limits` returns both allowlists and the configured default to any authenticated caller.
+  The values are global operator configuration, not cluster state:
+  they say which values any client may name, not which port any Pod exposes,
+  and the number a `portName` resolves to on a Pod stays hidden;
+  the argument is in [`ui.md`](ui.md) *Limits*.
+
 What an authorized upstream response carries — the profile bytes, a pass-through error body,
 an allowlisted upstream header such as `Content-Disposition` — is the application's to control;
 the gateway forwards it unchanged and makes no claim about its content.
@@ -885,6 +929,9 @@ principal, namespace, service, pod, profile, seconds, port, status, code, durati
 with the values [`auth.md`](auth.md) lists;
 one of them, `internal`, marks an authenticator error the gateway could not classify, answered `503 auth_unavailable`.
 The `/auth/` routes write a line with no namespace or Service ([`auth.md`](auth.md)).
+The four listing routes of [`ui.md`](ui.md) write the record with `namespace` set on the Service list only
+and `service`, `pod`, `profile`, `port`, and `seconds` empty;
+requests under `/ui/` and to `/` write no record — they carry no principal and name nothing a realm bounds.
 
 `port` is the client's port selection as sent, a number or a name, empty when absent;
 for a numeric selection that is also the resolved port,
@@ -916,7 +963,7 @@ and refuses to proxy (section 5.6), which is the correct behavior, not a reason 
 
 | Metric | Labels |
 |---|---|
-| `profgate_requests_total` (counter) | `endpoint` (`targets`/`profile`), `profile`, `code` |
+| `profgate_requests_total` (counter) | `endpoint` (`targets`/`profile`/`namespaces`/`services`/`whoami`/`limits`/`ui`), `profile`, `code` |
 | `profgate_request_duration_seconds` (histogram) | `profile` |
 | `profgate_confirm_total` (counter) | `result` (`ok`/`changed`/`unavailable`) |
 | `profgate_profiles_in_flight` (gauge) | — |
@@ -943,6 +990,11 @@ and the header deadline and overall budget built from them (section 6.4).
 Every label has a fixed value set:
 `profile` is the eight names or `none`, `code` takes the values in sections 6.4 and 6.5
 with upstream statuses bucketed as `upstream_<status>`.
+The `endpoint` values `namespaces`, `services`, `whoami`, `limits`, and `ui` belong to [`ui.md`](ui.md),
+with `profile` fixed to `none`;
+`ui` covers `/ui/`, every path under it, and `/`,
+and its `code` is `ok` for a `200` or the `302`, `route_unknown`, `method_not_allowed`,
+or `internal_error` for any other status the console wrote.
 The client's port selection is not a label either;
 it is client-controlled and would add a series per value.
 Namespace and Service names never become labels:
@@ -1113,6 +1165,18 @@ Because the overall request budget already includes confirmation, the drain boun
   They skip when `helm` is absent rather than failing.
 - A configuration test sets every `PROFGATE_*` variable and proves each lands on its field,
   guarding against a doubled prefix in a tag.
+- `internal/ui` against its embedded tree, per [`ui.md`](ui.md) *Unit*:
+  the tree hash, the shell and asset headers, the manifest hashes, relative imports only,
+  no inline script or style, and the source scan of *Rendering response values*.
+- The listing routes in `internal/httpapi`, per [`ui.md`](ui.md) *Unit*:
+  the request algorithm table, realm filtering over the four combinations,
+  `whoami` and `limits` contents, no Pod IP or Pod-declared port in a list, hostile names,
+  the `/ui/` and `/` dispatch, and the audit and metrics rows.
+- `Catalog` in `internal/k8s`, per [`ui.md`](ui.md) *Unit*:
+  it reads only the Service lister and the recording transport sees nothing beyond the seven tuples;
+  a selectorless Service is not listed.
+- `internal/config`: `ui.enabled` from file and environment, a non-boolean rejected,
+  and `ui.enabled` under `auth.mode: oidc` rejected without a `browser` block and accepted with one.
 - The client-go import check:
   every non-test Go file outside `test/` that imports `k8s.io/client-go` is under `internal/k8s/`.
 - The Kubernetes module check: `k8s.io/client-go`, `k8s.io/api`, and `k8s.io/apimachinery` share one minor in `go.mod`.
@@ -1259,6 +1323,16 @@ Why kind rather than k3s for the old versions:
     The two halves are separately registered scenarios because one gateway configuration cannot prove both outcomes.
 13. Every scenario runs on every lane whose capabilities it does not exclude;
     a lane skips a scenario only by `degraded` or `networkPolicy`, and the skip is logged by scenario name.
+14. Inside the browser-flow scenario against Dex, with `ui.enabled`:
+    `/ui/` serves the shell with its security headers to a caller with no cookie,
+    a `fetch`-shaped `/v1/whoami` without a cookie is `401` and not `302`,
+    the login walk returns to `/ui/?ns=x`,
+    the four listing routes answer `200` with the cookie and the Service list holds the test app's Service,
+    and logout lands on `/` and then `/ui/` ([`ui.md`](ui.md) *End to end*).
+15. Inside the `basic` over TLS scenario, with `ui.enabled`:
+    `/ui/` is `200` without a credential,
+    `/v1/namespaces` is `401` with `WWW-Authenticate: Basic realm="profgate"` without one and `200` with one,
+    and `/v1/limits` reports the lane's configured limits ([`ui.md`](ui.md) *End to end*).
 
 ### 9.5 Continuous integration
 
@@ -1316,6 +1390,7 @@ so a later hot-reload (`fuda/watcher`) is one goroutine and no change to request
 | `auth.mode` | `PROFGATE_AUTH_MODE` | `disabled` | restart | `disabled`, `basic`, `oidc`; the mode-specific keys are in [`auth.md`](auth.md) |
 | `auth.anonymousRealm` | `PROFGATE_ANONYMOUS_REALM` | — | hot | required in `disabled`, forbidden otherwise; names an entry in `realms` |
 | `realms` | — | — | hot | at least one; entries per section 7.2 |
+| `ui.enabled` | `PROFGATE_UI_ENABLED` | `false` | restart | boolean; under `auth.mode: oidc` requires `auth.oidc.browser` ([`ui.md`](ui.md) *Configuration*) |
 
 The two allowlists are independent and an empty one permits any value of its parameter;
 there is no setting that forbids `portName` outright;
@@ -1455,6 +1530,12 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
   There is deliberately no `checksum/tls-secret` annotation.
   Adding one for symmetry with `checksum/config` would roll the Deployment on every renewal
   and defeat the re-read the gateway does for exactly that reason.
+- The console of [`ui.md`](ui.md) ships inside the binary:
+  the vendored browser files under `internal/ui/static/vendor/` are embedded by `go:embed`
+  and pinned by `internal/ui/static/vendor/MANIFEST`, so the image gains no layer and the page loads nothing at runtime.
+  The chart gains a top-level `ui.enabled` value, default `false`, rendered into the ConfigMap,
+  and its raw `config:` block refuses `config.ui.enabled` and a scalar `config.ui`,
+  with the same guard it applies to `pgo.enabled` and the `tls` and `auth` file paths.
 
 ### 11.1 Dependencies
 
@@ -1472,6 +1553,8 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
 | `sigs.k8s.io/yaml` | tests only: golden ClusterRole and `versions.yaml` |
 
 Everything else is the standard library.
+The console adds no Go module;
+the browser code it vendors is listed in [`ui.md`](ui.md) *Dependencies*.
 
 ---
 
@@ -1487,6 +1570,7 @@ internal/metrics/    Recorder interface and the Prometheus implementation
 internal/tlscert/    the API listener's certificate: load, re-read on a ticker, GetCertificate
 internal/admit/      the admission gate shared by interactive requests and Collections
 internal/auth/       Authenticator; basic, oidc, and disabled modes; JWKS cache; browser flow
+internal/ui/         the console: embedded page and vendored browser libraries; sole user of go:embed
 deploy/              kustomize base and Helm chart
 test/e2e/            harness, versions.yaml, testapp, overlays
 ```
@@ -1519,6 +1603,9 @@ test/e2e/            harness, versions.yaml, testapp, overlays
 | Client denied by realm names a disallowed port | `403 realm_denied`; the allowlist is never evaluated |
 | Client names an allowed numeric port that is not a pprof listener | the dial or the upstream response decides: `502`/`504` from section 6.4, or the upstream's own status passed through as `upstream_<status>` |
 | Client names a `portName` some or all Pods lack | Pods without it are ineligible; the targets list shrinks to those that declare it, and a profile request with none left is `503 no_targets` |
+| Service cache read fails on a listing route | `503 discovery_unavailable`; never an empty `200` ([`ui.md`](ui.md)) |
+| Rolling update with two console asset hashes | each request a page makes may reach either build; an asset the answering replica lacks is `404 route_unknown` and the page does not render until the rollout converges, after which a reload recovers ([`ui.md`](ui.md)) |
+| `ui.enabled` false | `/ui/` and `/` are `404 route_unknown`; the four listing routes still answer |
 
 ---
 
@@ -1569,3 +1656,40 @@ Updated with the implementation:
 | `docs/api.md` | the `port` and `portName` parameters, `400 port_not_allowed`, and what choosing ports reveals |
 | `docs/configuration.md` | `allowedPorts` and `allowedPortNames`, their independence, and the shipped defaults |
 | `deploy/base/configmap.yaml`, `deploy/chart/profgate/values.yaml` | both allowlists shipped empty |
+
+The console ([`ui.md`](ui.md)) — four listing routes, a static page under `/ui/`, and `Catalog` on the seam —
+amends the following text.
+The first table lists the edits made in the same change as this block;
+the second lists the documents updated when the implementation lands.
+
+Amended now:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *HTTP API* | the `/auth/` exception also names the `/ui/` and `/` routes when `ui.enabled`; the four listing routes are `/v1` routes defined in [`ui.md`](ui.md) |
+| `docs/specs/gateway.md` | *Request algorithm* | the four listing routes run the route, method, readiness, credential-placement, and authentication steps as written, the realm step refuses only the Service list, and then they read the cache with no discovery, admission, confirmation, or proxy step; `GET` only |
+| `docs/specs/gateway.md` | *List targets* | the *Listing endpoints* subsection pointing to [`ui.md`](ui.md) *Response shapes* |
+| `docs/specs/gateway.md` | *Errors* | `503 discovery_unavailable` also covers a cache read that fails on a listing route; `405` under `/ui/` and on `/` carries `Allow: GET, HEAD` |
+| `docs/specs/gateway.md` | *The seam* | `ServiceRef` and `Catalog`, reading the Service cache and issuing no request |
+| `docs/specs/gateway.md` | *Non-disclosure* | a fourth listed observation: `/v1/limits` returns both allowlists and the default to any authenticated caller |
+| `docs/specs/gateway.md` | *Logging* | the listing routes write the record with `namespace` on the Service list only and the other target fields empty; requests under `/ui/` and to `/` write no record |
+| `docs/specs/gateway.md` | *Metrics* | `endpoint` gains `namespaces`, `services`, `whoami`, `limits`, `ui`; the `ui` codes `ok`, `route_unknown`, `method_not_allowed`, `internal_error` |
+| `docs/specs/gateway.md` | *Layers* | unit bullets for `internal/ui`, the listing routes, `Catalog`, and the `ui.enabled` validation |
+| `docs/specs/gateway.md` | *What end-to-end proves* | scenarios 14 and 15: the console proofs run inside the two authentication scenarios |
+| `docs/specs/gateway.md` | *Configuration* | the `ui.enabled` row |
+| `docs/specs/gateway.md` | *Build and Deployment* | the vendored browser files embedded by `go:embed` and pinned by `MANIFEST`; the chart's `ui.enabled` value and raw-block guard |
+| `docs/specs/gateway.md` | *Dependencies* | no Go module for the console; the vendored browser code is listed in [`ui.md`](ui.md) *Dependencies* |
+| `docs/specs/gateway.md` | *Package Layout* | `internal/ui/` |
+| `docs/specs/gateway.md` | *Failure Scenarios* | rows for a cache read failing on a listing route, a rolling update with two asset hashes, and `ui.enabled` false |
+| `docs/specs/auth.md` | *Non-goals*, *The `/auth/` routes*, *What is redirected*, *Testing* | the UI non-goal points to [`ui.md`](ui.md); logout's fallback `302` to `/` lands on `/ui/` when `ui.enabled`; the `fetch` sentence names the console; the two end-to-end lanes gain the console steps |
+| `.agents/rules/100-project-map.md` | *Planned Structure*, *External HTTP API* | `internal/ui/`; the four listing routes and the three console routes |
+| `docs/README.md` | *Where Contributors Start* | `specs/auth.md` and `specs/ui.md` beside the PGO spec |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `docs/api.md` | the four listing endpoints |
+| `docs/configuration.md` | `ui.enabled` |
+| `docs/deployment.md` | the Ingress paths `/ui/`, `/auth/`, and `/` |
+| `deploy/chart/profgate/values.yaml`, `deploy/chart/profgate/README.md` | the `ui.enabled` value and the raw-block guard |
