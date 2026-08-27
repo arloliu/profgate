@@ -579,11 +579,12 @@ and `code_challenge` is `base64url(SHA-256(ASCII(code_verifier)))` with `code_ch
 A read from `crypto/rand` that fails answers `503 auth_unavailable` with reason `entropy`.
 
 The *return path* is the one piece of client-supplied data a cookie carries.
-It is accepted only when, after percent-decoding,
+It is accepted only when the value as received, before decoding, is at most 1024 bytes,
+and, after percent-decoding,
 `url.Parse` yields a value with an empty scheme, host, user, and opaque part,
 a path that begins with `/` and not `//`,
-no `\` and no byte below `0x20` anywhere,
-and a total length of at most 1024 bytes;
+a path with no `.` or `..` segment — `path.Clean` leaves it unchanged apart from a trailing slash —
+and no `\` and no byte below `0x20` anywhere;
 it is then re-serialized as path plus query — the fragment is dropped — and that string is what is sealed.
 Anything else becomes `/`.
 The rule is stated in terms of the parsed form because browsers turn `/\evil.example` into `//evil.example`,
@@ -639,7 +640,20 @@ and answers `302` to the issuer's `authorization_endpoint` with
 6. Map to a realm per section 5. No match → `401` with reason `no_realm`.
 7. Seal `{principal, realm, exp: now + sessionTTL}` into `__Host-profgate_session`
    (`Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=<sessionTTL seconds>`),
-   delete `__Host-profgate_txn`, and `302` to the sealed return path.
+   delete `__Host-profgate_txn`, and answer `200` with a landing page that sends the browser to the sealed return path.
+
+The landing page is `text/html; charset=utf-8` with `Cache-Control: no-store`
+and `Content-Security-Policy: default-src 'none'`:
+a `<meta http-equiv="refresh" content="0;url=<return path>">`,
+the two words `Signed in` and `Redirecting…` as its text,
+and a link `Continue` to the same path for a browser that does not follow the refresh.
+The return path is the sealed, canonical one (section 6.4), HTML-escaped in both places.
+The callback does not answer `302`:
+a browser computes `Sec-Fetch-Site` over the whole redirect chain,
+so a `302` from the callback would deliver the return path with the new session cookie
+and `Sec-Fetch-Site: cross-site` — the chain began at the issuer —
+and section 6.6 would refuse the first request of every login with `csrf`.
+The navigation the page triggers starts from the gateway's own document and arrives `same-origin`.
 
 A `401` from the callback is the standard envelope; a browser shows it as a page.
 It is not redirected back to login, because a loop between two failing endpoints is worse than an error page.
@@ -671,6 +685,9 @@ A request that carries `__Host-profgate_session` and no `Authorization` header:
    `SameSite=Lax` still attaches it to a cross-site top-level `GET`,
    and a profile `GET` spends the victim's CPU-profiling authority even when the attacker cannot read the response.
    `none` admits a typed URL or a bookmark; a link from another origin arrives as `cross-site`.
+   The first request after a login passes this rule because the callback's landing page (section 6.5),
+   not a redirect, sends the browser to the return path:
+   a redirect chain that started at the issuer would arrive `cross-site`.
 3. The principal and realm are the sealed values; nothing else is looked up.
 
 The `302` that a navigation receives, from step 1 here or from section 6.2,
@@ -730,6 +747,7 @@ every other reason is `401`.
 A failure records the reason and never the credential, the token, or the subject when it differs from the principal.
 The `/auth/` routes write an audit line with route `auth_login`, `auth_callback`, or `auth_logout`,
 principal `-` for login and logout and the resolved principal for a successful callback,
+which is recorded with status `200` and code `ok`,
 and no namespace or Service.
 
 The ops listener gains:
@@ -755,13 +773,15 @@ These are the differences between issuers that decision 3 keeps out of the code;
 they live in `docs/` and are cited here so the design is checkable against real issuers.
 
 - **Keycloak.** Access tokens carry `aud` only when a client scope adds an audience mapper,
-  and carry `typ: Bearer` rather than `at+jwt` unless the client is configured for RFC 9068;
+  and carry `typ: JWT` rather than `at+jwt` unless the client is configured for RFC 9068;
   ID tokens carry the client ID as `aud` by default, so `tokenType: id` is the natural setting.
   Groups appear only when a "Group Membership" mapper is added to the client scope,
   and appear as full paths (`/engineering/payments`) unless "Full group path" is off.
   `preferred_username` is present in both token kinds.
   ID and access tokens live 5 minutes by default and the SSO session 30 minutes idle, 10 hours maximum;
   a `curl` user should raise the client's token lifespan or use the command-line client.
+  The logout redirect reaches a confirmation page, because the gateway sends no `id_token_hint`;
+  Keycloak returns to `/` once the user confirms.
 - **Dex.** ID tokens carry the client ID as `aud`, `groups` as a flat array, and `email` / `name`;
   there is no `preferred_username`, so `usernameClaim: email` is the usual choice.
   Dex has no `end_session_endpoint`; logout clears the cookie and returns to `/`.
@@ -774,7 +794,7 @@ they live in `docs/` and are cited here so the design is checkable against real 
 
 The end-to-end suite (section 10) runs against Dex,
 because it is a single binary with a static configuration and no database.
-Keycloak is verified against a real instance during implementation, and the verification is recorded in the issuer notes;
+Keycloak was verified against Keycloak `26.7.2` with the realm export in `docs/keycloak-realm.json`;
 the Okta, Entra ID, and Google notes are derived from their published documentation and marked unverified until someone runs them.
 
 ---
@@ -894,7 +914,7 @@ Unit, in `internal/auth`:
   the verifier is 43 characters of the base64url alphabet;
   a random source that fails answers `503` with reason `entropy`.
 - Return path: `/\evil.example`, `//evil.example`, `https://evil.example/`, `%2F%2Fevil`, `/a%5Cb`,
-  a path with a `0x0a`, a 2 KiB path, and `javascript:` each become `/`;
+  a path with a `0x0a`, a 2 KiB path, `/v1/../ops`, `/v1/./x`, and `javascript:` each become `/`;
   `/v1/x?seconds=5#frag` seals as `/v1/x?seconds=5`.
 - Key rotation: with two pollers over two fake files,
   the staged procedure of section 6.3 leaves every cookie openable at every step;
@@ -902,6 +922,9 @@ Unit, in `internal/auth`:
 - Browser flow, against an `httptest` issuer:
   the callback rejects a wrong `state`, an expired transaction, a `nonce` mismatch, an `error` parameter,
   a token endpoint that answers `400` (`401 exchange_denied`) and one that answers `500` (`503 exchange`);
+  a successful callback answers `200 text/html` with no `Location`, `Cache-Control: no-store`,
+  `Content-Security-Policy: default-src 'none'`, the refresh to the return path, and the "Continue" link,
+  with a return path carrying `<`, `&`, and `"` escaped in both;
   a session-authenticated `GET` with `Sec-Fetch-Site: cross-site`, `same-site`, or absent is `401 csrf`,
   and with `none` or `same-origin` is admitted;
   a navigation without a credential is `302` to `/auth/login` with the path and query in `return`;
@@ -926,9 +949,13 @@ Integration, in `internal/httpapi`:
 End to end, under `//go:build e2e`:
 
 - One lane runs `oidc` mode with the browser block against Dex with a static client and static password.
-  A headless-browser-free client walks the flow by hand:
+  A headless-browser-free client walks the flow by hand and sends the `Sec-Fetch-Site` a browser would:
   request a profile with navigation headers, follow the `302` to Dex, submit Dex's password form,
-  follow the callback, and pull a profile with the resulting cookie and `Sec-Fetch-Site: none`;
+  follow the callback with `Sec-Fetch-Site: cross-site`, as a chain that came from Dex arrives,
+  and receive the `200` landing page naming the return path;
+  then pull a profile with the resulting cookie and `Sec-Fetch-Site: same-origin`,
+  as the navigation the page starts arrives,
+  and see the same cookie refused with `Sec-Fetch-Site: cross-site`;
   then pull the same profile with an ID token obtained from Dex's password connector as a bearer.
   The lane then rotates Dex's signing key by restarting Dex with a new key,
   and a token signed with the new key verifies within `jwksRefreshMin` without restarting the gateway.
@@ -1038,3 +1065,14 @@ Nothing else in the gateway design moves.
 | `docs/specs/gateway.md`, *Configuration* table | (`Reload` column) | `hot` marks the fields a future reloader may replace without a restart; no reloader ships, and the users file and the cookie key file are the only values re-read while running |
 | `docs/specs/gateway.md`, *Logging* | (`auth_reason` values) | add `internal`: the authenticator returned an unclassified error, answered `503 auth_unavailable` |
 | `docs/specs/gateway.md`, *Dependencies* | (table) | add `golang.org/x/term`, imported only by `cmd/profgate` for `auth hash`; `.agents/rules/800-security-invariant.md` gains that importer grep |
+
+---
+
+## 14. Amendments
+
+Edits made to this document after it was accepted, each in the change that made it.
+
+| Section | Change |
+|---|---|
+| *The `/auth/` routes*, *The session*, *Audit and metrics*, *Testing* | a successful callback answers `200` with a landing page that sends the browser to the return path, instead of `302`: a browser computes `Sec-Fetch-Site` over the whole redirect chain, so the redirect delivered the first request of every login as `cross-site` and the session rule refused it with `csrf`; the audit status of a successful callback is `200`; the unit and Dex tests send what a browser sends |
+| *Wire values and bounds* | the 1024-byte bound on the return path applies to the value as received, before percent-decoding, and a path with a `.` or `..` segment is refused: the bound is checked before anything is parsed, and a dot segment would reach a route the client did not name |

@@ -1,0 +1,87 @@
+{
+  "realm": "profgate",
+  "enabled": true,
+  "groups": [
+    {
+      "name": "engineering",
+      "path": "/engineering"
+    },
+    {
+      "name": "payments",
+      "path": "/payments"
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "profgate",
+      "name": "profgate",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "rootUrl": "https://localhost:9443",
+      "baseUrl": "/",
+      "redirectUris": [
+        "https://localhost:9443/auth/callback"
+      ],
+      "webOrigins": [
+        "https://localhost:9443"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "https://localhost:9443/"
+      },
+      "protocolMappers": [
+        {
+          "name": "profgate audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "profgate",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "secret",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/engineering"
+      ]
+    }
+  ]
+}
