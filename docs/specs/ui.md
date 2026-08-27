@@ -36,10 +36,15 @@ through the same request algorithm, and the browser saves them as a file.
    It calls `/v1` with `fetch` the way a script would,
    is authenticated the way a browser already is under [`auth.md`](auth.md),
    and holds no credential of its own.
-   Every fact it shows came from a `/v1` response that a realm bounded.
-2. **Four listing endpoints, all read-only, all realm-filtered.**
+   Every fact it shows came from a `/v1` response the gateway served to that caller.
+2. **Four listing endpoints, all read-only, each bounded by what it describes.**
    The four are:
    `GET /v1/namespaces`, `GET /v1/namespaces/{namespace}/services`, `GET /v1/whoami`, and `GET /v1/limits`.
+   The two catalogs are realm-filtered.
+   `whoami` is caller-specific: it describes the caller and that caller's realm.
+   `limits` is global: it describes the gateway's own configuration, is identical for every caller,
+   and is answered to every request the configured `auth.mode` admits —
+   anonymous requests included, because `disabled` admits them.
    They exist so the console can offer choices instead of a blank text field.
    They read informer caches and configuration, never the API server,
    and they add no Kubernetes capability.
@@ -48,6 +53,8 @@ through the same request algorithm, and the browser saves them as a file.
    the same `403` whether or not the namespace holds a Service.
    A Service the realm denies is absent from every list.
    No listing response carries a Pod IP or a port number a Pod declares.
+   Realms bound cluster state; the global port policy `/v1/limits` reports is operator configuration,
+   and disclosing it is a decision this document argues for (*Limits*).
 4. **No build step, no network at runtime.**
    Preact, htm, and Pico CSS are vendored as files under `internal/ui/static/`
    and compiled into the binary with `go:embed`;
@@ -157,7 +164,9 @@ in the order `internal/httpapi` runs it today, and stop at the cache:
    or `302` to login for a navigation under the browser flow.
 6. **Realm.** Service list only: the realm's `namespaces` must admit `{namespace}` → `403 realm_denied`.
    The other three have no realm step to fail:
-   `whoami` and `limits` describe the caller, and the namespace list is filtered rather than refused.
+   `whoami` describes the caller,
+   `limits` describes the gateway and is the same for every caller,
+   and the namespace list is filtered rather than refused.
 7. **Parameters.** Any query parameter → `400 invalid_parameter`.
    None of the four takes one.
 8. **Read.** `whoami` and `limits` answer `200` from the configuration snapshot the request loaded at entry.
@@ -301,8 +310,7 @@ GET /v1/limits
   "profiles": ["cpu", "trace", "heap", "allocs", "goroutine", "mutex", "block", "threadcreate"],
   "pprof": {
     "default": {"port": 6060},
-    "allowedPorts": [6060, 6061],
-    "allowedPortNames": ["pprof", "pprof-alt"]
+    "allowedSelections": [{"port": 6061}, {"portName": "pprof-alt"}]
   },
   "pgo": {"enabled": true}
 }
@@ -313,19 +321,20 @@ so the page can bound its duration input instead of learning the bound from `400
 `profiles` is the eight profile names in the gateway's order, before the realm filters them;
 the page applies `realm.profiles` from `/v1/whoami` to it as *The realm filter* says.
 `pprof.default` is `{"port": N}` or `{"portName": "name"}`, whichever `discovery.pprof` sets.
-`pprof.allowedPorts` and `pprof.allowedPortNames` are the two allowlists as configured,
-each `[]` when empty, which the page presents as a free-form field rather than a choice (*Controls*).
+`pprof.allowedSelections` is `discovery.pprof.allowedSelections` in its configured order,
+each entry `{"port": N}`, `{"portName": "name"}`, `{"port": "*"}`, or `{"portName": "*"}`,
+and `[]` when the list is empty, which leaves the page nothing to offer beyond the default (*Controls*).
 `pgo.enabled` is `pgo.enabled`, and is how the page learns whether PGO collection is enabled;
 `/v1/whoami` says nothing about it.
 The page offers the Collections view (*Collections, read-only*) exactly when `pgo.enabled` is `true`
 and `realm.pgo.read` from `/v1/whoami` is `true`.
 
-**`/v1/limits` deliberately discloses these values to every authenticated caller.**
-The response carries the allowlists and the default themselves,
+**`/v1/limits` deliberately discloses these values to every caller the configured `auth.mode` admits.**
+The response carries `allowedSelections` and the default themselves,
 not a marker that a value exists, so the page can offer them as choices;
 that is a decision to disclose, and the argument for it is this.
 A caller could already learn, by sending a value and reading `400 port_not_allowed`,
-whether that one value is allowlisted (gateway *Non-disclosure*, third observation);
+whether that one value is admitted (gateway *Non-disclosure*, third observation);
 what the caller could not learn by probing is the full list without guessing its members,
 and which permitted value is the default when several are permitted.
 `/v1/limits` gives both.
@@ -333,11 +342,15 @@ The exposure is acceptable because the values are global operator configuration 
 they say which values any client may name, not which port any Pod exposes,
 and knowing them grants nothing —
 every profile request the caller can make with the list in hand is one the caller could make without it,
-bounded by the same realm, the same allowlists, and the same NetworkPolicy.
+bounded by the same realm, the same `allowedSelections`, and the same NetworkPolicy.
 What stays hidden stays hidden:
 the number a `portName` resolves to on a particular Pod, and which Pods declare which names,
 are Pod state and are not in this response.
-The endpoint requires authentication, so an unauthenticated probe still learns nothing but `401`.
+Under `basic` and `oidc` the endpoint answers only a caller who authenticated,
+so a probe without a credential learns nothing but `401`.
+Under `disabled` the gateway authenticates nobody:
+this response, like every other `/v1` response, is served to anonymous callers on `auth.anonymousRealm`,
+which is what that mode means and not an exception this endpoint makes.
 The gateway *Non-disclosure* section gains this as a fourth listed observation (*Changes to the accepted designs*).
 
 ### 3.5 Collections, read-only
@@ -431,19 +444,37 @@ so the request never depends on an upstream default that could exceed the config
 the input's `min` is `1` and its `max` is the profile's limit,
 and a value outside that range disables the download link and names the bound next to the input.
 
-The port control follows the two allowlists, which are independent (gateway *Port resolution*):
+The port control follows `allowedSelections` (gateway *Port resolution*).
+Its rules are two pure functions in `portmodel.js` —
+one derives the control from `/v1/limits`, the other turns the control's state into what the request sends —
+and they are the one part of the page a test executes (*What is not proven*):
 
 - A `<select>` always exists.
   It offers `default`, which sends nothing and resolves under `pprof.default`,
-  then every number in `allowedPorts` and every name in `allowedPortNames`, in the configured order.
-- For each allowlist that is empty, a free-form `<input>` for that kind exists beside the select:
-  a numeric field when `allowedPorts` is empty, a name field when `allowedPortNames` is empty.
-  An empty allowlist accepts any value of its parameter, so there is nothing to choose from.
-- One selection is sent.
+  then every `{"port": N}` and `{"portName": "name"}` entry of `allowedSelections`, in the configured order.
+  An entry equal to `pprof.default` is left out, because `default` already sends it
+  and two options with one effect are a menu that invites a wrong guess about the difference.
+  Equality is per kind and per value:
+  a `{"portName": "6060"}` entry never equals a `{"port": 6060}` default, and is offered.
+  `/v1/limits` still reports the suppressed entry, because that response is the gateway's configuration
+  and not the menu the page built from it.
+  A wildcard entry is not an option in the menu; it is what puts a field beside the menu.
+- A free-form `<input>` exists beside the select only for the kind whose wildcard is present:
+  a numeric field when `allowedSelections` holds `{"port": "*"}`,
+  a name field when it holds `{"portName": "*"}`.
+  Without the matching wildcard the menu is the whole of what the gateway accepts,
+  so the page offers no field whose every typed value would earn a `400 port_not_allowed`.
+  An empty `allowedSelections` therefore leaves `default` as the only choice and shows no field.
+- One selection is sent, and the control it came from decides the parameter, never the value it holds.
+  The numeric field sends `port=` and the name field sends `portName=`;
+  a menu entry sends the parameter for its own key, `port=` for `{"port": N}` and `portName=` for `{"portName": "name"}`.
+  So `123` typed in the name field is sent as `portName=123` and earns `400 invalid_parameter`,
+  which is the answer the caller asked for,
+  rather than turning into a numeric selection the caller did not ask for —
+  a difference that matters most when both wildcards are present and both fields exist.
   A non-empty free-form field wins over the select;
   typing in one free-form field clears the other, so `port` and `portName` are never sent together.
-  A number goes as `port=`, anything else as `portName=`;
-  the gateway validates the grammar and answers `400 invalid_parameter` for a value outside it.
+  The gateway validates the grammar and answers `400 invalid_parameter` for a value outside it.
 
 A bookmarked `ns` or `svc` that is not in the fetched list — the realm changed, the Service went away,
 the label was typed by hand — leaves the control with no selection and shows
@@ -564,7 +595,7 @@ plus a one-line hint for the codes a user can act on:
 | `realm_denied` | your realm does not admit this; the whoami panel shows what it does |
 | `service_not_found` | the Service left the cache since the list was fetched; the page refreshes the Service list |
 | `no_targets` | no Ready Pod declares the selected port |
-| `port_not_allowed` | the value is outside the allowlist shown in the port control |
+| `port_not_allowed` | `allowedSelections` does not admit the value; the port control shows what it does admit |
 | `seconds_exceeds_limit` | the limit the duration input was bounded by |
 | `discovery_unavailable` | the gateway could not read its cache or confirm the Pod; retry |
 | `pgo_disabled`, `pgo_unavailable` | the Collections view is hidden or shows the code |
@@ -591,9 +622,10 @@ a response body is never shown as HTML.
 ```text
 internal/ui/static/
   index.html                 the shell: <link> to the stylesheet, <script type="module"> to app.js, one <main>
-  app.js                     the console; an ES module importing ./urls.js, ./vendor/preact/preact.module.js,
-                             and ./vendor/htm/htm.module.js
+  app.js                     the console; an ES module importing ./urls.js, ./portmodel.js,
+                             ./vendor/preact/preact.module.js, and ./vendor/htm/htm.module.js
   urls.js                    the URL builders of Rendering response values; the only module that spells a /v1 path
+  portmodel.js               the port control's two pure functions, importing nothing so a test can evaluate them
   app.css                    the console's own rules, a few dozen lines on top of Pico
   vendor/
     MANIFEST                 one line per file: name, version, license, source URL, SHA-256
@@ -843,16 +875,46 @@ a value arriving through the raw block would bypass the structured value the cha
   `HEAD` answers the headers without a body; `POST` is `405` with `Allow: GET, HEAD`;
 - every vendored file's SHA-256 equals its `MANIFEST` line, and every file in `vendor/` has a line;
 - no vendored module, `app.js`, or `urls.js` contains an `import` or dynamic `import(`
-  whose specifier does not start with `./` or `../`;
+  whose specifier does not start with `./` or `../`,
+  and `portmodel.js` contains neither at all;
 - the shell and every `.js` file contain no `<script>` with a body, no `<style>`, no `style=`, no `on[a-z]+=`,
   no `eval(`, and no `new Function(`;
 - the source scan of *Rendering response values*:
-  `app.js` and `urls.js` contain none of `innerHTML`, `outerHTML`, `dangerouslySetInnerHTML`,
-  `insertAdjacentHTML`, `document.write`, or `DOMParser`;
+  `app.js`, `urls.js`, and `portmodel.js` contain none of `innerHTML`, `outerHTML`,
+  `dangerouslySetInnerHTML`, `insertAdjacentHTML`, `document.write`, or `DOMParser`;
   `app.js` contains no string literal beginning with `/v1`, `/ui`, or `/auth`;
   `urls.js` contains `encodeURIComponent` and `URLSearchParams` and no `+` between a string literal and an expression;
   the test runs against fixture strings that must fail as well as against the real files,
   so a scan that matches nothing is itself caught.
+
+`internal/ui`, against the port-control model:
+
+- `portmodel.js` imports nothing, declares plain functions,
+  and ends in a single `export { ... }` statement with no other export;
+  a test asserts that shape,
+  so an `import` added later turns the suite red instead of quietly making the model unloadable.
+- a table-driven test drives both functions in a pure-Go ECMAScript interpreter (gateway *Dependencies*).
+  The interpreter has no module loader and cannot parse `export`,
+  so the test evaluates the source with that one trailing statement cut off
+  and reads the functions as globals;
+  the asserted shape above is what makes cutting it safe.
+  Deriving the control, run against a numeric `pprof.default` and against a named one:
+  an empty `allowedSelections` offers `default` alone and shows no field;
+  concrete entries of each kind become one option each in the configured order, and show no field;
+  `{"port": "*"}` alone shows the numeric field and no name field;
+  `{"portName": "*"}` alone shows the name field and no numeric field;
+  both wildcards show both fields;
+  a wildcard is never itself an option;
+  a concrete entry equal to the default is absent from the options
+  while the `allowedSelections` handed in is unchanged, for a numeric default and for a named one;
+  and a `{"portName": "6060"}` entry beside a `{"port": 6060}` default is offered, because kinds do not compare.
+  Serializing the choice:
+  `default` sends neither parameter;
+  a `{"port": N}` option sends `port=` and a `{"portName": "name"}` option sends `portName=`;
+  the numeric field sends `port=` and the name field sends `portName=`;
+  `123` in the name field sends `portName=123` and never `port=123`;
+  a non-empty field wins over the menu;
+  and setting one field clears the other, so no input produces both parameters.
 
 `internal/httpapi`, against the fake `Discovery` extended with a namespace and Service catalog:
 
@@ -872,12 +934,13 @@ a value arriving through the raw block would bypass the structured value the cha
   lists are sorted and empty ones encode as `[]`;
 - `/v1/whoami` returns the configured lists verbatim, the wildcard included, the three `pgo` flags,
   `auth.mode`, and `auth.logout` only under the browser flow;
-- `/v1/limits` reflects each of `cpuSeconds`, `traceSeconds`, a numeric default, a named default, and both allowlists,
-  empty and non-empty;
+- `/v1/limits` reflects each of `cpuSeconds`, `traceSeconds`, a numeric default, a named default,
+  and `allowedSelections` as an array of one-key objects — `[]` when the list is empty and never `null`,
+  and carrying `{"port": "*"}` and `{"portName": "*"}` as configured;
 - no Service or namespace listing exposes a Pod-discovered or selected backend port,
   and no listing response contains a string that matches an IP address or a `podIP` field,
   with the fake holding Pods that have both;
-  `/v1/limits` returns the configured allowlists and default by design (*Limits*),
+  `/v1/limits` returns `allowedSelections` and the default by design (*Limits*),
   and the two list responses are asserted to contain no `6060`;
 - hostile names survive encoding:
   a principal, a namespace, and a Service name that carry HTML metacharacters (`<`, `>`, `&`, `"`, `'`)
@@ -909,10 +972,10 @@ a value arriving through the raw block would bypass the structured value the cha
 
 ### 11.2 What is not proven
 
-No test runs `app.js`.
+No test runs `app.js`, and `portmodel.js` is the exception that marks where the line falls.
 The repository's toolchain (`mise.toml`) pins Go, `golangci-lint`, `helm`, `kind`, `ko`, and `kubectl`;
 it pins no Node.js and no browser, and the end-to-end harness drives the gateway with Go's HTTP client.
-Running the console in a real engine would mean one of two additions:
+Running `app.js` itself would mean one of two additions:
 a Go-driven headless Chromium (`chromedp` or similar),
 which is a new Go module plus a Chromium binary on every machine and CI runner that runs the suite;
 or a Node.js test runner with a DOM, which is a second toolchain for a page of a few hundred lines.
@@ -920,16 +983,31 @@ This design adds neither.
 The console is small enough to read, its rendering rules are four, and a scan can enforce most of them;
 a second toolchain to prove the rest would cost more than the page it guards.
 
+The port control is the part that argument does not cover, which is why it is a module of its own.
+It is a decision table rather than a rendering:
+pure, DOM-free, and wrong in ways a reader does not see —
+an option that duplicates the default, a value serialized under the kind it was not typed as —
+where being wrong sends the caller's request under a parameter the caller did not choose.
+Executing it costs a third thing the two rejected options did not offer:
+a pure-Go ECMAScript interpreter, used by tests only,
+which runs wherever `go test` runs and puts no binary and no second toolchain on any machine or runner.
+That is what this design takes, and gateway *Dependencies* lists the module
+because decision 10 of that document makes adding one a design change.
+`app.js` still renders the control and hands it what the caller typed;
+that wiring is reviewed, not executed.
+
 What that leaves unproven, stated plainly:
 that `app.js` as executed renders a hostile principal, error message, version, `origin`, or `reason` as text;
 that the URLs it builds at runtime are the ones *Rendering response values* describes;
-that the non-envelope fallback of *Errors* behaves as written on malformed JSON, an empty body, or a rejected `fetch`.
+that the non-envelope fallback of *Errors* behaves as written on malformed JSON, an empty body, or a rejected `fetch`;
+and that `app.js` hands `portmodel.js` what the caller typed in the fields it renders,
+the model itself being proven apart from the widget.
 The source scan proves the page contains no interface that could render markup and no hand-built `/v1` path;
 the `internal/httpapi` tests prove the JSON the page receives carries hostile strings intact;
 the end-to-end scenarios prove the shell, the headers, and the listing responses over the wire.
 The gap between "contains no way to do it wrong" and "was seen doing it right" is closed by review,
-on every change to `app.js` and `urls.js`,
-which is why both stay small and why `urls.js` is a separate file.
+on every change to `app.js`, `urls.js`, and `portmodel.js`,
+which is why all three stay small and why `urls.js` and `portmodel.js` are separate files.
 If the page grows past what a reviewer can hold, adding the browser-driven test becomes the right call,
 and this section is where that decision is revised.
 
@@ -966,9 +1044,10 @@ the Service list reads the cache, so neither proof adds `needsPodReach` to its s
 
 ## 12. Dependencies
 
-No Go module is added.
+No Go module is added to the gateway binary.
 `embed`, `crypto/sha256`, `mime`, and `net/http` are the standard library.
-No test dependency is added either; *What is not proven* records that decision.
+One module is added to the tests: the pure-Go ECMAScript interpreter that evaluates `portmodel.js`,
+listed in gateway *Dependencies* and argued for in *What is not proven*.
 
 Vendored browser code, pinned in `internal/ui/static/vendor/MANIFEST`:
 
@@ -994,7 +1073,7 @@ Every vendored file is the upstream's published build, unmodified, which is what
 
 ```text
 internal/ui/           the console: embedded static tree, tree hash, rendered shell, asset handler, headers
-internal/ui/static/    index.html, app.js, urls.js, app.css, vendor/
+internal/ui/static/    index.html, app.js, urls.js, portmodel.js, app.css, vendor/
 internal/httpapi/      gains the four listing routes, the /ui/ and / dispatch, and the endpoint labels
 internal/k8s/          gains Catalog on the Discovery interface, reading the Service lister
 internal/config/       gains the ui block
@@ -1077,7 +1156,7 @@ Each row names the heading it edits.
 | `docs/specs/gateway.md` | *List targets* | a following subsection, *Listing endpoints*, pointing to [`ui.md`](ui.md) *Response shapes* for the four response shapes |
 | `docs/specs/gateway.md` | *Errors* | `503 discovery_unavailable` also covers a cache read that fails on a listing route; `405` under `/ui/` and on `/` carries `Allow: GET, HEAD` |
 | `docs/specs/gateway.md` | *The seam* | `ServiceRef` and `Catalog`, reading the Service cache and issuing no request |
-| `docs/specs/gateway.md` | *Non-disclosure* | a fourth listed observation: `/v1/limits` returns both allowlists and the default to any authenticated caller, with the argument of [`ui.md`](ui.md) *Limits* |
+| `docs/specs/gateway.md` | *Non-disclosure* | a fourth listed observation: `/v1/limits` returns `allowedSelections` and the default to any authenticated caller, with the argument of [`ui.md`](ui.md) *Limits* |
 | `docs/specs/gateway.md` | *Logging* | the listing routes write the record with `namespace` on the Service list only and the other target fields empty; requests under `/ui/` and to `/` write no record |
 | `docs/specs/gateway.md` | *Metrics* | `endpoint` gains `namespaces`, `services`, `whoami`, `limits`, `ui`; the `ui` codes |
 | `docs/specs/gateway.md` | *Layers* | unit rows for `internal/ui`, the listing routes, `Catalog`, and the `ui.enabled` validation, per [`ui.md`](ui.md) *Unit* |
@@ -1115,8 +1194,11 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Layout and embedding*, *Dependencies* | the Pico file is `pico.classless.min.css`, the class-less build's published name, and its size is about 69 KiB |
 | *Layout and embedding* | the tree hash frames each file as its length-prefixed path and length-prefixed content; `index.html` is hashed but has no hashed serving route |
 | *Request algorithm for the listing endpoints* | the readiness step is the readiness `internal/httpapi` composes for every `/v1` route — discovery synced and, under `oidc`, the issuer discovered — not `HasSynced()` alone |
-| *Unit* | the `internal/httpapi` fake holds no selectorless Service, because `ServiceRef` carries no selector; the selectorless cases live in the `internal/k8s` bullet, where selector presence is decided; the non-disclosure assertion says no list exposes a Pod-discovered or selected backend port and no listing response carries an IP address or `podIP`, since `/v1/limits` returns the allowlists and default by design |
+| *Unit* | the `internal/httpapi` fake holds no selectorless Service, because `ServiceRef` carries no selector; the selectorless cases live in the `internal/k8s` bullet, where selector presence is decided; the non-disclosure assertion says no list exposes a Pod-discovered or selected backend port and no listing response carries an IP address or `podIP`, since `/v1/limits` returns `allowedSelections` and the default by design |
 | *Audit and metrics*, *Unit* | the `ui` code set gains `internal_error` for any status the console wrote outside `2xx`, `3xx`, `404`, and `405`; the set stays closed |
 | *End to end* | the two proofs run inside the existing authentication scenarios rather than as scenarios of their own |
 | *Changes to the accepted designs* | the table describes edits already made, not edits acceptance would make |
 | *Flow*, *Signing in and out* | the return path carries a `returned=1` marker; a load that starts with it never navigates to login on its own and shows a **Sign in again** button on `401` instead, which is what bounds the once-per-load rule across the round trip |
+| *Core decisions*, *Request algorithm for the listing endpoints*, *Limits* | the namespace and Service catalogs are realm-filtered, `whoami` is caller-specific, and `/v1/limits` is global operator configuration answered to every request the configured `auth.mode` admits, anonymous requests under `disabled` included |
+| *Controls* | the control a value came from decides whether it is sent as `port=` or `portName=`, never the value itself; a menu entry equal to `pprof.default` is left out while `/v1/limits` still reports it |
+| *Controls*, *Layout and embedding*, *Unit*, *What is not proven*, *Dependencies*, *Package layout* | the port control's rules are two pure functions in `portmodel.js`, driven by a table-driven test in a pure-Go ECMAScript interpreter; that interpreter is the one test-only module the toolchain argument now admits |

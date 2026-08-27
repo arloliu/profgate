@@ -60,13 +60,13 @@ where an empty list permits any value,
 and no setting forbids `portName` outright (`docs/configuration.md`, section `discovery`).
 The console lets a browser type any port under that default.
 
-- [ ] Revise `docs/specs/gateway.md`:
+- [x] Revise `docs/specs/gateway.md`:
   one `discovery.pprof.allowedSelections` list whose entries are `{port: N}` or `{portName: name}`;
   an empty list accepts only the configured default;
   `{port: "*"}` admits any number and `{portName: "*"}` admits any name, each on its own;
   `allowedPorts` and `allowedPortNames` are removed, which is a breaking change for the next minor release.
   `/v1/limits` returns the list so the console can offer a menu or a free field.
-- [ ] Revise the permission invariant text in `AGENTS.md`, `README.md`, and `.agents/rules/800-security-invariant.md`,
+- [x] Revise the permission invariant text in `AGENTS.md`, `README.md`, and `.agents/rules/800-security-invariant.md`,
   which today states that an empty allowlist admits any port a client names,
   to say the gateway connects to the configured pprof port and to any other the operator lists.
 - [ ] Write the implementation plan; migrate `docs/configuration.md`, the chart values, and the console's port control.
