@@ -1,6 +1,6 @@
 # Console Implementation Plan
 
-**Status:** Approved
+**Status:** In Progress
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task is written test-first and ends with its own validation block and commit.
@@ -160,7 +160,7 @@ an accepted spec outranks this plan, and a later task must not implement from a 
 that still carries the requirements this task corrects.
 `AGENTS.md` already reads *Four Specs, All Accepted* and needs nothing.
 
-- [ ] **Apply the table**
+- [x] **Apply the table**
 
 | File | Section | Change |
 |---|---|---|
@@ -195,7 +195,7 @@ that still carries the requirements this task corrects.
 | `.agents/rules/100-project-map.md` | *External HTTP API* | the four listing routes; `/ui/`, `/ui/static/{hash}/{file}`, and `/`, present only when `ui.enabled` |
 | `docs/README.md` | *Where Contributors Start* | `specs/auth.md` and `specs/ui.md` beside the PGO spec (the authentication spec is not listed there today) |
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/specs/gateway.md docs/specs/auth.md docs/specs/ui.md .agents/rules/100-project-map.md docs/README.md
@@ -238,7 +238,7 @@ The rule is `cfg.UI.Enabled && cfg.Auth.Mode == ModeOIDC && cfg.Auth.OIDC.Browse
 `validateAuth` has already required `cfg.Auth.OIDC` under `oidc`, so the pointer is safe to read.
 `basic` and `disabled` need nothing (*Configuration*).
 
-- [ ] **Write the configuration tests**
+- [x] **Write the configuration tests**
 
 `config_test.go` gains rows over `testdata/ui-*.yaml` fixtures, one per row,
 in the table that drives `Load`.
@@ -257,14 +257,14 @@ The rows restate *Configuration* and the `internal/config` bullet of *Unit*.
 | ui under oidc with browser | the same with the browser fixture's block | loads |
 | ui off under oidc without browser | `ui: {enabled: false}` with the `oidc` fixture and no `browser` block | loads: the rule reads only an enabled console |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 Add `UIConfig`, the `UI` field, and `validateUI` as written above.
 Error text follows the existing style: the key path and the rule.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/config/
@@ -321,7 +321,7 @@ a `catalogCalls atomic.Int32` counter, and a `catalogNamespaces` record of the n
 because the listing tests must prove `Catalog` was not called on a denied namespace (*Request algorithm for the listing endpoints*).
 The `internal/pgo` fake returns `nil, nil`; PGO never lists the catalog.
 
-- [ ] **Write the seam tests**
+- [x] **Write the seam tests**
 
 `catalog_test.go` uses `startFixture` from `export_test.go`
 and restates the `internal/k8s` bullet of *Unit*.
@@ -338,15 +338,15 @@ and restates the `internal/k8s` bullet of *Unit*.
 | reflects a deleted Service | delete `a/one` through the fake clientset, then `waitCache` | `Catalog(ctx, "a")` no longer names it |
 | sorted | Services created in the order `b/z`, `a/y`, `a/x` | `Catalog(ctx, "")` is `[a/x a/y b/z]` |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `catalog.go` holds `Catalog` as described.
 The interface method is added to `discovery.go` with the comment above,
 and the package comment on `discovery.go` gains "and list the Services it holds".
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/k8s/ ./internal/httpapi/ ./internal/pgo/
@@ -517,7 +517,7 @@ Every slice in a body is built with `make([]T, 0, n)` so an empty list encodes a
 The audit record for the four routes is the default branch of `writeAudit`:
 `namespace` set only for the Service list, every other target field empty, `seconds` zero.
 
-- [ ] **Write the listing tests**
+- [x] **Write the listing tests**
 
 `listing_test.go` uses the existing `harness` with `fakeDiscovery.catalog` set,
 and a `fakeAuth` (from `auth_test.go`) where a principal other than the disabled default is needed.
@@ -576,13 +576,13 @@ selectorless coverage belongs to `internal/k8s` (*Catalog on the seam*), as the 
 `server_test.go` and `realm_test.go` keep their rows;
 `realm_test.go` gains one row per new kind for `realmAllows`.
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 As described under *Produces*.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/ ./internal/metrics/
@@ -650,7 +650,7 @@ The `Cache-Control: no-store` header `ServeHTTP` sets at entry stays set for the
 the console overwrites it for the immutable assets (*Headers*),
 which is why the console owns that header (*Package layout*).
 
-- [ ] **Write the dispatch tests**
+- [x] **Write the dispatch tests**
 
 `console_test.go` uses the `harness` with a new `console http.Handler` field passed as `Deps.Console`.
 The fake console writes what a row programs: a status, a body, and a `Cache-Control` of its own.
@@ -673,13 +673,13 @@ Rows restate *Package layout*, *Audit and metrics*, and the `ui.enabled` bullets
 | cache-control | the fake setting `Cache-Control: public, max-age=31536000, immutable` | the response carries the fake's value, not `no-store` |
 | WriteError exported | `WriteError(rec, 404, "route_unknown", "no such route")` on a recorder | the same bytes and headers `q.fail` produces for a `404` |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 As described under *Produces*.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/
@@ -745,7 +745,7 @@ written out in the test file and not read from `MANIFEST`;
 the test checks the files against the map and the manifest against the map,
 so a change that edits a file and its manifest line together still fails until the test's own table is edited too.
 
-- [ ] **Write the vendor tests**
+- [x] **Write the vendor tests**
 
 `vendor_test.go` reads the embedded tree (the embed directive lands in the next task;
 until then the test opens `static/` with `os.DirFS`, and the next task switches it to the `embed.FS`).
@@ -762,9 +762,9 @@ Rows restate *Vendoring rule*, *Response headers and CSP*, and the `internal/ui`
 | license texts | `preact/LICENSE` and `pico/LICENSE` contain `MIT License`; `htm/LICENSE` contains `Apache License` and `Version 2.0` |
 | fixture scans fail | the relative-import and inline-form checks, run on fixture strings holding `import x from "preact"`, `import("htm")`, `<script>1</script>`, `onclick=`, and `eval(`, each report a finding |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 Fetch each tarball, verify it, and stream each member straight to its repository path;
 the license files are renamed on the way (`package/LICENSE` and `package/LICENSE.md` both become `LICENSE`),
@@ -794,7 +794,7 @@ sha256sum preact/* htm/* pico/*   # must equal the second table, line for line
 Then write `MANIFEST` from the second table.
 Nothing in a vendored file is edited, and no tarball is committed.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/ui/
@@ -901,7 +901,7 @@ the first `urls.js` exports `apiURL(segments, params)` built with `new URL`, `en
 Both are replaced by the *Console page* task and exist here so the scan tests have real files to run against
 and the *Serve wiring* task has a shell and a script to serve.
 
-- [ ] **Write the handler tests**
+- [x] **Write the handler tests**
 
 `ui_test.go` builds handlers with `New()` and with `newFromFS` over an `fstest.MapFS` copy of the embedded tree.
 Rows restate *Layout and embedding*, *Headers*, *Response headers and CSP*, and the `internal/ui` bullets of *Unit*.
@@ -944,15 +944,15 @@ Rows restate *Layout and embedding*, *Headers*, *Response headers and CSP*, and 
 | no mutable top-level state | no line of `app.js` or `urls.js` matches `^(let|var)\b`: state lives on the component, not at module level (*Global Constraints*) |
 | fixtures fail | each check above, run on a fixture string that violates it (`el.innerHTML = x`, `fetch("/v1/namespaces")`, `"/v1/" + ns`, `import h from "htm"`, `<div onclick=…>`, `let navigated = false;` at column zero), reports a finding |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 As described under *Produces*.
 `vendor_test.go` now opens the tree with `fs.Sub(static, "static")` instead of `os.DirFS`.
 The relative-import and inline-form helpers move to a shared unexported test helper both scan files call.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/ui/
@@ -993,7 +993,7 @@ the *Console page* task replaces it and needs this wiring to review the page in 
 `writeConfig` appends `ui:\n  enabled: true\n` when `o.uiEnabled`.
 A construction error ends startup with exit 1 before anything binds, as an authenticator error does.
 
-- [ ] **Write the serve tests**
+- [x] **Write the serve tests**
 
 Rows extend `TestServe`.
 
@@ -1005,13 +1005,13 @@ Rows extend `TestServe`.
 | listing before sync | `uiEnabled: true` with the preflight held | `GET /v1/namespaces` is `503 not_ready` while `GET /ui/` is `200` |
 | oidc requires the browser flow | `mode: oidc` without a `browser` block and `uiEnabled: true` | `config.Load` refuses it: exit 2 and `ui.enabled requires auth.oidc.browser` in stderr |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 As described under *Produces*; `serve.go` imports `github.com/arloliu/profgate/internal/ui`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./cmd/profgate/
@@ -1094,38 +1094,38 @@ The *Controls* contract, restated so the implementation is checked against it in
 
 And the rest of *The page*, each a checkbox for review:
 
-- [ ] The selection is `?ns=&svc=` in the page's query, written with `history.replaceState` on change; nothing else is remembered.
-- [ ] A bookmarked `ns` or `svc` not in the fetched list leaves the control unselected and shows `<value> is not listed` as text; the query keeps it.
-- [ ] A `seconds` outside `1..limit` disables the download link and names the bound as text beside the input.
-- [ ] The download is `<a href=URL download>`; the URL is also shown in a read-only `<input>`; the copy button renders only when `navigator.clipboard?.writeText` exists; the sentence beside it follows `auth.mode` (*Flow*).
-- [ ] `/v1/whoami` is the first and only request until it answers `200` (*Bootstrap*); the state table is followed row for row.
-- [ ] Under `oidc`, the first `401` navigates to `loginURL(pageURL(ns, svc))`;
+- [x] The selection is `?ns=&svc=` in the page's query, written with `history.replaceState` on change; nothing else is remembered.
+- [x] A bookmarked `ns` or `svc` not in the fetched list leaves the control unselected and shows `<value> is not listed` as text; the query keeps it.
+- [x] A `seconds` outside `1..limit` disables the download link and names the bound as text beside the input.
+- [x] The download is `<a href=URL download>`; the URL is also shown in a read-only `<input>`; the copy button renders only when `navigator.clipboard?.writeText` exists; the sentence beside it follows `auth.mode` (*Flow*).
+- [x] `/v1/whoami` is the first and only request until it answers `200` (*Bootstrap*); the state table is followed row for row.
+- [x] Under `oidc`, the first `401` navigates to `loginURL(pageURL(ns, svc))`;
   the page does this at most once per load and shows every later `401` as an error.
-- [ ] Under `basic`, a `401` shows `sign in required` with a retry button that repeats the request; where the logout link would be, the page says a Basic credential is the browser's to keep.
-- [ ] Under `disabled`, the principal and realm show with no sign-in or sign-out control.
-- [ ] The logout link renders exactly when `/v1/whoami` returned `auth.logout`.
-- [ ] `not_ready` retries every 2 seconds until the first `200`; the hints table of *Errors* is rendered as text next to `code` and `error`; every other code shows as is.
-- [ ] `service_not_found` from a download cannot be observed by the page (it is a navigation); the hint applies when a targets or Collections fetch answers it, and the page then refetches the Service list.
-- [ ] The Collections view renders only when `limits.pgo.enabled && whoami.realm.pgo.read`; the table columns and the detail fields are those of *Controls*; the download link comes only from the detail record, only when `state === 'completed' && artifact !== null`, and only for an `id` that `collectionURL` accepts; `reason` shows beside `failed` and `cancelled`; unknown `origin` and `reason` show verbatim.
-- [ ] `app.css` is a few dozen lines on top of Pico: the panel grid, the URL field, the error box; no `url()` to anything but a relative path, no `@font-face`.
+- [x] Under `basic`, a `401` shows `sign in required` with a retry button that repeats the request; where the logout link would be, the page says a Basic credential is the browser's to keep.
+- [x] Under `disabled`, the principal and realm show with no sign-in or sign-out control.
+- [x] The logout link renders exactly when `/v1/whoami` returned `auth.logout`.
+- [x] `not_ready` retries every 2 seconds until the first `200`; the hints table of *Errors* is rendered as text next to `code` and `error`; every other code shows as is.
+- [x] `service_not_found` from a download cannot be observed by the page (it is a navigation); the hint applies when a targets or Collections fetch answers it, and the page then refetches the Service list.
+- [x] The Collections view renders only when `limits.pgo.enabled && whoami.realm.pgo.read`; the table columns and the detail fields are those of *Controls*; the download link comes only from the detail record, only when `state === 'completed' && artifact !== null`, and only for an `id` that `collectionURL` accepts; `reason` shows beside `failed` and `cancelled`; unknown `origin` and `reason` show verbatim.
+- [x] `app.css` is a few dozen lines on top of Pico: the panel grid, the URL field, the error box; no `url()` to anything but a relative path, no `@font-face`.
 
 The once-per-load rule is `this.navigatedToLogin`, a field of the mounted `App` instance and not a module-level variable
 (*Global Constraints*: no top-level `let` or `var`); once set, every later `401` is shown as an error.
 A reload mounts a fresh instance and so resets it, which is what a user does after fixing a login,
 and a loop between a page and a failing login is what the rule exists to prevent (*Signing in and out*).
 
-- [ ] **Read the scan tests**
+- [x] **Read the scan tests**
 
 There is no test to write first: `scan_test.go` and `ui_test.go` already run against these files.
 Read them before writing the page so the constraints are in view.
 
-- [ ] **Implement**
+- [x] **Implement**
 
 Write `urls.js`, then `app.js`, then `app.css`, in that order, and keep each small enough to read in one sitting
 (*What is not proven*).
 Run `mise exec -- go test -race ./internal/ui/` after each file.
 
-- [ ] **Review by hand**
+- [x] **Review by hand**
 
 The spec accepts that no test runs `app.js`.
 Before committing, open the checklist above and confirm each box against the code, not from memory;
@@ -1134,7 +1134,7 @@ Load the page once in a browser against a gateway started from this branch with 
 (the *Serve wiring* task has already landed, so `profgate serve` with `ui: {enabled: true}` serves the page),
 and record in the commit body which browser and which of the checklist items were seen working.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/ui/
@@ -1155,7 +1155,7 @@ The ClusterRole, the ClusterRoleBinding, the ServiceAccount, the Service, the Ne
 the Deployment, and both security contexts do not change (*Configuration*);
 `TestClusterRoleTuples` and `TestChartClusterRoleMatchesBase` stay green untouched.
 
-- [ ] **Write the manifest tests**
+- [x] **Write the manifest tests**
 
 | Subtest | Assertion |
 |---|---|
@@ -1170,9 +1170,9 @@ the Deployment, and both security contexts do not change (*Configuration*);
 | chart raw mapping ok | `--set-json 'config={"ui":{}}'` renders |
 | chart README | `TestChartReadmeValues` (or the existing README assertion, if one exists; else a new one) asserts the *Values* table has a `ui.enabled` row |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `deploy/base/configmap.yaml` gains, after the `auth` block, a comment:
 the console is off; to serve it at `/ui/`, uncomment `ui:` / `enabled: true`,
@@ -1193,7 +1193,7 @@ the env guards exist for keys the memory limit is derived from, and `ui.enabled`
 `README.md` gains a `ui.enabled` row in *Values*,
 and a short paragraph under *Configuration* saying what the console is, that it is off, and the Ingress paths.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./deploy/
@@ -1217,12 +1217,12 @@ both gateways gain `ui.enabled`, and the steps below run inside them.
 The registry, `lanes_test.go`, and `runners()` do not change;
 `NeedsPodReach` stays true because the scenarios still pull a profile.
 
-- [ ] **Write the harness piece**
+- [x] **Write the harness piece**
 
 `gatewayConfigOptions` gains `UIEnabled bool`; `gatewayConfig` writes `ui:\n  enabled: true\n` when set.
 Both authentication scenarios pass `UIEnabled: true`.
 
-- [ ] **Write the console steps**
+- [x] **Write the console steps**
 
 In `scenarioAuthOIDCBrowser`, after the existing logout step (the jar is then empty):
 
@@ -1247,13 +1247,13 @@ In `scenarioAuthBasic`, after the users-file rotation:
 | listing | `GET /v1/namespaces` as `alice` | `200`; `namespaces` contains `<ns>` |
 | limits | `GET /v1/limits` as `alice` | `200`; `cpuSeconds 60`, `traceSeconds 60`, `pprof.default` is `{"port":6060}`, both allowlists `[]`, `pgo.enabled false` |
 
-- [ ] **Run the suite on the current lane**
+- [x] **Run the suite on the current lane**
 
 ```bash
 PROFGATE_E2E_LANE=current mise run test:e2e
 ```
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go vet -tags e2e ./test/e2e/...
@@ -1271,7 +1271,7 @@ git commit -m "test(e2e): prove the console over the wire"
   `deploy/chart/profgate/README.md` (if the deployment task left anything)
 - Create: `docs/console.md`
 
-- [ ] **Update the guides**
+- [x] **Update the guides**
 
 | File | Change |
 |---|---|
@@ -1283,7 +1283,7 @@ git commit -m "test(e2e): prove the console over the wire"
 | `deploy/chart/profgate/README.md` | confirm the `ui.enabled` row and paragraph landed in the deployment task |
 | `CHANGELOG.md` | under `## [Unreleased]` *Added*: the console and `ui.enabled`, the four listing endpoints, `Catalog` on the seam, the five `endpoint` label values, the chart value; *Changed*: `/` now redirects to `/ui/` when the console is enabled and logout lands there |
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/api.md docs/configuration.md docs/deployment.md docs/console.md docs/README.md CHANGELOG.md deploy/chart/profgate/README.md

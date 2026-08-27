@@ -56,6 +56,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a browser client secret, and the cookie key, none of which belong in the rendered ConfigMap;
   [`deploy/secret-auth-example.yaml`](deploy/secret-auth-example.yaml) is a commented manifest for it.
 
+- **An embedded operator console, off by default.**
+  `ui.enabled` serves a static page at `/ui/`:
+  pick a namespace, then a Service, then a profile,
+  download it or copy the URL `go tool pprof` fetches it from,
+  see who you are and what your realm admits,
+  and, when PGO collection is enabled, browse a Service's Collections and download a finished artifact.
+  The page renders no profile and stores nothing; every fact it shows came from a `/v1` response a realm bounded.
+  Four listing routes back it and are useful from a script too, realm-filtered and read-only:
+  `GET /v1/namespaces`, `GET /v1/namespaces/{ns}/services`, `GET /v1/whoami`, and `GET /v1/limits`.
+  `Catalog` on the discovery seam reads the Service cache for the two lists and issues no request,
+  so the console adds no Kubernetes capability.
+  `profgate_requests_total`'s `endpoint` label gains `namespaces`, `services`, `whoami`, `limits`, and `ui`.
+  The page vendors Preact, htm, and Pico CSS under `internal/ui/static/vendor/`,
+  compiled into the binary with `go:embed`; it loads nothing from a CDN.
+  The Helm chart gains a `ui.enabled` value, off by default.
+
 ### Changed
 
 - **The targets endpoint now accepts `port` and `portName`.**
@@ -70,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and authentication resolves the principal and its realm; every later step renumbers.
   `401 unauthenticated` now precedes `403 realm_denied`,
   so a client can tell "present a credential" from "your credential does not reach this."
+- **`/` now redirects to `/ui/` when the console is enabled.**
+  Logout's fallback redirect lands there too, so signing out returns to a signed-out console.
 
 ## [0.3.0] - 2026-08-26
 

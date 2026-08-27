@@ -367,6 +367,20 @@ Each value must obey the matching `pgo.limits` ceiling — the cross-key rules b
 `versionPolicy: strict` requires every sampled Pod to carry the same value of
 `discovery.versionLabel`, so a merged profile never mixes binary versions.
 
+## `ui`
+
+| Key | Environment variable | Default | Constraints |
+|---|---|---|---|
+| `enabled` | `PROFGATE_UI_ENABLED` | `false` | boolean; requires `auth.oidc.browser` when `auth.mode` is `oidc` |
+
+`ui.enabled` turns on the embedded operator console at `/ui/`, covered in [`console.md`](console.md).
+It is restart-only, like every key but the three re-read from disk (see the top of this guide):
+it decides which routes the handler registers, so flipping it needs a new Pod.
+Under `auth.mode: oidc` an enabled console requires `auth.oidc.browser`:
+without it every browser request is `401` and `/auth/login` is `404 route_unknown`,
+so a console that cannot log a browser in would serve nobody.
+`basic` and `disabled` need nothing extra.
+
 ## `realms`
 
 `realms` is a required map with at least one entry;
@@ -426,6 +440,7 @@ Always, whatever `pgo.enabled` says:
   every mapping entry's `realm` names an entry in `realms`.
 - When `auth.oidc.browser` is set: `clientID` equals `oidc.audience`; `tokenType` is `id`;
   `server.tls` is set; `redirectURL`'s path is `/auth/callback` with no query.
+- `ui.enabled` requires `auth.oidc.browser` when `auth.mode` is `oidc`.
 - `pgo.limits.maxRounds × pgo.limits.maxTargetsPerRound` must be at most `256`.
 - `pgo.jobRetention` must be at least `pgo.limits.maxRetention + 1h`.
 - `pgo.limits.minEvery` must be at most `pgo.limits.maxEvery`.
@@ -628,6 +643,8 @@ auth:
       clientID: profgate
       redirectURL: https://profgate.example/auth/callback
       cookieKeyFile: /etc/profgate/auth/cookie.key
+ui:
+  enabled: true
 realms:
   developer:
     namespaces: ["*"]

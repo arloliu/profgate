@@ -79,6 +79,7 @@ that `discovery.pprof.allowedPorts` and `allowedPortNames` permit.
 - [`docs/configuration.md`](docs/configuration.md) — the configuration file, environment overrides, realms.
 - [`docs/deployment.md`](docs/deployment.md) — running the gateway in a cluster.
 - [`docs/pgo.md`](docs/pgo.md) — collecting CPU profiles for Profile-Guided Optimization.
+- [`docs/console.md`](docs/console.md) — the embedded operator console.
 - [`deploy/chart/profgate/README.md`](deploy/chart/profgate/README.md) — the Helm chart and its values.
 - [`docs/specs/gateway.md`](docs/specs/gateway.md) and [`docs/specs/pgo.md`](docs/specs/pgo.md) —
   the accepted designs the gateway and PGO collection are built from.
@@ -94,8 +95,8 @@ when running a released chart, read them at its tag: `https://github.com/arloliu
 - **Ops endpoints** on their own listener, `:9090` by default: `/healthz`, `/readyz`, and `/metrics`.
 - **Image**: `ghcr.io/arloliu/profgate` — distroless, static, `linux/amd64` and `linux/arm64`.
 
-Access control today is the realm ACL plus the network boundary;
-`auth.mode: disabled` is the only authentication mode.
+Access control is the realm ACL behind one of three authentication modes,
+`auth.mode: disabled`, `basic`, or `oidc` ([docs/authentication.md](docs/authentication.md)).
 
 ## License
 

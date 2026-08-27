@@ -79,6 +79,15 @@ config:
 
 [configuration.md](configuration.md) documents every key the file accepts.
 
+### The console
+
+`ui.enabled` (default `false`) turns on the embedded operator console at `/ui/`;
+[console.md](console.md) covers what it shows and how to sign in.
+An Ingress that routes only `/v1` needs `/ui/`, `/auth/`, and `/` added to it once the console is on,
+or the console and the sign-in it needs stay unreachable through it.
+Nothing else about the deployment changes: the console adds no listener, no volume, and no RBAC tuple,
+and its assets are compiled into the same binary and served from the same API port.
+
 ## RBAC
 
 The chart and the base both create a ClusterRole with fixed, read-only rules:
@@ -112,7 +121,7 @@ so two releases can share a cluster without taking over each other's RBAC.
 
 The chart renders the gateway's configuration file into a ConfigMap mounted at `/etc/profgate/config.yaml`.
 Structured values cover the keys the chart itself depends on
-(`server.logLevel`, `auth.anonymousRealm`, `realms`, `tls`, `nats`, `pgo`);
+(`server.logLevel`, `auth.anonymousRealm`, `realms`, `tls`, `nats`, `pgo`, `ui`);
 everything else goes in the raw `config:` block, which is merged over the structured keys one key at a time
 and wins where both set the same key.
 The keys the memory limit is derived from are the exception:
@@ -402,9 +411,16 @@ All metrics are on the ops port at `/metrics`.
 | `profgate_auth_file_reload_total` | counter | `file` (`users`/`cookie_key`), `result` | Re-reads of the users file or the cookie key file |
 | `profgate_auth_cookie_key_info` | gauge | `fingerprint`, `role` (`current`/`previous`) | One series per loaded cookie key, always `1` |
 
+`profgate_requests_total`'s `endpoint` label also carries `namespaces`, `services`, `whoami`, and `limits` for the four listing routes, and `ui` for `/ui/`, every path under it, and `/`;
+`profile` is `none` for all five.
+`ui`'s `code` is one of `ok`, `route_unknown`, `method_not_allowed`, or `internal_error` —
+a closed set derived from the status the console wrote, not the raw HTTP status.
+
 ### Audit log
 
 Every `/v1` request emits one JSON log record named `request` at info level on completion.
+Requests under `/ui/` and to `/` write no audit line:
+they carry no principal and name nothing a realm bounds, and one page load is several of them.
 An interactive request carries
 `principal`, `namespace`, `service`, `pod`, `profile`, `seconds`, `port`, `status`, `code`, and `duration_ms`;
 a PGO request carries

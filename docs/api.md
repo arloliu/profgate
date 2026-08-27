@@ -61,6 +61,9 @@ There is no index route and no OpenAPI document; the seven routes under `/v1` ar
 | `/v1/collections/{id}/profile` | GET |
 | `/v1/collections/{id}/cancel` | POST |
 
+Four more routes under `/v1` take no path parameter and answer from configuration or the cache:
+[Listing endpoints](#listing-endpoints) below covers them.
+
 `{ns}` and `{svc}` must be DNS-1123 labels,
 and `{id}` is a Collection identifier: exactly 20 lowercase Crockford base32 characters
 (the digits and the lowercase letters except `i`, `l`, `o`, and `u`).
@@ -76,6 +79,9 @@ A targets request runs steps 1 through 9 — parameter validation, the port allo
 and answers from what discovery found;
 it never reaches single-target selection, admission, confirmation, or the proxy.
 A policy or Collection request runs only steps 1 through 7 and then dispatches to its handler.
+A listing request ([Listing endpoints](#listing-endpoints)) runs the same steps 1 through 8 and then stops,
+answering from the configuration snapshot or the Service cache with no discovery, selection, admission,
+confirmation, or proxy step.
 
 1. **Route** — the path must match one of the seven routes (`404 route_unknown`),
    and a profile route must name a known profile (`404 profile_unknown`).
@@ -142,6 +148,95 @@ Targets are sorted by Pod name, and `targets` is `[]` (never `null`) for a Servi
 `version` is the value of the Pod label named by `discovery.versionLabel`
 (default `app.kubernetes.io/version`), and is empty when the Pod has no such label.
 The response never discloses a Pod IP or port.
+
+## Listing endpoints
+
+```
+GET /v1/namespaces
+GET /v1/namespaces/{ns}/services
+GET /v1/whoami
+GET /v1/limits
+```
+
+Four routes let a script, or [the console](console.md), discover what a realm can reach without already knowing a namespace or a Service name.
+They read informer caches and configuration, never the API server, take no query parameter
+(any parameter is `400 invalid_parameter`), and answer from the realm the caller's credential resolves to.
+Every array in these responses is `[]`, never `null`, when empty, and lists are sorted by name.
+
+```sh
+curl http://localhost:8080/v1/namespaces
+```
+
+```json
+{"namespaces": ["orders", "payments"]}
+```
+
+```sh
+curl http://localhost:8080/v1/namespaces/payments/services
+```
+
+```json
+{"namespace": "payments", "services": ["checkout", "ledger"]}
+```
+
+The namespace and Service lists apply the caller's realm the way every other route does:
+`realm.namespaces` and `realm.services` each admit a value by exact match or by holding `"*"`,
+and only a Service with a non-empty selector is ever listed.
+A namespace the realm does not admit is absent from the namespace list,
+and its Service list is `403 realm_denied` whether or not the namespace holds a Service —
+a namespace whose only Services fall outside `realm.services` is absent from the namespace list the same way,
+because listing it would disclose that it exists.
+
+```sh
+curl http://localhost:8080/v1/whoami
+```
+
+```json
+{
+  "principal": "alice",
+  "realm": {
+    "name": "payments-dev",
+    "namespaces": ["payments"],
+    "services": ["*"],
+    "profiles": ["cpu", "heap", "goroutine"],
+    "pgo": {"read": true, "collect": false, "configure": false}
+  },
+  "auth": {"mode": "oidc", "logout": "/auth/logout"}
+}
+```
+
+`realm` is the caller's own realm exactly as configured, the wildcard included.
+`auth.logout` is present only when the browser flow is configured, and is always `/auth/logout`.
+Under `disabled` the principal is `anonymous`, as everywhere else.
+
+```sh
+curl http://localhost:8080/v1/limits
+```
+
+```json
+{
+  "cpuSeconds": 60,
+  "traceSeconds": 60,
+  "profiles": ["cpu", "trace", "heap", "allocs", "goroutine", "mutex", "block", "threadcreate"],
+  "pprof": {
+    "default": {"port": 6060},
+    "allowedPorts": [6060, 6061],
+    "allowedPortNames": ["pprof", "pprof-alt"]
+  },
+  "pgo": {"enabled": true}
+}
+```
+
+`pprof.default` is `{"port": N}` or `{"portName": "name"}`, whichever `discovery.pprof` is configured with,
+and `allowedPorts` and `allowedPortNames` are each `[]` when the matching allowlist is empty.
+`pgo.enabled` is `pgo.enabled`, and is how a caller learns whether PGO collection is on at all.
+
+**`/v1/limits` deliberately discloses both allowlists and the configured default to any authenticated caller.**
+That is a decision, not an oversight:
+the values are global operator configuration, not cluster state,
+and every profile request the values let a caller build is one the caller could already build without them,
+bounded by the same realm, the same allowlists, and the same NetworkPolicy.
+An unauthenticated probe still learns nothing but `401`.
 
 ## Fetching a profile
 
