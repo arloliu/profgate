@@ -55,7 +55,8 @@ gives the reasons and says how to read a deleted document back out of git.
   the accepted gateway design.
   [`specs/pgo.md`](specs/pgo.md) is the accepted PGO collection design layered on it,
   [`specs/auth.md`](specs/auth.md) the accepted authentication design,
-  and [`specs/ui.md`](specs/ui.md) the accepted console design.
+  [`specs/ui.md`](specs/ui.md) the accepted console design,
+  and [`specs/cli.md`](specs/cli.md) the accepted command-line client design.
 - **Why a choice was made:** [`decisions/`](decisions/), one file per topic.
 - **Changing anything:** [`.agents/rules/`](../.agents/rules/) holds the rules in force,
   indexed by [`.agents/rules/AGENTS.md`](../.agents/rules/AGENTS.md).

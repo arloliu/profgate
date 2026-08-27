@@ -1,6 +1,6 @@
 # Profgate Command Line
 
-**Status:** Draft
+**Status:** Accepted
 
 This document designs a first-party command-line client for the gateway
 ([`gateway.md`](gateway.md)):
@@ -161,6 +161,8 @@ operator verbs configure and run a gateway, client verbs talk to one.
 **A name belongs to one half permanently.**
 A new verb joins the table above in the change that adds it,
 and a name that table already holds is never reused for the other half.
+The operator half is `serve`, `collector`, `version`, `config`, and `auth`;
+the collector process is `collector`, a noun, so the client verb `collect` stands.
 That rule is why a user's own login is `login` rather than `auth login`,
 and why the client's file is reached through `context` rather than `config set-context`:
 `auth hash` mints a bcrypt hash for `auth.basic.users` and `config validate` reads a gateway configuration file,
@@ -1301,7 +1303,8 @@ and its dependency set an argument about one package rather than about the whole
 
 ## 13. Changes to the accepted designs
 
-Accepting this document amends the following text in the same change.
+The following text is amended to match this document.
+Each row names the heading it edits.
 
 | File | Section | Change |
 |---|---|---|
@@ -1311,7 +1314,7 @@ Accepting this document amends the following text in the same change.
 | `docs/specs/gateway.md` | *Logging* | `/v1/auth` writes no audit record, as `/ui/` writes none |
 | `docs/specs/gateway.md` | *Metrics* | `endpoint` gains `auth` |
 | `docs/specs/gateway.md` | *CLI* | the client verbs of [`cli.md`](cli.md) *The verbs* |
-| `docs/specs/gateway.md` | *Configuration* | the three `auth.oidc.cli` rows |
+| `docs/specs/gateway.md` | *Configuration* | none: the `auth.mode` row already sends the mode-specific keys to [`auth.md`](auth.md), where the three `auth.oidc.cli` rows are |
 | `docs/specs/gateway.md` | *Dependencies* | a closing sentence: the command line adds no Go module, for the reason in [`cli.md`](cli.md) *Dependencies* |
 | `docs/specs/gateway.md` | *Package Layout* | `internal/client/` |
 | `docs/specs/gateway.md` | *Layers* | the unit rows of [`cli.md`](cli.md) *Testing* and the client steps in the two authentication lanes |
@@ -1326,7 +1329,6 @@ Accepting this document amends the following text in the same change.
 | `.agents/rules/100-project-map.md` | *External HTTP API* | `/v1/auth` |
 | `AGENTS.md` | *Four Specs, All Accepted* | five, adding this document |
 | `docs/README.md` | *Where Contributors Start* | [`specs/cli.md`](cli.md) beside the other specs |
-| `docs/README.md` | the opening guide list | the client guide named below, once it exists |
 
 Updated with the implementation:
 [`docs/api.md`](../api.md) (the `/v1/auth` route and the client's examples beside the `curl` ones),
@@ -1338,6 +1340,15 @@ and a client guide of its own, linked from the user-guide list in [`docs/README.
 `oauth2.device.authorization.grant.enabled` on its client,
 which Keycloak reads as `false` when it is absent,
 so the exported realm reproduces a device login rather than only a browser one.
+
+### 13.1 Required by this revision and not yet made
+
+The table above records edits that have been made.
+The rows below are edits this document requires and has not made.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/README.md` | the opening guide list | a client guide beside the other user guides, once one exists |
 
 ---
 

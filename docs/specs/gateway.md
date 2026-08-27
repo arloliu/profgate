@@ -699,6 +699,9 @@ The four listing routes of [`ui.md`](ui.md) —
 `/v1/namespaces`, `/v1/namespaces/{namespace}/services`, `/v1/whoami`, and `/v1/limits` —
 are `/v1` routes defined in that document.
 `GET /v1/openapi.json` describes every route to a machine (*The OpenAPI document*).
+`GET /v1/auth` reports the authentication mode to a caller with no credential,
+and the values a command-line login needs where one is configured;
+it is a `/v1` route with no authentication step, defined in [`cli.md`](cli.md) *Gateway discovery*.
 The product name does not appear in any path.
 Every response on both listeners carries `X-Request-Id` (*Request identifier*).
 Cache policy is per surface rather than one rule:
@@ -780,6 +783,12 @@ and the parameter step in the form that refuses every query parameter,
 and then answers.
 It has no credential-placement, authentication, or realm step,
 because it describes the route grammar and names nothing a realm bounds (*The OpenAPI document*).
+
+`GET /v1/auth` runs those same four steps and then answers.
+It too has no credential-placement, authentication, or realm step:
+it is the route a client reads before it holds a credential,
+so requiring one would leave it answering only callers who no longer need it,
+and it names nothing a realm bounds ([`cli.md`](cli.md) *Gateway discovery*).
 
 ### 6.2 List targets
 
@@ -1371,6 +1380,16 @@ listed here so nobody mistakes them for leaks the design closes:
   `404 route_unknown` and the `Allow` header of a `405` already give the same answer one request at a time.
   It carries no namespace, Service, Pod, node, version, port, realm, or principal —
   path templates only, the same text this document holds.
+- `/v1/auth` answers every caller that can reach the API listener, with no credential
+  ([`cli.md`](cli.md) *Gateway discovery*).
+  It publishes `auth.mode`, which the `WWW-Authenticate` header on every `401` already names,
+  and, where `auth.oidc.cli` is configured, the issuer URL, the client identifier, the token type,
+  the scopes, and whether the client must use PKCE.
+  All five are values an OpenID Connect deployment publishes by design:
+  the issuer serves its own discovery document to the world,
+  and a public client identifier cannot by definition be kept secret.
+  It carries no namespace, Service, Pod, node, version, port, realm, or principal,
+  and an operator who configures no `auth.oidc.cli` block publishes the mode alone.
 
 What an authorized upstream response carries — the profile bytes, a pass-through error body,
 an allowlisted upstream header such as `Content-Disposition` — is the application's to control;
@@ -1391,7 +1410,7 @@ deployments that need non-disclosure against in-cluster callers must run an enfo
 
 ```text
 profgate serve --config <path>
-profgate collect --config <path>
+profgate collector --config <path>
 profgate config validate --config <path>
 profgate auth hash
 profgate version
@@ -1402,6 +1421,14 @@ Standard-library `flag` with hand-written subcommand dispatch.
 `serve` is the gateway this document describes.
 `collect` runs the PGO collection loops of [`pgo.md`](pgo.md) and opens no API listener;
 it reads the same configuration file, so `config validate` answers for both.
+
+The same binary carries the client verbs of [`cli.md`](cli.md) *The verbs* —
+`login`, `logout`, `whoami`, `limits`, `namespaces`, `services`, `targets`, `profile`,
+`collections`, `collection get` and `cancel`, `download`, `pgo policy`, and `context` —
+which talk to a gateway over HTTP rather than run one,
+share this dispatcher and this flag idiom, and add no Kubernetes access.
+The collector process is `collector`, a noun like `serve`,
+so the client verb `collect` of [`cli.md`](cli.md) *The verbs* keeps its name under that document's *Reserved names* rule.
 
 ### 8.2 Logging
 
@@ -1419,6 +1446,7 @@ The `/auth/` routes write a line with no namespace or Service ([`auth.md`](auth.
 The four listing routes of [`ui.md`](ui.md) write the record with `namespace` set on the Service list only
 and `service`, `pod`, `profile`, `port`, and `seconds` empty;
 requests under `/ui/` and to `/` write no record — they carry no principal and name nothing a realm bounds.
+`/v1/auth` writes no record for the same reason ([`cli.md`](cli.md) *Gateway discovery*).
 
 `port` is the client's port selection as sent, a number or a name, empty when absent;
 for a numeric selection that is also the resolved port,
@@ -1470,7 +1498,7 @@ and refuses to proxy (section 5.6), which is the correct behavior, not a reason 
 
 | Metric | Labels |
 |---|---|
-| `profgate_requests_total` (counter) | `endpoint` (`targets`/`profile`/`namespaces`/`services`/`whoami`/`limits`/`ui`/`openapi`), `profile`, `code` |
+| `profgate_requests_total` (counter) | `endpoint` (`targets`/`profile`/`namespaces`/`services`/`whoami`/`limits`/`ui`/`openapi`/`auth`), `profile`, `code` |
 | `profgate_request_duration_seconds` (histogram) | `profile` |
 | `profgate_confirm_total` (counter) | `result` (`ok`/`changed`/`unavailable`) |
 | `profgate_profiles_in_flight` (gauge) | — |
@@ -1505,6 +1533,8 @@ or `internal_error` for any other status the console wrote.
 `openapi` is the endpoint value of the document route, with `profile` fixed to `none`;
 its `code` is `ok`, `not_ready`, `route_unknown`, `method_not_allowed`, or `invalid_parameter`,
 which is every answer it has (*The OpenAPI document*).
+`auth` is the endpoint value of `/v1/auth`, with the same `profile` and the same five codes,
+which is every answer it has ([`cli.md`](cli.md) *Gateway discovery*).
 The client's port selection is not a label either;
 it is client-controlled and would add a series per value.
 The request identifier is not a label for the stronger form of the same reason:
@@ -1825,6 +1855,20 @@ Because the overall request budget already includes confirmation, the drain boun
   a selectorless Service is not listed.
 - `internal/config`: `ui.enabled` from file and environment, a non-boolean rejected,
   and `ui.enabled` under `auth.mode: oidc` rejected without a `browser` block and accepted with one.
+- `internal/client` and `cmd/profgate`, per [`cli.md`](cli.md) *Testing*:
+  every deadline and interval read from an injected clock, so no test sleeps;
+  cache binding to a canonical gateway origin, and the plaintext refusals that precede any request;
+  the token cache's modes, atomic write, expiry by token type, refresh outcomes, and serialization;
+  the device grant's polling rules, `login` and `logout`, and the idempotent `collect` retry;
+  the dispatcher's positional grammar, output modes, and exit codes.
+- `/v1/auth` in `internal/httpapi`, per [`cli.md`](cli.md) *Testing*:
+  the four body shapes;
+  the `oidc` object present only with an `auth.oidc.cli` block, and never derived from `auth.oidc.browser`;
+  no credential read on the route, no audit record, and the `auth` metrics row.
+- `internal/config`: `auth.oidc.cli` from file and environment,
+  the `clientID` equality rule under `tokenType: id`,
+  the refusal of `auth.oidc.browser.clientSecretFile` beside it,
+  and every key rejected unless `auth.mode` is `oidc` ([`cli.md`](cli.md) *Configuration*).
 - The client-go import check:
   every non-test Go file outside `test/` that imports `k8s.io/client-go` is under `internal/k8s/`.
 - The Kubernetes module check: `k8s.io/client-go`, `k8s.io/api`, and `k8s.io/apimachinery` share one minor in `go.mod`.
@@ -1839,6 +1883,8 @@ so it cannot produce real EndpointSlices or reachable Pods.
 **Authentication**: `internal/auth` unit tests, the `internal/httpapi` integration tests,
 and the two end-to-end lanes — `oidc` with the browser flow against Dex, and `basic` over TLS —
 are specified in [`auth.md`](auth.md).
+Both lanes gain the client steps of [`cli.md`](cli.md) *End to end*:
+`profgate login` against the lane's issuer, then a client command answered from the cached token.
 
 ### 9.2 Cluster matrix
 
@@ -2223,7 +2269,7 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
     One selector therefore reaches both roles and another reaches exactly one,
     which is what lets the `PodMonitor` scrape both while each NetworkPolicy binds one.
   - A collector Deployment, rendered only when `pgo.enabled`,
-    running `profgate collect` at one replica with the ops port and no API port,
+    running `profgate collector` at one replica with the ops port and no API port,
     selected by no Service,
     and carrying its own `resources.limits.memory` and `terminationGracePeriodSeconds`,
     both derived from the PGO ceilings and neither shared with the gateway
@@ -2292,13 +2338,14 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
 Everything else is the standard library.
 The console adds no Go module to the binary and one to the tests, the interpreter above;
 the browser code it vendors is listed in [`ui.md`](ui.md) *Dependencies*.
+The command line adds no Go module either, for the reason in [`cli.md`](cli.md) *Dependencies*.
 
 ---
 
 ## 12. Package Layout
 
 ```text
-cmd/profgate/        CLI: serve, collect, config validate, version
+cmd/profgate/        CLI: serve, collect, config validate, version, and the client verbs of cli.md
 internal/k8s/        the seam; sole non-test importer of client-go
 internal/proxy/      upstream HTTP to PodIP:Port, transport, budget, error mapping
 internal/httpapi/    routing, realm checks, handlers, error bodies, audit log, the embedded OpenAPI document
@@ -2308,12 +2355,16 @@ internal/tlscert/    the API listener's certificate: load, re-read on a ticker, 
 internal/admit/      the admission gate interactive requests pass through
 internal/auth/       Authenticator; basic, oidc, and disabled modes; JWKS cache; browser flow
 internal/ui/         the console: embedded page and vendored browser libraries
+internal/client/     the command-line client: contexts, transport, token cache, issuer client
 deploy/              kustomize base and Helm chart
 test/e2e/            harness, versions.yaml, testapp, overlays
 ```
 
 Two packages embed files and no others do:
 `internal/ui` the console tree, and `internal/httpapi` the one OpenAPI document it serves.
+
+`internal/client` is the command line of [`cli.md`](cli.md) *Package layout*;
+it is reachable only from `cmd/profgate` and imports no Kubernetes or NATS package.
 
 ---
 
@@ -2354,6 +2405,7 @@ Two packages embed files and no others do:
 | Client sends no `X-Request-Id`, or one the grammar refuses | one is generated; the request is answered as it would have been, and the response and the audit record carry the generated value |
 | Client sends a usable `X-Request-Id` | it is echoed unchanged and written to the audit record; nothing else reads it |
 | `/v1/openapi.json` before the caches sync | `503 not_ready`, like every other `/v1` route; the document itself would have been correct, and the exception is not worth its cost |
+| `/v1/auth` before the caches sync | `503 not_ready`, like every other `/v1` route; the client reports it and exits ([`cli.md`](cli.md) *Failure scenarios*) |
 | Router and OpenAPI document disagree | the check of *The OpenAPI document* fails; no build ships a route, method, or error code the document does not hold |
 | `POST` to a PGO write route without `Content-Type: application/json` | `400 invalid_parameter` with a `details` item naming the header, immediately after the method step: before readiness, before authentication, and before any store call ([`pgo.md`](pgo.md)) |
 | A route the router serves with no declaration in the route table | the router cannot reach it, so it is `404 route_unknown`; a declaration is the only way a path is matched |
@@ -2505,7 +2557,7 @@ Reads this endpoint and is revised on its own, not here:
 | `docs/specs/cli.md` | *`targets`* | `--explain` sends `explain=true` and prints the `excluded` rows beside the list; that document is `Draft` and its text is not edited by this change |
 
 Running PGO collection in its own process —
-the `profgate collect` subcommand, the collector Deployment the chart renders when `pgo.enabled`,
+the `profgate collector` subcommand, the collector Deployment the chart renders when `pgo.enabled`,
 and the gateway's release from every PGO ceiling —
 amends the following text.
 The first table lists the edits made in the same change as this block;
@@ -2515,7 +2567,7 @@ Amended now:
 
 | File | Section | Change |
 |---|---|---|
-| `docs/specs/gateway.md` | *CLI* | `profgate collect --config <path>`, which runs the collection loops and opens no API listener, over the configuration file `serve` reads |
+| `docs/specs/gateway.md` | *CLI* | `profgate collector --config <path>`, which runs the collection loops and opens no API listener, over the configuration file `serve` reads |
 | `docs/specs/gateway.md` | *Request algorithm* | step 10 acquires from the admission gate, which interactive requests alone pass through |
 | `docs/specs/gateway.md` | *Startup and shutdown* | the drain waits only for in-flight requests; no Collection wait beside it, and none on the listener-failure path; the grace period does not vary with `pgo.enabled` |
 | `docs/specs/gateway.md` | *Layers* | the manifest test pins both roles' NetworkPolicy selectors and the `PodMonitor`; the chart test compares the collector's derived limit with the binary's and pins the gateway's static one |
@@ -2595,3 +2647,32 @@ Read these routes and are amended by that block rather than by this one:
 [`docs/specs/auth.md`](auth.md), whose composed order gains the media type step;
 [`docs/specs/ui.md`](ui.md), whose satisfied rows leave its pending table;
 and [`docs/specs/cli.md`](cli.md), whose `collect` reads a thin replay.
+
+A first-party command line —
+`/v1/auth` for a caller who holds no credential,
+the client verbs of [`cli.md`](cli.md) in this binary,
+and the `auth.oidc.cli` keys that make a device login discoverable —
+amends the following text.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *HTTP API* | the route inventory names `/v1/auth` |
+| `docs/specs/gateway.md` | *Request algorithm* | `/v1/auth` runs route, method, readiness, and the parameter step that refuses every query parameter, and then answers, the shorter path `/v1/openapi.json` already takes |
+| `docs/specs/gateway.md` | *Non-disclosure* | a further observation: `/v1/auth` publishes `auth.mode` to any caller, and the issuer, client identifier, token type, scopes, and PKCE assertion where `auth.oidc.cli` is configured |
+| `docs/specs/gateway.md` | *CLI* | the client verbs of [`cli.md`](cli.md) *The verbs*, and the `collect` name that both halves of the binary now claim |
+| `docs/specs/gateway.md` | *Logging* | `/v1/auth` writes no audit record, as `/ui/` writes none |
+| `docs/specs/gateway.md` | *Metrics* | `endpoint` gains `auth`, with the codes the route has |
+| `docs/specs/gateway.md` | *Layers* | unit rows for `internal/client`, for `/v1/auth`, and for `auth.oidc.cli` validation; the two authentication lanes gain the client's login and a command answered from the cached token |
+| `docs/specs/gateway.md` | *Dependencies* | a closing sentence: the command line adds no Go module |
+| `docs/specs/gateway.md` | *Package Layout* | `internal/client/`, and `cmd/profgate/` carrying the client verbs |
+| `docs/specs/gateway.md` | *Failure Scenarios* | a row for `/v1/auth` before the caches sync |
+| `docs/specs/auth.md` | *Request algorithm*, *Non-goals*, *Configuration*, *Issuer notes* | the authentication half of the same change, listed in that document's own amendments |
+| `docs/specs/pgo.md` | *HTTP API* | the client that drives the PGO routes, listed in that document's own amendment block |
+| `.agents/rules/100-project-map.md` | *Planned Structure*, *External HTTP API* | `internal/client/` and `/v1/auth` |
+| `AGENTS.md` | *Four Specs, All Accepted* | five, adding [`cli.md`](cli.md) |
+| `docs/README.md` | *Where Contributors Start* | [`specs/cli.md`](cli.md) beside the other specs |
+
+Updated with the implementation:
+[`docs/api.md`](../api.md), [`docs/authentication.md`](../authentication.md),
+[`docs/configuration.md`](../configuration.md), [`docs/keycloak-realm.json`](../keycloak-realm.json),
+and a client guide of its own, as [`cli.md`](cli.md) lists.

@@ -46,7 +46,7 @@ and a rolling update of either Deployment is uneventful.
    No database, no PVC, no object storage service, no work queue.
 3. **No leader, and two kinds of process.**
    The scheduler, worker, and sweeper run in a collector Deployment,
-   started as `profgate collect` and defaulting to one replica.
+   started as `profgate collector` and defaulting to one replica.
    Gateway replicas run `profgate serve`, keep every PGO route,
    and publish the Collections `POST /collections` asks for.
    Neither kind is elected:
@@ -106,12 +106,12 @@ and a rolling update of either Deployment is uneventful.
                      |
         +------------+------------+
         v                         v
-+---------------+         +---------------+       +-----------------+
-| profgate serve|         | profgate serve|       | profgate collect|
-| httpapi       |         | httpapi       |       | scheduler       |
-| PGO routes    |         | PGO routes    |       | worker          |
-| publisher     |         | publisher     |       | sweeper         |
-+---+-------+---+         +---+-------+---+       +--+----------+---+
++---------------+         +---------------+       +-------------------+
+| profgate serve|         | profgate serve|       | profgate collector|
+| httpapi       |         | httpapi       |       | scheduler         |
+| PGO routes    |         | PGO routes    |       | worker            |
+| publisher     |         | publisher     |       | sweeper           |
++---+-------+---+         +---+-------+---+       +--+----------+-----+
     |       |                 |       |              |          |
     |       +--------+--------+       |              |          |
     |                |                |              |          |
@@ -1094,7 +1094,7 @@ and leaves the reservation in place while neither observation has been made.
 
 **`Publisher.Run(ctx)` is that timer, and both subcommands start it.**
 The loop ticks every 10 seconds until `ctx` ends and performs one pass per tick;
-`profgate serve` starts it whenever `pgo.enabled`, and `profgate collect` starts it beside the three loops.
+`profgate serve` starts it whenever `pgo.enabled`, and `profgate collector` starts it beside the three loops.
 The scheduler does not own the pass and does not call it from its tick:
 a gateway replica publishes and runs no scheduler,
 so a reservation held there by an indeterminate write would never be re-evaluated,
@@ -1863,6 +1863,9 @@ and the realm is evaluated against the record's namespace and Service.
 A record the realm denies, and a record that does not exist, both answer `404 collection_not_found`.
 The identifier is opaque, so this leaks nothing the realm would hide.
 
+[`cli.md`](cli.md) *Collections* is the first-party client that drives these routes,
+which changes nothing above: it sends what any client sends.
+
 `latest` is a path segment under a Service, never an identifier.
 The two routes that carry it name a Service and are realm-checked against it like every other Service-scoped route,
 so the identifier grammar of section 8.1 is untouched
@@ -2545,7 +2548,7 @@ The merged profile is application data and passes through as the interactive pro
 
 New top-level blocks `nats` and `pgo`, and a `pgo` block in each realm.
 One file configures both processes.
-`profgate serve` and `profgate collect` load the same ConfigMap, apply the same defaults,
+`profgate serve` and `profgate collector` load the same ConfigMap, apply the same defaults,
 and run the same validation, so a file cannot be valid for one role and invalid for the other,
 and `profgate config validate` answers for both at once.
 The collector reads no `realms`, `auth`, `ui`, or `server.listen` value — it opens no API listener —
@@ -2913,7 +2916,7 @@ What follows is the PGO half of those objects — what the collector needs that 
 
 **The collector Deployment.**
 It is rendered only when `pgo.enabled`, carries `app.kubernetes.io/component: collector`,
-and runs `profgate collect` over the same ConfigMap the gateway mounts (section 11).
+and runs `profgate collector` over the same ConfigMap the gateway mounts (section 11).
 `pgo.collector.replicaCount` defaults to `1` (section 2).
 It declares the ops port and no API port, no Service selects it, and it carries no PodDisruptionBudget:
 nothing routes to it, so there is nothing for a budget to protect.
@@ -3633,9 +3636,9 @@ Amended now:
 | File | Section | Change |
 |---|---|---|
 | `docs/specs/pgo.md` | *Overview* | a rolling update of either Deployment is uneventful |
-| `docs/specs/pgo.md` | *Core decisions* | decision 3 names the two processes and the `profgate collect` subcommand; decision 5 drops the shared admission gate and states that the collector holds no Kubernetes permission a gateway replica does not; decision 9 adds the preset |
+| `docs/specs/pgo.md` | *Core decisions* | decision 3 names the two processes and the `profgate collector` subcommand; decision 5 drops the shared admission gate and states that the collector holds no Kubernetes permission a gateway replica does not; decision 9 adds the preset |
 | `docs/specs/pgo.md` | *Non-goals* | overlapping Collections on one Pod are bounded by each process's own ceilings, not by an admission gate |
-| `docs/specs/pgo.md` | *Architecture* | the diagram carries `profgate serve` replicas and one `profgate collect`; why the loops moved out of the gateway; why one collector replica is the default and why every coordination mechanism stays, starting from the two collectors a `RollingUpdate` of a one-replica Deployment produces |
+| `docs/specs/pgo.md` | *Architecture* | the diagram carries `profgate serve` replicas and one `profgate collector`; why the loops moved out of the gateway; why one collector replica is the default and why every coordination mechanism stays, starting from the two collectors a `RollingUpdate` of a one-replica Deployment produces |
 | `docs/specs/pgo.md` | *Container* | the collector's limit is `collectorBaseMemory` plus a checked PGO working set, the chart computes it and refuses the preset and sizing overrides that would move it out from under the render, a `deploy/` test compares the rendered limit with what the binary computes, and a gateway replica's limit no longer depends on `pgo.limits` |
 | `docs/specs/pgo.md` | *What a compromised gateway can do* | a compromised collector reaches exactly as far: same image, ServiceAccount, NATS user, and stores |
 | `docs/specs/pgo.md` | *The seam* | the replay barrier covers the watches a process opens — four in each role, three of them common, a collector adding `schedule.*` and a gateway replica `collector.*` |
@@ -3659,7 +3662,7 @@ Amended now:
 | `docs/specs/pgo.md` | *Shutdown* | `SIGTERM` stops the loops and stops lease renewal; the drain window is at most `leaseTTL - skewMargin` from the last renewal; the collector exits without waiting for an uninterruptible merge or `Put`; a draining collector deletes its heartbeat key; a sample is bounded by the collector's work context and lease cutoff, not by the gateway's HTTP-server drain; `terminationGracePeriodSeconds` is `pgo.leaseTTL + 30s`; the worst-deadline figure is gone |
 | `docs/specs/pgo.md` | *Testing* | preset expansion and override validation, the effective-policy retention rule, the two subcommands' wiring including `Publisher.Run`, the heartbeat and the refusal it drives, chart-and-binary agreement on success, rejection, and overflow, the per-Pod concurrency bound, the rendered manifests and their selectors and ports, a collector rolling update as scenario 10, and an enabled installation with no collector as scenarios 11 and 12 |
 | `docs/specs/pgo.md` | *Package Layout*, *Failure Scenarios* | `collect` and `serve` wiring; rows for a rolled collector, an absent collector split into while it is absent and when one returns, a stale heartbeat key, an incoherent retention policy, several Services on one Pod, and attempts exhausted by repeated rollouts |
-| `docs/specs/gateway.md` | *CLI* | `profgate collect --config <path>`, which runs the PGO loops and opens no API listener |
+| `docs/specs/gateway.md` | *CLI* | `profgate collector --config <path>`, which runs the PGO loops and opens no API listener |
 | `docs/specs/gateway.md` | *Request algorithm*, *Package Layout* | the admission gate is the one interactive requests pass through; `cmd/profgate/` lists `collect` |
 | `docs/specs/gateway.md` | *Startup and shutdown* | no Collection wait beside the request drain and none on the listener-failure path; the grace period does not vary with `pgo.enabled` |
 | `docs/specs/gateway.md` | *Build and Deployment*, *Layers* | the gateway's static memory limit; the common and `component` labels; a second Deployment when `pgo.enabled`, running `collect` with one replica, the ops port only, no Service, a derived memory limit, and a grace period of `pgo.leaseTTL + 30s`; the `PodMonitor` selecting both roles; one NetworkPolicy per role; the collector alert in the `PrometheusRule`; the collector objects outside the kustomize base; the manifest and chart tests that pin all of it |
@@ -3670,7 +3673,7 @@ Updated with the implementation:
 | File | Change |
 |---|---|
 | `docs/pgo.md` | the collector Deployment and what runs where; `pgo.preset` in place of the twelve ceilings; the retention default and its relationship to `schedule.every`; the drain paragraph under *Multiple gateway replicas*, which becomes what a rollout of either Deployment does; `slot_timeout` leaves the sample reasons; the memory formula sizes the collector |
-| `docs/configuration.md` | `pgo.preset` and the preset table; `pgo.limits` as overrides and `maxActiveCollections` bounded at 64; the removed cross-key rule, the kept `maxRetention ≥ maxEvery`, and the added `artifact.retention ≥ schedule.every`; the `artifact.retention` default; `profgate config validate` prints the preset, the resolved ceilings, the collector memory figure, and the collector grace period instead of the worst-deadline figure; `profgate collect` in the subcommand list |
+| `docs/configuration.md` | `pgo.preset` and the preset table; `pgo.limits` as overrides and `maxActiveCollections` bounded at 64; the removed cross-key rule, the kept `maxRetention ≥ maxEvery`, and the added `artifact.retention ≥ schedule.every`; the `artifact.retention` default; `profgate config validate` prints the preset, the resolved ceilings, the collector memory figure, and the collector grace period instead of the worst-deadline figure; `profgate collector` in the subcommand list |
 | `docs/deployment.md` | the collector Deployment: what it needs, what it does not serve, how it is scraped, the egress it needs, and the application-side policy that must admit both roles |
 | `docs/api.md` | `slot_timeout` leaves the sample-result values; `503 collector_unavailable` on `POST /collections` |
 | `deploy/chart/profgate/values.yaml`, `templates/`, `README.md` | a collector Deployment template with `pgo.collector.replicaCount: 1`; `pgo.preset` and `pgo.limits` overrides; the derived memory limit and grace period on the collector; `memoryLimitWithoutPGO` becomes the gateway's memory limit under both states and is renamed; the `extraEnv` and raw-config rejection lists gain `PROFGATE_PGO_PRESET` and `config.pgo.preset` and follow the sizing keys onto the collector; the `component` label on both roles; a PodMonitor selecting both and a NetworkPolicy per role; the collector-availability alert in the PrometheusRule |
@@ -3766,3 +3769,9 @@ Updated with the implementation:
 | `internal/pgo` | the receipt writer and reader, the canonical snapshot hash, the sweeper's receipt rules, and the generation broadcast |
 | `internal/httpapi` | the media-type step ahead of readiness, the receipt lookup and the thin replay, the register-then-read wait, the cursor's filters, and the latest walk |
 | `CHANGELOG.md` | the client-visible moves: a replay's body, a `wait` above the grammar refused rather than clamped, and a cursor refused beside filters it was not minted under |
+
+Accepting the command line of [`cli.md`](cli.md) amends the following text.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *HTTP API* | a sentence naming [`cli.md`](cli.md) *Collections* as the first-party client that drives these routes, which changes no behavior: it sends what any client sends |
