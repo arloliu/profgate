@@ -9,7 +9,9 @@ plus four read-only listing endpoints the page needs and a command-line client c
 Everything in the gateway design — permission boundary, discovery seam, request algorithm, realms,
 non-disclosure, configuration, testing — is assumed and not restated;
 the browser flow, session cookie, and `Sec-Fetch` rules of [`auth.md`](auth.md) are assumed the same way,
-and the PGO routes of [`pgo.md`](pgo.md) are read by the console and never changed.
+and the PGO routes of [`pgo.md`](pgo.md) are the console's,
+unchanged but for one rule this document argues for and that document carries
+(*Starting and cancelling a Collection*).
 Sections of this document and of the other specs are cited by heading name.
 
 ---
@@ -23,7 +25,8 @@ The console closes that gap and nothing more:
 pick a namespace, then a Service, then a profile and, optionally, a Pod, a version, a port, and a duration;
 download the profile, or copy the URL that `go tool pprof` fetches it from;
 see who you are and what your realm admits;
-and, when PGO collection is enabled, read the Collections of a Service and download a finished artifact.
+and, when PGO collection is enabled, read the Collections of a Service, download a finished artifact,
+and start or cancel a Collection when the realm admits it.
 
 The console is a page, not a product surface.
 It renders no profile, draws no flamegraph, and stores nothing;
@@ -37,6 +40,10 @@ through the same request algorithm, and the browser saves them as a file.
    is authenticated the way a browser already is under [`auth.md`](auth.md),
    and holds no credential of its own.
    Every fact it shows came from a `/v1` response the gateway served to that caller.
+   The two requests it sends that change state — start a Collection, cancel one —
+   are `POST`s declaring `Content-Type: application/json`,
+   which is the whole of what separates them from a form another site could submit
+   (*Starting and cancelling a Collection*).
 2. **Four listing endpoints, all read-only, each bounded by what it describes.**
    The four are:
    `GET /v1/namespaces`, `GET /v1/namespaces/{namespace}/services`, `GET /v1/whoami`, and `GET /v1/limits`.
@@ -81,10 +88,19 @@ through the same request algorithm, and the browser saves them as a file.
   `go tool pprof -http` renders a downloaded profile;
   Grafana Pyroscope and Parca exist for continuous profiling and are not dependencies of this design.
 - Continuous or scheduled profiling from the console.
-  Scheduled CPU collection is PGO collection ([`pgo.md`](pgo.md)) and the console only reads its state.
-- Writing PGO state: creating, cancelling, or configuring Collections.
-  Those are `curl` operations with request bodies and preconditions;
-  a later revision may add them once the read-only console has earned its place.
+  Scheduled CPU collection is PGO collection ([`pgo.md`](pgo.md)),
+  and the console neither writes a schedule nor edits one:
+  it starts a single Collection on demand and cancels one (*Starting and cancelling a Collection*).
+- Editing a Service's PGO policy.
+  `PUT` and `DELETE` on the policy route carry a revision in `If-Match` and answer
+  `412 precondition_failed` and `428 precondition_required` ([`pgo.md`](pgo.md) *Policy*),
+  so an editor has to re-read the policy, show the operator what moved underneath the open form,
+  and let them decide again.
+  A form that hides that round trip either clobbers a concurrent edit,
+  or dead-ends on a precondition the person in front of it cannot see.
+  Designing that flow is the work; the form is not.
+  Starting and cancelling a Collection carry no precondition,
+  and both are in (*Starting and cancelling a Collection*).
 - Any change to the gateway's authentication.
   The console logs in through the browser flow of [`auth.md`](auth.md) under `oidc`,
   through the browser's native dialog under `basic`,
@@ -95,9 +111,11 @@ through the same request algorithm, and the browser saves them as a file.
   there is no CORS header, no API key, and no embedding in another site.
 - Accessibility and localisation work beyond what Pico CSS and plain HTML give for free.
   Every control is a native `<select>`, `<input>`, `<button>`, or `<a>`.
-- A browser-driven test of the page.
-  The toolchain pins no JavaScript runtime and no browser, and this design adds neither;
-  *What is not proven* says what that leaves unproven and why the trade is accepted.
+- A browser-driven test on every browser and every lane.
+  One headless Chromium runs the page in two scenarios of the end-to-end suite,
+  one per authentication mode (*End to end*);
+  no other browser is driven, no unit test starts one, and `mise run test` needs none.
+  *What is not proven* says what that still leaves unproven.
 
 ---
 
@@ -109,7 +127,7 @@ The ops listener is unchanged.
 | Route | Methods | Authentication | Realm | Exists when |
 |---|---|---|---|---|
 | `/ui/` | `GET`, `HEAD` | none | none | `ui.enabled` |
-| `/ui/static/{hash}/{file}` | `GET`, `HEAD` | none | none | `ui.enabled` |
+| `/ui/{file}` | `GET`, `HEAD` | none | none | `ui.enabled` |
 | `/` | `GET`, `HEAD` | none | none | `ui.enabled`; `302` to `/ui/` |
 | `/v1/whoami` | `GET` | yes | none | always |
 | `/v1/limits` | `GET` | yes | none | always |
@@ -126,6 +144,10 @@ and answer `405` with `Allow: GET` otherwise.
 The four `/v1` routes exist whether or not `ui.enabled` is set:
 they are useful to a script,
 and a route that appears and disappears with a page would make the API's shape depend on a display option.
+
+The console also sends `POST` to the two PGO write routes [`pgo.md`](pgo.md) *HTTP API* already defines
+(*Starting and cancelling a Collection*).
+It adds no route for them and changes neither.
 
 ### 2.1 Why the page itself is not authenticated
 
@@ -331,7 +353,7 @@ each entry `{"port": N}`, `{"portName": "name"}`, `{"port": "*"}`, or `{"portNam
 and `[]` when the list is empty, which leaves the page nothing to offer beyond the default (*Controls*).
 `pgo.enabled` is `pgo.enabled`, and is how the page learns whether PGO collection is enabled;
 `/v1/whoami` says nothing about it.
-The page offers the Collections view (*Collections, read-only*) exactly when `pgo.enabled` is `true`
+The page offers the Collections view (*Collections*) exactly when `pgo.enabled` is `true`
 and `realm.pgo.read` from `/v1/whoami` is `true`.
 
 **`/v1/limits` deliberately discloses these values to every caller the configured `auth.mode` admits.**
@@ -358,16 +380,22 @@ this response, like every other `/v1` response, is served to anonymous callers o
 which is what that mode means and not an exception this endpoint makes.
 The gateway *Non-disclosure* section gains this as a fourth listed observation (*Changes to the accepted designs*).
 
-### 3.5 Collections, read-only
+### 3.5 Collections
 
-The read-only Collections view is part of the first console,
-shown only when `/v1/limits` reports `pgo.enabled` and `/v1/whoami` reports `realm.pgo.read`.
+The Collections view is shown when `/v1/limits` reports `pgo.enabled` and `/v1/whoami` reports `realm.pgo.read`.
 The console lists Collections through the existing `GET /v1/namespaces/{namespace}/services/{service}/collections`
 and reads one through `GET /v1/collections/{id}`, both defined in [`pgo.md`](pgo.md) *HTTP API*,
 and downloads a finished artifact by navigating to `GET /v1/collections/{id}/profile`.
-It sends no `POST`, `PUT`, or `DELETE`.
+It sends two more requests, both `POST` and both to routes that already exist:
+`POST .../collections` starts a Collection and `POST /v1/collections/{id}/cancel` ends one,
+each offered only when `/v1/whoami` reports `realm.pgo.collect`
+(*Starting and cancelling a Collection*).
+It sends no `PUT` and no `DELETE`:
+a Service's PGO policy is neither read nor written by this page (*Non-goals*).
 `state` is a closed set and `origin` and `reason` are open sets, as that document says;
-the page shows an unrecognized `origin` or `reason` verbatim, as text, rather than failing on it.
+the page shows an unrecognized `origin` or `reason` verbatim, as text, rather than failing on it,
+and treats a `state` it does not recognize as one that cannot be cancelled
+(*Starting and cancelling a Collection*).
 What the view shows and when the download link appears is in *Controls*.
 
 ### 3.6 Targets, with reasons
@@ -436,18 +464,30 @@ which costs one request and keeps the rule from needing a second clause.
   URL = /v1/namespaces/{ns}/services/{svc}/profiles/{profile}?[seconds=&pod=&version=&port=|portName=]
   [Download]  = <a href=URL download>         a navigation; the browser saves the file
   [Copy URL]  = absolute URL on the clipboard  for `go tool pprof <url>`; the URL is also shown as text
+
+  [Start collection] = POST .../collections            two presses; Content-Type: application/json, Idempotency-Key
+  [Cancel]           = POST /v1/collections/{id}/cancel two presses; Content-Type: application/json
 ```
 
 The selection lives in the page's query string, `?ns=&svc=`, and nothing else is remembered:
 the browser flow seals the return path as path plus query and drops the fragment
 ([`auth.md`](auth.md) *Wire values and bounds*),
 so state kept in `#fragment` would not survive a login round trip and state kept in the query does.
-The return path the page sends is `/ui/?ns=<label>&svc=<label>&returned=1`:
-two DNS-1123 labels and a fixed marker keep it far under the 1024-byte bound that document checks before decoding,
-and it holds no `.` or `..` segment, so it is sealed as sent and never replaced by `/`.
+The return path the page sends is `/ui/` carrying the current `ns` and `svc` and the fixed `returned=1` marker.
+It is built with `URL` and `URLSearchParams` and never by joining strings,
+so both values are percent-encoded whatever they hold.
+They are not necessarily DNS-1123 labels:
+they are whatever the link someone followed put in the query,
+and the page keeps a value it cannot find in a list so it can say that value is not listed (*Controls*).
+The page therefore measures the encoded result against the 1024-byte bound
+[`auth.md`](auth.md) *Wire values and bounds* applies to the value as received, before decoding,
+and sends `/ui/?returned=1` alone when a selection would cross it.
+Its path is the literal `/ui/` and holds no `.` or `..` segment,
+so what the page sends is sealed as sent and never replaced by `/`.
 The `returned` marker is how the page tells a return from login from a plain load (*Signing in and out*);
 it holds no credential and no state, and the page drops it from the address bar as soon as it has read it.
-A reload, a bookmark, and a return from login all land on the same selection.
+A reload, a bookmark, and a return from login land on the same selection,
+apart from the one return whose selection was too long to send.
 
 The download is an ordinary navigation to the profile endpoint.
 It carries the session cookie with `Sec-Fetch-Site: same-origin` under `oidc`,
@@ -552,7 +592,7 @@ A response with no `excluded` field at all leaves the plain empty state and no r
 that is the shape a fetch that fell back to no `explain` returns (*Targets, with reasons*),
 and the shape to render if the field is ever absent for another reason.
 An entry whose `reason` is not in the table is shown as that name, as text,
-the way an unrecognized Collection `origin` is (*Collections, read-only*);
+the way an unrecognized Collection `origin` is (*Collections*);
 a rolling update is again the only way it arrives.
 
 The rows above, and the query the page sends to get them,
@@ -585,8 +625,202 @@ the list entry carries no `artifact` field, so a row alone never offers a downlo
 Every other state shows no link, and `reason` beside `failed` and `cancelled`.
 An `id` is placed in a path only after it matches the identifier grammar of [`pgo.md`](pgo.md) *Identifier*;
 a record whose `id` does not is shown and not linked.
+The **Start collection** control above the table, the **Cancel** control on a row,
+and what each answer does to the page are in *Starting and cancelling a Collection*.
 
-### 4.3 Rendering response values
+### 4.3 Starting and cancelling a Collection
+
+Two controls change state, and nothing else on the page does.
+
+**Start collection** sits above the Collections table and exists only when all four of
+`/v1/limits` reporting `pgo.enabled`,
+`/v1/whoami` reporting `realm.pgo.read` and `realm.pgo.collect`,
+and a chosen Service hold.
+Any one of the four missing and the control is absent rather than disabled:
+a control a caller can never use is a question the page should not ask.
+`realm.pgo.read` is what shows the table;
+`realm.pgo.collect` is what adds this control to it,
+so a realm that may watch a Collection and not start one sees exactly the table.
+The two flags are independent, so `collect` without `read` is a configuration an operator can write,
+and it yields neither the table nor the control:
+a button whose every outcome is `403 realm_denied` — the list it refreshes, the record it selects —
+is a button that does nothing, and the page does not draw it.
+
+**Cancel** sits on a Collection row whose `state` is `pending` or `running`, under the same `pgo.collect` rule.
+It is on the row rather than in the detail record, so there is one place to press and one armed state to hold.
+`initializing` gets no button:
+[`pgo.md`](pgo.md) *Cancel* answers it `409 collection_initializing` while the record is still being published,
+so a button offered there is a button that predictably fails;
+the state moves on within a moment and the next list refresh brings the button with it.
+The four terminal states — `completed`, `failed`, `cancelled`, `expired` — get no button,
+and neither does any other value:
+`state` is a closed set that a later release may extend,
+and reading an unknown value as one that cannot be cancelled costs a missing button, never a wrong `POST`.
+
+**Two presses, never a dialog.**
+Both controls confirm in place.
+The first press turns the button into **Confirm start** or **Confirm cancel** beside a **Keep** button that undoes it;
+only the second press sends a request.
+The armed state clears itself after ten seconds and on any change of namespace or Service,
+so a page left open holds no loaded button.
+That timer runs only before the first request.
+Submission cancels it, and nothing restarts it while a request is in flight
+or after one whose outcome the page could not classify:
+a timer that kept running would disarm a control whose `POST` may already have created a Collection,
+and the next arm would generate a new key, which is the loss the key exists to prevent.
+`window.confirm`, `window.alert`, and `window.prompt` are forbidden in `app.js`,
+and the source scan refuses those three names (*Unit*):
+each blocks the page's event loop until it is answered,
+a browser may suppress them outright,
+and a suppressed `confirm` returns `false`, which turns a dialog the user never saw into a request that never went.
+An inline control has no state a browser can take away.
+
+**What the start request carries.**
+`POST /v1/namespaces/{ns}/services/{svc}/collections`,
+with `Content-Type: application/json`, an empty JSON object as the body, and an `Idempotency-Key` header.
+The empty body is valid and means every field comes from the Service's effective policy
+([`pgo.md`](pgo.md) *Create a Collection*).
+The console names no sampling field, because choosing rounds and durations is editing policy,
+which this page does not do (*Non-goals*).
+
+**The idempotency key is one UUIDv4 per attempt series.**
+The page generates it when the start control arms,
+sends it again on every press that follows an outcome it could not classify,
+and drops it as soon as a response says what happened.
+That is the whole of what the key buys a browser:
+a create commits before it answers,
+so a press whose answer never arrived may have started a Collection,
+and a second press carrying the same key is answered with that Collection and its identifier,
+instead of a `429 collection_in_progress` that names nothing to wait on.
+
+The contract the key relies on is [`pgo.md`](pgo.md) *Create a Collection*'s,
+where [`cli.md`](cli.md) already schedules it.
+This page relies on these facts of it and defines none of them:
+the `Idempotency-Key` header is optional;
+a present value is 1 to 128 bytes of `[A-Za-z0-9._-]`, which a UUIDv4's 36 characters satisfy;
+a key is scoped to the realm principal, the namespace, and the Service, so no key of one caller reaches another's;
+the key is stored in the Collection's record;
+a replay is answered `200` with the original record and the same identifier;
+a *different* key sent while a Collection of that Service is live is `429 collection_in_progress`;
+the *same* key sent with a different body is `409 idempotency_mismatch`;
+and a key lives exactly as long as the record that holds it.
+An attempt series is far shorter than that, so the page never depends on how long a key stays replayable.
+A gateway that does not implement the header ignores an unknown request header,
+and the second press is answered `429 collection_in_progress` exactly as it is today.
+
+`crypto.randomUUID()` is the source of the key when the browser exposes it.
+It is defined only in a secure context,
+and the gateway can serve this page over HTTP under `disabled`,
+or under `basic` with plaintext explicitly permitted —
+the same asymmetry `navigator.clipboard` has (*Flow*), handled the same way.
+The page feature-detects `crypto.randomUUID` and, when it is absent,
+draws sixteen bytes from `crypto.getRandomValues`, which every context defines.
+Formatting sixteen bytes as a UUIDv4 — the version nibble `4` in the seventh byte,
+the variant bits `10` in the ninth, lowercase hex in the 8-4-4-4-12 grouping —
+is a pure function of those bytes in `collectionmodel.js`,
+so a test checks the bits without a browser and without a random source (*Unit*).
+
+**What the page holds after an outcome it could not classify.**
+Three outcomes leave the start control armed and holding the route it sent to and the key it sent:
+a rejected `fetch`, a `503 pgo_unavailable`, and any other `5xx` besides `503 collector_unavailable`.
+It holds both until a response classifies the attempt or the operator abandons it.
+**Keep** is the abandonment.
+Pressed before the first request it simply disarms the control;
+pressed in the retained state it drops the route and the key
+and says a Collection may already exist for that Service, naming the Collections table as where to see it —
+the answer [`cli.md`](cli.md) gives an interrupted `collect` that never learned an identifier.
+Changing the namespace or the Service abandons the attempt the same way and says the same thing:
+the key's only value is learning the identifier of a Collection that may already exist,
+and the Collections table that would show it belongs to the Service the page is leaving.
+
+**Why another site cannot send these two requests.**
+Both are `POST`s that a browser attaches the caller's credential to on its own,
+which is the shape a cross-site request forgery takes:
+a page on another origin submits a form, or issues a `fetch`, that spends the victim's authority.
+
+Under `oidc`, nothing is added.
+[`auth.md`](auth.md) *The session* already refuses any session-authenticated request
+whose `Sec-Fetch-Site` is neither `same-origin` nor `none`, for every method,
+before the realm step and before any write.
+
+Under `basic` and `disabled` that rule does not reach.
+`basic` authenticates from an `Authorization` header the browser attaches to a cross-site request itself,
+and `disabled` authenticates nobody while the victim's browser still reaches a gateway the attacker cannot.
+The gateway therefore requires a `Content-Type` of `application/json`, with or without a body,
+on `POST` to `/v1/namespaces/{ns}/services/{svc}/collections` and to `/v1/collections/{id}/cancel`,
+and answers `400 invalid_parameter` otherwise.
+An HTML form can send only `application/x-www-form-urlencoded`, `multipart/form-data`, or `text/plain`,
+so a cross-site form cannot produce the request at all;
+a cross-origin `fetch` that sets the header earns a preflight,
+and the gateway answers no CORS header to any origin, so the preflight fails and the request is never sent.
+`curl` and the command-line client add one header and are otherwise unaffected:
+they were never the exposure,
+because a client that must be told to send a credential cannot be tricked into sending one.
+`internal/httpapi` runs the two write routes' steps in one order:
+route, method, JSON media type, readiness, PGO availability, credential placement, authentication, realm.
+The media-type check sits immediately after the method check and before every step that follows,
+so a request another origin could have produced is refused before any of them:
+before readiness, before PGO availability, before a credential is read, and before NATS is touched.
+The header is parsed with `mime.ParseMediaType`;
+the media type must be `application/json`, parameters such as `charset` are accepted and ignored,
+and a missing, malformed, or repeated `Content-Type` is `400 invalid_parameter`.
+The check reads the header and never the body,
+so a `POST` with no body — which every cancel is — passes it.
+Under `oidc`, [`auth.md`](auth.md) *The session* refuses a cross-site request as well,
+but it runs at the authentication step and therefore after this one:
+it is a second layer over the modes this rule already covers, not the first rejection.
+The rule belongs to [`pgo.md`](pgo.md) *HTTP API* and is listed as an edit that document needs
+(*Required by this revision and not yet made*).
+
+**What each answer does.**
+The mapping from a response to the page's next state is two pure functions in `collectionmodel.js`,
+one per control, so every arm is a test case rather than a branch a reader has to trust (*Unit*).
+
+| Answer to a start | Next state |
+|---|---|
+| any `2xx` carrying an `id` that matches the identifier grammar | that `id` becomes the selected record; the list is refetched; the key is dropped |
+| any `2xx` whose `id` is absent or outside the grammar | the body is shown as an error, as text; nothing is selected and no path is built from it |
+| `429 collection_in_progress` | the list is refetched, because the live Collection is in it; the control returns; the key is dropped |
+| `429 rate_limited`, `429 capacity_exhausted` | the control is disabled for the `Retry-After` delay and says so; the key is dropped |
+| `409 idempotency_mismatch` | the key was sent with a body other than the one it was created with, which is a bug in the page; the error is shown and the key is dropped |
+| `403 realm_denied` | `/v1/whoami` is refetched, since it is what decides whether the control exists; the key is dropped |
+| `501 pgo_disabled` | `/v1/limits` is refetched, since it is what decides whether the view exists; the key is dropped |
+| `503 pgo_unavailable` | the replica could not reach the store or had not finished replaying it, so the create may have committed; the error is shown, the control returns to its armed state, and the key is kept for the next press, which is the retry of the same attempt |
+| `503 collector_unavailable` | no collector is fresh and [`pgo.md`](pgo.md) *Collector availability* answers this code with no write, so nothing can have started; the error is shown as a durable one and the key is dropped |
+| a rejected `fetch`, or any other `5xx` | the error is shown, the control returns to its armed state, and the key is kept for the next press |
+| any other status | the envelope is shown as *Errors* shows every other error; the key is dropped |
+
+| Answer to a cancel | Next state |
+|---|---|
+| `200` | the returned record replaces the row's; the list is refetched |
+| `409 collection_terminal` | the Collection ended on its own; the list is refetched and the button goes with the state |
+| `409 collection_initializing` | retried once, one second later; a second one shows the code and leaves the row as it is |
+| `404 collection_not_found` | the record left the store, or the realm no longer admits it, and [`pgo.md`](pgo.md) *Cancel* answers the same `404` either way on purpose; the list is refetched, and so is `/v1/whoami`, because that is the only way a realm that stopped admitting the record takes the controls with it |
+| a rejected `fetch`, or any other status | shown as *Errors* shows every error; the row is left as it was |
+
+The first row reads a `2xx` and not a `202` on purpose.
+A first press is answered `202`.
+A press replaying a key is answered `200` with the record that key created ([`pgo.md`](pgo.md) *Create a Collection*).
+Reading the whole `2xx` range rather than those two statuses is what keeps a later release
+that moves a replay to another success status from turning the answer the key exists to produce into an error.
+
+A cancel carries no idempotency key and needs none:
+a repeat either cancels the same Collection or is answered `409 collection_terminal`.
+
+`Retry-After` is read as a count of seconds and as nothing else.
+[`pgo.md`](pgo.md) specifies no `Retry-After` on `429 rate_limited` or `429 capacity_exhausted` today,
+so the page treats the header as optional:
+a value above 300 is clamped to 300,
+and an absent, empty, negative, fractional, non-numeric, or HTTP-date value reads as five seconds —
+long enough not to be a retry loop, short enough to be worth waiting through.
+Parsing it is a pure function in `collectionmodel.js` and each of those cases is a test case (*Unit*).
+
+The gateway writes what it already writes.
+Both routes exist, both already write the [`pgo.md`](pgo.md) audit record and count under their own endpoints,
+and a request from the console differs from one from `curl` only in its principal;
+this document adds no audit field and no metric (*Audit and metrics*).
+
+### 4.4 Rendering response values
 
 The page renders values it did not write — principal, realm entries, namespace and Service names,
 Pod names, versions, error messages, Collection fields, `origin`, `reason` —
@@ -618,7 +852,7 @@ a value that reached the DOM as markup could load no script and no stylesheet,
 and could start no request but an `img` or a form submission,
 which `img-src data:` and `form-action 'none'` close.
 
-### 4.4 Signing in and out
+### 4.5 Signing in and out
 
 The page never holds a credential.
 It calls `fetch` with `credentials: 'same-origin'` and lets the browser attach what it has:
@@ -675,7 +909,7 @@ and neither the gateway nor the page can end it, so neither promises to.
 Under **`disabled`**, every request is `anonymous` in `auth.anonymousRealm`,
 and the page shows that principal and realm with no sign-in or sign-out control.
 
-### 4.5 Errors
+### 4.6 Errors
 
 The page shows every gateway error as its `code` and `error` from the envelope, as text,
 plus a one-line hint for the codes a user can act on:
@@ -689,7 +923,15 @@ plus a one-line hint for the codes a user can act on:
 | `port_not_allowed` | `allowedSelections` does not admit the value; the port control shows what it does admit |
 | `seconds_exceeds_limit` | the limit the duration input was bounded by |
 | `discovery_unavailable` | the gateway could not read its cache or confirm the Pod; retry |
-| `pgo_disabled`, `pgo_unavailable` | the Collections view is hidden or shows the code |
+| `pgo_disabled` | PGO collection is off on this gateway; the Collections view goes once `/v1/limits` has been refetched |
+| `pgo_unavailable` | the gateway could not reach its store, so a start may or may not have taken; the same press can be repeated |
+| `collector_unavailable` | nothing is running Collections at the moment, and nothing was started; the press can be repeated once something is |
+| `collection_in_progress` | a Collection is already running for this Service; the list shows it |
+| `rate_limited`, `capacity_exhausted` | the gateway is at its limit for now; the control returns after the delay |
+| `collection_terminal` | the Collection ended before the cancel arrived; the list shows its final state |
+| `collection_initializing` | the Collection is still being created; the cancel is retried once |
+| `limit_exceeded` | the Collection's policy exceeds a configured ceiling; the message names the fields |
+| `version_conflict`, `version_missing` | the Service's Pods carry more than one version, or none |
 
 Every other code is shown as is.
 The page never rewrites a message the gateway generated, and never shows a message the gateway did not send.
@@ -714,10 +956,12 @@ a response body is never shown as HTML.
 internal/ui/static/
   index.html                 the shell: <link> to the stylesheet, <script type="module"> to app.js, one <main>
   app.js                     the console; an ES module importing ./urls.js, ./portmodel.js, ./targetmodel.js,
-                             ./vendor/preact/preact.module.js, and ./vendor/htm/htm.module.js
+                             ./collectionmodel.js, ./vendor/preact/preact.module.js, and ./vendor/htm/htm.module.js
   urls.js                    the URL builders of Rendering response values; the only module that spells a /v1 path
   portmodel.js               the port control's two pure functions, importing nothing so a test can evaluate them
   targetmodel.js             the targets query, the retry rule, and the target summary, importing nothing either
+  collectionmodel.js         the Collection controls: when they exist, what the start request carries,
+                             and what each answer does; importing nothing either
   app.css                    the console's own rules, a few dozen lines on top of Pico
   vendor/
     MANIFEST                 one line per file: name, version, license, source URL, SHA-256
@@ -734,49 +978,85 @@ internal/ui/static/
 
 `internal/ui` embeds the directory with `//go:embed static`.
 Its constructor, not an `init` function (`200-coding-standards.md` forbids `init`),
-walks the embedded tree once, hashes it, and renders the shell:
+walks the embedded tree once and builds one table:
+for each regular file its bytes, its `Content-Type`, its length, and its **entity tag**.
 
-- The **tree hash** is the SHA-256 over every embedded file in path order,
-  each framed as its length-prefixed path followed by its length-prefixed content,
-  so no two trees share a hash by shifting bytes between a path and a file;
-  the digest is truncated to its first 16 hex digits.
-  `index.html` is hashed with the rest and has no hashed serving route:
-  it is served only as the rendered shell at `/ui/`.
-  Every asset is served under `/ui/static/<tree hash>/<path>`,
-  so a change to any file changes every asset URL and a page never mixes files from two builds.
-  Hashing the tree rather than each file keeps the relative `import` paths inside the modules valid as written;
-  hashing per file would mean rewriting them.
-- The **shell** is `index.html` with its two placeholders — the stylesheet path and the script path —
-  replaced by the hashed paths.
-  It is rendered once and held in memory;
-  no template runs per request.
-- Any path under `/ui/static/` whose hash segment is not this binary's, or whose file does not exist,
-  is `404 route_unknown`.
-  During a rolling update the replicas serve two hashes,
-  and every request a page makes — the shell, the script, the stylesheet, each module — may land on either build;
-  a page can therefore fail to load, and fail again on reload, until the rollout converges,
-  which *Failure scenarios* records.
+- The **entity tag** is the quoted lowercase hex of the SHA-256 of that file's content, all 64 digits.
+  It is computed once at startup and never per request,
+  and it is untruncated so that `sha256sum` on the file in this repository reproduces the tag a response carries,
+  which is what makes a mismatch in the field a fact rather than a theory.
+- **Every asset is served at a stable path.**
+  `app.js` is `/ui/app.js`, the stylesheet is `/ui/app.css`,
+  and a vendored file is `/ui/vendor/preact/preact.module.js`:
+  the path under `/ui/` is the path under `static/`.
+  No content hash appears in any URL,
+  so every replica running one release serves every asset URL that release's shell and modules name.
+  What stable paths remove is the `404` for an asset both builds of a rollout carry,
+  which is the failure the hashed prefix produced for every asset at once.
+  What they do not remove is the rollout itself.
+  A release that adds an asset or drops one has a path the other build answers `404` for —
+  `collectionmodel.js` is such a file in this revision —
+  and the release that moves from hashed prefixes to stable paths is the one rollout
+  where neither build can serve what the other's shell names:
+  an old replica has no `/ui/app.js`, and a new one no hashed path.
+  A load that fails for either reason recovers on a reload once the rollout has converged,
+  which `no-cache` makes fetch the current bytes.
+  A load can also combine a shell from one build with a module from another while both are live,
+  and it runs unless those two files changed incompatibly in that release;
+  nothing binds one load to one build.
+  No rollout affinity, shared asset store, or staged compatibility route is added,
+  and the two-build rollout test a stronger guarantee would need is out of scope
+  (*What is not proven*).
+- The **shell** is `index.html` as it was written.
+  It names `/ui/app.css` and `/ui/app.js` itself,
+  so nothing is substituted into it, no placeholder exists, and no template runs at startup or per request;
+  the constructor reads the file and holds its bytes.
+  `index.html` has no asset route of its own — `/ui/index.html` is `404 route_unknown` —
+  because it is served at `/ui/`, and one file at two URLs is two answers to cache.
+- **A path under `/ui/` that names no regular file of the tree is `404 route_unknown`**,
+  as is one that names a directory and one that traverses:
+  a `.` or `..` segment, an absolute path, a backslash, an empty rest.
+  Every replica running one release serves the same set of paths,
+  so a `404` under `/ui/` is a wrong URL, or an asset the answering build does not carry,
+  and never one replica resolving a hash another resolved differently (*Failure scenarios*).
 
-The shell references exactly two assets; every other file loads through a relative `import` from `app.js`
-or a relative `url()` from the stylesheet.
+The shell references exactly two assets by absolute path;
+every other file loads through a relative `import` from `app.js` or a relative `url()` from the stylesheet,
+and those relative paths resolve under `/ui/` exactly as they are written.
 There is no import map:
 an import map is an inline script under CSP,
 and the vendored modules are chosen so none uses a bare specifier (*Vendoring rule*).
+An asset's identity is its path and its version is its entity tag;
+no URL the page loads carries either.
 
 ### 5.2 Headers
 
-| Path | `Cache-Control` | `Content-Type` |
-|---|---|---|
-| `/ui/` | `no-store` | `text/html; charset=utf-8` |
-| `/ui/static/<hash>/*.js` | `public, max-age=31536000, immutable` | `text/javascript; charset=utf-8` |
-| `/ui/static/<hash>/*.css` | `public, max-age=31536000, immutable` | `text/css; charset=utf-8` |
-| `/ui/static/<hash>/*` (other) | `public, max-age=31536000, immutable` | by extension, `application/octet-stream` otherwise |
+| Path | `Cache-Control` | `ETag` | `Content-Type` |
+|---|---|---|---|
+| `/ui/` | `no-store` | none | `text/html; charset=utf-8` |
+| `/ui/*.js` | `no-cache` | the file's | `text/javascript; charset=utf-8` |
+| `/ui/*.css` | `no-cache` | the file's | `text/css; charset=utf-8` |
+| `/ui/*` (other) | `no-cache` | the file's | by extension, `application/octet-stream` otherwise |
 
-The shell is `no-store` because it is the one file whose content changes what the browser fetches next;
-the hashed assets are immutable because their URL changes when they do.
-`ETag` and `Last-Modified` are not set:
-an immutable asset is never revalidated and the shell is never cached.
-`Content-Length` is set from the embedded size, and `HEAD` is answered as `GET` without a body (*Routes*).
+The shell is `no-store` because it is the one file whose content changes what the browser fetches next,
+and it is small enough that never caching it costs nothing.
+Every other file is `no-cache`, which stores the response and revalidates it on every use:
+the browser sends `If-None-Match`,
+and the answer is `304 Not Modified` while the bytes are the same and `200` the first time they are not.
+`no-cache` rather than `max-age`:
+a browser holding an asset under a freshness lifetime keeps serving it after a rollout without asking,
+which is the class of failure this design is removing rather than one it should reintroduce (*Failure scenarios*);
+and rather than `no-store`, because the vendored stylesheet alone is about 69 KiB
+and re-transferring it on every load buys nothing a revalidation does not.
+`Last-Modified` is still not set: an embedded file has no meaningful modification time.
+
+An `If-None-Match` of `*`,
+or whose comma-separated list holds the file's tag — compared after trimming a leading `W/`,
+which no response of this handler sets —
+answers `304` with the `ETag` and the `Cache-Control`, no body, and no `Content-Length`;
+anything else answers the file.
+`Content-Length` is set from the embedded size on a `200`,
+and `HEAD` is answered as `GET` without a body (*Routes*), the `304` included.
 The `Content-Type` for a module script is `text/javascript`, which is what a browser requires for `type="module"`.
 
 ### 5.3 Vendoring rule
@@ -784,7 +1064,7 @@ The `Content-Type` for a module script is `text/javascript`, which is what a bro
 A vendored file is accepted only when:
 
 1. it is the upstream's published ES module or CSS build, byte for byte, with its SHA-256 recorded in `MANIFEST`;
-2. every `import` in it names a relative path, so it resolves under the hashed prefix without an import map;
+2. every `import` in it names a relative path, so it resolves under `/ui/` without an import map;
 3. its license text, and its `NOTICE` when the project ships one,
    sit in its directory under `vendor/` and its license is recorded in `MANIFEST`.
 
@@ -867,8 +1147,12 @@ The listing endpoints reuse the gateway's codes with their meanings:
 | 503 | `discovery_unavailable` | `Catalog` returned an error on the namespace or Service list; never an empty `200` |
 
 No new code is needed.
-`404 route_unknown` covers every `/ui/` miss, a stale hash included,
-because from the gateway's side a URL from another build is a route it does not have.
+`404 route_unknown` covers every `/ui/` miss:
+a path naming no file of the embedded tree, a path that traverses, a directory, and `/ui/index.html`,
+which is served at `/ui/` and nowhere else.
+Every replica running one release serves the same set of paths,
+so a miss is a wrong URL, or an asset only the other build of a rollout carries
+(*Layout and embedding*).
 `/ui/` routes never generate the JSON envelope for a success and always do for a failure,
 so a fetch of a missing asset reads the same envelope every gateway error carries.
 
@@ -884,19 +1168,23 @@ Each of the four listing routes writes the gateway *Logging* record on completio
 Requests under `/ui/` and to `/` write no audit line:
 they carry no principal, name nothing a realm bounds, and one page load is several of them;
 they are counted, not narrated.
+The two `POST` routes the console sends to are [`pgo.md`](pgo.md)'s,
+and they write that document's records under its own endpoints;
+this design adds no field to them.
 
 **Metrics.**
 `profgate_requests_total{endpoint,profile,code}` gains `endpoint` values
 `namespaces`, `services`, `whoami`, `limits`, and `ui`,
 with `profile` fixed to `none` for all five.
 `ui` covers `/ui/`, every path under it, and `/`;
-its `code` is `ok` for a `200` or the `302`, `route_unknown`, `method_not_allowed`,
+its `code` is `ok` for a `200`, a `304`, or the `302`, `route_unknown`, `method_not_allowed`,
 or `internal_error` for any status the console wrote outside `2xx`, `3xx`, `404`, and `405`,
 derived by `internal/httpapi` from the status the console handler wrote (*Package layout*),
 and its histogram bucket is the first one in practice.
 The set is closed at those four values.
-The tree hash is not a label and neither is a file name:
+A file name is not a label:
 `code` and `endpoint` stay closed sets, and the label cardinality rule of the gateway *Metrics* section holds.
+A `304` falls in the `3xx` the `ok` code already covers, so a revalidation counts as the `200` it stands in for.
 
 ---
 
@@ -910,7 +1198,9 @@ The tree hash is not a label and neither is a file name:
 | Login fails after the redirect | the callback answers `401` as a page; nothing on the console side loops back to login |
 | Basic dialog cancelled | the `fetch` resolves `401`; the page shows "sign in required" and a retry button that prompts again |
 | Issuer token endpoint down | login answers `503 auth_unavailable` on the callback; existing sessions keep working |
-| Rolling update in progress | each request a page makes may reach either build; an asset the answering replica lacks is `404 route_unknown` and the page does not render; a reload can fail the same way; the console is unavailable for some loads until the rollout converges and every replica serves one hash, after which a reload recovers |
+| Rolling update in progress, both builds carrying the asset | the asset answers `200` from either replica; a load whose shell and modules came from different builds runs unless two of those files changed incompatibly in that release, and one that does not run recovers on a reload once the rollout has converged, which `no-cache` makes fetch the current bytes |
+| Rolling update of a release that adds or drops an asset | the build without the file answers `404 route_unknown` for it; the load recovers on a reload once the rollout has converged (*Layout and embedding*) |
+| Rolling update from hashed prefixes to stable paths | neither build serves what the other's shell names, so a load reaching the other build fails until the rollout has converged; a reload after it recovers, and this is the one release with that property |
 | Service deleted between listing and download | `404 service_not_found` from the profile endpoint; the page refreshes the Service list |
 | Service with no eligible target | the Pod and version controls are replaced by the counted reasons of *Controls*, in the order the gateway sent them |
 | Service whose selector matches no Pod | the same empty state says the selector matches no Pod, from `selectorMatched` of `0`, and lists no reason |
@@ -923,7 +1213,14 @@ The tree hash is not a label and neither is a file name:
 | Page served over HTTP (`disabled`, or `basic` with plaintext permitted) | `navigator.clipboard` is absent in an insecure context; the copy button is not rendered and the URL is shown for manual copying |
 | A `fetch` answers without the envelope: HTML from an Ingress, an empty body, truncated JSON | the page shows `HTTP <status> <statusText>` and nothing from the body |
 | A `fetch` is rejected: network failure, connection reset | the page shows "request failed" with a retry button |
-| A vendored file is edited or replaced | the manifest hash test fails; the tree hash changes and every asset URL with it |
+| A vendored file is edited or replaced | the manifest hash test fails; the file's `ETag` changes, so every browser holding it revalidates and is answered the new bytes |
+| Start pressed while a Collection is live | `429 collection_in_progress`; the list is refetched and shows it; no second Collection exists |
+| Start pressed again after an answer that never arrived | the same `Idempotency-Key` is sent, and the answer is `200` with the record the first press created and its identifier; against a gateway that does not implement the key, the header is ignored and the answer is `429 collection_in_progress` |
+| Start refused `429 rate_limited` or `429 capacity_exhausted` | the control is disabled for `Retry-After` seconds, or five when the header is absent or unparseable, and says so |
+| The realm loses `pgo.collect` while the page is open | the next start is `403 realm_denied`, and the next cancel is `404 collection_not_found`, indistinguishable from a record that left the store ([`pgo.md`](pgo.md) *Cancel*); both answers refetch `/v1/whoami`, so both controls disappear either way |
+| Cancel pressed on a Collection that has just finished | `409 collection_terminal`; the list is refetched and the row shows its final state |
+| Cancel pressed while the record is still being published | `409 collection_initializing`; retried once a second later, then shown as an error |
+| A page on another origin submits a form to a write route | the form cannot set `Content-Type: application/json`, so the request is `400 invalid_parameter` immediately after the method check — before readiness, PGO availability, the credential, authentication, and the realm; under `oidc` the session rule of [`auth.md`](auth.md) refuses it as well, at the authentication step |
 
 ---
 
@@ -962,22 +1259,38 @@ a value arriving through the raw block would bypass the structured value the cha
 
 `internal/ui`, against the embedded tree:
 
-- the tree hash is stable across two constructions and changes when one byte of one file changes;
-- `/ui/` serves the shell with every header of *Response headers and CSP* and `Cache-Control: no-store`;
-- each asset serves under the current hash with its `Content-Type`, `Content-Length`, and the immutable `Cache-Control`;
-  the same path under another hash is `404 route_unknown`,
-  and so is a path that traverses (`..`, an absolute path, a backslash);
-  `HEAD` answers the headers without a body; `POST` is `405` with `Allow: GET, HEAD`;
+- each file's `ETag` is the quoted 64-digit lowercase hex of its SHA-256,
+  is identical across two constructions of the handler,
+  and changes when one byte of that file changes while every other file's tag is unchanged;
+- `/ui/` serves the shell with every header of *Response headers and CSP*, `Cache-Control: no-store`, and no `ETag`;
+- the shell's `<link href>` is `/ui/app.css` and its `<script src>` is `/ui/app.js`,
+  and the handler answers `200` for each of the two;
+  nothing rewrites the shell any more, so a mistyped path in `index.html` is caught here or nowhere;
+- each asset serves at its stable path with its `Content-Type`, `Content-Length`, `ETag`,
+  and `Cache-Control: no-cache`;
+  a request repeating that tag in `If-None-Match` is `304` with the `ETag` and the `Cache-Control`,
+  no body, and no `Content-Length`;
+  `If-None-Match: *` is `304`; a list holding the tag beside others is `304`;
+  the tag carrying a `W/` prefix is `304`; another tag is `200` with the bytes;
+  `HEAD` answers the same `304`, and the same `200` headers without a body;
+  `POST` is `405` with `Allow: GET, HEAD`;
+- a path under `/ui/` is `404 route_unknown` when it names no file, when it names a directory,
+  when it is `index.html`, and when it traverses:
+  `../app.js`, `//app.js`, `..%2Fapp.js`, a backslash between segments, and an empty rest.
+  Each of those cases was written against the hashed prefix and is rewritten against `/ui/`,
+  because the segment that used to reject some of them by itself is gone;
 - every vendored file's SHA-256 equals its `MANIFEST` line, and every file in `vendor/` has a line;
 - no vendored module, `app.js`, or `urls.js` contains an `import` or dynamic `import(`
   whose specifier does not start with `./` or `../`,
-  and `portmodel.js` and `targetmodel.js` contain neither at all;
+  and `portmodel.js`, `targetmodel.js`, and `collectionmodel.js` contain neither at all;
 - the shell and every `.js` file contain no `<script>` with a body, no `<style>`, no `style=`, no `on[a-z]+=`,
   no `eval(`, and no `new Function(`;
 - the source scan of *Rendering response values*:
-  `app.js`, `urls.js`, `portmodel.js`, and `targetmodel.js` contain none of `innerHTML`, `outerHTML`,
-  `dangerouslySetInnerHTML`, `insertAdjacentHTML`, `document.write`, or `DOMParser`;
+  `app.js`, `urls.js`, `portmodel.js`, `targetmodel.js`, and `collectionmodel.js` contain none of
+  `innerHTML`, `outerHTML`, `dangerouslySetInnerHTML`, `insertAdjacentHTML`, `document.write`, or `DOMParser`;
   `app.js` contains no string literal beginning with `/v1`, `/ui`, or `/auth`;
+  `app.js` contains none of `confirm(`, `alert(`, or `prompt(`,
+  the three the page confirms in place instead of (*Starting and cancelling a Collection*);
   `urls.js` contains `encodeURIComponent` and `URLSearchParams` and no `+` between a string literal and an expression;
   the test runs against fixture strings that must fail as well as against the real files,
   so a scan that matches nothing is itself caught;
@@ -1044,6 +1357,42 @@ a value arriving through the raw block would bypass the structured value the cha
   each produce the plain empty state and no rows;
   and a `count` of `1` reads the same plural wording as a count of `9`.
 
+`internal/ui`, against the Collection-control model:
+
+- `collectionmodel.js` satisfies the shape assertion `portmodel.js` does
+  and is evaluated the same way, its one trailing `export` cut off and its functions read as globals.
+- a table-driven test drives every function in the same interpreter.
+  Whether each control exists:
+  the start control needs `pgo.enabled`, `realm.pgo.collect`, and a chosen Service,
+  and each one missing hides it;
+  `realm.pgo.read` alone yields the table and no start control,
+  and `realm.pgo.collect` alone yields neither;
+  the cancel control is offered for `pending` and `running` and for nothing else —
+  not `initializing`, not the four terminal states, and not a value outside the set.
+  The start request:
+  a `POST` to the Service's collections path, `Content-Type: application/json`,
+  an empty object as the body, and exactly one `Idempotency-Key`;
+  the key is unchanged across presses that follow a rejected `fetch`, a `503 pgo_unavailable`,
+  or any other `5xx` besides `503 collector_unavailable`,
+  and different after any response that classified the attempt, `503 collector_unavailable` included.
+  The armed state:
+  the ten-second timer disarms an armed control that was never submitted;
+  it does not fire while a request is in flight;
+  it does not fire after an outcome the page could not classify,
+  so the retained route and key survive an arbitrary wait;
+  **Keep** before the first request disarms and drops nothing else,
+  and **Keep** in the retained state drops the route and the key and produces the message
+  that names the Collections table;
+  a change of namespace or Service produces the same abandonment and the same message,
+  and a press after a lost response sends the key the lost press sent.
+  The key's format: sixteen fixed bytes become the 8-4-4-4-12 grouping with the version nibble `4`
+  and the variant bits `10`, whatever those bytes held in those positions,
+  and two different inputs format differently.
+  The answers: every row of the two tables of *Starting and cancelling a Collection*,
+  including a `202` whose `id` is outside the identifier grammar, which selects nothing and builds no path.
+  `Retry-After`: `"7"` is seven seconds, `"0"` is none, `"900"` clamps to 300,
+  and absent, empty, negative, fractional, non-numeric, and an HTTP-date each read as five seconds.
+
 `internal/httpapi`, against the fake `Discovery` extended with a namespace and Service catalog:
 
 - a table over the four routes and every step of *Request algorithm for the listing endpoints*:
@@ -1074,12 +1423,19 @@ a value arriving through the raw block would bypass the structured value the cha
   a principal, a namespace, and a Service name that carry HTML metacharacters (`<`, `>`, `&`, `"`, `'`)
   are JSON-escaped in the responses and decode to the configured strings unchanged,
   so the page's text rendering receives exactly the configured string;
-- `ui.enabled` false: `/ui/`, `/ui/static/<hash>/app.js`, and `/` are `404 route_unknown`;
+- `ui.enabled` false: `/ui/`, `/ui/app.js`, and `/` are `404 route_unknown`;
   true: `GET /` and `HEAD /` are `302` with `Location: /ui/`, the `HEAD` without a body;
+- a `POST` to either write route whose `Content-Type` is absent, is not `application/json`,
+  does not parse as a media type, or appears twice is `400 invalid_parameter`,
+  and the fakes record that the readiness check, the PGO availability check, the credential read,
+  authentication, the realm check, and the NATS seam were none of them reached,
+  which is the order of *Starting and cancelling a Collection* asserted rather than described;
+  the header with a `charset` parameter is accepted;
+  the check reads the header and never the body, so a `POST` with no body passes it;
 - the audit line for each listing route carries the principal and, for the Service list, the namespace;
   `/ui/` writes none;
   the recorder sees `endpoint` `namespaces`, `services`, `whoami`, `limits`, or `ui` with `profile` `none`,
-  and for `ui` the `code` `ok` on `200` and `302`, `route_unknown` on `404`, `method_not_allowed` on `405`,
+  and for `ui` the `code` `ok` on `200`, `304`, and `302`, `route_unknown` on `404`, `method_not_allowed` on `405`,
   and `internal_error` on any other status the console wrote.
 
 `internal/k8s`, against the fake clientset with real informers:
@@ -1100,53 +1456,64 @@ a value arriving through the raw block would bypass the structured value the cha
 
 ### 11.2 What is not proven
 
-No test runs `app.js`, and `portmodel.js` and `targetmodel.js` are the exceptions that mark where the line falls.
-The repository's toolchain (`mise.toml`) pins Go, `golangci-lint`, `helm`, `kind`, `ko`, and `kubectl`;
-it pins no Node.js and no browser, and the end-to-end harness drives the gateway with Go's HTTP client.
-Running `app.js` itself would mean one of two additions:
-a Go-driven headless Chromium (`chromedp` or similar),
-which is a new Go module plus a Chromium binary on every machine and CI runner that runs the suite;
-or a Node.js test runner with a DOM, which is a second toolchain for a page of a few hundred lines.
-This design adds neither.
-The console is small enough to read, its rendering rules are four, and a scan can enforce most of them;
-a second toolchain to prove the rest would cost more than the page it guards.
+`app.js` is executed by a headless Chromium in the end-to-end suite (*End to end*) and by nothing else.
+No unit test runs it, and `mise run test` starts no browser.
 
-The port control and the target summary are the parts that argument does not cover,
-which is why each is a module of its own.
+The three model modules are executed by unit tests as well,
+in a pure-Go ECMAScript interpreter, which is why each is a module of its own.
 Each is a decision table rather than a rendering:
 pure, DOM-free, and wrong in ways a reader does not see —
 an option that duplicates the default, a value serialized under the kind it was not typed as,
 a counted reason dropped instead of shown, rows re-sorted out of the gateway's order,
-a query that stopped asking for `explain` —
+a query that stopped asking for `explain`,
+a cancel offered on a state that will refuse it,
+an idempotency key that changed between two presses of one attempt —
 where being wrong sends the caller's request under a parameter the caller did not choose,
-or tells an operator a Service has no Pods when the gateway said why it has none.
-Executing them costs a third thing the two rejected options did not offer:
-a pure-Go ECMAScript interpreter, used by tests only,
-which runs wherever `go test` runs and puts no binary and no second toolchain on any machine or runner.
-That is what this design takes, and gateway *Dependencies* lists the module
-because decision 10 of that document makes adding one a design change.
-`app.js` still renders the control and hands it what the caller typed;
-that wiring is reviewed, not executed.
+tells an operator a Service has no Pods when the gateway said why it has none,
+or starts a second Collection nobody asked for.
+The interpreter runs wherever `go test` runs and puts no binary on any machine,
+so those cases stay in the suite that finishes in seconds,
+where a table of thirty rows is affordable and a browser is not.
+Gateway *Dependencies* lists the module because decision 10 of that document makes adding one a design change.
+
+**Why a browser drives the page, and not an interpreter with a shim.**
+The alternative considered was the same interpreter given a hand-written DOM and `fetch`.
+It is rejected because everything the layer exists to prove lives in what the shim would have to invent.
+Whether a value reaches the DOM as text or as markup is the DOM's answer and not a shim's.
+The Content Security Policy is enforced by a browser and by nothing else.
+The `401` that raises the `basic` credential dialog,
+the navigation to the issuer and back,
+and the `Sec-Fetch-*` headers the session rule of [`auth.md`](auth.md) reads are all browser behavior.
+And `app.js` is an ES module using `fetch`, `URL`, `URLSearchParams`, `history.replaceState`, and `crypto`,
+none of which the interpreter has and each of which the shim would reimplement.
+A page proven against a shim is proven against the shim.
+
+The browser therefore runs the real page against a real gateway in a real cluster,
+in the end-to-end lane and nowhere else,
+which is where a browser is affordable:
+that suite already builds an image, creates a cluster, and installs a chart, and it measures in minutes.
+A machine with no browser skips those scenarios by name (*End to end*).
 
 What that leaves unproven, stated plainly:
-that `app.js` as executed renders a hostile principal, error message, version, `origin`, or `reason` as text;
-that the URLs it builds at runtime are the ones *Rendering response values* describes;
-that the non-envelope fallback of *Errors* behaves as written on malformed JSON, an empty body, or a rejected `fetch`;
-and that `app.js` hands `portmodel.js` what the caller typed in the fields it renders,
-hands `targetmodel.js` the response it fetched, and repeats a fetch when that model says to,
-both models being proven apart from the widget and apart from the network.
+every browser other than the Chromium the suite drives,
+so the Firefox and Safari behavior of the credential dialog,
+of `crypto.randomUUID` outside a secure context,
+and of the Content Security Policy is exercised nowhere;
+the **Copy URL** button, which needs a secure context and a clipboard permission the suite does not grant;
+the branches of *Errors* no scenario can provoke — a truncated body, an Ingress answering its own HTML,
+a rejected `fetch`;
+a rolling update, which would need two builds in one cluster
+and which this design leaves out of scope rather than proves (*Layout and embedding*);
+and the port control and the target summary as `app.js` wires them,
+each proven apart from the widget and apart from the network.
 The source scan proves the page contains no interface that could render markup and no hand-built `/v1` path;
-the `internal/httpapi` tests prove the JSON the page receives carries hostile strings intact;
-the end-to-end scenarios prove the shell, the headers, and the listing responses over the wire.
-The gap between "contains no way to do it wrong" and "was seen doing it right" is closed by review,
-on every change to `app.js`, `urls.js`, `portmodel.js`, and `targetmodel.js`,
+the `internal/httpapi` tests prove the JSON the page receives carries hostile strings intact.
+What is left is closed by review, on every change to `app.js` and the three models,
 which is why all four stay small and why the three besides `app.js` are separate files.
-If the page grows past what a reviewer can hold, adding the browser-driven test becomes the right call,
-and this section is where that decision is revised.
 
 ### 11.3 End to end
 
-Two proofs, each run inside the existing authentication scenario of its lane
+**Two wire proofs**, each run inside the existing authentication scenario of its lane
 ([`auth.md`](auth.md) *Testing*), both against a gateway with `ui.enabled`:
 
 - **Browser flow under Dex.**
@@ -1171,7 +1538,97 @@ Two proofs, each run inside the existing authentication scenario of its lane
   what is proven is the pair of responses it reacts to.
 
 A scenario that reaches no application Pod declares nothing;
-the Service list reads the cache, so neither proof adds `needsPodReach` to its scenario.
+the Service list reads the cache, so neither wire proof adds `needsPodReach` to its scenario.
+
+**Two browser scenarios**, `console-oidc` and `console-basic`,
+live in `test/e2e` behind the build tag the suite already uses,
+and are registered beside the others with `NeedsPodReach`, because each ends at a profile from a Pod.
+No second build tag and no second task:
+a proof that runs only under a flag someone remembers to pass is a proof that stops running.
+No lane flag either — every field of the lane matrix describes a cluster,
+and a browser is a property of the machine running the test.
+Each is an independent subtest, as every registry entry is,
+so neither can use a gateway an `auth-*` scenario installed and then tore down:
+the harness deletes a scenario's namespace when that scenario's test ends.
+Each console runner therefore provisions what it needs and cleans it up —
+its own gateway with `ui.enabled`, its own issuer and user configuration or its own Basic user,
+and its own test app — inside the namespace the harness deletes for it.
+The two entries' metadata goes in the untagged `registry.go` beside the others,
+and their runners in the `e2e`-tagged files that hold the rest.
+
+Each runner drives one headless Chromium through `github.com/chromedp/chromedp` (*Dependencies*).
+The executable is discovered once, into the `Harness`, and both runners read it from there:
+the names Chromium and Chrome ship under, and `PROFGATE_E2E_BROWSER` when it names one.
+A machine with none skips both scenarios by name with the one shared reason,
+which states what was looked for, so a developer without a browser still runs the rest of the lane.
+Discovery also prints the executable path and the version it reported,
+and fails the scenario when that version falls outside the range the suite pins,
+so a browser too old for the page's `crypto`, `URL`, or module behavior is a red test and not a mystery.
+The workflow that runs the suite installs a pinned Chromium version
+and asserts the executable exists in one step of its own before `mise run test:e2e`,
+so a runner that loses one, or drifts to a version outside the range, turns red instead of quietly proving less.
+
+`console-oidc` proves:
+
+- a load with no session navigates to `/auth/login` of its own accord,
+  the issuer's login form completes,
+  the callback's landing page returns the browser to `/ui/?ns=…&svc=…`,
+  and the identity panel names the issuer's user and the realm it mapped to —
+  which is the `401`, the redirect, the `returned=1` marker, and the once-per-load rule, executed rather than read;
+- choosing the namespace, the Service, and a profile fills the profile URL field with the URL *Flow* describes,
+  and pressing **Download** saves a file that is the gzip-framed body the profile endpoint streams;
+  that those bytes parse as a profile is proven by the profiles scenario and not repeated here;
+- the Collections table lists the Service's Collections and a row's detail shows its record;
+  **Start collection**, pressed twice through its inline confirmation,
+  sends exactly one `POST` carrying `Content-Type: application/json` and one `Idempotency-Key` —
+  both read from the browser's own network events, which is the only place they can be observed as the page sent them —
+  and a row for the new Collection appears;
+  **Cancel** on that row, pressed twice the same way, moves it to `cancelled`,
+  and the button goes with the state;
+- a load whose `ns` and `svc` carry `<img src=x onerror=…>` shows both through the "is not listed" message as text:
+  the document holds no `img` element, the container's markup holds the escaped form,
+  and the browser logged no script error.
+  That query is carried through the whole login round trip and not only through a plain load:
+  the load with no session navigates to `/auth/login` with those values in its return path,
+  the issuer's form completes, and the landing page brings the browser back to them,
+  which is where a return path built by joining strings instead of by `URLSearchParams` would show;
+- the browser reported no Content Security Policy violation and no uncaught exception on any load of the scenario.
+  The proof is an observer, not an absence:
+  the Log and Runtime domains of the DevTools Protocol are enabled before the first navigation,
+  every load's entries and exceptions are collected through load completion,
+  and a Content Security Policy violation entry or an uncaught exception fails the scenario.
+  Enabling them after the first navigation would satisfy the sentence while observing nothing,
+  which is why the order is stated here.
+
+`console-basic` proves HTTP authentication challenge handling, which the wire proof cannot reach.
+The first `fetch` is answered `401` with `WWW-Authenticate: Basic`,
+the browser raises its authentication challenge,
+the test answers it with the lane's user and password over the protocol's own challenge handling,
+and the page continues to the identity panel and to a profile download without a second prompt.
+What that proves is the challenge being answered and the page continuing;
+whether Chromium drew a native dialog is not observed and is not claimed.
+It runs over the lane's TLS with the certificate error ignored at launch,
+which is the one browser setting either scenario changes.
+
+**Hostile values come from where a hostile value can actually come from.**
+A Service name cannot carry one: it is a DNS-1123 label.
+Neither can a Pod name, a DNS-1123 subdomain,
+nor a `version` label value, whose grammar is alphanumerics with `-`, `_`, and `.` between them.
+The API server refuses `<` in all three, so no fixture can plant one there.
+What can carry one is a value that passed no Kubernetes validator:
+the page's own query string, which holds whatever the link someone sent contains,
+and an OIDC claim, which holds whatever the issuer put in it.
+`console-oidc` uses both sources, and both are mandatory.
+The query string needs no cluster fixture at all.
+The issuer half is a static user whose principal claim carries the same string,
+named by the scenario's own realm mapping,
+so the login reaches the console instead of ending at `401 no_realm` before anything is rendered.
+Setup fails if the issuer cannot be configured with that principal,
+rather than the scenario running and proving half of what it says it proves.
+The scenario asserts both:
+the unlisted `ns` and `svc` values and the identity panel's principal each appear as text,
+with the escaped form in the container's markup,
+no element either string names anywhere in the document, and no script run from either.
 
 ---
 
@@ -1179,9 +1636,20 @@ the Service list reads the cache, so neither proof adds `needsPodReach` to its s
 
 No Go module is added to the gateway binary.
 `embed`, `crypto/sha256`, `mime`, and `net/http` are the standard library.
-One module is added to the tests:
-the pure-Go ECMAScript interpreter that evaluates `portmodel.js` and `targetmodel.js`,
-listed in gateway *Dependencies* and argued for in *What is not proven*.
+
+Two modules are added to the tests and to nothing else:
+the pure-Go ECMAScript interpreter that evaluates `portmodel.js`, `targetmodel.js`, and `collectionmodel.js`,
+and `github.com/chromedp/chromedp` with the DevTools Protocol and WebSocket modules it brings,
+which only `test/e2e` imports and only behind the suite's build tag.
+Both are listed in gateway *Dependencies* and argued for in *What is not proven*.
+Neither is in `go.mod` today:
+each lands with the tests that need it, which is also when its row in that document is written.
+Neither reaches `cmd/profgate`, so the binary a release ships links neither.
+chromedp also needs a Chromium executable, which is not a Go module and is not pinned by `mise.toml`.
+It is a property of the machine running the suite:
+the workflow installs a pinned version,
+and the runner prints the path and version it found and refuses one outside the accepted range
+(*End to end*).
 
 Vendored browser code, pinned in `internal/ui/static/vendor/MANIFEST`:
 
@@ -1206,13 +1674,14 @@ Every vendored file is the upstream's published build, unmodified, which is what
 ## 13. Package layout
 
 ```text
-internal/ui/           the console: embedded static tree, tree hash, rendered shell, asset handler, headers
-internal/ui/static/    index.html, app.js, urls.js, portmodel.js, targetmodel.js, app.css, vendor/
+internal/ui/           the console: embedded static tree, per-file entity tags, the shell, asset handler, headers
+internal/ui/static/    index.html, app.js, urls.js, portmodel.js, targetmodel.js, collectionmodel.js, app.css, vendor/
 internal/httpapi/      gains the four listing routes, the /ui/ and / dispatch, and the endpoint labels
 internal/k8s/          gains Catalog on the Discovery interface, reading the Service lister
 internal/config/       gains the ui block
 internal/metrics/      gains the five Endpoint values
 cmd/profgate/          constructs internal/ui when ui.enabled and passes it to httpapi
+test/e2e/              gains the two browser scenarios of End to end, behind the build tag the suite already uses
 ```
 
 What the console adds to the seam is one method and one type.
@@ -1264,7 +1733,8 @@ Ownership is split as follows, so each concern lives in exactly one package:
   it wraps the `ResponseWriter`, reads the status `Console` wrote, and maps it to the `ui` codes of *Audit and metrics*.
   It writes no audit line for them.
 - `internal/ui` owns everything inside that dispatch:
-  **path matching** under `/ui/static/<hash>/` and the shell at `/ui/`,
+  **path matching** under `/ui/` and the shell at `/ui/`,
+  the **entity tags** and the `If-None-Match` comparison of *Headers*,
   the **method check** (`GET` and `HEAD`; `405` with `Allow: GET, HEAD` otherwise),
   the **`302`** from `/` to `/ui/`,
   every **security header** of *Response headers and CSP*, and the `Cache-Control` and `Content-Type` of *Headers*.
@@ -1300,13 +1770,13 @@ Each row names the heading it edits.
 | `docs/specs/gateway.md` | *Build and Deployment* | the vendored browser files under `internal/ui/static/vendor/` are embedded by `go:embed` and pinned by `MANIFEST`; the chart's `ui.enabled` value and raw-block guard |
 | `docs/specs/gateway.md` | *Dependencies* | a closing sentence: no Go module for the console; the vendored browser code is listed in [`ui.md`](ui.md) *Dependencies* |
 | `docs/specs/gateway.md` | *Package Layout* | `internal/ui/` |
-| `docs/specs/gateway.md` | *Failure Scenarios* | rows for a cache read failing on a listing route, a rolling update with two asset hashes, and `ui.enabled` false |
+| `docs/specs/gateway.md` | *Failure Scenarios* | rows for a cache read failing on a listing route, a rolling update, and `ui.enabled` false |
 | `docs/specs/auth.md` | *Non-goals* | "A UI, and the listing endpoints it would need, is a later document" becomes a pointer to this one |
 | `docs/specs/auth.md` | *The `/auth/` routes* | logout's fallback `302` to `/` lands on `/ui/` when `ui.enabled` |
 | `docs/specs/auth.md` | *What is redirected* | "a future UI's JSON requests" names this document |
 | `docs/specs/auth.md` | *Testing* | the two lanes gain the scenarios of [`ui.md`](ui.md) *End to end* |
 | `.agents/rules/100-project-map.md` | *Planned Structure* | `internal/ui/` |
-| `.agents/rules/100-project-map.md` | *External HTTP API* | the four listing routes; `/ui/`, `/ui/static/{hash}/{file}`, and `/`, present only when `ui.enabled` |
+| `.agents/rules/100-project-map.md` | *External HTTP API* | the four listing routes; `/ui/`, the asset paths under it, and `/`, present only when `ui.enabled` |
 | `AGENTS.md` | *Three Specs, All Accepted* | four, adding this document |
 | `docs/README.md` | *Where Contributors Start* | [`specs/ui.md`](ui.md) beside the PGO and authentication specs |
 
@@ -1318,6 +1788,41 @@ Updated with the implementation: `docs/api.md` (the listing endpoints), `docs/co
 `deploy/chart/profgate/values.yaml` and `deploy/chart/profgate/README.md`
 (the `ui.enabled` value and the raw-block guard).
 
+### 14.1 Required by this revision and not yet made
+
+The table above records edits that have been made.
+The rows below are edits this document now requires and has not made.
+They land with the change that implements the write controls, the browser scenarios, and the stable asset paths;
+until then this document is ahead of the documents it names, which is stated here rather than left to be discovered.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *HTTP API* | a `POST` to `.../collections` or to `/v1/collections/{id}/cancel` must declare `Content-Type: application/json`, with or without a body, and is `400 invalid_parameter` otherwise; the two routes run route, method, JSON media type, readiness, PGO availability, credential placement, authentication, realm, with the media type parsed by `mime.ParseMediaType`, `charset` and other parameters accepted, a missing, malformed, or repeated header refused, and the body never read; that order is what keeps a page on another origin from spending a caller's credential ([`ui.md`](ui.md) *Starting and cancelling a Collection*) |
+| `docs/specs/pgo.md` | *Create a Collection* | the `Idempotency-Key` contract, already scheduled by [`cli.md`](cli.md): the header is optional; a present value is 1 to 128 bytes of `[A-Za-z0-9._-]`; a key is scoped to the realm principal, the namespace, and the Service; it is stored in the record; a replay is answered `200` with the original record and the same identifier; a different key while a Collection of that Service is live is `429 collection_in_progress`; the same key with a different body is `409 idempotency_mismatch`; and a key lives as long as the record that holds it |
+| `docs/specs/pgo.md` | *The seam*, *Atomicity primitives*, *Paths that touch each key* | where the key is stored, which store and key name hold it, and the compare-and-swap that makes one create and its key one decision across replicas, so two replicas cannot both miss and both publish |
+| `docs/specs/pgo.md` | *Record*, *Sweeper* | the key as a field of the record, and its removal with the record, which is what makes "as long as the record" a mechanism and not a promise |
+| `docs/specs/pgo.md` | *Errors* | `409 idempotency_mismatch` in the code table |
+| `docs/specs/pgo.md` | *Failure Scenarios* | a create whose key write or record write loses its acknowledgement, and a replay of a key whose caller's realm no longer admits the record |
+| `docs/specs/pgo.md` | *Create a Collection*, *Errors* | whether `429 rate_limited` and `429 capacity_exhausted` carry `Retry-After`; the console reads the header when it is there and assumes a fixed delay when it is not |
+| `docs/specs/pgo.md` | *Unit* | the `Content-Type` cases of [`ui.md`](ui.md) *Unit*, and the key's cases: a replay, a different key against a live Collection, the same key with a different body, and two concurrent requests carrying one key |
+| `docs/specs/auth.md` | *Request algorithm* | the media-type step of the two PGO write routes, and its position before the credential and the session rule, which is a second layer over it rather than the first rejection |
+| `docs/specs/gateway.md` | *Request algorithm* | the same step and the same position, in the order this document names |
+| `docs/specs/gateway.md` | *Dependencies* | `github.com/chromedp/chromedp`, tests only, driving the console's browser scenarios; the interpreter's row names `collectionmodel.js` beside the other two models |
+| `docs/specs/gateway.md` | *Layers* | the `internal/ui` rows for entity tags and `304`, the `internal/httpapi` rows for the media-type step and the idempotency key, and the two browser scenarios in the end-to-end row |
+| `docs/specs/gateway.md` | *What end-to-end proves* | the two browser scenarios of [`ui.md`](ui.md) *End to end* |
+| `docs/specs/gateway.md` | *Failure Scenarios* | the rolling-update row: stable paths remove the `404` for an asset both builds carry; a release that adds or drops one, and the release that moves off hashed prefixes, still fail a load until the rollout converges, and a reload then recovers |
+| `docs/specs/auth.md` | *Testing* | the two authentication lanes gain the browser scenarios beside the wire proofs they already carry |
+| `docs/specs/cli.md` | *Collections* | `collect` and `collection cancel` send `Content-Type: application/json`, the cancel with no body |
+| `docs/api.md` | *PGO collection* | the same header on the create example and on the bodyless cancel |
+| `.agents/rules/100-project-map.md` | *External HTTP API* | `/ui/{file}` in place of `/ui/static/{hash}/{file}` |
+| `.agents/rules/500-validation-and-workflow.md` | *Before a PR* | "hashed assets" becomes the stable paths, and "the page's own JavaScript runs in no test" becomes the two browser scenarios that run it |
+| `.github/workflows/e2e.yml` | the `e2e` job | a step that installs the pinned Chromium and asserts the executable exists, before `mise run test:e2e` |
+| `docs/console.md` | *Console* | the introduction, which describes a page for pulling a profile and a read-only Collections view, names the two controls that write |
+| `docs/console.md` | *What it shows* | the Collections bullet and its link stop calling the view read-only |
+| `docs/console.md` | *Collections, read-only* | the heading, the description, and "The console only reads Collections here" all change: the panel carries a **Start collection** control and a **Cancel** on a live row, both behind two presses and both under `pgo.collect` |
+| `docs/console.md` | *During a rolling update* | the corrected contract of [`ui.md`](ui.md) *Layout and embedding*, in a user's words |
+| `docs/console.md` | *What the console never does* | the **Write PGO state** bullet becomes editing a Service's policy, which is what the page still never does |
+
 ---
 
 ## 15. Amendments
@@ -1327,11 +1832,10 @@ Edits made to this document after it was accepted, each in the change that made 
 | Section | Change |
 |---|---|
 | *Layout and embedding*, *Dependencies* | the Pico file is `pico.classless.min.css`, the class-less build's published name, and its size is about 69 KiB |
-| *Layout and embedding* | the tree hash frames each file as its length-prefixed path and length-prefixed content; `index.html` is hashed but has no hashed serving route |
 | *Request algorithm for the listing endpoints* | the readiness step is the readiness `internal/httpapi` composes for every `/v1` route — discovery synced and, under `oidc`, the issuer discovered — not `HasSynced()` alone |
 | *Unit* | the `internal/httpapi` fake holds no selectorless Service, because `ServiceRef` carries no selector; the selectorless cases live in the `internal/k8s` bullet, where selector presence is decided; the non-disclosure assertion says no list exposes a Pod-discovered or selected backend port and no listing response carries an IP address or `podIP`, since `/v1/limits` returns `allowedSelections` and the default by design |
 | *Audit and metrics*, *Unit* | the `ui` code set gains `internal_error` for any status the console wrote outside `2xx`, `3xx`, `404`, and `405`; the set stays closed |
-| *End to end* | the two proofs run inside the existing authentication scenarios rather than as scenarios of their own |
+| *End to end* | the two proofs are registry entries of their own, each provisioning and cleaning up its gateway, issuer configuration, and test app |
 | *Changes to the accepted designs* | the table describes edits already made, not edits acceptance would make |
 | *Flow*, *Signing in and out* | the return path carries a `returned=1` marker; a load that starts with it never navigates to login on its own and shows a **Sign in again** button on `401` instead, which is what bounds the once-per-load rule across the round trip |
 | *Core decisions*, *Request algorithm for the listing endpoints*, *Limits* | the namespace and Service catalogs are realm-filtered, `whoami` is caller-specific, and `/v1/limits` is global operator configuration answered to every request the configured `auth.mode` admits, anonymous requests under `disabled` included |
@@ -1342,3 +1846,8 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Controls*, *Failure scenarios* | an empty target list is replaced by the gateway's counted reasons in a fixed wording, `selectorMatched` of `0` reading as a selector that matches no Pod, and a body without `excluded` leaving the plain empty state |
 | *Controls*, *Layout and embedding*, *Unit*, *What is not proven*, *Dependencies*, *Package layout* | the targets query, the retry rule, and the target summary are three pure functions in `targetmodel.js`, executed by the interpreter that already runs `portmodel.js`; the scan pins the ten reason names there |
 | *Package layout* | the `Discovery` snippet is labelled as the console's delta rather than the whole interface, which gateway *The seam* holds |
+| *Overview*, *Core decisions*, *Non-goals*, *Collections*, *Starting and cancelling a Collection*, *Errors*, *Layout and embedding*, *Unit*, *Failure scenarios*, *Package layout* | the console starts and cancels a Collection: two `POST`s behind an inline two-step confirmation rather than a blocking dialog, the start carrying one `Idempotency-Key` per attempt series, their rules a fourth model module `collectionmodel.js`; a `POST` to either write route must declare `Content-Type: application/json`, which is what a form on another origin cannot produce and what covers `basic` and `disabled`, where the session rule of [`auth.md`](auth.md) does not reach; editing a Service's policy stays out until its conflict flow is designed |
+| *Non-goals*, *End to end*, *What is not proven*, *Dependencies*, *Package layout* | a headless Chromium runs `app.js` in two end-to-end scenarios of their own, one per authentication mode; the interpreter with a hand-written DOM was rejected, because a page proven against a shim is proven against the shim |
+| *Routes*, *Layout and embedding*, *Headers*, *Vendoring rule*, *Errors*, *Audit and metrics*, *Unit*, *Failure scenarios*, *Package layout* | assets are served at stable paths under `/ui/` with a per-file `ETag` and `Cache-Control: no-cache` instead of under a tree hash marked immutable; the tree hash, the shell's two placeholders, and the render step are gone, and a rolling update no longer answers `404` for an asset both of its builds carry |
+| *Non-goals*, *Flow*, *Starting and cancelling a Collection*, *Errors*, *Layout and embedding*, *Failure scenarios*, *Unit*, *What is not proven*, *End to end*, *Dependencies*, *Changes to the accepted designs* | what stable paths guarantee is scoped to the assets both builds of a rollout carry, with the release that adds or drops a file and the release that moves off hashed prefixes named as the loads that still fail until the rollout converges; each PGO failure code carries one rule for the idempotency key, `503 pgo_unavailable` keeping it and `503 collector_unavailable` dropping it; the key's contract in [`pgo.md`](pgo.md) is relied on fact by fact instead of by reference alone, `409 idempotency_mismatch` included; the media-type check has a stated place in the two write routes' step order; the confirmation timer stops at the first request, and a retained attempt is abandoned only by **Keep** or a change of selection; a cancel after realm loss is the indistinguishable `404` that also refetches `/v1/whoami`; and each browser scenario is a registry entry of its own rather than a step inside an authentication scenario, provisioning and cleaning up its own gateway, enabling its Content Security Policy and exception observers before the first navigation, requiring its hostile issuer principal, and running a pinned, version-checked Chromium |
+| *Changes to the accepted designs* | the section carries a second table for the edits this document requires elsewhere and has not made |
