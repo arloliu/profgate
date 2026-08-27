@@ -521,7 +521,11 @@ or the login never completed — is shown as "sign in required" with a **Sign in
 that starts another login only when the user presses it,
 because a loop between a page and a login that keeps failing is worse than a message the user can read.
 The page drops the marker from the address bar with `history.replaceState` before its first request,
-so a reload is a plain load that may navigate again, and a bookmark never carries the marker.
+so a reload is a plain load that may navigate again,
+and a bookmark taken after that first request carries no marker.
+Only the exact value `returned=1` is the marker;
+a URL that still carries it — bookmarked before the page stripped it, or typed by hand —
+loads into the same "sign in required" state, which the **Sign in again** button leaves.
 The marker is the only thing the page reads from its query besides the selection;
 it uses no `sessionStorage` or `localStorage`, so "nothing else is remembered" (*Flow*) stays true.
 The console requires the browser flow under `oidc`:
