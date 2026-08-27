@@ -898,6 +898,9 @@ type fakeObjects struct {
 	failAfter int
 	// onRead runs once, on the first read, so a test can act mid-stream.
 	onRead func()
+	// gate, when set, parks every read after the first until it is closed or
+	// the read's context ends, so the server cannot outrun the test.
+	gate chan struct{}
 	// opened is the last reader handed out, so a test can see how far the
 	// stream got and whether it was released.
 	opened *fakeReader
@@ -934,6 +937,7 @@ func (o *fakeObjects) Get(ctx context.Context, name string) (io.ReadCloser, erro
 		readErr:   o.readErr,
 		failAfter: o.failAfter,
 		onRead:    o.onRead,
+		gate:      o.gate,
 	}
 
 	return o.opened, nil
@@ -982,6 +986,7 @@ type fakeReader struct {
 	readErr   error
 	failAfter int
 	onRead    func()
+	gate      chan struct{}
 	once      sync.Once
 	reads     atomic.Int32
 	closed    atomic.Bool
@@ -993,6 +998,12 @@ func (r *fakeReader) Read(p []byte) (int, error) {
 			r.onRead()
 		}
 	})
+	if r.gate != nil && r.reads.Load() > 0 {
+		select {
+		case <-r.gate:
+		case <-r.ctx.Done():
+		}
+	}
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
 	}

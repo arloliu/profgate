@@ -687,9 +687,12 @@ func TestCollectionDownloadFailingAfterHeaders(t *testing.T) {
 
 // TestCollectionDownloadClientGone proves a client that leaves mid-stream
 // cancels the store read rather than being served to the end.
+// The store parks after the first chunk and the test never releases it,
+// so the server cannot finish the object before the cancellation lands.
 func TestCollectionDownloadClientGone(t *testing.T) {
 	h := newPGOHarness(t, pgoOpts{})
 	rec := h.completedRecord(t)
+	h.nats.artifacts.gate = make(chan struct{})
 
 	gateway := httptest.NewServer(h.handler())
 	t.Cleanup(gateway.Close)
