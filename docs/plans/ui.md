@@ -1,6 +1,7 @@
 # Console Implementation Plan
 
-**Status:** In Progress
+**Status:** Done
+**Outcome:** commit 04324eb on main; CI passed check and all three e2e lanes.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task is written test-first and ends with its own validation block and commit.
@@ -1296,15 +1297,15 @@ git commit -m "docs: describe the web console"
 
 ## Finish the plan
 
-- [ ] Confirm the `main` run passed every lane
+- [x] Confirm the `main` run passed every lane
   (the existing workflows need no change: `check.yml` covers the new unit tests and `e2e.yml` the lanes;
   `e2e.yml` ignores `docs/**` and `**/*.md`, so the amendment and documentation commits run only `check.yml`).
-- [ ] Decide whether `internal/ui` changes should trigger the end-to-end suite before a PR
+- [x] Decide whether `internal/ui` changes should trigger the end-to-end suite before a PR
   and record the decision in `.agents/rules/500-validation-and-workflow.md` either way
   (the shell and headers are proven there; the page itself is not).
-- [ ] In the same change: set line 3 of this file to `**Status:** Done` and add line 4
+- [x] In the same change: set line 3 of this file to `**Status:** Done` and add line 4
   `**Outcome:** <tag or commit that shipped the console>`.
-- [ ] `mise run lint && mise run test && mise run check`;
+- [x] `mise run lint && mise run test && mise run check`;
   `git add docs/plans/ui.md .agents/rules/`; `git commit -m "docs: mark the console plan done"`.
 
 ---

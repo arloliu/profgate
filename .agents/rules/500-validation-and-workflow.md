@@ -15,8 +15,8 @@ run `semlf check <file>` on every Markdown file you wrote or edited and fix the 
 
 ## Before a PR
 
-Six packages need the end-to-end suite on the `current` lane before a PR opens:
-`internal/k8s`, `internal/proxy`, `internal/pgo`, `internal/natskv`, `internal/auth`, and `deploy/`.
+Seven packages need the end-to-end suite on the `current` lane before a PR opens:
+`internal/k8s`, `internal/proxy`, `internal/pgo`, `internal/natskv`, `internal/auth`, `internal/ui`, and `deploy/`.
 
 ```bash
 mise run test:e2e
@@ -27,5 +27,7 @@ Their unit tests run against an embedded server and never see a Pod restart.
 The browser login round trip, the users file and cookie key read from a mounted Secret,
 and a signing-key rotation at the issuer meet a real issuer only in the authentication scenarios;
 their unit tests drive fakes.
+The console's shell, hashed assets, headers, and login return meet a real gateway and issuer only in those same scenarios;
+the page's own JavaScript runs in no test, so a change to `internal/ui/static/` also needs a check in a browser against a running gateway.
 
 Report what ran and what was skipped in the PR description ([600](600-git-conventions.md)).
