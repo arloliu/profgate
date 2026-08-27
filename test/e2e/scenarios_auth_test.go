@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -436,7 +437,8 @@ func basicAuthBlock(aliceHash string) string {
 // scenarioAuthOIDCBrowser proves oidc mode against Dex: the browser flow from
 // a navigation through Dex's password form to a session cookie, the session's
 // origin check, a bearer ID token, the refusal of a token in the query, a
-// signing-key rotation the gateway follows without a restart, logout, and the
+// signing-key rotation the gateway follows without a restart, logout, the
+// console's shell, assets, and listing routes under the same session, and the
 // audit lines that make each step attributable.
 func scenarioAuthOIDCBrowser(t *testing.T, h *Harness) {
 	ns := h.Namespace(t)
@@ -464,7 +466,7 @@ func scenarioAuthOIDCBrowser(t *testing.T, h *Harness) {
 		t.Fatal(err)
 	}
 	gwCA := newAuthority(t, tlsHost)
-	cfg := gatewayConfig(gatewayConfigOptions{TLSMount: tlsMountPath, AuthBlock: oidcAuthBlock()})
+	cfg := gatewayConfig(gatewayConfigOptions{TLSMount: tlsMountPath, AuthBlock: oidcAuthBlock(), UIEnabled: true})
 	local, pod := deployHTTPSGateway(t, h, ns, "oidc-gateway", oidcGatewayName, gwCA, cfg)
 
 	// Readiness followed discovery: the log shows the issuer discovered
@@ -640,21 +642,161 @@ func scenarioAuthOIDCBrowser(t *testing.T, h *Harness) {
 		t.Fatalf("after logout the jar holds %v, want nothing", names)
 	}
 
-	// Audit: the redirect, the refusal, and the login are each attributable.
+	// The console: the jar is empty, as a browser's is on its first visit.
+	// The shell and its assets need no session and write no audit record.
+	recordsBefore := auditRecords(currentLogs(t, h, ns, pod))
+	shell := send(t, client, http.MethodGet, gatewayOrigin+uiPath, navigationHeaders(), nil)
+	assertShell(t, "GET /ui/ without a cookie", shell)
+	if !strings.Contains(string(shell.Body), "<main") {
+		t.Fatalf("GET /ui/ without a cookie: the body is not the shell:\n%s", shell.Body)
+	}
+	head := send(t, client, http.MethodHead, gatewayOrigin+uiPath, navigationHeaders(), nil)
+	assertShell(t, "HEAD /ui/", head)
+	if len(head.Body) != 0 {
+		t.Fatalf("HEAD /ui/: body of %d bytes, want none", len(head.Body))
+	}
+	for _, asset := range assetPaths(t, shell.Body) {
+		resp := send(t, client, http.MethodGet, gatewayOrigin+asset, nil, nil)
+		assertAsset(t, asset, resp)
+	}
+	if n := auditRecords(currentLogs(t, h, ns, pod)); n != recordsBefore {
+		t.Errorf("the shell and asset requests grew the audit log from %d to %d records; /ui/ writes none", recordsBefore, n)
+	}
+
+	// A fetch from the page without a session is refused, never redirected:
+	// the page reads the 401 and starts the login itself.
+	fetched := send(t, client, http.MethodGet, gatewayOrigin+"/v1/whoami", fetchHeaders(), nil)
+	if fetched.Status != http.StatusUnauthorized || fetched.Header.Get("WWW-Authenticate") != `Bearer realm="profgate"` {
+		t.Fatalf("fetch-shaped GET /v1/whoami without a cookie: status %d, WWW-Authenticate %q, want 401 with the bearer challenge",
+			fetched.Status, fetched.Header.Get("WWW-Authenticate"))
+	}
+
+	// The login the page starts returns to the page's own path and query.
+	pageLogin := gatewayOrigin + "/auth/login?return=" + url.QueryEscape(consoleReturn)
+	login = send(t, client, http.MethodGet, pageLogin, navigationHeaders(), nil)
+	if login.Status != http.StatusFound {
+		t.Fatalf("GET %s: status %d, want 302: %s", pageLogin, login.Status, login.Body)
+	}
+	authorize = location(t, login, pageLogin)
+	form = walkDex(t, client, authorize.String())
+	action = formAction(t, form)
+	submitted = send(t, client, http.MethodPost, action, http.Header{"Content-Type": {"application/x-www-form-urlencoded"}},
+		strings.NewReader(credentials.Encode()))
+	callback = followToGateway(t, client, submitted, action)
+	cb = send(t, client, http.MethodGet, callback.String(), cbHeaders, nil)
+	if cb.Status != http.StatusOK || !strings.HasPrefix(cb.Header.Get("Content-Type"), "text/html") {
+		t.Fatalf("callback: status %d, Content-Type %q, want 200 text/html: %s", cb.Status, cb.Header.Get("Content-Type"), cb.Body)
+	}
+	escapedReturn := html.EscapeString(consoleReturn)
+	for _, want := range []string{`content="0;url=` + escapedReturn + `"`, `href="` + escapedReturn + `"`} {
+		if !strings.Contains(string(cb.Body), want) {
+			t.Fatalf("the landing page does not carry %s:\n%s", want, cb.Body)
+		}
+	}
+	if names := cookieNames(t, client, gatewayOrigin); len(names) != 1 || names[0] != sessionCookie {
+		t.Fatalf("after the console login the jar holds %v, want exactly %s", names, sessionCookie)
+	}
+
+	// The shell has no authentication step, so the navigation the landing page
+	// starts is answered whatever site the browser reports.
+	crossHeaders := navigationHeaders()
+	crossHeaders.Set("Sec-Fetch-Site", "cross-site")
+	if resp := send(t, client, http.MethodGet, gatewayOrigin+consoleReturn, crossHeaders, nil); resp.Status != http.StatusOK {
+		t.Fatalf("GET %s with the cookie: status %d, want 200: %s", consoleReturn, resp.Status, resp.Body)
+	}
+
+	// The page's fetches carry the cookie and are same-origin; each listing
+	// route answers, filtered by the realm, and none names an address.
+	listing := func(path string) []byte {
+		t.Helper()
+		resp := send(t, client, http.MethodGet, gatewayOrigin+path, fetchHeaders(), nil)
+		if resp.Status != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+			t.Fatalf("GET %s with the cookie: status %d, Content-Type %q, want 200 application/json: %s",
+				path, resp.Status, resp.Header.Get("Content-Type"), resp.Body)
+		}
+		if m := ipv4Re.Find(resp.Body); m != nil {
+			t.Fatalf("GET %s: the body names the address %s:\n%s", path, m, resp.Body)
+		}
+
+		return resp.Body
+	}
+	var whoami struct {
+		Principal string `json:"principal"`
+		Realm     struct {
+			Name string `json:"name"`
+		} `json:"realm"`
+		Auth struct {
+			Mode   string `json:"mode"`
+			Logout string `json:"logout"`
+		} `json:"auth"`
+	}
+	decode(t, "/v1/whoami", listing("/v1/whoami"), &whoami)
+	if whoami.Principal != dexUser || whoami.Realm.Name != "developer" || whoami.Auth.Mode != "oidc" || whoami.Auth.Logout != "/auth/logout" {
+		t.Fatalf("whoami: %+v, want principal %s in realm developer under oidc with logout /auth/logout", whoami, dexUser)
+	}
+	var limits struct {
+		CPUSeconds int `json:"cpuSeconds"`
+	}
+	decode(t, "/v1/limits", listing("/v1/limits"), &limits)
+	if limits.CPUSeconds != 60 {
+		t.Fatalf("limits.cpuSeconds is %d, want 60", limits.CPUSeconds)
+	}
+	assertNamespaces(t, listing("/v1/namespaces"), ns)
+	var services struct {
+		Namespace string   `json:"namespace"`
+		Services  []string `json:"services"`
+	}
+	decode(t, "services", listing("/v1/namespaces/"+ns+"/services"), &services)
+	if services.Namespace != ns || !slices.Contains(services.Services, testAppName) {
+		t.Fatalf("services of %s: %+v, want %s among them", ns, services, testAppName)
+	}
+
+	// Logout from the console lands on a signed-out console: / is the
+	// fallback when the issuer publishes no end_session_endpoint, and / is
+	// the console's own redirect.
+	logout = send(t, client, http.MethodGet, gatewayOrigin+"/auth/logout", navigationHeaders(), nil)
+	if logout.Status != http.StatusFound || logout.Header.Get("Location") != "/" {
+		t.Fatalf("logout from the console: status %d, Location %q, want 302 to /", logout.Status, logout.Header.Get("Location"))
+	}
+	if names := cookieNames(t, client, gatewayOrigin); len(names) != 0 {
+		t.Fatalf("after logout the jar holds %v, want nothing", names)
+	}
+	root := send(t, client, http.MethodGet, gatewayOrigin+"/", navigationHeaders(), nil)
+	if root.Status != http.StatusFound || root.Header.Get("Location") != uiPath {
+		t.Fatalf("GET /: status %d, Location %q, want 302 to %s", root.Status, root.Header.Get("Location"), uiPath)
+	}
+
+	// Audit: the redirect, the refusal, the login, and each listing route are
+	// attributable; the Service list names its namespace.
 	logs = currentLogs(t, h, ns, pod)
 	for _, want := range []string{`"code":"auth_redirect"`, `"auth_reason":"csrf"`} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("the gateway log has no record with %s", want)
 		}
 	}
-	var callbackLogged bool
+	var callbackLogged, listings, serviceLists int
 	for _, line := range strings.Split(logs, "\n") {
-		if strings.Contains(line, `"route":"auth_callback"`) && strings.Contains(line, `"principal":"`+dexUser+`"`) {
-			callbackLogged = true
+		if !strings.Contains(line, `"principal":"`+dexUser+`"`) {
+			continue
+		}
+		switch {
+		case strings.Contains(line, `"route":"auth_callback"`):
+			callbackLogged++
+		case strings.Contains(line, `"route":"`):
+		case strings.Contains(line, `"profile":""`):
+			// A listing route: the interactive shape with no target selected.
+			listings++
+			if strings.Contains(line, `"namespace":"`+ns+`"`) {
+				serviceLists++
+			}
 		}
 	}
-	if !callbackLogged {
+	if callbackLogged == 0 {
 		t.Errorf("the gateway log has no auth_callback record naming %s", dexUser)
+	}
+	if listings != 4 || serviceLists != 1 {
+		t.Errorf("the gateway log has %d listing records naming %s, %d of them with namespace %s; want 4 and 1:\n%s",
+			listings, dexUser, serviceLists, ns, logs)
 	}
 }
 
@@ -725,8 +867,9 @@ func followToGateway(t *testing.T, c *http.Client, resp response, from string) *
 
 // scenarioAuthBasic proves basic mode over TLS: the challenge, a wrong
 // password, an inline user, a user from the mounted file, go tool pprof with
-// a userinfo URL, and a users-file rotation the gateway follows without the
-// Pod being replaced.
+// a userinfo URL, a users-file rotation the gateway follows without the Pod
+// being replaced, and the console's shell and listing routes under the
+// challenge a browser's dialog reacts to.
 func scenarioAuthBasic(t *testing.T, h *Harness) {
 	ns := h.Namespace(t)
 	pods := deployTestApp(t, h, ns)
@@ -740,7 +883,7 @@ func scenarioAuthBasic(t *testing.T, h *Harness) {
 	// The leaf certifies the loopback address as well as the hostname, so
 	// go tool pprof can dial the forward by address with no hostname mapping.
 	ca := newAuthority(t, tlsHost, "127.0.0.1")
-	cfg := gatewayConfig(gatewayConfigOptions{TLSMount: tlsMountPath, AuthBlock: basicAuthBlock(hash)})
+	cfg := gatewayConfig(gatewayConfigOptions{TLSMount: tlsMountPath, AuthBlock: basicAuthBlock(hash), UIEnabled: true})
 	local, pod := deployHTTPSGateway(t, h, ns, "basic-gateway", basicGatewayName, ca, cfg)
 
 	client := tlsClient(local, ca.pool)
@@ -838,6 +981,175 @@ func scenarioAuthBasic(t *testing.T, h *Harness) {
 	if after.restarts != before.restarts {
 		t.Errorf("the container restart count went from %d to %d; the gateway restarted to pick the users file up",
 			before.restarts, after.restarts)
+	}
+
+	// The console: the shell needs no credential, the listing routes answer
+	// the challenge the browser's dialog reacts to, and with a credential they
+	// answer the realm's view and the configured limits.
+	shell := send(t, client, http.MethodGet, gatewayOrigin+uiPath, navigationHeaders(), nil)
+	assertShell(t, "GET /ui/ without a credential", shell)
+	namespacesURL := gatewayOrigin + "/v1/namespaces"
+	challenge := send(t, client, http.MethodGet, namespacesURL, fetchHeaders(), nil)
+	if challenge.Status != http.StatusUnauthorized || challenge.Header.Get("WWW-Authenticate") != `Basic realm="profgate"` {
+		t.Fatalf("GET /v1/namespaces without a credential: status %d, WWW-Authenticate %q, want 401 with the basic challenge",
+			challenge.Status, challenge.Header.Get("WWW-Authenticate"))
+	}
+	asAlice := func(path string) []byte {
+		t.Helper()
+		headers := basic("alice", password)
+		for k, vs := range fetchHeaders() {
+			headers[k] = vs
+		}
+		resp := send(t, client, http.MethodGet, gatewayOrigin+path, headers, nil)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("GET %s as alice: status %d, want 200: %s", path, resp.Status, resp.Body)
+		}
+
+		return resp.Body
+	}
+	assertNamespaces(t, asAlice("/v1/namespaces"), ns)
+	var limits struct {
+		CPUSeconds   int `json:"cpuSeconds"`
+		TraceSeconds int `json:"traceSeconds"`
+		Pprof        struct {
+			Default          json.RawMessage `json:"default"`
+			AllowedPorts     []int32         `json:"allowedPorts"`
+			AllowedPortNames []string        `json:"allowedPortNames"`
+		} `json:"pprof"`
+		PGO struct {
+			Enabled bool `json:"enabled"`
+		} `json:"pgo"`
+	}
+	body := asAlice("/v1/limits")
+	decode(t, "/v1/limits", body, &limits)
+	if limits.CPUSeconds != 60 || limits.TraceSeconds != 60 || string(limits.Pprof.Default) != `{"port":6060}` ||
+		len(limits.Pprof.AllowedPorts) != 0 || limits.Pprof.AllowedPorts == nil ||
+		len(limits.Pprof.AllowedPortNames) != 0 || limits.Pprof.AllowedPortNames == nil || limits.PGO.Enabled {
+		t.Fatalf("limits: %s, want cpuSeconds 60, traceSeconds 60, pprof.default {\"port\":6060}, empty allowlists, and pgo.enabled false", body)
+	}
+}
+
+const (
+	// uiPath is the console's shell; / redirects to it while ui.enabled.
+	uiPath = "/ui/"
+	// consoleReturn is the path and query a login started from the page returns to.
+	consoleReturn = "/ui/?ns=x"
+)
+
+// ipv4Re matches a dotted address; no listing body may carry one.
+var ipv4Re = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+
+// assetRe matches the two hashed paths the shell references.
+var assetRe = regexp.MustCompile(`(?:href|src)="(/ui/static/[0-9a-f]{16}/[^"]+)"`)
+
+// consoleHeaders returns what every response under /ui/ carries, Cache-Control
+// and Content-Type aside.
+func consoleHeaders() map[string]string {
+	return map[string]string{
+		"Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; " +
+			"connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'",
+		"X-Frame-Options":              "DENY",
+		"X-Content-Type-Options":       "nosniff",
+		"Referrer-Policy":              "no-referrer",
+		"Cross-Origin-Opener-Policy":   "same-origin",
+		"Cross-Origin-Resource-Policy": "same-origin",
+	}
+}
+
+// fetchHeaders are what a browser sends on a fetch the page starts: same-origin,
+// and never a navigation, so the gateway answers 401 rather than redirecting.
+func fetchHeaders() http.Header {
+	return http.Header{"Sec-Fetch-Mode": {"cors"}, "Sec-Fetch-Site": {"same-origin"}, "Sec-Fetch-Dest": {"empty"}}
+}
+
+// assertConsoleHeaders checks every header of the console's policy on resp.
+func assertConsoleHeaders(t *testing.T, what string, resp response) {
+	t.Helper()
+	for name, want := range consoleHeaders() {
+		if got := resp.Header.Get(name); got != want {
+			t.Fatalf("%s: %s is %q, want %q", what, name, got, want)
+		}
+	}
+}
+
+// assertShell checks a 200 shell response: HTML, never stored, with the policy headers.
+func assertShell(t *testing.T, what string, resp response) {
+	t.Helper()
+	if resp.Status != http.StatusOK {
+		t.Fatalf("%s: status %d, want 200: %s", what, resp.Status, resp.Body)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("%s: Content-Type %q, want text/html", what, ct)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("%s: Cache-Control %q, want no-store", what, cc)
+	}
+	assertConsoleHeaders(t, what, resp)
+}
+
+// assertAsset checks a hashed asset response: the type its extension names,
+// immutable, with the policy headers.
+func assertAsset(t *testing.T, path string, resp response) {
+	t.Helper()
+	if resp.Status != http.StatusOK {
+		t.Fatalf("GET %s: status %d, want 200: %s", path, resp.Status, resp.Body)
+	}
+	want := "text/css; charset=utf-8"
+	if strings.HasSuffix(path, ".js") {
+		want = "text/javascript; charset=utf-8"
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != want {
+		t.Fatalf("GET %s: Content-Type %q, want %q", path, ct, want)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+		t.Fatalf("GET %s: Cache-Control %q, want the immutable policy", path, cc)
+	}
+	if len(resp.Body) == 0 {
+		t.Fatalf("GET %s: empty body", path)
+	}
+	assertConsoleHeaders(t, "GET "+path, resp)
+}
+
+// assetPaths reads the hashed asset paths the shell references, plus one
+// vendored module under the same hash, which the shell reaches through an
+// import rather than a reference of its own.
+// The hash is this binary's and is never known in advance.
+func assetPaths(t *testing.T, shell []byte) []string {
+	t.Helper()
+	var paths []string
+	for _, m := range assetRe.FindAllSubmatch(shell, -1) {
+		paths = append(paths, string(m[1]))
+	}
+	if len(paths) != 2 {
+		t.Fatalf("the shell references %d hashed assets, want the stylesheet and the script:\n%s", len(paths), shell)
+	}
+	dir := paths[0][:strings.LastIndex(paths[0], "/")+1]
+
+	return append(paths, dir+"vendor/preact/preact.module.js")
+}
+
+// auditRecords counts the request records in a gateway log.
+func auditRecords(logs string) int {
+	return strings.Count(logs, `"msg":"request"`)
+}
+
+// decode parses body as JSON into v or fails naming what was fetched.
+func decode(t *testing.T, what string, body []byte, v any) {
+	t.Helper()
+	if err := json.Unmarshal(body, v); err != nil {
+		t.Fatalf("%s: %v:\n%s", what, err, body)
+	}
+}
+
+// assertNamespaces checks that a namespace list names ns.
+func assertNamespaces(t *testing.T, body []byte, ns string) {
+	t.Helper()
+	var list struct {
+		Namespaces []string `json:"namespaces"`
+	}
+	decode(t, "/v1/namespaces", body, &list)
+	if !slices.Contains(list.Namespaces, ns) {
+		t.Fatalf("namespaces %v do not name %s", list.Namespaces, ns)
 	}
 }
 

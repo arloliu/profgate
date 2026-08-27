@@ -79,13 +79,19 @@ type fakeDiscovery struct {
 	confirmErr error
 	onTargets  func()
 
+	// catalog and catalogErr answer Catalog; catalogNamespaces records the namespace argument of every call.
+	catalog    []k8s.ServiceRef
+	catalogErr error
+
 	targetsCalls atomic.Int32
 	confirmCalls atomic.Int32
+	catalogCalls atomic.Int32
 
-	mu              sync.Mutex
-	confirmDeadline time.Time
-	confirmTarget   k8s.Target
-	selections      []k8s.PortSelection // the port selection of every Targets call, in order
+	mu                sync.Mutex
+	confirmDeadline   time.Time
+	confirmTarget     k8s.Target
+	selections        []k8s.PortSelection // the port selection of every Targets call, in order
+	catalogNamespaces []string            // the namespace argument of every Catalog call, in order
 	// byName, when set, answers a portName selection from the map (nil for an
 	// absent name) instead of targets, the way a name resolves per Pod.
 	byName map[string][]k8s.Target
@@ -127,6 +133,36 @@ func (f *fakeDiscovery) Confirm(ctx context.Context, t k8s.Target) error {
 	f.mu.Unlock()
 
 	return f.confirmErr
+}
+
+func (f *fakeDiscovery) Catalog(_ context.Context, namespace string) ([]k8s.ServiceRef, error) {
+	f.catalogCalls.Add(1)
+	f.mu.Lock()
+	f.catalogNamespaces = append(f.catalogNamespaces, namespace)
+	f.mu.Unlock()
+	if f.catalogErr != nil {
+		return nil, f.catalogErr
+	}
+	if namespace == "" {
+		return f.catalog, nil
+	}
+	// A namespace argument narrows the answer, as the seam's Catalog does.
+	refs := make([]k8s.ServiceRef, 0, len(f.catalog))
+	for _, ref := range f.catalog {
+		if ref.Namespace == namespace {
+			refs = append(refs, ref)
+		}
+	}
+
+	return refs, nil
+}
+
+// catalogNamespacesSeen is the namespace argument of every Catalog call, in order.
+func (f *fakeDiscovery) catalogNamespacesSeen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]string(nil), f.catalogNamespaces...)
 }
 
 func (f *fakeDiscovery) confirmed() (time.Time, k8s.Target) {
@@ -376,6 +412,7 @@ type harness struct {
 	runtime   *pgo.Runtime       // nil leaves the handler an unbound one
 	auth      auth.Authenticator // nil leaves the handler on auth.Disabled
 	routes    auth.AuthRoutes    // nil leaves the /auth/ routes unknown
+	console   http.Handler       // nil leaves /ui/ and / unknown
 	ready     func() bool        // nil leaves readiness on disc.synced
 	// beforeAllowlist, when set, runs between the realm check and the allowlist check.
 	beforeAllowlist func()
@@ -424,6 +461,7 @@ func (h *harness) handler() http.Handler {
 		PGO:        h.runtime,
 		Auth:       h.auth,
 		AuthRoutes: h.routes,
+		Console:    h.console,
 		Ready:      h.ready,
 		Logger:     h.logger(),
 		Choose:     h.choose,

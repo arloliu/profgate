@@ -28,6 +28,7 @@ import (
 	"github.com/arloliu/profgate/internal/pgo"
 	"github.com/arloliu/profgate/internal/proxy"
 	"github.com/arloliu/profgate/internal/tlscert"
+	"github.com/arloliu/profgate/internal/ui"
 )
 
 const (
@@ -207,6 +208,20 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	}
 	if oidc != nil {
 		apiDeps.AuthRoutes = oidc.Routes()
+	}
+	// The console is built from files already in the binary, so the only way
+	// it fails is a tree that cannot be read or a shell that cannot be
+	// rendered; that ends startup here, before anything binds, as an
+	// authenticator error does.
+	if cfg.UI.Enabled {
+		console, err := ui.New()
+		if err != nil {
+			logger.Error("console", "error", err)
+
+			return 1
+		}
+		apiDeps.Console = console
+		logger.Info("console enabled", "path", ui.Prefix)
 	}
 	api := httpapi.New(apiDeps)
 	// inFlightRequests is how many API requests are being served right now,

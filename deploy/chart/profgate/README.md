@@ -150,7 +150,7 @@ and the chart offers no way to widen them.
 The gateway's configuration file is assembled from two places.
 
 Structured values cover the keys the chart itself depends on:
-`server.logLevel`, `server.tls`, `auth.anonymousRealm`, `realms`,
+`server.logLevel`, `server.tls`, `auth.anonymousRealm`, `realms`, `ui.enabled`,
 `nats.url` and `nats.credsFile`, and `pgo.enabled`, `pgo.configAPI`, and `pgo.limits`.
 The chart reads `pgo.limits` for the memory arithmetic and `nats` for the volume it mounts,
 so these have to be values rather than opaque text.
@@ -210,6 +210,13 @@ extraEnv:
 
 The overrides land in the pod template,
 so changing `extraEnv` rolls the Deployment on upgrade the way any other pod-template change does.
+
+`ui.enabled` turns on the embedded operator console, served at `/ui/`.
+It is off by default and restart-class, since it decides which routes the handler registers.
+Under `auth.mode: oidc` it needs `auth.oidc.browser`, because a console that cannot log a browser in serves nobody;
+`config.Load` refuses the combination without it.
+An Ingress that routes only `/v1` has to add `/ui/`, `/auth/`, and `/` once the console is on,
+or the console and the sign-in it needs stay unreachable through it.
 
 ## Readiness and shutdown
 
@@ -450,6 +457,7 @@ that provision the buckets, the account, and the Secret.
 | `auth.oidc.browser` | `{}` | The relying-party block that turns a login into a session cookie; empty renders no `auth.oidc.browser` block. See *Authentication*. |
 | `auth.secret.enabled`, `.existingSecret`, `.mountPath` | `false`, `profgate-auth`, `/etc/profgate/auth` | The Secret the files above are read from. |
 | `realms` | one wide-open realm | What each principal may reach. |
+| `ui.enabled` | `false` | The embedded operator console, served at `/ui/`. Restart-class; under `auth.mode: oidc` it requires `auth.oidc.browser`. |
 | `tls.enabled`, `.existingSecret`, `.certKey`, `.keyKey`, `.mountPath`, `.minVersion` | `false`, `profgate-tls`, `tls.crt`, `tls.key`, `/etc/profgate/tls`, `1.2` | HTTPS on the API port, from a Secret the operator creates. |
 | `nats.url`, `.credsFile`, `.existingSecret`, `.secretKey`, `.mountPath` | empty, `/etc/profgate/nats/nats.creds`, `profgate-nats-creds`, `nats.creds`, `/etc/profgate/nats` | NATS, used only with `pgo.enabled`. |
 | `pgo.enabled`, `.configAPI`, `.limits` | `false`, `enabled`, shipped ceilings | PGO collection and the ceilings the memory limit is derived from. |

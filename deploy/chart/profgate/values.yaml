@@ -284,6 +284,16 @@ realms:
     #   collect: true
     #   configure: true
 
+# The embedded operator console, served at /ui/. Off by default. Turning it
+# on is restart-class: it decides which routes the handler registers.
+# Under auth.mode: oidc, the console needs auth.oidc.browser -- a console
+# that cannot log a browser in serves nobody -- and config.Load refuses the
+# combination without it. An Ingress that routes only /v1 has to add /ui/,
+# /auth/, and / once this is on, or the console and the sign-in it needs are
+# unreachable through it.
+ui:
+  enabled: false
+
 # HTTPS on the API port. Off means plaintext, with TLS terminating at an
 # Ingress or a mesh, which is the shipped topology. The ops port stays
 # plaintext either way: the kubelet's probe and the metrics scraper reach it by

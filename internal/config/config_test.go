@@ -1278,3 +1278,50 @@ func TestLoadAuth(t *testing.T) {
 		})
 	})
 }
+
+// TestLoadUI covers the console key: where its value comes from, what a value
+// that is not a boolean does, and the rule that holds an enabled console to a
+// browser login under oidc.
+func TestLoadUI(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+		// env is PROFGATE_UI_ENABLED; an empty string leaves it unset.
+		env string
+		// wantErr is a substring of the load error; empty means the load must succeed.
+		wantErr string
+		want    bool
+	}{
+		{name: "absent", file: "good.yaml"},
+		{name: "from file", file: "ui-enabled.yaml", want: true},
+		{name: "from env", file: "good.yaml", env: "true", want: true},
+		{name: "env false over file", file: "ui-enabled.yaml", env: "false"},
+		// The decoder refuses the value before validation runs, so the message
+		// is the decoder's: it names the value it could not read as a boolean.
+		{name: "not boolean", file: "ui-not-bool.yaml", wantErr: "cannot unmarshal !!str `yes-please` into bool"},
+		{name: "unknown key", file: "ui-unknown.yaml", wantErr: "field path not found in type config.UIConfig"},
+		{name: "under basic", file: "ui-basic.yaml", want: true},
+		{
+			name: "under oidc without browser", file: "ui-oidc.yaml",
+			wantErr: "ui.enabled requires auth.oidc.browser when auth.mode is oidc",
+		},
+		{name: "under oidc with browser", file: "ui-oidc-browser.yaml", want: true},
+		// The rule reads only an enabled console: an issuer with no browser
+		// block stays a valid configuration for a gateway that serves no page.
+		{name: "off under oidc without browser", file: "ui-oidc-off.yaml"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env != "" {
+				t.Setenv("PROFGATE_UI_ENABLED", tc.env)
+			}
+			if tc.wantErr != "" {
+				loadErr(t, fixture(tc.file), tc.wantErr)
+				return
+			}
+			cfg := loadOK(t, fixture(tc.file))
+			if cfg.UI.Enabled != tc.want {
+				t.Fatalf("ui.enabled = %v, want %v", cfg.UI.Enabled, tc.want)
+			}
+		})
+	}
+}

@@ -99,6 +99,15 @@ holds it to an actual boolean.
 {{- end -}}
 
 {{/*
+Whether the console is on: "true", or "" when it is off.
+ui.enabled decides the ui block in the rendered configuration, so the
+template reads it through this helper, which holds it to an actual boolean.
+*/}}
+{{- define "profgate.uiEnabled" -}}
+{{- include "profgate.boolValue" (dict "key" "ui.enabled" "value" .Values.ui.enabled) -}}
+{{- end -}}
+
+{{/*
 Whether the authentication Secret is mounted: "true", or "" when it is off.
 auth.secret.enabled decides the Secret volume, its mount, and every derived
 file path in the rendered configuration -- auth.basic.usersFile,
@@ -307,6 +316,13 @@ shapes are refused the way config.pgo is.
 {{- if hasKey (dig "limits" dict $rawPgo | default dict) $key -}}
 {{- fail (printf "config.pgo.limits.%s is not supported: when PGO is enabled and resources is empty, the memory limit is derived from pgo.limits.%s, so set pgo.limits.%s instead" $key $key $key) -}}
 {{- end -}}
+{{- end -}}
+{{- if and (hasKey $raw "ui") (not (kindIs "map" (get $raw "ui"))) -}}
+{{- fail "config.ui must be a mapping: null or a scalar replaces the whole ui block in the rendered configuration, so set ui.enabled instead" -}}
+{{- end -}}
+{{- $rawUI := dig "ui" dict $raw | default dict -}}
+{{- if hasKey $rawUI "enabled" -}}
+{{- fail "config.ui.enabled is not supported: the console is a documented value, so set ui.enabled instead" -}}
 {{- end -}}
 {{- if and (hasKey $raw "server") (not (kindIs "map" (get $raw "server"))) -}}
 {{- fail "config.server must be a mapping: null or a scalar replaces the whole server block in the rendered configuration and resets the listen addresses the container ports and readiness probe are built around, so set the individual keys under config.server instead" -}}
@@ -635,6 +651,9 @@ auth:
 {{- end }}
 realms:
 {{ toYaml (required "realms must name at least one realm" .Values.realms) | indent 2 }}
+{{- $_ := include "profgate.uiEnabled" . }}
+ui:
+  enabled: {{ .Values.ui.enabled }}
 {{- if include "profgate.pgoEnabled" . }}
 nats:
   url: {{ include "profgate.natsURL" . | quote }}

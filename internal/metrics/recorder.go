@@ -29,6 +29,16 @@ const (
 	EndpointCollectionCancel Endpoint = "collection_cancel"
 	// EndpointAuth is the route family of the three /auth/ routes.
 	EndpointAuth Endpoint = "auth"
+	// EndpointNamespaces is the namespace listing route family; profile is fixed to "none".
+	EndpointNamespaces Endpoint = "namespaces"
+	// EndpointServices is the Service listing route family; profile is fixed to "none".
+	EndpointServices Endpoint = "services"
+	// EndpointWhoami is the caller description route family; profile is fixed to "none".
+	EndpointWhoami Endpoint = "whoami"
+	// EndpointLimits is the limits description route family; profile is fixed to "none".
+	EndpointLimits Endpoint = "limits"
+	// EndpointUI covers /ui/, every path under it, and /; profile is fixed to "none".
+	EndpointUI Endpoint = "ui"
 )
 
 // CookieKey is one loaded cookie key as the info gauge reports it.
@@ -44,7 +54,9 @@ type CookieKey struct {
 type Recorder interface {
 	// Request records one completed /v1 request.
 	// endpoint and profile come from the resolved route when there is one (method failures included):
-	// targets → ("targets","none"), a known profile route → ("profile", name).
+	// targets → ("targets","none"), a known profile route → ("profile", name),
+	// the listing routes → ("namespaces","none"), ("services","none"), ("whoami","none"), ("limits","none"),
+	// and the console → ("ui","none").
 	// Requests that fail before a route resolves, or name an unknown profile, record ("profile","none").
 	Request(endpoint Endpoint, profile, code string, d time.Duration)
 	// Confirm records the outcome of one Pod confirmation call: "ok", "changed", or "unavailable".

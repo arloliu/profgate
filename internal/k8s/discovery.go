@@ -1,6 +1,6 @@
 // Package k8s is the gateway's only seam to the Kubernetes API.
 // The methods it exposes are the set of things Profgate can do to the cluster:
-// observe Services, Pods, and EndpointSlices, and read one named Pod.
+// observe Services, Pods, and EndpointSlices, read one named Pod, and list the Services it holds.
 package k8s
 
 import (
@@ -46,6 +46,11 @@ type Discovery interface {
 	Targets(ctx context.Context, namespace, service string, port PortSelection) ([]Target, error)
 	HasSynced() bool
 	Confirm(ctx context.Context, t Target) error
+	// Catalog lists the Services with a non-empty selector from the cache,
+	// sorted by namespace then name.
+	// An empty namespace means every namespace; a namespace the cache lacks is an empty list, not an error.
+	// It issues no request; an error means the lister could not be read.
+	Catalog(ctx context.Context, namespace string) ([]ServiceRef, error)
 }
 
 // Options configures the package's constructors and Preflight.

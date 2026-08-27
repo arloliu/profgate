@@ -520,6 +520,7 @@ func TestChartBooleanTogglesAreValidated(t *testing.T) {
 		"rbac.create",
 		"serviceAccount.create",
 		"configChecksumAnnotation",
+		"ui.enabled",
 	} {
 		t.Run(key, func(t *testing.T) {
 			for name, tc := range map[string]struct {
@@ -605,6 +606,63 @@ func TestChartGracePeriod(t *testing.T) {
 	}
 }
 
+// TestChartUI covers ui.enabled, the console toggle, over the combinations
+// that decide whether the rendered configuration parses: off by default,
+// on with the console alone, on under basic authentication, and on under
+// oidc with the browser flow, the one combination the chart renders without
+// a guard of its own because config.Load itself refuses oidc without a
+// browser block.
+func TestChartUI(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		cfg := loadRenderedConfig(t)
+		if cfg.UI.Enabled {
+			t.Errorf("UI.Enabled = %v, want false", cfg.UI.Enabled)
+		}
+
+		cm := render[corev1.ConfigMap](t, "configmap.yaml")
+		body := cm.Data["config.yaml"]
+		var parsed map[string]any
+		if err := yaml.Unmarshal([]byte(body), &parsed); err != nil {
+			t.Fatalf("unmarshal the rendered config.yaml: %v\n%s", err, body)
+		}
+		ui, ok := parsed["ui"].(map[string]any)
+		if !ok {
+			t.Fatalf("the rendered config.yaml has no ui mapping:\n%s", body)
+		}
+		if enabled, ok := ui["enabled"].(bool); !ok || enabled {
+			t.Errorf("the rendered config.yaml's ui.enabled = %v, want false and visible:\n%s", ui["enabled"], body)
+		}
+	})
+
+	t.Run("on", func(t *testing.T) {
+		cfg := loadRenderedConfig(t, "--set", "ui.enabled=true")
+		if !cfg.UI.Enabled {
+			t.Errorf("UI.Enabled = %v, want true", cfg.UI.Enabled)
+		}
+	})
+
+	t.Run("on under basic", func(t *testing.T) {
+		values, _ := authBasicValues(t)
+		values = append(values, "--set", "ui.enabled=true")
+		cfg := loadRenderedConfig(t, values...)
+		if !cfg.UI.Enabled {
+			t.Errorf("UI.Enabled = %v, want true", cfg.UI.Enabled)
+		}
+	})
+
+	t.Run("on under oidc with the browser flow", func(t *testing.T) {
+		values, _ := authBrowserValues(t)
+		values = append(values, "--set", "ui.enabled=true")
+		cfg := loadRenderedConfig(t, values...)
+		if !cfg.UI.Enabled {
+			t.Errorf("UI.Enabled = %v, want true", cfg.UI.Enabled)
+		}
+		if cfg.Auth.OIDC.Browser == nil {
+			t.Error("Auth.OIDC.Browser = nil, want the browser block to survive rendering with ui.enabled")
+		}
+	})
+}
+
 // TestChartConfigVolumeNamesTheConfigMap pins the reference between the two
 // templates. The Deployment reaches the ConfigMap through two name helpers and
 // the checksum reaches it through a template path, so a rename that misses one
@@ -673,6 +731,15 @@ func TestChartConfigChecksum(t *testing.T) {
 	t.Run("it can be turned off", func(t *testing.T) {
 		if got := checksumAnnotation(t, "--set", "configChecksumAnnotation=false"); got != "" {
 			t.Errorf("checksum/config = %q, want it absent when configChecksumAnnotation is false", got)
+		}
+	})
+
+	t.Run("turning the console on moves it", func(t *testing.T) {
+		// ui.enabled is restart-class -- it decides which routes the handler
+		// registers -- so the rendered configuration has to change for the
+		// upgrade to roll the Pods.
+		if got := checksumAnnotation(t, "--set", "ui.enabled=true"); got == base {
+			t.Errorf("checksum/config is %q with and without ui.enabled; the upgrade would not restart any Pod", got)
 		}
 	})
 }
@@ -803,6 +870,21 @@ func TestChartRejectsDerivedKeyOverrides(t *testing.T) {
 			name:   "config.pgo.limits scalar",
 			values: []string{"--set-json", `config={"pgo":{"limits":5}}`},
 			want:   "set pgo.limits.maxParallel, pgo.limits.maxSampleBytes, pgo.limits.maxMergedBytes, and pgo.limits.maxActiveCollections instead",
+		},
+		{
+			name:   "config.ui.enabled",
+			values: []string{"--set", "config.ui.enabled=true"},
+			want:   "set ui.enabled instead",
+		},
+		{
+			name:   "config.ui null",
+			values: []string{"--set-json", `config={"ui":null}`},
+			want:   "config.ui must be a mapping",
+		},
+		{
+			name:   "config.ui scalar",
+			values: []string{"--set-json", `config={"ui":5}`},
+			want:   "config.ui must be a mapping",
 		},
 		{
 			name:   "config.nats.credsFile",
@@ -972,6 +1054,11 @@ func TestChartRejectsDerivedKeyOverrides(t *testing.T) {
 		cfg = loadRenderedConfig(t, append(pgoValues(t), "--set-json", `config={"pgo":{"limits":{}}}`)...)
 		if got, want := cfg.PGO.Limits.MaxParallel, 4; got != want {
 			t.Errorf("pgo.limits.maxParallel = %d, want the shipped %d to survive an empty config.pgo.limits mapping", got, want)
+		}
+
+		cfg = loadRenderedConfig(t, "--set-json", `config={"ui":{}}`)
+		if cfg.UI.Enabled {
+			t.Error("UI.Enabled = true, want the structured false to survive an empty config.ui mapping")
 		}
 	})
 }
@@ -2398,4 +2485,34 @@ func TestChartPodDisruptionBudget(t *testing.T) {
 			t.Errorf("minAvailable = %v, want the plain integer 2147483647", spec.MinAvailable)
 		}
 	})
+}
+
+// TestChartReadmeValues holds the chart README's *Values* table to naming
+// every value operators change through this task: a value documented nowhere
+// is one an operator has to read the chart's templates to find.
+func TestChartReadmeValues(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(chartDir, "README.md"))
+	if err != nil {
+		t.Fatalf("read %s/README.md: %v", chartDir, err)
+	}
+
+	var inTable bool
+	var sawUI bool
+	for _, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## Values") {
+			inTable = true
+			continue
+		}
+		if !inTable || !strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		if strings.Contains(trimmed, "`ui.enabled`") {
+			sawUI = true
+		}
+	}
+
+	if !sawUI {
+		t.Error("the README's Values table has no row naming `ui.enabled`")
+	}
 }

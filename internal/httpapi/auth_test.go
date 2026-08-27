@@ -82,7 +82,7 @@ func (f *fakeRoutes) ServeAuth(w http.ResponseWriter, _ *http.Request, cfg *conf
 	case http.StatusOK:
 		w.WriteHeader(http.StatusOK)
 	default:
-		writeError(w, f.outcome.Status, f.outcome.Code, "authentication required")
+		WriteError(w, f.outcome.Status, f.outcome.Code, "authentication required")
 	}
 
 	return f.outcome
@@ -579,11 +579,11 @@ func TestReasonsClosedSet(t *testing.T) {
 	}
 }
 
-// TestEnvelopeMatchesAuth pins writeError to the bytes internal/auth writes
+// TestEnvelopeMatchesAuth pins WriteError to the bytes internal/auth writes
 // for its own errors, so the two envelopes stay identical.
 func TestEnvelopeMatchesAuth(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeError(rec, http.StatusUnauthorized, "unauthenticated", "authentication required")
+	WriteError(rec, http.StatusUnauthorized, "unauthenticated", "authentication required")
 	if got := rec.Body.String(); got != authFailureBody {
 		t.Errorf("body = %q, want %q", got, authFailureBody)
 	}

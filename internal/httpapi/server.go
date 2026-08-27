@@ -48,6 +48,8 @@ var (
 	// the namespace and Service segments are validated separately.
 	serviceRouteRE = regexp.MustCompile(
 		`^/v1/namespaces/([^/]+)/services/([^/]+)/(targets|pgo|collections|profiles/([^/]+))$`)
+	// listingRouteRE matches the Service listing route; the namespace is validated as a DNS-1123 label.
+	listingRouteRE = regexp.MustCompile(`^/v1/namespaces/([^/]+)/services$`)
 	// collectionRouteRE matches the three Collection-scoped routes;
 	// the identifier is validated against its own grammar, so a path carrying a
 	// separator or a traversal segment is never read as one.
@@ -75,6 +77,8 @@ type Deps struct {
 	Auth auth.Authenticator
 	// AuthRoutes serves /auth/*; nil means the three routes are 404 route_unknown.
 	AuthRoutes auth.AuthRoutes
+	// Console serves /ui/ and /; nil means ui.enabled is false and both are 404 route_unknown.
+	Console http.Handler
 	// Ready gates the /v1 and /auth/ readiness steps: discovery synced and,
 	// under oidc, the issuer discovered.
 	// It is narrower than /readyz, which also turns 503 for the drain and for
@@ -120,7 +124,9 @@ func New(d Deps) http.Handler {
 // routeKind is which of the /v1 routes a path matched.
 type routeKind int
 
-// The routes the gateway serves: the two interactive ones and the five PGO ones.
+// The routes the gateway serves: the two interactive ones, the five PGO ones, and the four listing ones.
+// Each classification below is an exhaustive switch that names every kind,
+// so declaration order carries no meaning and a kind added later is classified by name.
 const (
 	kindTargets routeKind = iota
 	kindProfile
@@ -129,15 +135,50 @@ const (
 	kindCollection
 	kindCollectionProfile
 	kindCollectionCancel
+	kindNamespaces
+	kindServices
+	kindWhoami
+	kindLimits
 )
 
 // isPGO reports whether the route reads or writes PGO state, which is what the
 // pgo.enabled and replay-barrier steps of the request algorithm gate.
-func (k routeKind) isPGO() bool { return k >= kindPGOPolicy }
+func (k routeKind) isPGO() bool {
+	switch k {
+	case kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel:
+		return true
+	case kindTargets, kindProfile, kindNamespaces, kindServices, kindWhoami, kindLimits:
+		return false
+	default:
+		return false
+	}
+}
 
 // isCollectionScoped reports whether the route names a Collection rather than a
 // Service, so its namespace, Service, and realm come from the stored record.
-func (k routeKind) isCollectionScoped() bool { return k >= kindCollection }
+func (k routeKind) isCollectionScoped() bool {
+	switch k {
+	case kindCollection, kindCollectionProfile, kindCollectionCancel:
+		return true
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindNamespaces, kindServices, kindWhoami, kindLimits:
+		return false
+	default:
+		return false
+	}
+}
+
+// isListing reports whether the route is one of the four listing endpoints,
+// which run the algorithm up to the realm step and then read the cache or the configuration.
+func (k routeKind) isListing() bool {
+	switch k {
+	case kindNamespaces, kindServices, kindWhoami, kindLimits:
+		return true
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel:
+		return false
+	default:
+		return false
+	}
+}
 
 // methods lists what the route accepts, in the order the Allow header carries them.
 func (k routeKind) methods() []string {
@@ -148,7 +189,8 @@ func (k routeKind) methods() []string {
 		return []string{http.MethodGet, http.MethodPost}
 	case kindCollectionCancel:
 		return []string{http.MethodPost}
-	case kindTargets, kindProfile, kindCollection, kindCollectionProfile:
+	case kindTargets, kindProfile, kindCollection, kindCollectionProfile,
+		kindNamespaces, kindServices, kindWhoami, kindLimits:
 		return []string{http.MethodGet}
 	default:
 		return []string{http.MethodGet}
@@ -164,9 +206,24 @@ type route struct {
 	collection string // set for the three Collection-scoped routes
 }
 
-// parseRoute matches path against the seven routes,
-// validating the two name segments as DNS-1123 labels and the identifier against its own grammar.
+// parseRoute matches path against the eleven routes,
+// validating the name segments as DNS-1123 labels and the identifier against its own grammar.
 func parseRoute(path string) (route, bool) {
+	switch path {
+	case "/v1/namespaces":
+		return route{kind: kindNamespaces}, true
+	case "/v1/whoami":
+		return route{kind: kindWhoami}, true
+	case "/v1/limits":
+		return route{kind: kindLimits}, true
+	}
+	if m := listingRouteRE.FindStringSubmatch(path); m != nil {
+		if len(validation.IsDNS1123Label(m[1])) > 0 {
+			return route{}, false
+		}
+
+		return route{kind: kindServices, namespace: m[1]}, true
+	}
 	if m := serviceRouteRE.FindStringSubmatch(path); m != nil {
 		if len(validation.IsDNS1123Label(m[1])) > 0 || len(validation.IsDNS1123Label(m[2])) > 0 {
 			return route{}, false
@@ -210,14 +267,19 @@ type request struct {
 	route  route
 	// authRoute marks a request under /auth/, which has labels and an audit shape of its own.
 	authRoute bool
-	port      portParams // the client's port selection; zero on PGO routes
-	audit     auditRecord
+	// console marks a request under /ui/ or to /: counted under EndpointUI, never narrated in the audit log.
+	console bool
+	port    portParams // the client's port selection; zero on PGO routes
+	audit   auditRecord
 }
 
 // labels are the metrics endpoint and profile for this request:
 // the resolved route when there is one, ("profile","none") before a route resolves
 // or when the profile name is unknown.
 func (q *request) labels() (metrics.Endpoint, string) {
+	if q.console {
+		return metrics.EndpointUI, labelNone
+	}
 	if q.authRoute {
 		return metrics.EndpointAuth, labelNone
 	}
@@ -237,6 +299,14 @@ func (q *request) labels() (metrics.Endpoint, string) {
 		return metrics.EndpointCollectionProfile, labelCPU
 	case kindCollectionCancel:
 		return metrics.EndpointCollectionCancel, labelCPU
+	case kindNamespaces:
+		return metrics.EndpointNamespaces, labelNone
+	case kindServices:
+		return metrics.EndpointServices, labelNone
+	case kindWhoami:
+		return metrics.EndpointWhoami, labelNone
+	case kindLimits:
+		return metrics.EndpointLimits, labelNone
 	case kindProfile:
 		if config.IsProfile(q.route.profile) {
 			return metrics.EndpointProfile, q.route.profile
@@ -255,7 +325,7 @@ func (q *request) fail(w http.ResponseWriter, e *requestError) {
 	if e.auditCode != "" {
 		q.audit.code = e.auditCode
 	}
-	writeError(w, e.status, e.code, e.message)
+	WriteError(w, e.status, e.code, e.message)
 }
 
 // ServeHTTP runs the request algorithm:
@@ -263,7 +333,8 @@ func (q *request) fail(w http.ResponseWriter, e *requestError) {
 // filter and select, admit, confirm, proxy.
 // The first failing step answers.
 // The configuration is loaded once here and the request uses that snapshot throughout.
-// A path under /auth/ is not a /v1 route and takes the shorter algorithm of serveAuthRoute.
+// A path under /auth/ is not a /v1 route and takes the shorter algorithm of serveAuthRoute;
+// a path under /ui/ or exactly / is handed to the console, which runs its own.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	cfg := s.deps.Config.Load()
@@ -274,8 +345,17 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		q.audit.duration = time.Since(start)
 		endpoint, profile := q.labels()
 		s.deps.Recorder.Request(endpoint, profile, q.audit.code, q.audit.duration)
-		writeAudit(s.deps.Logger, q.audit)
+		// A console request is counted, not narrated: it carries no principal and names nothing a realm bounds.
+		if !q.console {
+			writeAudit(s.deps.Logger, q.audit)
+		}
 	}()
+
+	if isConsolePath(r.URL.Path) {
+		s.serveConsole(w, r, q)
+
+		return
+	}
 
 	if strings.HasPrefix(r.URL.Path, authPrefix) {
 		s.serveAuthRoute(w, r, q, cfg)
@@ -364,6 +444,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !realmAllows(realm, rt, r.Method) {
 		// The denial names nothing: the same body whether or not the Service exists.
 		q.fail(w, &requestError{status: http.StatusForbidden, code: "realm_denied", message: "access denied by realm"})
+
+		return
+	}
+
+	if rt.kind.isListing() {
+		s.serveListing(w, r, q, cfg, p, realm)
 
 		return
 	}
@@ -543,7 +629,7 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 	if !out.Committed {
 		// Status 0 is a client that left before anything was written: nobody to answer.
 		if out.Status != 0 {
-			writeError(w, out.Status, out.Code, upstreamMessage(out.Code, target.Pod))
+			WriteError(w, out.Status, out.Code, upstreamMessage(out.Code, target.Pod))
 		}
 
 		return

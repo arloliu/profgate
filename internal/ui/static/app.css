@@ -1,0 +1,74 @@
+@import url("./vendor/pico/pico.classless.min.css");
+
+/* The console's own rules sit on top of Pico's class-less defaults:
+   the panel grid, the URL field, the error box. */
+main#app {
+  padding-block: 1rem;
+}
+
+.panels {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  align-items: start;
+}
+
+.panels article {
+  margin: 0;
+}
+
+.panels dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.panels dt {
+  font-weight: bold;
+}
+
+.panels dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+input.url {
+  font-family: monospace;
+  font-size: 0.85em;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.error {
+  border: 1px solid var(--pico-del-color, #c62828);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.error button {
+  margin-top: 0.5rem;
+  width: auto;
+}
+
+.table {
+  overflow-x: auto;
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  width: auto;
+  color: var(--pico-primary, #1565c0);
+  text-decoration: underline;
+  font-family: monospace;
+}

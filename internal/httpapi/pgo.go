@@ -120,7 +120,8 @@ func (s *server) servePGOCollection(
 		s.serveCollectionDownload(w, r, q, sess, stored)
 	case kindCollectionCancel:
 		s.serveCollectionCancel(w, r, q, sess, stored)
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections:
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections,
+		kindNamespaces, kindServices, kindWhoami, kindLimits:
 		q.fail(w, errCollectionNotFound)
 	}
 }

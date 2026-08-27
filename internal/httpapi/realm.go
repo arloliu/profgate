@@ -13,7 +13,12 @@ const wildcard = "*"
 // realmAllows evaluates namespace, then Service, then the route's own check:
 // the profile list for the profile endpoint, and the realm's pgo flag for a PGO route.
 // Each list matches by the wildcard or the exact string; there is no prefix or glob matching.
+// A listing route has no Service to check: the namespace list, whoami, and limits are admitted
+// unconditionally and filtered or described afterwards, and the Service list needs only its namespace admitted.
 func realmAllows(r config.Realm, rt route, method string) bool {
+	if rt.kind.isListing() {
+		return rt.kind != kindServices || listAllows(r.Namespaces, rt.namespace)
+	}
 	if !listAllows(r.Namespaces, rt.namespace) || !listAllows(r.Services, rt.service) {
 		return false
 	}
@@ -49,7 +54,7 @@ func pgoAllows(p config.RealmPGO, kind routeKind, method string) bool {
 		return p.Read
 	case kindCollectionCancel:
 		return p.Collect
-	case kindTargets, kindProfile:
+	case kindTargets, kindProfile, kindNamespaces, kindServices, kindWhoami, kindLimits:
 		return true
 	default:
 		return false

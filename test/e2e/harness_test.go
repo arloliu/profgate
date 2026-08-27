@@ -756,6 +756,8 @@ type gatewayConfigOptions struct {
 	// AuthBlock, when set, is the whole auth block, written in place of the
 	// disabled one the other gateways run with.
 	AuthBlock string
+	// UIEnabled turns the console on: /ui/ serves the shell and / redirects to it.
+	UIEnabled bool
 }
 
 // gatewayConfig renders the configuration one gateway runs with:
@@ -814,6 +816,11 @@ pgo:
       rounds: 1
       roundInterval: 1s
 `, o.NATSURL, credsFile)
+	}
+	if o.UIEnabled {
+		b.WriteString(`ui:
+  enabled: true
+`)
 	}
 	b.WriteString(`realms:
   developer:

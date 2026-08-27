@@ -66,6 +66,12 @@ Check these three things first.
 {{- else }}
      curl "localhost:8080/v1/namespaces/<ns>/services/<svc>/targets"
 {{- end }}
+{{- if include "profgate.uiEnabled" . }}
+
+   The console is on, at /ui/ through the same Service and port. An Ingress
+   that routes only /v1 has to add /ui/, /auth/, and / too, or the console
+   and the sign-in it needs stay unreachable through it.
+{{- end }}
 
 {{ if include "profgate.pgoEnabled" . }}
 {{- if .Values.nats.credsFile }}

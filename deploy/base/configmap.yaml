@@ -28,6 +28,13 @@ data:
     auth:
       mode: disabled
       anonymousRealm: developer
+    # The console is off. To serve it at /ui/, uncomment:
+    #
+    # ui:
+    #   enabled: true
+    #
+    # Under auth.mode: oidc, configure auth.oidc.browser first: a console
+    # that cannot log a browser in serves nobody.
     realms:
       developer:
         namespaces: ["*"]

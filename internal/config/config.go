@@ -31,6 +31,7 @@ type Config struct {
 	Auth      AuthConfig       `yaml:"auth"`
 	NATS      NATSConfig       `yaml:"nats"`
 	PGO       PGOConfig        `yaml:"pgo"`
+	UI        UIConfig         `yaml:"ui"`
 	Realms    map[string]Realm `yaml:"realms" validate:"required,min=1,dive"`
 }
 
@@ -272,6 +273,12 @@ type PGOTargetDefaults struct {
 // PGOArtifactDefaults is how long a finished profile is kept by default.
 type PGOArtifactDefaults struct {
 	Retention time.Duration `yaml:"retention" default:"2h" validate:"min=1m"`
+}
+
+// UIConfig is the console block.
+// Enabled is restart-only: it decides which routes the handler registers.
+type UIConfig struct {
+	Enabled bool `yaml:"enabled" env:"UI_ENABLED" default:"false"`
 }
 
 // defaultPprofPort is used when neither port nor portName is configured.
@@ -539,8 +546,25 @@ func validate(cfg *Config) error {
 	if err := validateAuth(cfg); err != nil {
 		return err
 	}
+	if err := validateUI(cfg); err != nil {
+		return err
+	}
 
 	return validatePGO(cfg)
+}
+
+// validateUI holds an enabled console to the browser flow under oidc:
+// a console that cannot log a browser in serves nobody.
+// It runs after validateAuth, which has already required auth.oidc under
+// oidc, so the pointer is safe to read.
+// The other two modes need nothing: basic authenticates the page's requests
+// from the browser's own credential prompt, and disabled authenticates nothing.
+func validateUI(cfg *Config) error {
+	if cfg.UI.Enabled && cfg.Auth.Mode == ModeOIDC && cfg.Auth.OIDC.Browser == nil {
+		return errors.New("ui.enabled requires auth.oidc.browser when auth.mode is oidc")
+	}
+
+	return nil
 }
 
 // validatePGO runs the rules that relate a PGO key to another key.

@@ -33,6 +33,16 @@ func TestRealmAllows(t *testing.T) {
 			route{namespace: "payment", service: "payment-api"}, true},
 		{"empty lists deny", config.Realm{},
 			route{namespace: "payment", service: "payment-api"}, false},
+		{"namespaces list ignores the lists", config.Realm{},
+			route{kind: kindNamespaces}, true},
+		{"whoami ignores the lists", config.Realm{},
+			route{kind: kindWhoami}, true},
+		{"limits ignores the lists", config.Realm{},
+			route{kind: kindLimits}, true},
+		{"services admitted by namespace", config.Realm{Namespaces: []string{"payment"}},
+			route{namespace: "payment", kind: kindServices}, true},
+		{"services denied by namespace", config.Realm{Namespaces: []string{"billing"}, Services: wide},
+			route{namespace: "payment", kind: kindServices}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

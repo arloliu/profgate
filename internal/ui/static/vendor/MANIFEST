@@ -1,0 +1,8 @@
+# Checked by internal/ui/vendor_test.go against its own wantVendored table.
+# path id version license source-url sha256
+preact/preact.module.js preact 10.29.8 MIT https://registry.npmjs.org/preact/-/preact-10.29.8.tgz c30e721ebfdc6e2ad4c18c14d2dfb82667829c8aec27de1207774e3fc16858a8
+preact/LICENSE preact 10.29.8 MIT https://registry.npmjs.org/preact/-/preact-10.29.8.tgz 1fe6958409c8c257a70c587a18b6f7f412b179b456630790d30b2ec9a8e4b7d4
+htm/htm.module.js htm 3.1.1 Apache-2.0 https://registry.npmjs.org/htm/-/htm-3.1.1.tgz ab33dd3f38059b9be4d5f5350128eefb2356639c4e0bbe9d9e8b3ba75847e9e4
+htm/LICENSE htm 3.1.1 Apache-2.0 https://registry.npmjs.org/htm/-/htm-3.1.1.tgz 740725f7252e750af735d0028cc534970772f513331e9f68150fede8fb3ce00f
+pico/pico.classless.min.css pico 2.1.1 MIT https://registry.npmjs.org/@picocss/pico/-/pico-2.1.1.tgz 61207a40ffc02a42d1e50143651c121beab70ed413c934c1ff84fa263ba436b0
+pico/LICENSE pico 2.1.1 MIT https://registry.npmjs.org/@picocss/pico/-/pico-2.1.1.tgz afaff063e044233f917b7807dccab022f09dca474f92b642846bee4850655bbf

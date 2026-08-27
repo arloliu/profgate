@@ -517,6 +517,16 @@ func TestConfigMap(t *testing.T) {
 	if len(cfg.Discovery.Pprof.AllowedPortNames) != 0 {
 		t.Errorf("discovery.pprof.allowedPortNames = %v, want empty", cfg.Discovery.Pprof.AllowedPortNames)
 	}
+
+	if cfg.UI.Enabled {
+		t.Errorf("UI.Enabled = %v, want false: the console is off by default", cfg.UI.Enabled)
+	}
+	if !strings.Contains(body, "# ui:") {
+		t.Errorf("config.yaml does not contain a commented \"# ui:\" block:\n%s", body)
+	}
+	if !strings.Contains(body, "#   enabled: true") {
+		t.Errorf("config.yaml's commented ui block does not contain \"#   enabled: true\":\n%s", body)
+	}
 }
 
 // kustomization is the minimal shape deploy_test.go needs from kustomization.yaml:

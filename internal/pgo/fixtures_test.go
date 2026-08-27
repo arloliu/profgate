@@ -1623,6 +1623,9 @@ func (d *fakeDiscovery) selected() []k8s.PortSelection {
 
 func (d *fakeDiscovery) HasSynced() bool { return true }
 
+// Catalog is never called by PGO, which schedules against configured Services rather than a listing.
+func (d *fakeDiscovery) Catalog(context.Context, string) ([]k8s.ServiceRef, error) { return nil, nil }
+
 func (d *fakeDiscovery) Confirm(_ context.Context, t k8s.Target) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

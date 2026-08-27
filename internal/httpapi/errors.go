@@ -24,16 +24,23 @@ type errorBody struct {
 	Code  string `json:"code"`
 }
 
-// writeError writes the gateway's JSON error envelope.
-// It sets only gateway-owned headers and never a target header:
-// target headers belong to forwarded upstream responses alone.
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	header := w.Header()
-	header.Set("Content-Type", "application/json")
-	header.Set("Cache-Control", "no-store")
+// ErrorEnvelope is the serialized JSON error envelope, newline-terminated;
+// the console uses it to answer a HEAD with the Content-Length its GET would carry.
+func ErrorEnvelope(code, message string) []byte {
 	// json.Marshal of a struct of two strings cannot fail,
 	// so there is no error path to handle.
 	body, _ := json.Marshal(errorBody{Error: message, Code: code})
+
+	return append(body, '\n')
+}
+
+// WriteError writes the gateway's JSON error envelope; the console calls it for its own 404 and 405.
+// It sets only gateway-owned headers and never a target header:
+// target headers belong to forwarded upstream responses alone.
+func WriteError(w http.ResponseWriter, status int, code, message string) {
+	header := w.Header()
+	header.Set("Content-Type", "application/json")
+	header.Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_, _ = w.Write(append(body, '\n'))
+	_, _ = w.Write(ErrorEnvelope(code, message)) //nolint:gosec // G705: a JSON-encoded envelope of gateway-chosen strings, never request input
 }

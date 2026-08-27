@@ -9,7 +9,7 @@ import (
 
 func TestWriteError(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeError(rec, http.StatusNotFound, "service_not_found", "service x not found in namespace y")
+	WriteError(rec, http.StatusNotFound, "service_not_found", "service x not found in namespace y")
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)

@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,6 +62,11 @@ const (
 	targetsPath     = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/targets"
 	heapPath        = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/profiles/heap"
 	collectionsPath = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/collections"
+	whoamiPath      = "/v1/whoami"
+	namespacesPath  = "/v1/namespaces"
+
+	// uiPath is where the console's shell is served, and what "/" redirects to.
+	uiPath = "/ui/"
 
 	// pollInterval is how often the waiters re-check their condition.
 	pollInterval = 10 * time.Millisecond
@@ -374,6 +380,9 @@ limits:
 	if o.enabled {
 		body += pgoBlock
 	}
+	if o.uiEnabled {
+		body += "ui:\n  enabled: true\n"
+	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -427,6 +436,8 @@ type gatewayOpts struct {
 	// interval, zero meaning the production 30 seconds.
 	authBlock string
 	authPoll  time.Duration
+	// uiEnabled writes ui.enabled: true into the configuration.
+	uiEnabled bool
 }
 
 // startGateway runs serve over cs with PGO off.
@@ -1004,6 +1015,127 @@ func TestServe(t *testing.T) {
 			t.Fatalf("the deadline record counted %v requests, want 1", got)
 		}
 	})
+
+	t.Run("console off", func(t *testing.T) {
+		gw := startGateway(t, fake.NewClientset(fixtureObjects()...), defaultLimits())
+		gw.waitReady(t, waitTimeout)
+
+		for _, path := range []string{uiPath, "/"} {
+			code, body := mustGet(t, gw.apiAddr, path)
+			if code != http.StatusNotFound || !strings.Contains(body, `"route_unknown"`) {
+				t.Fatalf("GET %s without ui.enabled = %d %q, want 404 route_unknown", path, code, body)
+			}
+		}
+		// The four listing routes exist whether or not the page does: a script
+		// reads them from a gateway that serves no console at all.
+		code, body := mustGet(t, gw.apiAddr, whoamiPath)
+		if code != http.StatusOK {
+			t.Fatalf("GET %s without ui.enabled = %d %q, want 200", whoamiPath, code, body)
+		}
+		var who struct {
+			Principal string `json:"principal"`
+		}
+		if err := json.Unmarshal([]byte(body), &who); err != nil {
+			t.Fatalf("whoami body %q is not JSON: %v", body, err)
+		}
+		if who.Principal != "anonymous" {
+			t.Fatalf("whoami principal = %q, want anonymous", who.Principal)
+		}
+		if recordIndex(gw.records(t), "console enabled") >= 0 {
+			t.Fatalf("the console mount was logged without ui.enabled:\n%s", gw.stdout.String())
+		}
+	})
+
+	t.Run("console on", func(t *testing.T) {
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{uiEnabled: true})
+		gw.waitReady(t, waitTimeout)
+
+		shell := request(t, gw.apiAddr, uiPath, nil, nil)
+		if shell.status != http.StatusOK || !strings.HasPrefix(shell.header.Get("Content-Type"), "text/html") {
+			t.Fatalf("GET %s = %d %q, want 200 text/html", uiPath, shell.status, shell.header.Get("Content-Type"))
+		}
+		// The policy is what keeps the page to its own origin; a shell served
+		// without it is a page the gateway no longer bounds.
+		if shell.header.Get("Content-Security-Policy") == "" {
+			t.Fatalf("the shell carries no Content-Security-Policy header:\n%v", shell.header)
+		}
+
+		// The shell names the hashed asset it loads, and the gateway serves it:
+		// the two halves of the console reach the browser through one mount.
+		script := shellScript(t, shell.body)
+		asset := request(t, gw.apiAddr, script, nil, nil)
+		if asset.status != http.StatusOK || !strings.HasPrefix(asset.header.Get("Content-Type"), "text/javascript") {
+			t.Fatalf("GET %s = %d %q, want 200 text/javascript", script, asset.status, asset.header.Get("Content-Type"))
+		}
+
+		root := request(t, gw.apiAddr, "/", nil, nil)
+		if root.status != http.StatusFound || root.header.Get("Location") != uiPath {
+			t.Fatalf("GET / = %d Location %q, want 302 to %s", root.status, root.header.Get("Location"), uiPath)
+		}
+		if got := gw.record(t, "console enabled")["path"]; got != uiPath {
+			t.Fatalf("console enabled record path = %v, want %s", got, uiPath)
+		}
+	})
+
+	t.Run("console on the ops listener", func(t *testing.T) {
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{uiEnabled: true})
+		gw.waitReady(t, waitTimeout)
+
+		if code, _ := mustGet(t, gw.opsAddr, uiPath); code != http.StatusNotFound {
+			t.Fatalf("GET %s on the ops listener = %d, want 404: the console lives on the API listener only", uiPath, code)
+		}
+	})
+
+	t.Run("listing before sync", func(t *testing.T) {
+		cs := fake.NewClientset(fixtureObjects()...)
+		release := make(chan struct{})
+		cs.PrependReactor("list", "services", func(k8stesting.Action) (bool, runtime.Object, error) {
+			<-release
+
+			return false, nil, nil
+		})
+		gw := startGatewayWith(t, cs, defaultLimits(), gatewayOpts{uiEnabled: true})
+		gw.waitStatus(t, waitTimeout, gw.opsAddr, "/healthz", http.StatusOK)
+
+		// The page is bytes the gateway already holds, so it loads while
+		// discovery is still coming up and asks again for what it could not read.
+		code, body := mustGet(t, gw.apiAddr, namespacesPath)
+		if code != http.StatusServiceUnavailable || !strings.Contains(body, `"not_ready"`) {
+			t.Fatalf("GET %s during the preflight = %d %q, want 503 not_ready", namespacesPath, code, body)
+		}
+		if code, _ := mustGet(t, gw.apiAddr, uiPath); code != http.StatusOK {
+			t.Fatalf("GET %s during the preflight = %d, want 200", uiPath, code)
+		}
+		close(release)
+		gw.waitReady(t, waitTimeout)
+	})
+
+	t.Run("oidc requires the browser flow", func(t *testing.T) {
+		is := newTestIssuer(t)
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{authBlock: oidcBlock(t, is, false), uiEnabled: true})
+
+		if code := gw.exitCode(t, waitTimeout); code != 2 {
+			t.Fatalf("exit code = %d, want 2: a console that cannot sign a browser in serves nobody", code)
+		}
+		if !strings.Contains(gw.stderr.String(), "ui.enabled requires auth.oidc.browser") {
+			t.Fatalf("stderr = %q, want it to name the rule the configuration broke", gw.stderr.String())
+		}
+	})
+}
+
+// shellScript is the hashed app.js path the rendered shell names.
+func shellScript(t *testing.T, shell string) string {
+	t.Helper()
+
+	path := regexp.MustCompile(`/ui/static/[0-9a-f]+/app\.js`).FindString(shell)
+	if path == "" {
+		t.Fatalf("the shell names no hashed app.js path:\n%s", shell)
+	}
+
+	return path
 }
 
 // emptyKV is a bucket holding nothing.
