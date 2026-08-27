@@ -213,18 +213,32 @@ huge ceiling would render a nonsense limit such as a negative number.
 {{- end -}}
 
 {{/*
-The container's resources block: an explicit override, else a memory limit
-derived from pgo.limits, else the static limit for the interactive path.
+The container's resources block.
+limits: an explicit resources.limits, else a memory limit derived from
+pgo.limits, else the static limit for the interactive path.
+requests: resources.requests as written, which values.yaml ships with a CPU
+request so a namespace whose quota counts requests.cpu admits the Pod.
+The two halves are read separately rather than as one verbatim block, because
+a values file that named only requests would otherwise leave the container
+with no memory limit at all.
 */}}
 {{- define "profgate.resources" -}}
-{{- if .Values.resources -}}
-{{- toYaml .Values.resources -}}
+{{- $resources := default (dict) .Values.resources -}}
+{{- $limits := default (dict) (get $resources "limits") -}}
+{{- $requests := default (dict) (get $resources "requests") -}}
+{{- if $limits -}}
+limits:
+  {{- toYaml $limits | nindent 2 }}
 {{- else if include "profgate.pgoEnabled" . -}}
 limits:
   memory: {{ include "profgate.pgoMemoryBytes" . }}
 {{- else -}}
 limits:
   memory: {{ .Values.memoryLimitWithoutPGO }}
+{{- end -}}
+{{- with $requests }}
+requests:
+  {{- toYaml . | nindent 2 }}
 {{- end -}}
 {{- end -}}
 

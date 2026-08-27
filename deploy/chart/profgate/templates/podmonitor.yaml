@@ -1,0 +1,27 @@
+{{- if include "profgate.boolValue" (dict "key" "podMonitor.enabled" "value" .Values.podMonitor.enabled) }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "profgate.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "profgate.labels" . | nindent 4 }}
+    {{- with .Values.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  # A PodMonitor rather than a ServiceMonitor, because the ops port carrying
+  # /metrics is deliberately absent from the Service: nothing routes to it and
+  # it is reached by Pod address. The endpoint names the container port, which
+  # is the name the Deployment declares.
+  selector:
+    matchLabels:
+      {{- include "profgate.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  podMetricsEndpoints:
+    - port: ops
+      path: /metrics
+      interval: {{ .Values.podMonitor.interval | quote }}
+{{- end }}

@@ -1501,13 +1501,15 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
   The two surfaces are both shipped and neither is generated from the other:
   the chart templates what an external operator changes,
   the kustomize base is what a repository already using kustomize patches.
-  The chart guarantees four things beyond rendering those resources:
+  Beyond rendering those resources, the chart guarantees:
   - `checksum/config` on the pod template, holding a hash of the rendered ConfigMap,
     because the binary reads its configuration once at startup and has no reload,
     so without it a `helm upgrade` that changes only configuration rolls nothing out.
   - `limits.memory` derived from `pgo.limits` through the sizing rule of `PGOMemoryBytes`,
     so the limit cannot drift from the configuration it is sized for.
-    An explicit `resources` block overrides it;
+    An explicit `resources.limits` overrides it,
+    and `resources.requests` is a separate half rendered as written,
+    shipping the CPU request a namespace whose quota counts `requests.cpu` needs;
     with PGO off the limit is a static 512Mi, because the formula reads `pgo.limits`
     and never `pgo.enabled` and would otherwise size a merge that never happens.
   - `podSecurityContext.fsGroup`, 65532 by default, rendering no key at all when set to null,
@@ -1517,6 +1519,14 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
   - `discovery.pprof.allowedPorts` and `allowedPortNames` rendered as empty lists in `values.yaml`,
     so a chart install accepts any port and any name until the operator narrows the lists;
     the binary's own default for each list is empty, which accepts any value.
+  - An Ingress, off by default, routing `/`, `/ui/`, `/auth/`, and `/v1/` to the Service's API port,
+    so an operator reaching the gateway from outside the cluster does not write one by hand.
+    It never routes the ops port, which stays reachable only by the kubelet and the metrics scraper.
+  - A prometheus-operator `PodMonitor`, off by default, for the ops port.
+    It selects Pods and names the container port, because the ops port is absent from the Service by design.
+  - A prometheus-operator `PrometheusRule`, off by default,
+    over the metrics section's readiness, admission, and signing-key gauges,
+    replaceable outright by a rule set the operator supplies.
 
   `tls.enabled` gates the certificate volume, its mount, and the `server.tls` keys in the rendered configuration.
   The chart needs the flag because Helm needs a boolean to render a conditional;

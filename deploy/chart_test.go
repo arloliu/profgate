@@ -292,6 +292,15 @@ func TestChartLint(t *testing.T) {
 		{name: "defaults"},
 		{name: "pgo enabled", values: []string{"--set", "pgo.enabled=true", "--set", "nats.url=nats://nats.profgate.svc:4222"}},
 		{name: "tls enabled", values: []string{"--set", "tls.enabled=true"}},
+		{
+			name: "ingress enabled",
+			values: []string{
+				"--set", "ingress.enabled=true",
+				"--set", "ingress.hosts[0].host=profgate.example.com",
+			},
+		},
+		{name: "pod monitor enabled", values: []string{"--set", "podMonitor.enabled=true"}},
+		{name: "prometheus rule enabled", values: []string{"--set", "prometheusRule.enabled=true"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := append([]string{"lint", chartDir}, tc.values...)
@@ -521,6 +530,9 @@ func TestChartBooleanTogglesAreValidated(t *testing.T) {
 		"serviceAccount.create",
 		"configChecksumAnnotation",
 		"ui.enabled",
+		"ingress.enabled",
+		"podMonitor.enabled",
+		"prometheusRule.enabled",
 	} {
 		t.Run(key, func(t *testing.T) {
 			for name, tc := range map[string]struct {
@@ -561,9 +573,6 @@ func TestChartMemoryLimitWithoutPGO(t *testing.T) {
 	dep := render[appsv1.Deployment](t, "deployment.yaml")
 	res := dep.Spec.Template.Spec.Containers[0].Resources
 
-	if len(res.Requests) != 0 {
-		t.Errorf("resources.requests = %v, want none, as in deploy/base", res.Requests)
-	}
 	if len(res.Limits) != 1 {
 		t.Errorf("resources.limits = %v, want the memory limit alone", res.Limits)
 	}
@@ -573,9 +582,9 @@ func TestChartMemoryLimitWithoutPGO(t *testing.T) {
 	}
 }
 
-// TestChartResourcesOverride covers the opt-out: a cluster with a LimitRange
-// or a quota needs requests the derived path does not render, and an explicit
-// block replaces it wholesale even where the derivation would apply.
+// TestChartResourcesOverride covers the opt-out: an explicit resources.limits
+// replaces the derived memory limit wholesale even where the derivation would
+// apply, and resources.requests is rendered as written over the shipped one.
 func TestChartResourcesOverride(t *testing.T) {
 	values := append(pgoValues(t),
 		"--set", "resources.limits.memory=8Gi",
@@ -593,6 +602,63 @@ func TestChartResourcesOverride(t *testing.T) {
 	if got := res.Requests[corev1.ResourceCPU]; got.String() != "500m" {
 		t.Errorf("resources.requests.cpu = %s, want the override 500m", got.String())
 	}
+}
+
+// TestChartResourceRequests covers the half of the resources block the chart
+// ships a default for. A container with no CPU request is refused outright by
+// a namespace whose ResourceQuota counts requests.cpu, which is what made such
+// a namespace reach for the escape hatch to install at all.
+// There is deliberately no memory request: Kubernetes copies an unset one from
+// the limit, so the Pod reserves the derived figure, and a smaller number here
+// would let the scheduler place a gateway where the merge that limit is sized
+// for has no room.
+func TestChartResourceRequests(t *testing.T) {
+	t.Run("the shipped request", func(t *testing.T) {
+		res := render[appsv1.Deployment](t, "deployment.yaml").Spec.Template.Spec.Containers[0].Resources
+
+		if got := res.Requests[corev1.ResourceCPU]; got.String() != "100m" {
+			t.Errorf("resources.requests.cpu = %s, want the shipped 100m", got.String())
+		}
+		if _, ok := res.Requests[corev1.ResourceMemory]; ok {
+			t.Errorf("resources.requests = %v, want no memory request: an unset one tracks the derived limit", res.Requests)
+		}
+	})
+
+	t.Run("null renders no request", func(t *testing.T) {
+		res := render[appsv1.Deployment](t, "deployment.yaml",
+			"--set", "resources.requests.cpu=null").Spec.Template.Spec.Containers[0].Resources
+
+		if len(res.Requests) != 0 {
+			t.Errorf("resources.requests = %v, want none: null is how the shipped request is dropped", res.Requests)
+		}
+	})
+
+	t.Run("requests alone keep the derived limit", func(t *testing.T) {
+		values := append(pgoValues(t), "--set", "resources.requests.cpu=250m")
+		dep := render[appsv1.Deployment](t, "deployment.yaml", values...)
+		res := dep.Spec.Template.Spec.Containers[0].Resources
+
+		if got := res.Requests[corev1.ResourceCPU]; got.String() != "250m" {
+			t.Errorf("resources.requests.cpu = %s, want the override 250m", got.String())
+		}
+		cfg := loadRenderedConfig(t, values...)
+		mem := containerMemoryLimit(t, dep)
+		if got, want := mem.Value(), cfg.PGOMemoryBytes(); got != want {
+			t.Errorf("resources.limits.memory = %d bytes, want the derived %d: only resources.limits turns the derivation off", got, want)
+		}
+	})
+
+	t.Run("limits alone keep the shipped request", func(t *testing.T) {
+		res := render[appsv1.Deployment](t, "deployment.yaml",
+			"--set", "resources.limits.memory=2Gi").Spec.Template.Spec.Containers[0].Resources
+
+		if got := res.Limits[corev1.ResourceMemory]; got.String() != "2Gi" {
+			t.Errorf("resources.limits.memory = %s, want the override 2Gi", got.String())
+		}
+		if got := res.Requests[corev1.ResourceCPU]; got.String() != "100m" {
+			t.Errorf("resources.requests.cpu = %s, want the shipped 100m to survive a limits override", got.String())
+		}
+	})
 }
 
 // TestChartGracePeriod ties the chart's default grace period to the drain its
@@ -659,6 +725,334 @@ func TestChartUI(t *testing.T) {
 		}
 		if cfg.Auth.OIDC.Browser == nil {
 			t.Error("Auth.OIDC.Browser = nil, want the browser block to survive rendering with ui.enabled")
+		}
+	})
+}
+
+// renderAll renders every template of the chart with the given values and
+// returns helm's whole output. A template that renders nothing is dropped
+// from that output, and `--show-only` then fails rather than handing back an
+// empty document, so a case that asserts a template rendered nothing has to
+// look at the whole render.
+func renderAll(t *testing.T, values ...string) string {
+	t.Helper()
+
+	args := []string{"template", "profgate", chartDir, "--namespace", "profgate"}
+
+	return string(runHelm(t, append(args, values...)...))
+}
+
+// ingressPaths returns the paths of the rule for host, in order, with each
+// path's type and backend checked against the one shape the chart renders.
+func ingressPaths(t *testing.T, ing networkingv1.Ingress, host string) []string {
+	t.Helper()
+
+	for _, rule := range ing.Spec.Rules {
+		if rule.Host != host {
+			continue
+		}
+		if rule.HTTP == nil {
+			t.Fatalf("the rule for %s has no http block", host)
+		}
+		paths := make([]string, 0, len(rule.HTTP.Paths))
+		for _, p := range rule.HTTP.Paths {
+			if p.PathType == nil || *p.PathType != networkingv1.PathTypePrefix {
+				t.Errorf("pathType of %s = %v, want Prefix", p.Path, p.PathType)
+			}
+			svc := p.Backend.Service
+			if svc == nil || svc.Name != "profgate" || svc.Port.Name != "api" {
+				t.Errorf("backend of %s = %+v, want the Service's api port", p.Path, svc)
+			}
+			paths = append(paths, p.Path)
+		}
+
+		return paths
+	}
+	t.Fatalf("the Ingress has no rule for %s: %+v", host, ing.Spec.Rules)
+
+	return nil
+}
+
+// TestChartIngress covers the Ingress the chart offers so that reaching the
+// gateway from outside the cluster does not mean writing one by hand.
+// The four prefixes are the reason it exists: a route carrying only /v1/
+// leaves the console and the sign-in it needs unreachable, which is what
+// docs/specs/ui.md sends the operator here for.
+func TestChartIngress(t *testing.T) {
+	oneHost := []string{
+		"--set", "ingress.enabled=true",
+		"--set", "ingress.hosts[0].host=profgate.example.com",
+	}
+
+	t.Run("off by default", func(t *testing.T) {
+		if out := renderAll(t); strings.Contains(out, "kind: Ingress") {
+			t.Errorf("the default render carries an Ingress:\n%s", out)
+		}
+	})
+
+	t.Run("enabled with no hosts fails at render", func(t *testing.T) {
+		out := renderFailure(t, "--set", "ingress.enabled=true")
+		if want := "ingress.enabled is true with no ingress.hosts"; !strings.Contains(out, want) {
+			t.Errorf("helm's error does not say %q:\n%s", want, out)
+		}
+	})
+
+	t.Run("a host that names no paths gets all four", func(t *testing.T) {
+		ing := render[networkingv1.Ingress](t, "ingress.yaml", oneHost...)
+		want := []string{"/", "/ui/", "/auth/", "/v1/"}
+		if got := ingressPaths(t, ing, "profgate.example.com"); !slices.Equal(got, want) {
+			t.Errorf("paths = %v, want %v: the console, its sign-in, and the API", got, want)
+		}
+	})
+
+	t.Run("a host may narrow the paths", func(t *testing.T) {
+		values := append(slices.Clone(oneHost), "--set", "ingress.hosts[0].paths[0]=/v1/")
+		ing := render[networkingv1.Ingress](t, "ingress.yaml", values...)
+		if got := ingressPaths(t, ing, "profgate.example.com"); !slices.Equal(got, []string{"/v1/"}) {
+			t.Errorf("paths = %v, want the named one alone", got)
+		}
+	})
+
+	t.Run("the class, annotations, and tls pass through", func(t *testing.T) {
+		values := append(slices.Clone(oneHost),
+			"--set", "ingress.className=nginx",
+			"--set", `ingress.annotations.cert-manager\.io/cluster-issuer=letsencrypt`,
+			"--set", "ingress.tls[0].secretName=profgate-ingress-tls",
+			"--set", "ingress.tls[0].hosts[0]=profgate.example.com",
+		)
+		ing := render[networkingv1.Ingress](t, "ingress.yaml", values...)
+
+		if ing.Spec.IngressClassName == nil || *ing.Spec.IngressClassName != "nginx" {
+			t.Errorf("ingressClassName = %v, want nginx", ing.Spec.IngressClassName)
+		}
+		if got := ing.Annotations["cert-manager.io/cluster-issuer"]; got != "letsencrypt" {
+			t.Errorf("the cert-manager annotation = %q, want letsencrypt", got)
+		}
+		if len(ing.Spec.TLS) != 1 ||
+			ing.Spec.TLS[0].SecretName != "profgate-ingress-tls" ||
+			!slices.Equal(ing.Spec.TLS[0].Hosts, []string{"profgate.example.com"}) {
+			t.Errorf("tls = %+v, want the one entry as written", ing.Spec.TLS)
+		}
+	})
+
+	t.Run("the ops port is never routed", func(t *testing.T) {
+		ing := render[networkingv1.Ingress](t, "ingress.yaml", oneHost...)
+		// Every rule backend is checked in ingressPaths; a defaultBackend
+		// would be the second way in, and the template renders none.
+		if ing.Spec.DefaultBackend != nil {
+			t.Errorf("defaultBackend = %+v, want none: only the api port is routed", ing.Spec.DefaultBackend)
+		}
+		args := []string{"template", "profgate", chartDir, "--namespace", "profgate", "-s", "templates/ingress.yaml"}
+		if out := string(runHelm(t, append(args, oneHost...)...)); strings.Contains(out, "9090") {
+			t.Errorf("the Ingress names the ops port:\n%s", out)
+		}
+	})
+}
+
+// podMonitor is the part of a monitoring.coreos.com/v1 PodMonitor these
+// tests read back. The prometheus-operator API types are not a dependency of
+// this module, and taking one on to decode a template the chart renders would
+// cost more than the assertions are worth.
+type podMonitor struct {
+	Metadata struct {
+		Name   string            `json:"name"`
+		Labels map[string]string `json:"labels"`
+	} `json:"metadata"`
+	Spec struct {
+		Selector struct {
+			MatchLabels map[string]string `json:"matchLabels"`
+		} `json:"selector"`
+		NamespaceSelector struct {
+			MatchNames []string `json:"matchNames"`
+		} `json:"namespaceSelector"`
+		PodMetricsEndpoints []struct {
+			Port     string `json:"port"`
+			Path     string `json:"path"`
+			Interval string `json:"interval"`
+		} `json:"podMetricsEndpoints"`
+	} `json:"spec"`
+}
+
+// TestChartPodMonitor covers the scrape target the ops port needs.
+// The port is deliberately absent from the Service, so a ServiceMonitor could
+// not reach it at all; the endpoint names the container port instead, and the
+// test holds that name equal to what the Deployment declares rather than to a
+// literal, because a rename in one template alone renders cleanly and scrapes
+// nothing.
+func TestChartPodMonitor(t *testing.T) {
+	t.Run("off by default", func(t *testing.T) {
+		if out := renderAll(t); strings.Contains(out, "kind: PodMonitor") {
+			t.Errorf("the default render carries a PodMonitor:\n%s", out)
+		}
+	})
+
+	t.Run("on", func(t *testing.T) {
+		values := []string{
+			"--set", "podMonitor.enabled=true",
+			"--set", "podMonitor.interval=15s",
+			"--set", "podMonitor.labels.release=kube-prometheus-stack",
+		}
+		pm := render[podMonitor](t, "podmonitor.yaml", values...)
+
+		if len(pm.Spec.PodMetricsEndpoints) != 1 {
+			t.Fatalf("podMetricsEndpoints = %+v, want exactly one", pm.Spec.PodMetricsEndpoints)
+		}
+		endpoint := pm.Spec.PodMetricsEndpoints[0]
+
+		ports := render[appsv1.Deployment](t, "deployment.yaml").Spec.Template.Spec.Containers[0].Ports
+		var opsPort *corev1.ContainerPort
+		for i, port := range ports {
+			if port.ContainerPort == 9090 {
+				opsPort = &ports[i]
+			}
+		}
+		if opsPort == nil {
+			t.Fatalf("the container declares no port 9090: %+v", ports)
+		}
+		if endpoint.Port != opsPort.Name {
+			t.Errorf("podMetricsEndpoints[0].port = %q, want the container port name %q", endpoint.Port, opsPort.Name)
+		}
+		if endpoint.Path != "/metrics" {
+			t.Errorf("podMetricsEndpoints[0].path = %q, want /metrics", endpoint.Path)
+		}
+		if endpoint.Interval != "15s" {
+			t.Errorf("podMetricsEndpoints[0].interval = %q, want the value's 15s", endpoint.Interval)
+		}
+
+		if got := pm.Metadata.Labels["release"]; got != "kube-prometheus-stack" {
+			t.Errorf("the release label = %q, want kube-prometheus-stack: it is how a Prometheus selects this", got)
+		}
+		if !slices.Equal(pm.Spec.NamespaceSelector.MatchNames, []string{"profgate"}) {
+			t.Errorf("namespaceSelector.matchNames = %v, want the release namespace alone", pm.Spec.NamespaceSelector.MatchNames)
+		}
+
+		dep := render[appsv1.Deployment](t, "deployment.yaml")
+		for key, want := range dep.Spec.Selector.MatchLabels {
+			if got := pm.Spec.Selector.MatchLabels[key]; got != want {
+				t.Errorf("selector.matchLabels[%q] = %q, want the Deployment's %q", key, got, want)
+			}
+		}
+	})
+}
+
+// prometheusRule is the part of a monitoring.coreos.com/v1 PrometheusRule
+// these tests read back, declared here for the same reason podMonitor is.
+type prometheusRule struct {
+	Metadata struct {
+		Labels map[string]string `json:"labels"`
+	} `json:"metadata"`
+	Spec struct {
+		Groups []struct {
+			Name  string `json:"name"`
+			Rules []struct {
+				Alert       string            `json:"alert"`
+				Expr        string            `json:"expr"`
+				For         string            `json:"for"`
+				Labels      map[string]string `json:"labels"`
+				Annotations map[string]string `json:"annotations"`
+			} `json:"rules"`
+		} `json:"groups"`
+	} `json:"spec"`
+}
+
+// TestChartPrometheusRule covers the alerts the chart ships so that the
+// figures docs/deployment.md calls alertable do not have to be typed out per
+// cluster. The load-bearing case is the metric names: an alert over a series
+// the binary does not export is silently dead, and no render or lint notices,
+// so the shipped expressions are checked against the recorder that creates
+// them.
+func TestChartPrometheusRule(t *testing.T) {
+	t.Run("off by default", func(t *testing.T) {
+		if out := renderAll(t); strings.Contains(out, "kind: PrometheusRule") {
+			t.Errorf("the default render carries a PrometheusRule:\n%s", out)
+		}
+	})
+
+	t.Run("the shipped set", func(t *testing.T) {
+		values := []string{
+			"--set", "prometheusRule.enabled=true",
+			"--set", "prometheusRule.labels.release=kube-prometheus-stack",
+		}
+		pr := render[prometheusRule](t, "prometheusrule.yaml", values...)
+
+		if len(pr.Spec.Groups) != 1 {
+			t.Fatalf("groups = %+v, want exactly one", pr.Spec.Groups)
+		}
+		if got := pr.Metadata.Labels["release"]; got != "kube-prometheus-stack" {
+			t.Errorf("the release label = %q, want kube-prometheus-stack: it is how a Prometheus selects this", got)
+		}
+
+		var names []string
+		for _, rule := range pr.Spec.Groups[0].Rules {
+			names = append(names, rule.Alert)
+			if rule.For == "" {
+				t.Errorf("%s has no for: an instantaneous alert fires on one scrape", rule.Alert)
+			}
+			if rule.Labels["severity"] == "" {
+				t.Errorf("%s carries no severity label", rule.Alert)
+			}
+			if rule.Annotations["summary"] == "" || rule.Annotations["description"] == "" {
+				t.Errorf("%s carries no summary or description: %+v", rule.Alert, rule.Annotations)
+			}
+		}
+		want := []string{"ProfgateNotReady", "ProfgateAdmissionSaturated", "ProfgateOIDCKeysStale"}
+		if !slices.Equal(names, want) {
+			t.Errorf("alerts = %v, want the readiness, admission, and signing-key three %v", names, want)
+		}
+
+		//nolint:gosec // the path is this repository's own source
+		recorder, err := os.ReadFile(filepath.Join("..", "internal", "metrics", "prometheus.go"))
+		if err != nil {
+			t.Fatalf("read the Prometheus recorder: %v", err)
+		}
+		metric := regexp.MustCompile(`profgate_[a-z_]+`)
+		for _, rule := range pr.Spec.Groups[0].Rules {
+			for _, name := range metric.FindAllString(rule.Expr, -1) {
+				if !bytes.Contains(recorder, []byte(`"`+name+`"`)) {
+					t.Errorf("%s alerts on %s, which internal/metrics/prometheus.go does not export", rule.Alert, name)
+				}
+			}
+		}
+	})
+
+	t.Run("the admission alert names a code the gateway writes", func(t *testing.T) {
+		pr := render[prometheusRule](t, "prometheusrule.yaml", "--set", "prometheusRule.enabled=true")
+		var expr string
+		for _, rule := range pr.Spec.Groups[0].Rules {
+			if rule.Alert == "ProfgateAdmissionSaturated" {
+				expr = rule.Expr
+			}
+		}
+		//nolint:gosec // the path is this repository's own source
+		server, err := os.ReadFile(filepath.Join("..", "internal", "httpapi", "server.go"))
+		if err != nil {
+			t.Fatalf("read the API server: %v", err)
+		}
+		// The label value is the error code the admission gate answers with;
+		// renaming that code would leave this alert matching no series.
+		if !strings.Contains(expr, `code="too_many_profiles"`) ||
+			!bytes.Contains(server, []byte(`"too_many_profiles"`)) {
+			t.Errorf("expr %q and internal/httpapi/server.go disagree on the admission refusal code", expr)
+		}
+		// profgate_requests_total is labelled by endpoint and profile, so an
+		// unaggregated rate fires once per profile name a burst touched.
+		if !strings.HasPrefix(expr, "sum(") {
+			t.Errorf("expr %q is not summed, so one burst raises one alert per profile name", expr)
+		}
+	})
+
+	t.Run("rules replace the shipped set", func(t *testing.T) {
+		values := []string{
+			"--set", "prometheusRule.enabled=true",
+			"--set", "prometheusRule.rules[0].alert=OperatorsOwn",
+			"--set", "prometheusRule.rules[0].expr=profgate_nats_connected == 0",
+			"--set", "prometheusRule.rules[0].for=5m",
+		}
+		pr := render[prometheusRule](t, "prometheusrule.yaml", values...)
+
+		rules := pr.Spec.Groups[0].Rules
+		if len(rules) != 1 || rules[0].Alert != "OperatorsOwn" {
+			t.Errorf("rules = %+v, want the operator's one alone", rules)
 		}
 	})
 }

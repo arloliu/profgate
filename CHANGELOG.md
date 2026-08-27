@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Optional chart templates for the pieces every install needed to write by hand.**
+  `ingress.enabled` renders an Ingress routing `/`, `/ui/`, `/auth/`, and `/v1/` to the API port;
+  `podMonitor.enabled` renders a PodMonitor for the ops port, which the Service deliberately omits;
+  `prometheusRule.enabled` renders alerts for stale JWKS keys, discovery not synced, and admission saturation.
+  All three are off by default.
+- **A default CPU request.**
+  The container ships `resources.requests.cpu: 100m`
+  so a namespace whose quota counts CPU requests admits the gateway;
+  `resources.requests` now merges with the shipped value and `resources.limits` still replaces the derived memory limit.
+
 ## [0.4.0] - 2026-08-27
 
 Adds authentication, the embedded operator console, and client-selected pprof ports.
@@ -348,6 +362,7 @@ and PGO CPU-profile collection layered on top of it.
   frozen Kubernetes 1.23 and 1.24 images and the current Kubernetes release,
   matching the 1.23 compatibility baseline.
 
+[Unreleased]: https://github.com/arloliu/profgate/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/arloliu/profgate/releases/tag/v0.4.0
 [0.3.0]: https://github.com/arloliu/profgate/releases/tag/v0.3.0
 [0.2.0]: https://github.com/arloliu/profgate/releases/tag/v0.2.0

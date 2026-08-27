@@ -1,0 +1,55 @@
+{{- if include "profgate.boolValue" (dict "key" "prometheusRule.enabled" "value" .Values.prometheusRule.enabled) }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "profgate.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "profgate.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ include "profgate.fullname" . }}
+      rules:
+        {{- with .Values.prometheusRule.rules }}
+        {{- toYaml . | nindent 8 }}
+        {{- else }}
+        # Every expression below reads a metric the gateway exports on the ops
+        # port, so all three need something scraping that port -- the
+        # PodMonitor above, or a scrape configured by hand.
+        - alert: ProfgateNotReady
+          expr: profgate_discovery_synced == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: A profgate replica is not serving.
+            description: >-
+              The discovery cache has been unsynced for ten minutes, so /readyz answers 503
+              and no traffic reaches this replica.
+        - alert: ProfgateAdmissionSaturated
+          expr: sum(rate(profgate_requests_total{code="too_many_profiles"}[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: profgate is refusing profile requests.
+            description: >-
+              The admission gate is at limits.maxConcurrentProfiles and answering 429,
+              so raise that limit or add replicas: the gate is per replica.
+        - alert: ProfgateOIDCKeysStale
+          expr: profgate_oidc_jwks_age_seconds > 43200
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: profgate has not fetched OpenID Connect signing keys for 12 hours.
+            description: >-
+              Verification starts failing as keys_stale once the age passes
+              auth.oidc.jwksMaxStale, 24 hours at the binary's default, so this fires at half
+              of it while tokens still verify. The gauge is NaN until the first fetch, which
+              crosses no threshold, so the rule is inert outside auth.mode oidc.
+        {{- end }}
+{{- end }}

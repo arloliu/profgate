@@ -83,10 +83,44 @@ config:
 
 `ui.enabled` (default `false`) turns on the embedded operator console at `/ui/`;
 [console.md](console.md) covers what it shows and how to sign in.
-An Ingress that routes only `/v1` needs `/ui/`, `/auth/`, and `/` added to it once the console is on,
-or the console and the sign-in it needs stay unreachable through it.
+An Ingress that routes only `/v1/` needs `/ui/`, `/auth/`, and `/` added to it once the console is on,
+or the console and the sign-in it needs stay unreachable through it;
+the chart's own Ingress routes all four by default.
 Nothing else about the deployment changes: the console adds no listener, no volume, and no RBAC tuple,
 and its assets are compiled into the same binary and served from the same API port.
+
+### Ingress
+
+`ingress.enabled` (default `false`) renders an Ingress for the API port.
+It is off by default because the host, the class, and the annotations differ per cluster,
+and turning it on with an empty `ingress.hosts` fails rendering rather than producing an Ingress that routes nothing:
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: profgate.example.com
+  tls:
+    - secretName: profgate-ingress-tls
+      hosts:
+        - profgate.example.com
+```
+
+A host that names no `paths` gets the four prefixes the gateway serves —
+`/` and `/ui/` for the console, `/auth/` for the browser login it needs, and `/v1/` for the API —
+each with `pathType: Prefix` and the Service's `api` port as its backend.
+`/` alone would cover the other three; they are listed so that narrowing the set is a visible choice.
+The ops port is not in the Service and is never routed here.
+The kustomize base ships no Ingress:
+a base that named a host nobody has would apply as a route to nothing.
+
+`ingress.tls` is TLS in front of the Ingress.
+With `tls.enabled` the API port serves HTTPS as well,
+and a controller reaches it over plain HTTP until it is told otherwise:
+ingress-nginx reads `nginx.ingress.kubernetes.io/backend-protocol: HTTPS` from `ingress.annotations`,
+and other controllers have their own setting.
+Without it the controller speaks HTTP to an HTTPS listener and every request through the Ingress fails.
 
 ## RBAC
 
@@ -349,7 +383,15 @@ and every other key stays overridable through both.
 At the shipped ceilings the limit is 4Gi.
 With PGO off the limit is the static `memoryLimitWithoutPGO`, 512Mi,
 which covers the runtime, the informer caches, and the interactive transfer buffers.
-An explicit `resources` block replaces both paths and is rendered verbatim.
+An explicit `resources.limits` replaces both paths and is rendered verbatim.
+
+`resources.requests` is rendered as written, and ships a CPU request of `100m`.
+A container with no CPU request at all is refused outright by a namespace whose `ResourceQuota` counts `requests.cpu`,
+which is what made such a namespace need the escape hatch to install.
+There is deliberately no memory request:
+Kubernetes copies an unset memory request from the limit,
+so the Pod already reserves the derived figure,
+and a smaller number would let the scheduler place a gateway where the merge that limit is sized for has no room.
 
 ### Graceful shutdown
 
@@ -415,6 +457,26 @@ All metrics are on the ops port at `/metrics`.
 `profile` is `none` for all five.
 `ui`'s `code` is one of `ok`, `route_unknown`, `method_not_allowed`, or `internal_error` —
 a closed set derived from the status the console wrote, not the raw HTTP status.
+
+`podMonitor.enabled` (default `false`) renders a prometheus-operator `PodMonitor` for that port.
+It is off by default because it needs the `monitoring.coreos.com` custom resource definitions
+and a Prometheus whose `podMonitorSelector` matches it;
+`podMonitor.labels` is how that selector finds it,
+and `podMonitor.interval` (default `30s`) is the scrape interval.
+It selects Pods rather than a Service, because the ops port is absent from the Service by design,
+so the endpoint names the container port rather than a Service port.
+With `networkPolicy.enabled`, `opsFromNamespaces` has to name the namespace the scraper runs in,
+or the scrape is refused before it reaches the port.
+
+`prometheusRule.enabled` (default `false`) renders a `PrometheusRule` over three of the metrics above:
+`ProfgateNotReady` on `profgate_discovery_synced == 0`,
+`ProfgateAdmissionSaturated` on `profgate_requests_total` refusing with `too_many_profiles`,
+and `ProfgateOIDCKeysStale` on `profgate_oidc_jwks_age_seconds`.
+All three read the ops port, so they need something scraping it.
+The stale-keys threshold is half of the binary's `auth.oidc.jwksMaxStale` default of 24 hours,
+which is when verification starts failing as `keys_stale`;
+`prometheusRule.rules` replaces the shipped set outright for a deployment that lowers that key,
+since the chart does not render it and cannot follow it.
 
 ### Audit log
 

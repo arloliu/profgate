@@ -66,11 +66,26 @@ Check these three things first.
 {{- else }}
      curl "localhost:8080/v1/namespaces/<ns>/services/<svc>/targets"
 {{- end }}
+{{- if include "profgate.boolValue" (dict "key" "ingress.enabled" "value" .Values.ingress.enabled) }}
+
+   An Ingress routes to that port from:
+{{- range .Values.ingress.hosts }}
+     {{ .host }}: {{ (default (list "/" "/ui/" "/auth/" "/v1/") .paths) | join " " }}
+{{- end }}
+{{- end }}
+{{- if include "profgate.boolValue" (dict "key" "podMonitor.enabled" "value" .Values.podMonitor.enabled) }}
+
+   Metrics come from the ops port, which is not in the Service. The PodMonitor
+   this release renders needs the monitoring.coreos.com CRDs and a Prometheus
+   whose podMonitorSelector matches its labels; without both, nothing scrapes.
+{{- end }}
 {{- if include "profgate.uiEnabled" . }}
 
-   The console is on, at /ui/ through the same Service and port. An Ingress
-   that routes only /v1 has to add /ui/, /auth/, and / too, or the console
-   and the sign-in it needs stay unreachable through it.
+   The console is on, at /ui/ through the same Service and port. It needs
+   /ui/, /auth/, and / routed to it as well as /v1/, or the console and the
+   sign-in it needs stay unreachable from outside the cluster. The chart's
+   own Ingress (ingress.enabled) routes all four unless a host narrows the
+   list; an Ingress written by hand has to name them.
 {{- end }}
 
 {{ if include "profgate.pgoEnabled" . }}

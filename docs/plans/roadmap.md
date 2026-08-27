@@ -1,6 +1,6 @@
 # Roadmap
 
-**Status:** Draft
+**Status:** In Progress
 
 > **How to read this document:** it orders the work that follows the console,
 > so that each item is taken up in turn and nothing is started out of order.
@@ -39,14 +39,14 @@ Why first: nothing under `Unreleased` reaches an operator who installs from the 
 
 ### 2. Chart templates every install needs
 
-- [ ] An `Ingress` template, off by default,
+- [x] An `Ingress` template, off by default,
   routing `/`, `/ui/`, `/auth/`, and `/v1/` to the API port;
   `values.yaml`, the chart README, and `NOTES.txt` today instruct the operator to write one by hand.
-- [ ] A `PodMonitor` template, off by default, for the ops port,
+- [x] A `PodMonitor` template, off by default, for the ops port,
   which is deliberately absent from the Service.
-- [ ] A `PrometheusRule` template, off by default, with the alerts the deployment guide already names as alertable
+- [x] A `PrometheusRule` template, off by default, with the alerts the deployment guide already names as alertable
   (JWKS age, readiness, admission saturation).
-- [ ] A `resources.requests` default alongside the derived memory limit,
+- [x] A `resources.requests` default alongside the derived memory limit,
   so a namespace with a `LimitRange` or quota installs without the raw `resources:` escape hatch.
 
 Spec: the deployment section of `docs/specs/gateway.md` names the chart's shape;
@@ -61,11 +61,14 @@ and no setting forbids `portName` outright (`docs/configuration.md`, section `di
 The console lets a browser type any port under that default.
 
 - [ ] Revise `docs/specs/gateway.md`:
-  one `discovery.pprof.allowedSelections` list of `{port}` or `{portName}` entries;
-  empty means only the configured default is accepted;
-  an explicit `allowAny: true` restores today's behavior.
+  one `discovery.pprof.allowedSelections` list whose entries are `{port: N}` or `{portName: name}`;
+  an empty list accepts only the configured default;
+  `{port: "*"}` admits any number and `{portName: "*"}` admits any name, each on its own;
+  `allowedPorts` and `allowedPortNames` are removed, which is a breaking change for the next minor release.
+  `/v1/limits` returns the list so the console can offer a menu or a free field.
 - [ ] Revise the permission invariant text in `AGENTS.md`, `README.md`, and `.agents/rules/800-security-invariant.md`,
-  which today states that an empty allowlist admits any port a client names.
+  which today states that an empty allowlist admits any port a client names,
+  to say the gateway connects to the configured pprof port and to any other the operator lists.
 - [ ] Write the implementation plan; migrate `docs/configuration.md`, the chart values, and the console's port control.
 
 Spec: `docs/specs/gateway.md` (revision required).

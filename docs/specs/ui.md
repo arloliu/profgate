@@ -815,7 +815,9 @@ The `oidc` rule exists because a console that cannot log a browser in serves nob
 Nothing else is configurable:
 the path is `/ui/`, the assets are the embedded ones, and the theme follows the browser.
 An operator whose Ingress routes only `/v1` adds `/ui/`, `/auth/`, and `/` to it;
-the shipped manifests ship no Ingress, and the NetworkPolicy, Service, and container security context do not change.
+the Helm chart offers an Ingress template, off by default,
+routing `/`, `/ui/`, `/auth/`, and `/v1/` to the API port,
+and the NetworkPolicy, Service, and container security context do not change.
 
 The Helm chart gains a top-level `ui.enabled` value, default `false`,
 beside `tls.enabled`, `pgo.enabled`, and `auth.mode`,

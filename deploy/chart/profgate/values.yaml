@@ -44,6 +44,43 @@ service:
   port: 8080
   annotations: {}
 
+# An Ingress for the API port. Off by default, because the host, the class,
+# and the annotations differ per cluster; turning it on with no hosts fails
+# rendering rather than producing an Ingress that routes nothing.
+# The backend is always the Service's api port. The ops port is not in the
+# Service and is never routed here.
+ingress:
+  enabled: false
+  # The IngressClass. "" renders no ingressClassName, which leaves the
+  # cluster's default class to claim it.
+  className: ""
+  annotations: {}
+  # The hosts to route, each with an optional list of path prefixes. A host
+  # that names no paths gets all four the gateway serves: / and /ui/ for the
+  # console, /auth/ for the browser login it needs, and /v1/ for the API.
+  # / alone would cover the other three, and they are listed anyway so an
+  # operator narrowing the set can see what dropping one costs: routing only
+  # /v1/ leaves the console and its sign-in unreachable.
+  # Every path renders with pathType: Prefix.
+  #   hosts:
+  #     - host: profgate.example.com
+  #       paths: ["/v1/"]
+  hosts: []
+  # This is TLS in front of the Ingress. With tls.enabled the API port serves
+  # HTTPS as well, and a controller reaches it over plain HTTP until it is told
+  # otherwise: ingress-nginx reads
+  # nginx.ingress.kubernetes.io/backend-protocol: HTTPS from the annotations
+  # above, and other controllers have their own setting. Without it the
+  # controller speaks HTTP to an HTTPS listener and every request fails.
+  #
+  # TLS, as networking.k8s.io/v1 IngressTLS entries. The chart never creates
+  # the Secret, the same way it never creates the one tls.enabled mounts.
+  #   tls:
+  #     - secretName: profgate-ingress-tls
+  #       hosts:
+  #         - profgate.example.com
+  tls: []
+
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
@@ -84,10 +121,22 @@ securityContext:
   capabilities:
     drop: ["ALL"]
 
-# Container resources. An explicit block here is rendered verbatim and turns
-# off the derived memory limit below; use it when a cluster's quota or
-# LimitRange demands requests, or a CPU limit.
-resources: {}
+# Container resources. The two halves are read separately.
+# An explicit resources.limits is rendered verbatim and turns off the derived
+# memory limit below; use it for a CPU limit, or for a memory limit the
+# derivation does not produce.
+# resources.requests is rendered as written. The shipped CPU request is what
+# lets a namespace whose ResourceQuota counts requests.cpu admit the Pod at
+# all, since a container with no CPU request is refused there outright.
+# There is deliberately no memory request: Kubernetes copies an unset memory
+# request from the limit, so the Pod already reserves the derived figure, and
+# a smaller number here would let the scheduler place a gateway on a node
+# without room for the merge that limit is sized for.
+# Set cpu to null to render no request at all, the way fsGroup: null renders
+# no pod securityContext.
+resources:
+  requests:
+    cpu: 100m
 
 # The memory limit while pgo.enabled is false.
 # With PGO off the gateway streams profiles through to the client and holds no
@@ -152,6 +201,48 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 topologySpreadConstraints: []
+
+# A prometheus-operator PodMonitor for the ops port, which carries /metrics.
+# Off by default: it needs the monitoring.coreos.com CRDs installed and a
+# Prometheus whose podMonitorSelector matches the labels below, and rendering
+# it into a cluster without them leaves an object nothing reads.
+# It selects Pods rather than a Service because the ops port is deliberately
+# absent from the Service (see service above); the endpoint names the
+# container port the Deployment declares.
+# With networkPolicy.enabled, opsFromNamespaces has to name the namespace the
+# scraper runs in, or the scrape is refused.
+podMonitor:
+  enabled: false
+  interval: 30s
+  # Extra labels on the PodMonitor, which is how a Prometheus selects it.
+  labels: {}
+
+# A prometheus-operator PrometheusRule with the alerts the deployment guide
+# names as alertable. Off by default, for the same reason podMonitor is: it
+# needs the monitoring.coreos.com CRDs and a Prometheus whose ruleSelector
+# matches the labels below.
+# Every shipped expression reads a metric from the ops port, so the rules need
+# something scraping it -- podMonitor above, or a scrape configured by hand.
+prometheusRule:
+  enabled: false
+  # Extra labels on the PrometheusRule, which is how a Prometheus selects it.
+  labels: {}
+  # Rules replacing the shipped set outright, as monitoring.coreos.com/v1 rule
+  # entries rendered verbatim. Empty keeps the shipped three:
+  # ProfgateNotReady (profgate_discovery_synced), ProfgateAdmissionSaturated
+  # (profgate_requests_total refusing with too_many_profiles, summed over the
+  # endpoint and profile labels so a burst is one alert rather than one per
+  # profile name), and
+  # ProfgateOIDCKeysStale (profgate_oidc_jwks_age_seconds).
+  # The stale-keys threshold is half of the binary's own 24h
+  # auth.oidc.jwksMaxStale default; a deployment that lowers that key sets its
+  # own rules here, because the chart does not render the key and cannot
+  # follow it.
+  #   rules:
+  #     - alert: ProfgateNotReady
+  #       expr: profgate_discovery_synced == 0
+  #       for: 10m
+  rules: []
 
 # An ingress NetworkPolicy for the gateway Pods. It is off by default because
 # the namespaces that reach the two ports differ per cluster;
