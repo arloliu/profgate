@@ -30,8 +30,9 @@ Full authority order:
 
 > Profgate requires no Kubernetes write permissions.
 > It observes Services, Pods, and EndpointSlices in authorized namespaces,
-> connects to explicitly permitted application pprof ports, and manipulates
-> only its dedicated `PROFGATE_*` NATS stores.
+> connects to application ports the operator permits —
+> when an allowlist is empty, any port or port name a client names —
+> and manipulates only its dedicated `PROFGATE_*` NATS stores.
 
 This boundary is the product.
 It erodes through convenience, not malice: one extra client-go call, one extra

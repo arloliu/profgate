@@ -51,6 +51,7 @@ and rolling updates of the gateway are uneventful.
    The container stays exactly as hardened as the gateway spec's *Container* section describes.
 5. **The Kubernetes permission boundary does not move.**
    Collections resolve and confirm targets through the same `Discovery` interface as interactive requests,
+   always with the zero `PortSelection`, so they use the configured pprof port and offer no client selection,
    fetch samples through the same proxy transport,
    and pass through the same admission gate.
    No new RBAC tuple, no new `internal/k8s` method.
@@ -1148,7 +1149,7 @@ so the worst-case latency from cancellation to the owner stopping is one renewal
 
 ```text
 for round in 0..rounds-1:
-    targets := discovery.Targets(ns, svc)          // gateway eligibility rules, from the cache
+    targets := discovery.Targets(ns, svc, PortSelection{})  // gateway eligibility rules, from the cache, on the configured port
     targets  = filter(version != "")
     if policy.target.version != "": targets = filter(version == pin)
     if round == 0:
@@ -1592,7 +1593,7 @@ A Service that already has a live Collection answers `429 collection_in_progress
 the handler's `Create` of `active.<ns>.<svc>` loses (section 7.3),
 or the watched cache already shows the key and the write is skipped.
 
-Before creating the record the handler resolves targets once, as round 0 would,
+Before creating the record the handler resolves targets once, as round 0 would, with the zero `PortSelection`,
 and answers `409 version_conflict` or `409 version_missing` on the spot;
 this is advisory — the round is authoritative — so a Collection can still fail for the same reason later.
 A Service that does not exist or has no selector answers as the gateway spec's *Discovery* step does.
@@ -2039,6 +2040,8 @@ one server per subtest.
   round 0 with two versions fails `version_conflict`; with no labels, `version_missing`;
   a Pod of a new version appearing in round 1 is excluded and the manifest shows only `resolvedVersion`;
   every Pod rolled by round 1 fails `no_targets`;
+  the fake `Discovery` records the zero `PortSelection` on the advisory resolution and on every round,
+  so a Collection never names a port;
   `replicas: 2` over five Pods with a fixed `Shuffle` sequence samples two distinct Pods per round
   and the union over 20 rounds covers all five;
   two production-seeded workers over the same five Pods produce different orders within 20 rounds
@@ -2134,6 +2137,9 @@ one server per subtest.
 - `internal/admit`: `TryAcquire` fails without blocking at capacity;
   `Acquire` waits and returns on release or on context end.
 - Repository checks: the nats.go import check; the existing client-go check still passes.
+
+The zero `PortSelection` on every `Targets` call is the gateway spec's client-selected-port amendment applied here;
+its *Amendments* section lists this document's edits.
 
 ### 13.2 End-to-end
 

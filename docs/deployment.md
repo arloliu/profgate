@@ -63,7 +63,9 @@ The shipped defaults run, but three settings decide whether the gateway is usefu
 - **`auth.anonymousRealm`** — the realm every request gets while authentication is disabled.
   It must name one of the configured realms.
 - **The pprof port** — `discovery.pprof.port` (default 6060) or `discovery.pprof.portName`,
-  which is how discovery finds the profiling port on application Pods.
+  which is how discovery finds the profiling port on application Pods,
+  bounded by `discovery.pprof.allowedPorts` and `allowedPortNames` for what a client may name instead;
+  the shipped manifests leave both lists empty.
 
 With the chart, realms and `auth.anonymousRealm` are structured values,
 and the pprof port goes in the raw `config` block:
@@ -89,7 +91,9 @@ The chart and the base both create a ClusterRole with fixed, read-only rules:
 
 That is the permission invariant:
 profgate requires no Kubernetes write permissions,
-observes Services, Pods, and EndpointSlices, connects only to explicitly permitted pprof ports,
+observes Services, Pods, and EndpointSlices,
+connects to application ports the operator permits —
+when an allowlist is empty, any port or port name a client names —
 and touches only its own `PROFGATE_*` NATS stores.
 The chart offers no value that widens the rules,
 and a golden test pins them:
@@ -317,9 +321,11 @@ All metrics are on the ops port at `/metrics`.
 
 Every `/v1` request emits one JSON log record named `request` at info level on completion.
 An interactive request carries
-`principal`, `namespace`, `service`, `pod`, `profile`, `seconds`, `status`, `code`, and `duration_ms`;
+`principal`, `namespace`, `service`, `pod`, `profile`, `seconds`, `port`, `status`, `code`, and `duration_ms`;
 a PGO request carries
 `principal`, `namespace`, `service`, `collection`, `method`, `status`, `code`, and `duration_ms`.
+`port` is the client's port selection as sent, a number or a name, empty when absent;
+for a name it is never the number the name resolved to.
 The record names the selected Pod or Collection and never the Pod's IP address.
 
 ### Smoke test
@@ -348,6 +354,10 @@ It is off by default because those namespaces differ per cluster.
 The application side needs a matching policy admitting the gateway to its pprof port;
 [`deploy/networkpolicy-app-example.yaml`](../deploy/networkpolicy-app-example.yaml) is that policy,
 which belongs in the application's namespace rather than in this release.
+A client may name the port it wants
+([`port` and `portName` on the profile and targets routes](api.md#query-parameters));
+each empty allowlist accepts every port or port name a client names,
+and with both lists empty this NetworkPolicy is the only bound on which Pod ports the gateway can reach.
 
 A PodDisruptionBudget is on by default with `minAvailable: 1`.
 To express the budget the other way around, clear one bound and set the other:

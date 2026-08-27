@@ -50,8 +50,10 @@ which is what makes the profiled replica predictable.
    This design defines the `disabled` mode and the authorization structure every mode shares;
    [`auth.md`](auth.md) defines `basic` and `oidc` on that structure.
 8. **Authorization is static access realms** loaded from process configuration.
-9. **Nothing the gateway itself emits reveals a Pod IP, a pprof port, or a name the client's realm denies.**
-   Hiding the direct path to the pprof endpoint is part of what the gateway is for.
+9. **Nothing the gateway itself emits reveals a Pod IP, the port number behind a `portName` selection,
+   or a name the client's realm denies.**
+   Hiding the direct path to the pprof endpoint is part of what the gateway is for;
+   what a client can still learn about ports by choosing them is listed in section 7.5.
    Bytes the application sends — a profile body, an upstream error body, an allowlisted upstream header —
    are application-controlled and pass through as they are.
 10. **Every dependency is auditable in one sitting.**
@@ -127,7 +129,8 @@ its protection is a network property, and the kubelet's probe would skip verific
 
 > Profgate requires no Kubernetes write permissions.
 > It observes Services, Pods, and EndpointSlices in authorized namespaces,
-> connects to explicitly permitted application pprof ports,
+> connects to application ports the operator permits —
+> when an allowlist is empty, any port or port name a client names —
 > and manipulates only its dedicated `PROFGATE_*` NATS stores.
 
 The gateway defined here uses no NATS stores;
@@ -225,6 +228,9 @@ serving HTTPS adds no Kubernetes permission and leaves section 3.1's seven tuple
 Application pprof ports must not be routed by application Ingress resources.
 Where the cluster enforces NetworkPolicy, the pprof port should admit only the gateway's namespace and Pod selector;
 `deploy/` ships an example policy.
+A client may name the port it wants (section 5.4);
+each empty allowlist accepts every port or port name a client names,
+and NetworkPolicy is then the only bound on which Pod ports the gateway can reach.
 The ops listener is not exposed by the gateway's own Ingress or Service of type other than `ClusterIP`.
 
 ### 3.4 Container
@@ -257,7 +263,9 @@ No host namespaces, host paths, `SYS_PTRACE`, or privileged mode.
 ### 3.5 What a compromised gateway can do
 
 It can read Service, Pod, and EndpointSlice metadata cluster-wide,
-and open HTTP connections to any Pod IP on the configured pprof port that NetworkPolicy admits.
+and open HTTP connections to any Pod IP on the configured pprof port that NetworkPolicy admits,
+plus any port the allowlists of section 5.4 permit —
+with both allowlists empty, that is every port on every Pod NetworkPolicy admits.
 It cannot exec into Pods, read Secrets or logs, port-forward, mutate any Kubernetes object,
 or reach the host.
 Under `basic` authentication it holds bcrypt hashes, not passwords.
@@ -327,10 +335,18 @@ type Target struct {
     UID       string // pod.metadata.uid at selection; used by Confirm, never serialized
 }
 
+// PortSelection is the client's port choice for one request (section 5.4);
+// the zero value means the configured default.
+type PortSelection struct {
+    Port     int32
+    PortName string
+}
+
 type Discovery interface {
-    // Targets returns the currently eligible backends of a Service.
+    // Targets returns the currently eligible backends of a Service
+    // whose pprof port resolves under port.
     // Order is unspecified.
-    Targets(ctx context.Context, namespace, service string) ([]Target, error)
+    Targets(ctx context.Context, namespace, service string, port PortSelection) ([]Target, error)
     // HasSynced reports whether every informer has completed its initial list.
     HasSynced() bool
     // Confirm re-reads the Pod behind t from the API server and reports
@@ -418,7 +434,7 @@ A Pod is a target of a Service when all of the following hold:
    and Pods that are terminating.
 7. The endpoint's first address is one of the Pod's `status.podIPs`.
    A slice whose address disagrees with the Pod it claims to represent does not qualify.
-8. A pprof port resolves for the Pod (section 5.4).
+8. A pprof port resolves for the Pod (section 5.4), from the request's `port` or `portName` when given.
 
 Endpoints are aggregated across every EndpointSlice of the Service in this order:
 each endpoint is validated against rules 2–7 on its own and invalid entries are discarded;
@@ -434,12 +450,43 @@ when it has only `IPv6` slices, those are read.
 
 ### 5.4 Port resolution
 
-`discovery.pprof` names the port in one of two ways (exactly one must be set):
+Workloads in one cluster expose pprof on fixed but different ports,
+and some of their manifests are not the operator's to change,
+so one global `port` or `portName` cannot describe every Service.
+A client may therefore name the port per request;
+the configuration keeps the default and bounds what a client may name.
+
+`discovery.pprof` names the default port in one of two ways (exactly one must be set):
 
 - `port: 6060` — the same numeric port for every Pod.
 - `portName: pprof` — the named `containerPort` found in the Pod's `spec.containers[].ports`
   whose `protocol` is `TCP` (or unset, which Kubernetes defaults to TCP).
   A Pod with no TCP port of that name is ineligible; there is no fallback to a number.
+
+A request may carry `port=<1–65535>` or `portName=<name>` (sections 6.2 and 6.3), never both.
+Either one replaces the configured default for that request and resolves under the same two rules:
+`port` is used for every Pod without checking that the Pod declares it,
+and `portName` names the TCP `containerPort`, leaving a Pod without it ineligible.
+`Target.Port` is the resolved number either way and is never serialized.
+
+`discovery.pprof.allowedPorts` and `discovery.pprof.allowedPortNames` bound what a client may name.
+A request whose `port` is not in a non-empty `allowedPorts`,
+or whose `portName` is not in a non-empty `allowedPortNames`,
+is refused with `400 port_not_allowed` before discovery runs.
+The two lists are independent: `allowedPorts` bounds only `port` and `allowedPortNames` bounds only `portName`.
+An empty list permits any value of its parameter,
+so an empty `allowedPortNames` accepts every valid name whatever `allowedPorts` holds,
+and each accepted name resolves to whatever number the Pod declares under it.
+"No `portName` at all" therefore cannot be expressed;
+an operator who wants to forbid names lists only the configured default name
+(or, with a numeric default, one name no Pod declares).
+Both lists default empty, so a bare configuration accepts any port and any name a client sends;
+the shipped manifests leave both lists empty (section 11),
+so a fresh install accepts any port and any name until the operator narrows the lists.
+The configured default `port` or `portName` is always permitted, whatever the lists hold.
+The status is `400` rather than `403` because the value is invalid under this gateway's configuration,
+and the response must not say which ports Pods expose (section 7.5).
+The allowlists are global; a realm decides namespaces, Services, and profiles, never ports (section 7.4).
 
 The application Service does not need to expose the pprof port.
 A per-Service annotation override is deliberately not part of this design.
@@ -518,9 +565,12 @@ Steps 8–10 differ by endpoint.
    → `401 unauthenticated`, `429 too_many_auth`, `503 auth_unavailable`, or a `302` to login ([`auth.md`](auth.md)).
 6. **Realm.** Namespace, then Service, then (profile endpoint only) profile → `403 realm_denied`.
 7. **Parameters.**
-   Targets endpoint: any query parameter → `400 invalid_parameter`.
+   Targets endpoint: any query parameter other than `port` or `portName` → `400 invalid_parameter`.
    Profile endpoint: validate every parameter per section 6.3 → `400 invalid_parameter` or `400 seconds_exceeds_limit`.
-8. **Discovery.** `Targets()` → `404 service_not_found`, `422 service_selectorless`.
+   Both endpoints: `port` or `portName` outside its grammar, or both given → `400 invalid_parameter`;
+   a value a non-empty allowlist excludes → `400 port_not_allowed` (section 5.4).
+   A refused port never reaches discovery.
+8. **Discovery.** `Targets()` with the request's port selection → `404 service_not_found`, `422 service_selectorless`.
 9. **Filter and select.**
    Targets endpoint: respond `200` with the full list, sorted (section 6.2).
    Profile endpoint: apply `version`;
@@ -554,6 +604,8 @@ GET /v1/namespaces/{namespace}/services/{service}/targets
 }
 ```
 
+The endpoint takes the optional `port` or `portName` parameter of section 6.3 and no other;
+the list then holds the Pods eligible under that port.
 `targets` is sorted by `pod` name;
 the response `Content-Type` is `application/json`, as it is for every gateway error body.
 A Service with no eligible backends returns `200` with an empty array.
@@ -585,12 +637,16 @@ Query parameters:
 | `pod` | DNS-1123 subdomain (the Kubernetes Pod-name rule) | select this Pod; it must be an eligible target |
 | `version` | non-empty string | restrict selection to targets with this version |
 | `strategy` | `random` | selection strategy; the only value, and the default when absent |
+| `port` | decimal integer, 1–65535 | pprof port for every Pod, replacing `discovery.pprof.port`/`portName`; must pass `allowedPorts` (section 5.4) |
+| `portName` | IANA service name (the Kubernetes container-port name rule) | named TCP container port, replacing the configured default; must pass `allowedPortNames`; excludes `port` |
 
 Rules:
 
 - A parameter given more than once, an empty value, an unknown parameter name,
   or a value outside its grammar → `400 invalid_parameter`.
 - `seconds` on a profile that does not take it → `400 invalid_parameter`.
+- `port` and `portName` together → `400 invalid_parameter`;
+  either one excluded by its non-empty allowlist → `400 port_not_allowed`, before discovery.
 - **Effective duration** for `cpu` and `trace` is the explicit `seconds` or the upstream default.
   The effective duration, explicit or not, must not exceed `limits.cpuSeconds` / `limits.traceSeconds`,
   otherwise `400 seconds_exceeds_limit`.
@@ -627,7 +683,7 @@ through a dedicated `http.Transport`:
   a **header deadline** of effective duration + 10s for `cpu` and `trace`, 30s otherwise,
   cancels the upstream request if response headers have not arrived;
   an **overall budget** of effective duration + 30s (30s for profiles without a duration)
-  starts when the request enters step 9 of section 6.1 and bounds confirmation, dial, header wait,
+  starts when the request enters the Admit step of section 6.1 and bounds confirmation, dial, header wait,
   and body streaming together;
   the confirmation read's own 5-second timeout is the lesser of 5s and what remains of the budget.
 - The upstream request context is derived from the client request context,
@@ -675,7 +731,7 @@ The complete set of gateway-generated codes:
 
 | Status | `code` |
 |---|---|
-| 400 | `invalid_parameter`, `seconds_exceeds_limit` |
+| 400 | `invalid_parameter`, `seconds_exceeds_limit`, `port_not_allowed` |
 | 401 | `unauthenticated` |
 | 403 | `realm_denied` |
 | 404 | `route_unknown`, `service_not_found`, `pod_not_found`, `profile_unknown` |
@@ -693,6 +749,9 @@ and are recorded with code `upstream_<status>`.
 `pod_not_found` covers a Pod that does not exist,
 one that is not an eligible backend,
 and one filtered out by `version`.
+
+`port_not_allowed` names only the value the client sent, never a port a Pod exposes;
+receiving it does tell the client that the value is outside the allowlist (section 7.5).
 
 ---
 
@@ -763,12 +822,30 @@ limits:
 
 Limits cap the effective duration any realm may request (section 6.3).
 No principal, however privileged, exceeds them.
+The port allowlists of section 5.4 are global in the same way:
+a realm decides namespaces, Services, and profiles, and no realm widens or narrows which ports a client may name.
 
 ### 7.5 Non-disclosure
 
 A client's realm bounds everything the gateway generates on the API listener:
 the targets response, gateway error bodies, gateway-owned headers, and the transport-error envelopes
 name only namespaces, Services, and Pods the realm admits and never a Pod address.
+Of ports, the guarantee is narrower:
+no response carries the port number a `portName` selection resolved to,
+and the `X-Pprof-Target-*` headers never carry a port;
+a `400 port_not_allowed` body names only the value the client sent.
+Choosing ports still lets an authorized client observe three things,
+listed here so nobody mistakes them for leaks the design closes:
+
+- `portName` on the targets endpoint changes per-Pod eligibility,
+  so calling it with different names reveals which admitted Pods declare each named TCP port.
+- A numeric `port` on the profile endpoint reaches the Pod without checking its declarations,
+  so an authorized caller can combine `pod=` with different numbers,
+  and the proxy outcomes of section 6.4 then tell an open pprof port from a refused, silent, redirecting, or non-pprof HTTP port —
+  a port-scanning capability over admitted Pods,
+  bounded by the realm, `allowedPorts`, and NetworkPolicy, and nothing else.
+- `400 port_not_allowed` reveals that a value is outside the allowlist.
+  It reveals nothing about Pods: realm evaluation precedes it and discovery never runs.
 What an authorized upstream response carries — the profile bytes, a pass-through error body,
 an allowlisted upstream header such as `Content-Disposition` — is the application's to control;
 the gateway forwards it unchanged and makes no claim about its content.
@@ -801,7 +878,7 @@ Standard-library `flag` with hand-written subcommand dispatch.
 Every `/v1` request emits one record on completion:
 
 ```text
-principal, namespace, service, pod, profile, seconds, status, code, duration_ms
+principal, namespace, service, pod, profile, seconds, port, status, code, duration_ms
 ```
 
 `auth_reason` is added on authentication failures and login redirects,
@@ -809,6 +886,12 @@ with the values [`auth.md`](auth.md) lists;
 one of them, `internal`, marks an authenticator error the gateway could not classify, answered `503 auth_unavailable`.
 The `/auth/` routes write a line with no namespace or Service ([`auth.md`](auth.md)).
 
+`port` is the client's port selection as sent, a number or a name, empty when absent;
+for a numeric selection that is also the resolved port,
+for a name it is the name and never the number it resolved to.
+When the selection is malformed, repeated, or both parameters are present,
+the field is empty and the request fails `invalid_parameter`;
+a disallowed value is recorded as sent with `port_not_allowed`.
 `code` is `ok` for a successful proxy, the gateway error code, or the upstream code from section 6.4.
 This is the audit trail.
 Records never contain a Pod IP.
@@ -860,6 +943,8 @@ and the header deadline and overall budget built from them (section 6.4).
 Every label has a fixed value set:
 `profile` is the eight names or `none`, `code` takes the values in sections 6.4 and 6.5
 with upstream statuses bucketed as `upstream_<status>`.
+The client's port selection is not a label either;
+it is client-controlled and would add a series per value.
 Namespace and Service names never become labels:
 they are client-controlled path segments, and under a wildcard realm a caller could mint one series per request.
 Those names live in the audit log, where they cost nothing after the line is written.
@@ -942,7 +1027,8 @@ Because the overall request budget already includes confirmation, the drain boun
   fixtures exercise every eligibility rule in section 5.3 one mutation at a time
   (selector mismatch, stale UID, wrong namespace in `targetRef`, address not in `podIPs`,
   duplicate with conflicting address, `ready: false`, terminating, not `Running`, missing named port),
-  plus dual-stack and IPv6-only Services.
+  plus dual-stack and IPv6-only Services,
+  and a request `portName` that one Pod declares and another does not, leaving only the first eligible.
   A recording transport asserts the request set during preflight, steady state, and confirmation
   is exactly the seven RBAC tuples.
   Confirmation tests: freeze the informer (stop delivering events), delete or recreate the Pod in the fake API,
@@ -962,6 +1048,8 @@ Because the overall request budget already includes confirmation, the drain boun
   forged `X-Pprof-Target-*`, `Cache-Control`, `Set-Cookie`, and hop-by-hop headers dropped,
   relative and absolute redirects turned into `502 upstream_redirect` with no Pod address in the body,
   connection refused versus accepted-but-silent upstream yielding `502` versus `504` on every run,
+  an allowed numeric port that is not a pprof listener (a plain HTTP server answering `404`)
+  passing through as `upstream_404`,
   client cancellation propagated,
   upstream `404`/`429`/`500` pass-through, reset before headers, reset after partial body,
   and concurrent requests with different header deadlines against delayed upstreams proving the deadlines are independent.
@@ -969,8 +1057,27 @@ Because the overall request budget already includes confirmation, the drain boun
   a table over every route, method, parameter combination, and error code;
   realm denial identical for an existing and a missing Service;
   no response, header, or error string containing a Pod IP.
+  For `port`: `0`, `65536`, `abc`, empty, and repeated are `400 invalid_parameter`.
+  For `portName`, each of these is `400 invalid_parameter`:
+  empty, repeated, 16 characters or longer, uppercase, a leading or trailing hyphen, and all digits;
+  `abc` is valid.
+  `port` and `portName` together are `400 invalid_parameter`.
+  A value outside a non-empty allowlist is `400 port_not_allowed` and the fake `Discovery` records no call;
+  an empty allowlist accepts any value of its parameter while the other list stays non-empty;
+  the configured default passes whatever the lists hold;
+  a realm denial with a disallowed port is `403 realm_denied`, proving realm evaluation precedes the allowlist;
+  a `portName` present on one fake Pod and absent on another lists only the first on the targets endpoint,
+  and one absent from every Pod lists none and profiles `503 no_targets`.
+  The audit `port` field is empty for an absent selection,
+  the value as sent for a single valid `port` or `portName`,
+  empty with `invalid_parameter` for a repeated, malformed, or doubled selection,
+  and the value as sent with `port_not_allowed` for a disallowed one;
+  a `portName` selection never logs the resolved number,
+  and no response or header carries the number a `portName` resolved to.
 - `internal/config`: every environment override, unknown keys at each nesting level,
   numeric-only, name-only, both, and neither of `port`/`portName` (neither normalizes to 6060),
+  `allowedPorts` and `allowedPortNames` from file and from their comma-separated environment variables,
+  with an out-of-range number, an invalid name, or a duplicate entry rejected,
   invalid limits, unknown realm reference,
   and a request paused between realm evaluation and discovery while the config pointer is swapped,
   proving the request uses one snapshot.
@@ -1056,7 +1163,8 @@ are specified in [`auth.md`](auth.md).
   every scenario talks to the gateway through these and they are never accounted per scenario.
   **Test-app reach:** a scenario that opens a port-forward to a test-app Pod (to flip readiness)
   or that needs the gateway to complete a proxy to a test-app Pod declares `needsPodReach`.
-  `degraded: true` skips exactly the scenarios that declare it (2, the readiness half of 3, 4, 8, and 9) on that lane;
+  `degraded: true` skips exactly the scenarios that declare it on that lane
+  (2, the readiness half of 3, 4, 8, 9, 11, and 12);
   the harness logs every skipped scenario by name, the remaining scenarios must still pass,
   and CI reports the lane as passed with a warning annotation.
   A scenario that opens a test-app port-forward without declaring `needsPodReach` fails on every lane.
@@ -1084,11 +1192,18 @@ Why kind rather than k3s for the old versions:
   image substitution, `replicas: 2`, and ClusterRole variants missing `watch` and missing `get`.
 - The reduced-ClusterRole scenario runs a second gateway Deployment with its own ServiceAccount
   and ClusterRoleBinding so it cannot disturb the main gateway.
+- The default gateway's configuration leaves both allowlists empty, so it accepts the test app's second port and its name,
+  and the `ports-gateway` overlay runs a gateway whose lists hold only `6060` and `pprof`,
+  because configuration is loaded once per process and one gateway cannot show both the accepted and the refused outcome.
 - The harness reaches individual gateway Pods and test-app Pods through client-go `portforward`
   with the tester's kubeconfig, because Pod IPs are unreachable from outside kind.
 - The test application lives in `test/e2e/testapp/`:
-  `net/http/pprof`, a readiness probe on `/healthz` with `periodSeconds: 1` and `failureThreshold: 1`,
+  `net/http/pprof` on `:6060` (container port `pprof`)
+  and on a second `http.Server` on `:6061` (container port `pprof-alt`) sharing one handler,
+  a readiness probe on `/healthz` with `periodSeconds: 1` and `failureThreshold: 1`,
   and `POST /healthz/fail` and `POST /healthz/pass` that flip the probe result for that process.
+  `GET /hits` keeps its `pprof` total and adds a per-listener count keyed by listen address:
+  `{"pprof": 3, "hits": {":6060": 2, ":6061": 1}}`.
   After either call the harness waits until its own watch sees the Pod's `Ready` condition change
   before it starts the convergence clock.
   Its Deployment sets `terminationGracePeriodSeconds: 60` and a `preStop` sleep of 30s,
@@ -1135,7 +1250,14 @@ Why kind rather than k3s for the old versions:
     and replacing the Secret's contents with a certificate from a second authority makes the gateway serve the new one,
     while the Pod's UID and restart count stay as they were.
     The scenario reaches no application Pod: it exercises the gateway's own listener.
-11. Every scenario runs on every lane whose capabilities it does not exclude;
+11. Against the default gateway, whose empty allowlists accept the test app's second port and its name,
+    `?port=6061` fetches a profile the test app's `/hits` attributes to `:6061`,
+    and `?portName=pprof-alt` does the same (`needsPodReach`).
+12. Against the `ports-gateway` overlay, whose lists exclude them,
+    `?port=6061` and `?portName=pprof-alt` are each `400 port_not_allowed`
+    and the test app's `:6061` count does not move (`needsPodReach`).
+    The two halves are separately registered scenarios because one gateway configuration cannot prove both outcomes.
+13. Every scenario runs on every lane whose capabilities it does not exclude;
     a lane skips a scenario only by `degraded` or `networkPolicy`, and the skip is logged by scenario name.
 
 ### 9.5 Continuous integration
@@ -1186,12 +1308,19 @@ so a later hot-reload (`fuda/watcher`) is one goroutine and no change to request
 | `discovery.versionLabel` | `PROFGATE_VERSION_LABEL` | `app.kubernetes.io/version` | restart | valid label key |
 | `discovery.pprof.port` | `PROFGATE_PPROF_PORT` | `6060` when `portName` is also absent | restart | 1–65535; exactly one of `port`/`portName` after normalization |
 | `discovery.pprof.portName` | `PROFGATE_PPROF_PORT_NAME` | — | restart | IANA service name (the Kubernetes container-port name rule) |
+| `discovery.pprof.allowedPorts` | `PROFGATE_PPROF_ALLOWED_PORTS` (comma-separated) | empty: any `port` accepted | restart | each 1–65535; no duplicates; bounds `port` only |
+| `discovery.pprof.allowedPortNames` | `PROFGATE_PPROF_ALLOWED_PORT_NAMES` (comma-separated) | empty: any `portName` accepted | restart | each an IANA service name; no duplicates; bounds `portName` only |
 | `limits.cpuSeconds` | `PROFGATE_LIMIT_CPU_SECONDS` | `60` | restart | 1–86400 |
 | `limits.traceSeconds` | `PROFGATE_LIMIT_TRACE_SECONDS` | `60` | restart | 1–86400 |
 | `limits.maxConcurrentProfiles` | `PROFGATE_LIMIT_MAX_CONCURRENT_PROFILES` | `16` | restart | 1–1024 |
 | `auth.mode` | `PROFGATE_AUTH_MODE` | `disabled` | restart | `disabled`, `basic`, `oidc`; the mode-specific keys are in [`auth.md`](auth.md) |
 | `auth.anonymousRealm` | `PROFGATE_ANONYMOUS_REALM` | — | hot | required in `disabled`, forbidden otherwise; names an entry in `realms` |
 | `realms` | — | — | hot | at least one; entries per section 7.2 |
+
+The two allowlists are independent and an empty one permits any value of its parameter;
+there is no setting that forbids `portName` outright;
+an operator who wants no names accepted lists only the configured default name when the default is a name,
+or one well-formed name no Pod declares when the default is a number (the example's empty lists accept every name).
 
 ```yaml
 server:
@@ -1203,6 +1332,8 @@ discovery:
   versionLabel: app.kubernetes.io/version
   pprof:
     port: 6060
+    allowedPorts: []
+    allowedPortNames: []
 limits:
   cpuSeconds: 60
   traceSeconds: 60
@@ -1267,7 +1398,9 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
 - Images are built with `ko`: no Dockerfile, distroless base, non-root.
 - `deploy/` holds plain YAML with a kustomize base:
   ServiceAccount, ClusterRole, ClusterRoleBinding,
-  ConfigMap with the example configuration mounted read-only at `/etc/profgate/config.yaml`,
+  ConfigMap with the example configuration mounted read-only at `/etc/profgate/config.yaml`
+  (its `discovery.pprof.allowedPorts` and `allowedPortNames` are empty,
+  so a client may name any port or any name until the operator narrows the lists),
   Deployment (`replicas: 2`, hardened as in section 3.4, `--config /etc/profgate/config.yaml`,
   readiness probe on the ops listener's `/readyz`, `terminationGracePeriodSeconds: 125`),
   a `ClusterIP` Service exposing only the API port,
@@ -1306,6 +1439,9 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
     for a cluster that assigns its own ranges through a security context constraint.
   - Release-scoped ClusterRole and ClusterRoleBinding names, so two releases in one cluster do not collide,
     over rules identical to the base's.
+  - `discovery.pprof.allowedPorts` and `allowedPortNames` rendered as empty lists in `values.yaml`,
+    so a chart install accepts any port and any name until the operator narrows the lists;
+    the binary's own default for each list is empty, which accepts any value.
 
   `tls.enabled` gates the certificate volume, its mount, and the `server.tls` keys in the rendered configuration.
   The chart needs the flag because Helm needs a boolean to render a conditional;
@@ -1377,3 +1513,59 @@ test/e2e/            harness, versions.yaml, testapp, overlays
 | Issuer rotates its signing keys | tokens under the new key verify within `jwksRefreshMin` of the first one arriving |
 | Issuer token endpoint down | browser logins answer `503 auth_unavailable`; existing sessions and bearer tokens unaffected |
 | Users file or cookie key file unreadable while running | the previous contents stay in use; a warning is logged and a `failed` reload counted |
+| Client names a `portName` on the targets endpoint | the list holds only admitted Pods declaring that TCP port name; the client learns which do (section 7.5) |
+| Client probes numeric ports with `pod=` on the profile endpoint | each allowed port answers with the proxy outcome of section 6.4; the client can tell open from refused, silent, redirecting, or non-pprof HTTP ports of admitted Pods, within the realm, `allowedPorts`, and NetworkPolicy |
+| Client names a port outside a non-empty allowlist | `400 port_not_allowed` before discovery; the client learns the value is not allowlisted and nothing about Pods |
+| Client denied by realm names a disallowed port | `403 realm_denied`; the allowlist is never evaluated |
+| Client names an allowed numeric port that is not a pprof listener | the dial or the upstream response decides: `502`/`504` from section 6.4, or the upstream's own status passed through as `upstream_<status>` |
+| Client names a `portName` some or all Pods lack | Pods without it are ineligible; the targets list shrinks to those that declare it, and a profile request with none left is `503 no_targets` |
+
+---
+
+## 14. Amendments
+
+Client-selected pprof ports (`port` and `portName` query parameters with `allowedPorts` and `allowedPortNames`)
+amend the following text.
+The first table lists the edits made in the same change as this section;
+the second lists the documents that describe shipped behavior and are updated when the implementation lands.
+
+Amended now:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *Core decisions* | decision 9 narrowed: a Pod IP, the number behind a `portName` selection, and realm-denied names stay hidden; what choosing ports reveals is listed under *Non-disclosure* |
+| `docs/specs/gateway.md` | *Permission Boundary* | invariant sentence reworded: "connects to application ports the operator permits — when an allowlist is empty, any port or port name a client names" |
+| `docs/specs/gateway.md` | *Network* | an empty allowlist accepts every port or name a client names and leaves NetworkPolicy as the only bound on reachable Pod ports |
+| `docs/specs/gateway.md` | *What a compromised gateway can do* | every allowlisted port, or every port with the lists empty |
+| `docs/specs/gateway.md` | *The seam* | `PortSelection` and the `Targets` parameter that carries it |
+| `docs/specs/gateway.md` | *Cluster matrix* | scenarios 11 and 12 in the `degraded` skip list |
+| `docs/specs/gateway.md` | *Eligibility* | rule 8 resolves from the request's port selection when given |
+| `docs/specs/gateway.md` | *Port resolution* | motivation, the two parameters, the two independent allowlists, `400 port_not_allowed`, an empty list permits any value of its parameter, "no `portName`" cannot be expressed, default always permitted, shipped manifests set both lists |
+| `docs/specs/gateway.md` | *Request algorithm* | parameter step validates and allowlists the port before discovery; discovery takes the selection |
+| `docs/specs/gateway.md` | *List targets* | accepts `port` or `portName` |
+| `docs/specs/gateway.md` | *Fetch a profile* | parameter table rows and rules for `port` and `portName` |
+| `docs/specs/gateway.md` | *Proxy behavior* | the overall budget starts at the Admit step, cited by name |
+| `docs/specs/gateway.md` | *Errors* | `400 port_not_allowed`, naming only the client's value and revealing allowlist membership |
+| `docs/specs/gateway.md` | *Limits are not authorization* | allowlists are global, not per realm |
+| `docs/specs/gateway.md` | *Non-disclosure* | the guarantee narrowed to no Pod IP, no number behind a `portName`, no port in `X-Pprof-Target-*`; the three observations a client can make by choosing ports |
+| `docs/specs/gateway.md` | *Logging* | audit field `port`: the selection as sent, empty when absent or invalid, the client value with `port_not_allowed` |
+| `docs/specs/gateway.md` | *Metrics* | no label for the port selection |
+| `docs/specs/gateway.md` | *Layers* | unit rows per parameter for grammar, allowlists, realm before allowlist, per-Pod `portName` eligibility, the audit field per input, no discovery on denial, a non-pprof listener through the proxy, config validation |
+| `docs/specs/gateway.md` | *Harness* | the test app's second listener `:6061` named `pprof-alt`, the per-listener `/hits` shape, and the `ports-gateway` overlay |
+| `docs/specs/gateway.md` | *What end-to-end proves* | scenario 11: second port reached through `?port=` and `?portName=` on the default gateway; scenario 12: both refused by the `ports-gateway` overlay |
+| `docs/specs/gateway.md` | *Configuration* | rows for `allowedPorts` and `allowedPortNames`, each bounding one parameter; the lists are independent; the example leaves both lists empty |
+| `docs/specs/gateway.md` | *Build and Deployment* | kustomize ConfigMap and chart `values.yaml` ship both lists empty |
+| `docs/specs/gateway.md` | *Failure Scenarios* | rows for `portName` target-set inference, numeric probing through proxy outcomes, allowlist-membership disclosure, realm denial before the allowlist, an allowed port that is not a pprof listener, and a name some or all Pods lack |
+| `docs/specs/pgo.md` | *Core decisions*, *On-demand Collections*, *Rounds*, *Unit* | every `Targets` call passes the zero `PortSelection`: PGO always uses the configured default and offers no client selection; a unit test records the zero value |
+| `.agents/rules/800-security-invariant.md` | *The Boundary* | invariant sentence reworded as above |
+| `AGENTS.md` | *The Permission Invariant* | invariant sentence reworded as above |
+| `README.md` | opening paragraph | invariant sentence reworded as above |
+| `docs/deployment.md` | *RBAC* | invariant sentence reworded as above |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `docs/api.md` | the `port` and `portName` parameters, `400 port_not_allowed`, and what choosing ports reveals |
+| `docs/configuration.md` | `allowedPorts` and `allowedPortNames`, their independence, and the shipped defaults |
+| `deploy/base/configmap.yaml`, `deploy/chart/profgate/values.yaml` | both allowlists shipped empty |

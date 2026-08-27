@@ -8,7 +8,8 @@ and merges them into an artifact for `go build -pgo=`.
 
 Profgate requires no Kubernetes write permissions.
 It only lists and watches Services and EndpointSlices and gets, lists, and watches Pods in authorized namespaces,
-connects only to the configured application pprof port,
+connects to application ports the operator permits —
+when an allowlist is empty, any port or port name a client names —
 and, in PGO mode, touches only its own `PROFGATE_*` NATS stores.
 
 ## Features
@@ -67,8 +68,10 @@ go tool pprof "http://localhost:8080/v1/namespaces/<ns>/services/<svc>/profiles/
 ```
 
 The one requirement on the application:
-its Pods must serve Go's `net/http/pprof` handlers on the port the gateway is configured to reach —
-`discovery.pprof.port` (6060 by default) or `discovery.pprof.portName`.
+its Pods must serve Go's `net/http/pprof` handlers on the configured default,
+`discovery.pprof.port` (6060 by default) or `discovery.pprof.portName`,
+and on any other port a client selects with `port` or `portName`
+that `discovery.pprof.allowedPorts` and `allowedPortNames` permit.
 
 ## Documentation
 

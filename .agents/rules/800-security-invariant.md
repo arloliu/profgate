@@ -10,8 +10,9 @@ root [`AGENTS.md`](../../AGENTS.md) tracks it.
 
 > Profgate requires no Kubernetes write permissions.
 > It observes Services, Pods, and EndpointSlices in authorized namespaces,
-> connects to explicitly permitted application pprof ports, and manipulates
-> only its dedicated `PROFGATE_*` NATS stores.
+> connects to application ports the operator permits —
+> when an allowlist is empty, any port or port name a client names —
+> and manipulates only its dedicated `PROFGATE_*` NATS stores.
 
 A compromised gateway reaches exactly this far, and no further.
 The boundary is the reason Profgate is deployable in a production cluster at
