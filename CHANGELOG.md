@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A client can select the pprof port for one request.**
+  A `port` (a decimal integer) or `portName` (a container-port name) query parameter,
+  on the targets and profile endpoints,
+  replaces the configured default for that request, never both together.
+  Two independent operator allowlists,
+  `discovery.pprof.allowedPorts` and `allowedPortNames`, bound what a client may name;
+  an empty list permits any value of its parameter, and the configured default always passes.
+  A value a non-empty allowlist excludes is refused with `400 port_not_allowed` before discovery runs.
+  The audit log gains a `port` field recording the selection as sent —
+  a number or a name, empty when absent, and for a name never the number it resolved to.
+  The end-to-end test application now serves pprof on a second listener
+  so the two allowlists have a real alternate port and port name to exercise.
+
+### Changed
+
+- **The targets endpoint now accepts `port` and `portName`.**
+  It previously took no query parameters; any other query parameter still answers
+  `400 invalid_parameter`.
+- **The permission invariant's wording.**
+  It now says the gateway connects to application ports the operator permits,
+  and that an empty allowlist accepts any port or port name a client names,
+  rather than naming one fixed port as the only one reachable.
+
 ## [0.3.0] - 2026-08-26
 
 Documents the project for public use, hardens the chart against values it cannot honor,
@@ -262,6 +289,7 @@ and PGO CPU-profile collection layered on top of it.
   frozen Kubernetes 1.23 and 1.24 images and the current Kubernetes release,
   matching the 1.23 compatibility baseline.
 
+[Unreleased]: https://github.com/arloliu/profgate/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/arloliu/profgate/releases/tag/v0.3.0
 [0.2.0]: https://github.com/arloliu/profgate/releases/tag/v0.2.0
 [0.1.1]: https://github.com/arloliu/profgate/releases/tag/v0.1.1

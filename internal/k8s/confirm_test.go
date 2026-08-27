@@ -37,7 +37,7 @@ const (
 func onlyTarget(t *testing.T, c *Cluster) Target {
 	t.Helper()
 
-	targets, err := c.Targets(context.Background(), fixtureNamespace, fixtureService)
+	targets, err := c.Targets(context.Background(), fixtureNamespace, fixtureService, PortSelection{})
 	if err != nil || len(targets) != 1 {
 		t.Fatalf("Targets() = %+v, %v, want exactly one target and no error", targets, err)
 	}
@@ -317,7 +317,7 @@ func TestConfirm(t *testing.T) {
 
 		// The replacement Pod reaches the cache under the same name and address.
 		waitCache(t, func() bool {
-			targets, err := c.Targets(context.Background(), fixtureNamespace, fixtureService)
+			targets, err := c.Targets(context.Background(), fixtureNamespace, fixtureService, PortSelection{})
 
 			return err == nil && len(targets) == 1 && targets[0].UID == recreatedUID
 		})
@@ -336,15 +336,10 @@ func TestConfirm(t *testing.T) {
 			t.Fatalf("Confirm() = %v, want nil", err)
 		}
 
-		granted := map[string]bool{
-			"list services": true, "watch services": true,
-			"list pods": true, "watch pods": true, "get pods": true,
-			"list endpointslices": true, "watch endpointslices": true,
-		}
 		for _, a := range cs.Actions() {
-			tuple := a.GetVerb() + " " + a.GetResource().Resource
-			if !granted[tuple] {
-				t.Fatalf("discovery issued %q; the ClusterRole grants seven read tuples and nothing else", tuple)
+			if !isGranted(a.GetVerb(), a.GetResource().Resource) {
+				t.Fatalf("discovery issued %q; the ClusterRole grants seven read tuples and nothing else",
+					a.GetVerb()+" "+a.GetResource().Resource)
 			}
 		}
 		if n := len(podGets(t, cs)); n != 1 {
@@ -390,7 +385,7 @@ func TestConfirm(t *testing.T) {
 			t.Fatalf("Tracker().Add() error = %v", err)
 		}
 		waitCache(t, func() bool {
-			targets, err := c.Targets(context.Background(), fixtureNamespace, fixtureService)
+			targets, err := c.Targets(context.Background(), fixtureNamespace, fixtureService, PortSelection{})
 
 			return err == nil && len(targets) == 2
 		})

@@ -26,6 +26,9 @@ spec:
             - name: pprof
               containerPort: 6060
               protocol: TCP
+            - name: pprof-alt
+              containerPort: 6061
+              protocol: TCP
           readinessProbe:
             httpGet:
               path: /healthz

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -76,6 +77,9 @@ type Deps struct {
 // server is the handler's state.
 type server struct {
 	deps Deps
+	// beforeAllowlist, when set, runs after the realm check and before the allowlist check.
+	// Production leaves it nil; a test uses it to swap the configuration pointer mid-request.
+	beforeAllowlist func()
 }
 
 // New builds the /v1 handler.
@@ -188,6 +192,7 @@ func parseRoute(path string) (route, bool) {
 type request struct {
 	routed bool
 	route  route
+	port   portParams // the client's port selection; zero on PGO routes
 	audit  auditRecord
 }
 
@@ -329,20 +334,45 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if rt.kind == kindTargets {
-		if r.URL.RawQuery != "" {
-			q.fail(w, invalidParameter("the targets endpoint takes no parameters"))
+	// Parameters, then the allowlist, then discovery: a refused port never reaches Targets.
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		q.fail(w, invalidParameter("the query string is malformed"))
 
-			return
-		}
-		s.serveTargets(w, r, q)
+		return
+	}
+	var (
+		params profileParams
+		perr   *requestError
+	)
+	if rt.kind == kindTargets {
+		params.port, perr = parseTargetsParams(values)
+	} else {
+		params, perr = parseProfileParams(values, spec, cfg.Limits)
+	}
+	// The selection is recorded as sent even when another parameter fails;
+	// a fault in the selection itself leaves it empty.
+	q.port = params.port
+	q.audit.port = q.port.sent
+	if perr != nil {
+		q.fail(w, perr)
 
 		return
 	}
 
-	params, perr := parseProfileParams(r.URL.RawQuery, spec, cfg.Limits)
-	if perr != nil {
-		q.fail(w, perr)
+	if s.beforeAllowlist != nil {
+		s.beforeAllowlist()
+	}
+	// The allowlist reads cfg, the snapshot loaded at entry; a zero selection
+	// resolves under the configured default, which is always permitted.
+	if aerr := allowPort(cfg.Discovery.Pprof, q.port); aerr != nil {
+		q.fail(w, aerr)
+
+		return
+	}
+
+	if rt.kind == kindTargets {
+		s.serveTargets(w, r, q)
 
 		return
 	}
@@ -350,10 +380,23 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.serveProfile(w, r, q, spec, params)
 }
 
+// allowPort evaluates the selection against the allowlists of one configuration snapshot.
+func allowPort(pprof config.PprofConfig, port portParams) *requestError {
+	sel := port.sel
+	switch {
+	case sel.Port != 0 && !pprof.AllowsPort(sel.Port):
+		return portNotAllowed(port.sent)
+	case sel.PortName != "" && !pprof.AllowsPortName(sel.PortName):
+		return portNotAllowed(port.sent)
+	default:
+		return nil
+	}
+}
+
 // discover runs the discovery step and maps its errors.
 func (s *server) discover(ctx context.Context, q *request) ([]k8s.Target, *requestError) {
 	rt := q.route
-	targets, err := s.deps.Discovery.Targets(ctx, rt.namespace, rt.service)
+	targets, err := s.deps.Discovery.Targets(ctx, rt.namespace, rt.service, q.port.sel)
 	switch {
 	case err == nil:
 		return targets, nil

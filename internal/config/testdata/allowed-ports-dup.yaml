@@ -1,0 +1,10 @@
+discovery:
+  pprof:
+    allowedPorts: [6060, 6060]
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

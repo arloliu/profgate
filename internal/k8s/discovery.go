@@ -30,9 +30,20 @@ var (
 	ErrDiscoveryUnavailable = errors.New("discovery unavailable")
 )
 
+// PortSelection is the client's port choice for one request (spec: Port resolution);
+// the zero value means the configured default.
+// Port and PortName are never both set: the HTTP layer refuses that before discovery.
+type PortSelection struct {
+	Port     int32
+	PortName string
+}
+
 // Discovery resolves a Service to its backend Pods and confirms one before proxying.
 type Discovery interface {
-	Targets(ctx context.Context, namespace, service string) ([]Target, error)
+	// Targets returns the currently eligible backends of a Service
+	// whose pprof port resolves under port.
+	// Order is unspecified.
+	Targets(ctx context.Context, namespace, service string, port PortSelection) ([]Target, error)
 	HasSynced() bool
 	Confirm(ctx context.Context, t Target) error
 }

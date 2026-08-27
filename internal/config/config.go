@@ -75,11 +75,34 @@ type DiscoveryConfig struct {
 	Pprof        PprofConfig `yaml:"pprof"`
 }
 
-// PprofConfig names the pprof port by number or by container-port name.
+// PprofConfig names the default pprof port by number or by container-port name
+// and bounds what a request may name instead.
 // Port 0 means unset; normalization sets it to 6060 when PortName is also empty.
+// Each list bounds one request parameter and an empty list permits any value of it.
 type PprofConfig struct {
-	Port     int32  `yaml:"port"     env:"PPROF_PORT"      validate:"min=0,max=65535"`
-	PortName string `yaml:"portName" env:"PPROF_PORT_NAME"`
+	Port             int32    `yaml:"port"             env:"PPROF_PORT"               validate:"min=0,max=65535"`
+	PortName         string   `yaml:"portName"         env:"PPROF_PORT_NAME"`
+	AllowedPorts     []int32  `yaml:"allowedPorts"     env:"PPROF_ALLOWED_PORTS"      validate:"dive,min=1,max=65535"`
+	AllowedPortNames []string `yaml:"allowedPortNames" env:"PPROF_ALLOWED_PORT_NAMES"`
+}
+
+// AllowsPort reports whether a request may name port n:
+// the configured default always, any number when AllowedPorts is empty,
+// otherwise a listed one.
+// A gateway whose default is a name has no default number,
+// which is why the zero Port is not a default anything matches.
+func (p PprofConfig) AllowsPort(n int32) bool {
+	return (p.Port != 0 && n == p.Port) || len(p.AllowedPorts) == 0 || slices.Contains(p.AllowedPorts, n)
+}
+
+// AllowsPortName reports whether a request may name the container port name:
+// the configured default always, any name when AllowedPortNames is empty,
+// otherwise a listed one.
+// A gateway whose default is numeric has no default name,
+// so AllowedPortNames alone decides which names a request may send.
+func (p PprofConfig) AllowsPortName(name string) bool {
+	return (p.PortName != "" && name == p.PortName) ||
+		len(p.AllowedPortNames) == 0 || slices.Contains(p.AllowedPortNames, name)
 }
 
 // LimitsConfig caps profile durations and concurrency.
@@ -356,6 +379,17 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("discovery.pprof.portName %q: %s", pprof.PortName, strings.Join(msgs, "; "))
 		}
 	}
+	for _, name := range pprof.AllowedPortNames {
+		if msgs := validation.IsValidPortName(name); len(msgs) > 0 {
+			return fmt.Errorf("discovery.pprof.allowedPortNames %q: %s", name, strings.Join(msgs, "; "))
+		}
+	}
+	if port, ok := firstDuplicate(pprof.AllowedPorts); ok {
+		return fmt.Errorf("discovery.pprof.allowedPorts: duplicate entry %d", port)
+	}
+	if name, ok := firstDuplicate(pprof.AllowedPortNames); ok {
+		return fmt.Errorf("discovery.pprof.allowedPortNames: duplicate entry %q", name)
+	}
 	if msgs := validation.IsQualifiedName(cfg.Discovery.VersionLabel); len(msgs) > 0 {
 		return fmt.Errorf("discovery.versionLabel %q: %s", cfg.Discovery.VersionLabel, strings.Join(msgs, "; "))
 	}
@@ -528,6 +562,21 @@ func validatePGODefaults(defaults *PGODefaults, limits PGOLimits) error {
 			defaults.Artifact.Retention, limits.MaxRetention)
 	}
 	return nil
+}
+
+// firstDuplicate returns the first entry that already appears earlier in list.
+// A repeated entry in an allowlist says the operator meant two different values
+// and wrote one twice, so it is worth naming rather than merging silently.
+// The scan is quadratic, which the allowlists' size makes the cheaper choice.
+func firstDuplicate[T comparable](list []T) (T, bool) {
+	for i, entry := range list {
+		if slices.Contains(list[:i], entry) {
+			return entry, true
+		}
+	}
+	var zero T
+
+	return zero, false
 }
 
 // isDNSLabel reports whether s is a DNS-1123 label, the rule for namespace and Service names.

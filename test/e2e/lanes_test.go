@@ -236,6 +236,18 @@ func TestScenariosRegistry(t *testing.T) {
 		}
 	}
 
+	// Both port-selection scenarios read the test app's per-listener counter
+	// through a port-forward, and the first completes a proxy through the gateway.
+	for _, name := range []string{"port selection", "port selection refused"} {
+		j := slices.IndexFunc(all, func(s Scenario) bool { return s.Name == name })
+		if j < 0 {
+			t.Fatalf("no scenario named %q", name)
+		}
+		if !all[j].NeedsPodReach {
+			t.Fatalf("%q reads the test app's counter through a port-forward, so it must declare NeedsPodReach", name)
+		}
+	}
+
 	// The TLS scenario port-forwards to a gateway Pod and asks that gateway for
 	// a target list; it never reaches a test-app Pod and needs no NetworkPolicy
 	// enforcement, so every lane runs it, degraded ones included.
@@ -265,6 +277,7 @@ func TestScenarioSkips(t *testing.T) {
 			lane: Lane{Name: "1.23", Frozen: true, Degraded: true, NetworkPolicy: true},
 			want: []string{
 				"ineligible pods", "convergence on ready", "profiles parse", "replicas agree", "api outage",
+				"port selection", "port selection refused",
 				"pgo-on-demand", "pgo-scheduled-slot", "pgo-cancel", "pgo-version-conflict", "pgo-reclaim",
 			},
 		},

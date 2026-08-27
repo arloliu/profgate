@@ -70,6 +70,8 @@ The ops listener has no TLS block and is always plaintext.
 | `versionLabel` | `PROFGATE_VERSION_LABEL` | `app.kubernetes.io/version` | a valid Kubernetes label key |
 | `pprof.port` | `PROFGATE_PPROF_PORT` | see below | `1` to `65535` |
 | `pprof.portName` | `PROFGATE_PPROF_PORT_NAME` | unset | a valid container-port name |
+| `pprof.allowedPorts` | `PROFGATE_PPROF_ALLOWED_PORTS` | empty | comma-separated; each `1` to `65535` |
+| `pprof.allowedPortNames` | `PROFGATE_PPROF_ALLOWED_PORT_NAMES` | empty | comma-separated; each a valid container-port name |
 
 Exactly one of `pprof.port` and `pprof.portName` may be set;
 naming both is a validation error.
@@ -80,8 +82,17 @@ the default exists only while `portName` is empty.
 `portName` instead resolves a named TCP container port per Pod,
 which suits fleets where the pprof port number varies by workload;
 a Pod whose spec does not carry the named port is silently ineligible rather than an error.
-There is no port allowlist beyond this single setting:
-the one configured port, by number or by name, is the only port the gateway connects to.
+
+A request may name a port for itself with the `port` or `portName` query parameter
+([`api.md`](api.md#fetching-a-profile)), replacing this configured default for that request.
+`pprof.allowedPorts` and `pprof.allowedPortNames` bound what a request may name;
+the two lists are independent, each bounding only its own parameter.
+An empty list permits any value of its parameter,
+so both lists default empty and a bare configuration accepts any port and any name a request sends.
+The configured default `pprof.port` or `pprof.portName` always passes, whatever the lists hold.
+There is no setting that forbids `portName` outright:
+an operator who wants no names accepted lists only the configured default name
+when the default is a name, or one well-formed name no Pod declares when the default is a number.
 
 ## `limits`
 
@@ -243,6 +254,8 @@ Always, whatever `pgo.enabled` says:
 - `server.tls.certFile` and `server.tls.keyFile` are set together or not at all,
   and both files must be readable.
 - Exactly one of `discovery.pprof.port` and `discovery.pprof.portName` is set.
+- Every `discovery.pprof.allowedPortNames` entry is a valid container-port name.
+- `discovery.pprof.allowedPorts` and `discovery.pprof.allowedPortNames` each hold no duplicate entry.
 - `auth.anonymousRealm` must name a key under `realms`.
 - `pgo.limits.maxRounds × pgo.limits.maxTargetsPerRound` must be at most `256`.
 - `pgo.jobRetention` must be at least `pgo.limits.maxRetention + 1h`.
@@ -332,6 +345,8 @@ discovery:
   versionLabel: app.kubernetes.io/version
   pprof:
     port: 6060
+    allowedPorts: []
+    allowedPortNames: []
 limits:
   cpuSeconds: 60
   traceSeconds: 60

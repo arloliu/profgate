@@ -220,7 +220,8 @@ func (r *Rounds) sleep(ctx context.Context, d time.Duration) bool {
 // Targets are re-resolved every round, so a Pod that leaves during a rollout
 // drops out and a Pod that arrives with the same version joins.
 func (r *Rounds) targetsFor(ctx context.Context, round int, rec Record, state *runState) ([]k8s.Target, string) {
-	targets, err := r.deps.Discovery.Targets(ctx, rec.Namespace, rec.Service)
+	// Always the zero selection: PGO samples the configured pprof port and offers no client selection.
+	targets, err := r.deps.Discovery.Targets(ctx, rec.Namespace, rec.Service, k8s.PortSelection{})
 	if err != nil {
 		return nil, ReasonNoTargets
 	}

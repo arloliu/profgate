@@ -909,6 +909,12 @@ func TestChartConfigIsMergedAndParses(t *testing.T) {
 		if cfg.Discovery.Pprof.Port != 7070 {
 			t.Errorf("discovery.pprof.port = %d, want the raw block's 7070", cfg.Discovery.Pprof.Port)
 		}
+		if len(cfg.Discovery.Pprof.AllowedPorts) != 0 {
+			t.Errorf("discovery.pprof.allowedPorts = %v, want empty", cfg.Discovery.Pprof.AllowedPorts)
+		}
+		if len(cfg.Discovery.Pprof.AllowedPortNames) != 0 {
+			t.Errorf("discovery.pprof.allowedPortNames = %v, want empty", cfg.Discovery.Pprof.AllowedPortNames)
+		}
 	})
 
 	t.Run("the raw block wins", func(t *testing.T) {
@@ -931,6 +937,61 @@ func TestChartConfigIsMergedAndParses(t *testing.T) {
 
 		if got, want := cfg.NATS.URL, "nats://raw.profgate.svc:4222"; got != want {
 			t.Errorf("nats.url = %q, want the raw block's %q", got, want)
+		}
+	})
+}
+
+// TestChartPortAllowlists covers the chart's default pprof port allowlists:
+// both ship empty, which accepts any port and any port name a request names,
+// and a user narrows either one independently of the other.
+func TestChartPortAllowlists(t *testing.T) {
+	t.Run("defaults render both lists empty", func(t *testing.T) {
+		cm := render[corev1.ConfigMap](t, "configmap.yaml")
+		body := cm.Data["config.yaml"]
+		if !strings.Contains(body, "allowedPorts: []") {
+			t.Errorf("rendered config.yaml does not contain \"allowedPorts: []\":\n%s", body)
+		}
+		if !strings.Contains(body, "allowedPortNames: []") {
+			t.Errorf("rendered config.yaml does not contain \"allowedPortNames: []\":\n%s", body)
+		}
+
+		cfg := loadRenderedConfig(t)
+		if len(cfg.Discovery.Pprof.AllowedPorts) != 0 {
+			t.Errorf("discovery.pprof.allowedPorts = %v, want empty", cfg.Discovery.Pprof.AllowedPorts)
+		}
+		if len(cfg.Discovery.Pprof.AllowedPortNames) != 0 {
+			t.Errorf("discovery.pprof.allowedPortNames = %v, want empty", cfg.Discovery.Pprof.AllowedPortNames)
+		}
+	})
+
+	t.Run("portName only", func(t *testing.T) {
+		cfg := loadRenderedConfig(t, "--set", "config.discovery.pprof.portName=pprof")
+
+		if cfg.Discovery.Pprof.Port != 0 {
+			t.Errorf("discovery.pprof.port = %d, want 0 with only portName set", cfg.Discovery.Pprof.Port)
+		}
+		if cfg.Discovery.Pprof.PortName != "pprof" {
+			t.Errorf("discovery.pprof.portName = %q, want pprof", cfg.Discovery.Pprof.PortName)
+		}
+		if len(cfg.Discovery.Pprof.AllowedPorts) != 0 {
+			t.Errorf("discovery.pprof.allowedPorts = %v, want empty", cfg.Discovery.Pprof.AllowedPorts)
+		}
+		if len(cfg.Discovery.Pprof.AllowedPortNames) != 0 {
+			t.Errorf("discovery.pprof.allowedPortNames = %v, want empty", cfg.Discovery.Pprof.AllowedPortNames)
+		}
+	})
+
+	t.Run("narrows the lists", func(t *testing.T) {
+		cfg := loadRenderedConfig(t,
+			"--set-json", "config.discovery.pprof.allowedPorts=[6060]",
+			"--set-json", `config.discovery.pprof.allowedPortNames=["pprof"]`,
+		)
+
+		if got, want := cfg.Discovery.Pprof.AllowedPorts, []int32{6060}; !slices.Equal(got, want) {
+			t.Errorf("discovery.pprof.allowedPorts = %v, want %v", got, want)
+		}
+		if got, want := cfg.Discovery.Pprof.AllowedPortNames, []string{"pprof"}; !slices.Equal(got, want) {
+			t.Errorf("discovery.pprof.allowedPortNames = %v, want %v", got, want)
 		}
 	})
 }

@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -926,4 +928,404 @@ func TestSharedGateLeavesRoomForInteractiveRequests(t *testing.T) {
 	for _, release := range releases {
 		release()
 	}
+}
+
+// TestPortGrammar covers the port and portName grammar on both interactive
+// endpoints: every row is 400 invalid_parameter, discovery is never reached,
+// and the audit port field is empty unless the selection itself was valid.
+func TestPortGrammar(t *testing.T) {
+	endpoints := []struct{ name, path string }{
+		{"profile", profilePath + "heap?"},
+		{"targets", targetsPath + "?"},
+	}
+	rows := []struct {
+		name, query string
+		auditPort   string
+	}{
+		{"port zero", "port=0", ""},
+		{"port over", "port=65536", ""},
+		{"port letters", "port=abc", ""},
+		{"port signed", "port=+80", ""},
+		{"port empty", "port=", ""},
+		{"port repeated", "port=6060&port=6061", ""},
+		{"portName empty", "portName=", ""},
+		{"portName repeated", "portName=a&portName=b", ""},
+		{"portName too long", "portName=" + strings.Repeat("a", 16), ""},
+		{"portName uppercase", "portName=Pprof", ""},
+		{"portName leading hyphen", "portName=-pprof", ""},
+		{"portName trailing hyphen", "portName=pprof-", ""},
+		{"portName all digits", "portName=6060", ""},
+		{"portName consecutive hyphens", "portName=pp--rof", ""},
+		{"both given", "port=6060&portName=pprof", ""},
+		{"query malformed", "port=%zz", ""},
+		{"valid port, unknown parameter", "port=6060&x=1", "6060"},
+	}
+	for _, ep := range endpoints {
+		for _, tc := range rows {
+			t.Run(ep.name+" "+tc.name, func(t *testing.T) {
+				h := newHarness(baseTarget())
+				rec := h.do(t, http.MethodGet, ep.path+tc.query)
+				h.expectError(t, rec, http.StatusBadRequest, "invalid_parameter")
+				h.expectCounts(t, 0, 0)
+				if got := h.audits(t)[0]["port"]; got != tc.auditPort {
+					t.Errorf("audit port = %v, want %q", got, tc.auditPort)
+				}
+			})
+		}
+	}
+
+	t.Run("valid port, invalid seconds", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		rec := h.do(t, http.MethodGet, profilePath+"cpu?port=6060&seconds=abc")
+		h.expectError(t, rec, http.StatusBadRequest, "invalid_parameter")
+		h.expectCounts(t, 0, 0)
+		if got := h.audits(t)[0]["port"]; got != "6060" {
+			t.Errorf("audit port = %v, want 6060: the selection was valid, only seconds was not", got)
+		}
+	})
+
+	t.Run("targets seconds", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		rec := h.do(t, http.MethodGet, targetsPath+"?seconds=2")
+		h.expectError(t, rec, http.StatusBadRequest, "invalid_parameter")
+		h.expectCounts(t, 0, 0)
+		if got := h.audits(t)[0]["port"]; got != "" {
+			t.Errorf("audit port = %v, want empty", got)
+		}
+	})
+}
+
+// TestPortAllowlist covers the allowlist step: its place after the realm and
+// the parameter grammar, before discovery, the snapshot it reads, and what the
+// audit line and the response say about a selection.
+func TestPortAllowlist(t *testing.T) {
+	pprof := func(p config.PprofConfig) func(*config.Config) {
+		return func(cfg *config.Config) { cfg.Discovery.Pprof = p }
+	}
+	expectSelections := func(t *testing.T, h *harness, want ...k8s.PortSelection) {
+		t.Helper()
+		if got := h.disc.selectionsSeen(); !slices.Equal(got, want) {
+			t.Errorf("selections = %v, want %v", got, want)
+		}
+	}
+	expectOK := func(t *testing.T, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+	}
+
+	t.Run("portName abc is valid", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		expectOK(t, h.do(t, http.MethodGet, targetsPath+"?portName=abc"))
+		expectSelections(t, h, k8s.PortSelection{PortName: "abc"})
+	})
+
+	t.Run("empty lists accept any port", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		expectOK(t, h.do(t, http.MethodGet, profilePath+"heap?port=9999"))
+		expectSelections(t, h, k8s.PortSelection{Port: 9999})
+		h.expectCounts(t, 1, 1)
+	})
+
+	t.Run("disallowed port", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}))
+		rec := h.do(t, http.MethodGet, profilePath+"heap?port=6061")
+		h.expectError(t, rec, http.StatusBadRequest, "port_not_allowed")
+		h.expectCounts(t, 0, 0)
+		_, message := errorBodyOf(t, rec)
+		if !strings.Contains(message, "6061") {
+			t.Errorf("message %q does not name the value sent", message)
+		}
+		for _, other := range []string{"6060", "8080", "9999"} {
+			if strings.Contains(rec.Body.String(), other) {
+				t.Errorf("body %q names a number the client did not send", rec.Body.String())
+			}
+		}
+	})
+
+	t.Run("disallowed name", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPortNames: []string{"pprof"}}))
+		rec := h.do(t, http.MethodGet, targetsPath+"?portName=pprof-alt")
+		h.expectError(t, rec, http.StatusBadRequest, "port_not_allowed")
+		h.expectCounts(t, 0, 0)
+		if _, message := errorBodyOf(t, rec); !strings.Contains(message, "pprof-alt") {
+			t.Errorf("message %q does not name the value sent", message)
+		}
+	})
+
+	t.Run("lists are independent", func(t *testing.T) {
+		t.Run("ports bound, any name", func(t *testing.T) {
+			h := newHarness(baseTarget())
+			h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}))
+			expectOK(t, h.do(t, http.MethodGet, targetsPath+"?portName=anything"))
+		})
+		t.Run("names bound, any port", func(t *testing.T) {
+			h := newHarness(baseTarget())
+			h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPortNames: []string{"pprof"}}))
+			expectOK(t, h.do(t, http.MethodGet, profilePath+"heap?port=9999"))
+		})
+	})
+
+	t.Run("default number always passes", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{7070}}))
+		expectOK(t, h.do(t, http.MethodGet, targetsPath+"?port=6060"))
+	})
+
+	t.Run("default name always passes", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(pprof(config.PprofConfig{PortName: "pprof", AllowedPortNames: []string{"metrics"}}))
+		expectOK(t, h.do(t, http.MethodGet, targetsPath+"?portName=pprof"))
+	})
+
+	narrowed := pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{7070}, AllowedPortNames: []string{"metrics"}})
+
+	t.Run("no selection under narrowed lists, targets", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(narrowed)
+		expectOK(t, h.do(t, http.MethodGet, targetsPath))
+		expectSelections(t, h, k8s.PortSelection{})
+	})
+
+	t.Run("no selection under narrowed lists, profile", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(narrowed)
+		expectOK(t, h.do(t, http.MethodGet, profilePath+"heap"))
+		h.expectCounts(t, 1, 1)
+	})
+
+	t.Run("allowlist reads the request's snapshot", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060, 7070}}))
+		h.beforeAllowlist = func() {
+			cfg := testConfig()
+			cfg.Discovery.Pprof = config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}
+			h.cfg.Store(cfg)
+		}
+		rec := h.do(t, http.MethodGet, profilePath+"heap?port=7070")
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200: the request must finish under the config it loaded (body %q)", rec.Code, rec.Body.String())
+		}
+		expectSelections(t, h, k8s.PortSelection{Port: 7070})
+	})
+
+	t.Run("realm before allowlist", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(func(cfg *config.Config) {
+			cfg.Realms["developer"] = config.Realm{Namespaces: []string{"other"}, Services: []string{"*"}, Profiles: []string{"*"}}
+			cfg.Discovery.Pprof = config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}
+		})
+		rec := h.do(t, http.MethodGet, profilePath+"heap?port=6061")
+		h.expectError(t, rec, http.StatusForbidden, "realm_denied")
+		h.expectCounts(t, 0, 0)
+	})
+
+	t.Run("grammar before allowlist", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}))
+		rec := h.do(t, http.MethodGet, targetsPath+"?port=abc")
+		h.expectError(t, rec, http.StatusBadRequest, "invalid_parameter")
+	})
+
+	t.Run("allowlist before discovery error", func(t *testing.T) {
+		h := newHarness()
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}))
+		h.disc.err = k8s.ErrServiceNotFound
+		rec := h.do(t, http.MethodGet, targetsPath+"?port=6061")
+		h.expectError(t, rec, http.StatusBadRequest, "port_not_allowed")
+		h.expectCounts(t, 0, 0)
+	})
+
+	t.Run("parameters before allowlist", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}))
+		rec := h.do(t, http.MethodGet, profilePath+"cpu?port=6061&seconds=61")
+		h.expectError(t, rec, http.StatusBadRequest, "seconds_exceeds_limit")
+		h.expectCounts(t, 0, 0)
+	})
+}
+
+// TestPortResolution covers what a selection does past the allowlist: the
+// per-Pod name resolution the fake models, the audit field, the metric
+// labels, the pass-through of a non-pprof listener, and that nothing the
+// gateway writes carries the number a name resolved to.
+func TestPortResolution(t *testing.T) {
+	const altPort = 6061
+	altTarget := func(pod string) k8s.Target {
+		t := namedTarget(pod, fixtureVersion)
+		t.Port = altPort
+
+		return t
+	}
+	// altHarness answers pprof-alt with pod-1 at 6061 and nothing else.
+	altHarness := func() *harness {
+		h := newHarness(namedTarget("pod-1", fixtureVersion), namedTarget("pod-2", fixtureVersion))
+		h.disc.byName = map[string][]k8s.Target{"pprof-alt": {altTarget("pod-1")}}
+
+		return h
+	}
+	auditPort := func(t *testing.T, h *harness, status int, code, want string) {
+		t.Helper()
+		audit := h.expectAudit(t, status, code)
+		if audit["port"] != want {
+			t.Errorf("audit port = %v, want %q", audit["port"], want)
+		}
+	}
+	targetPods := func(t *testing.T, rec *httptest.ResponseRecorder) []string {
+		t.Helper()
+		var body struct {
+			Targets []map[string]string `json:"targets"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("body %q: %v", rec.Body.String(), err)
+		}
+		pods := make([]string, 0, len(body.Targets))
+		for _, target := range body.Targets {
+			pods = append(pods, target["pod"])
+		}
+
+		return pods
+	}
+
+	t.Run("name on one Pod of two", func(t *testing.T) {
+		h := altHarness()
+		rec := h.do(t, http.MethodGet, targetsPath+"?portName=pprof-alt")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d (body %q)", rec.Code, rec.Body.String())
+		}
+		if pods := targetPods(t, rec); !slices.Equal(pods, []string{"pod-1"}) {
+			t.Errorf("targets = %v, want [pod-1]", pods)
+		}
+	})
+
+	t.Run("name on no Pod", func(t *testing.T) {
+		t.Run("targets", func(t *testing.T) {
+			h := altHarness()
+			rec := h.do(t, http.MethodGet, targetsPath+"?portName=nowhere")
+			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"targets":[]`) {
+				t.Errorf("status %d body %q, want 200 with an empty list", rec.Code, rec.Body.String())
+			}
+		})
+		t.Run("profile", func(t *testing.T) {
+			h := altHarness()
+			rec := h.do(t, http.MethodGet, profilePath+"heap?portName=nowhere")
+			h.expectError(t, rec, http.StatusServiceUnavailable, "no_targets")
+			h.expectCounts(t, 1, 0)
+		})
+	})
+
+	t.Run("audit absent", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.do(t, http.MethodGet, profilePath+"heap")
+		auditPort(t, h, http.StatusOK, codeOK, "")
+	})
+
+	t.Run("audit numeric", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.do(t, http.MethodGet, profilePath+"heap?port=6061")
+		auditPort(t, h, http.StatusOK, codeOK, "6061")
+	})
+
+	t.Run("audit name", func(t *testing.T) {
+		h := altHarness()
+		h.do(t, http.MethodGet, profilePath+"heap?portName=pprof-alt")
+		auditPort(t, h, http.StatusOK, codeOK, "pprof-alt")
+		if strings.Contains(h.logs.String(), strconv.Itoa(altPort)) {
+			t.Errorf("audit line names the resolved port: %s", h.logs.String())
+		}
+	})
+
+	t.Run("audit malformed", func(t *testing.T) {
+		for _, query := range []string{"port=abc", "port=1&port=2", "port=1&portName=a"} {
+			t.Run(query, func(t *testing.T) {
+				h := newHarness(baseTarget())
+				h.do(t, http.MethodGet, profilePath+"heap?"+query)
+				auditPort(t, h, http.StatusBadRequest, "invalid_parameter", "")
+			})
+		}
+	})
+
+	t.Run("audit disallowed", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(func(cfg *config.Config) {
+			cfg.Discovery.Pprof = config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}
+		})
+		h.do(t, http.MethodGet, profilePath+"heap?port=6061")
+		auditPort(t, h, http.StatusBadRequest, "port_not_allowed", "6061")
+	})
+
+	t.Run("no metric label", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.do(t, http.MethodGet, profilePath+"heap?port=6061")
+		h.expectMetric(t, metrics.EndpointProfile, "heap")
+	})
+
+	t.Run("no number in the response", func(t *testing.T) {
+		leak := strconv.Itoa(altPort)
+		check := func(t *testing.T, rec *httptest.ResponseRecorder) {
+			t.Helper()
+			for name, values := range rec.Header() {
+				for _, v := range values {
+					if strings.Contains(v, leak) {
+						t.Errorf("header %s carries the resolved port: %q", name, v)
+					}
+				}
+			}
+			if strings.Contains(rec.Body.String(), leak) {
+				t.Errorf("body carries the resolved port: %q", rec.Body.String())
+			}
+		}
+		t.Run("targets body", func(t *testing.T) {
+			h := altHarness()
+			check(t, h.do(t, http.MethodGet, targetsPath+"?portName=pprof-alt"))
+		})
+		t.Run("profile headers", func(t *testing.T) {
+			h := altHarness()
+			rec := h.do(t, http.MethodGet, profilePath+"heap?portName=pprof-alt")
+			if rec.Code != http.StatusOK || rec.Header().Get("X-Pprof-Target-Pod") != "pod-1" {
+				t.Fatalf("status %d headers %v", rec.Code, rec.Header())
+			}
+			check(t, rec)
+		})
+		t.Run("gateway errors", func(t *testing.T) {
+			for _, tc := range []struct {
+				name  string
+				setup func(h *harness)
+				path  string
+			}{
+				{"pod not found", func(*harness) {}, profilePath + "heap?portName=pprof-alt&pod=pod-2"},
+				{"confirm changed", func(h *harness) { h.disc.confirmErr = k8s.ErrTargetChanged }, profilePath + "heap?portName=pprof-alt"},
+				{"upstream unreachable", func(h *harness) {
+					h.up.outcome = proxy.Outcome{Code: "upstream_unreachable", Status: http.StatusBadGateway}
+				}, profilePath + "heap?portName=pprof-alt"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					h := altHarness()
+					tc.setup(h)
+					rec := h.do(t, http.MethodGet, tc.path)
+					if rec.Code < http.StatusBadRequest {
+						t.Fatalf("status = %d, want an error", rec.Code)
+					}
+					check(t, rec)
+				})
+			}
+		})
+	})
+
+	t.Run("non-pprof listener passes through", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.up.outcome = proxy.Outcome{Code: "upstream_404", Status: http.StatusNotFound, Committed: true}
+		rec := h.do(t, http.MethodGet, profilePath+"heap?port=8080")
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", rec.Code)
+		}
+		auditPort(t, h, http.StatusNotFound, "upstream_404", "8080")
+		expectSel := k8s.PortSelection{Port: 8080}
+		if seen := h.disc.selectionsSeen(); len(seen) != 1 || seen[0] != expectSel {
+			t.Errorf("selections = %v, want [%v]", seen, expectSel)
+		}
+	})
 }

@@ -84,18 +84,36 @@ type fakeDiscovery struct {
 	mu              sync.Mutex
 	confirmDeadline time.Time
 	confirmTarget   k8s.Target
+	selections      []k8s.PortSelection // the port selection of every Targets call, in order
+	// byName, when set, answers a portName selection from the map (nil for an
+	// absent name) instead of targets, the way a name resolves per Pod.
+	byName map[string][]k8s.Target
 }
 
-func (f *fakeDiscovery) Targets(context.Context, string, string) ([]k8s.Target, error) {
+func (f *fakeDiscovery) Targets(_ context.Context, _, _ string, sel k8s.PortSelection) ([]k8s.Target, error) {
 	f.targetsCalls.Add(1)
+	f.mu.Lock()
+	f.selections = append(f.selections, sel)
+	f.mu.Unlock()
 	if f.onTargets != nil {
 		f.onTargets()
 	}
 	if f.err != nil {
 		return nil, f.err
 	}
+	if sel.PortName != "" && f.byName != nil {
+		return f.byName[sel.PortName], nil
+	}
 
 	return f.targets, nil
+}
+
+// selectionsSeen is the port selection of every Targets call, in order.
+func (f *fakeDiscovery) selectionsSeen() []k8s.PortSelection {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]k8s.PortSelection(nil), f.selections...)
 }
 
 func (f *fakeDiscovery) HasSynced() bool { return f.synced }
@@ -322,6 +340,8 @@ type harness struct {
 	upstream  Upstream      // overrides up when set
 	gate      *admit.Gate   // overrides the per-handler gate when set
 	runtime   *pgo.Runtime  // nil leaves the handler an unbound one
+	// beforeAllowlist, when set, runs between the realm check and the allowlist check.
+	beforeAllowlist func()
 }
 
 func newHarness(targets ...k8s.Target) *harness {
@@ -358,7 +378,7 @@ func (h *harness) handler() http.Handler {
 		gate = admit.New(h.cfg.Load().Limits.MaxConcurrentProfiles)
 	}
 
-	return New(Deps{
+	handler := New(Deps{
 		Discovery: discovery,
 		Upstream:  upstream,
 		Config:    &h.cfg,
@@ -368,6 +388,11 @@ func (h *harness) handler() http.Handler {
 		Logger:    h.logger(),
 		Choose:    h.choose,
 	})
+	if h.beforeAllowlist != nil {
+		setBeforeAllowlist(handler, h.beforeAllowlist)
+	}
+
+	return handler
 }
 
 // logger is the one logger the handler, the caches, the publisher, and the
@@ -455,7 +480,7 @@ func (h *harness) expectAudit(t *testing.T, status int, code string) map[string]
 		t.Fatalf("audit records = %d, want 1: %s", len(records), h.logs.String())
 	}
 	rec := records[0]
-	for _, key := range []string{"principal", "namespace", "service", "pod", "profile", "seconds", "status", "code", "duration_ms"} {
+	for _, key := range []string{"principal", "namespace", "service", "pod", "profile", "seconds", "port", "status", "code", "duration_ms"} {
 		if _, ok := rec[key]; !ok {
 			t.Errorf("audit record lacks %q: %v", key, rec)
 		}

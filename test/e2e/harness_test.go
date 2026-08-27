@@ -145,6 +145,8 @@ func runners() map[string]func(t *testing.T, h *Harness) {
 		"rbac":                           scenarioRBAC,
 		"replicas agree":                 scenarioReplicasAgree,
 		"api outage":                     scenarioAPIOutage,
+		"port selection":                 scenarioPortSelection,
+		"port selection refused":         scenarioPortSelectionRefused,
 		"pgo-on-demand":                  scenarioPGOOnDemand,
 		"pgo-scheduled-slot":             scenarioPGOScheduledSlot,
 		"pgo-cancel":                     scenarioPGOCancel,

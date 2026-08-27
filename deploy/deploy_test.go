@@ -406,6 +406,19 @@ func TestConfigMap(t *testing.T) {
 			t.Errorf("anonymous realm %s = %v, want exactly [\"*\"]", name, list)
 		}
 	}
+
+	if !strings.Contains(body, "allowedPorts: []") {
+		t.Errorf("config.yaml does not contain \"allowedPorts: []\":\n%s", body)
+	}
+	if !strings.Contains(body, "allowedPortNames: []") {
+		t.Errorf("config.yaml does not contain \"allowedPortNames: []\":\n%s", body)
+	}
+	if len(cfg.Discovery.Pprof.AllowedPorts) != 0 {
+		t.Errorf("discovery.pprof.allowedPorts = %v, want empty", cfg.Discovery.Pprof.AllowedPorts)
+	}
+	if len(cfg.Discovery.Pprof.AllowedPortNames) != 0 {
+		t.Errorf("discovery.pprof.allowedPortNames = %v, want empty", cfg.Discovery.Pprof.AllowedPortNames)
+	}
 }
 
 // kustomization is the minimal shape deploy_test.go needs from kustomization.yaml:

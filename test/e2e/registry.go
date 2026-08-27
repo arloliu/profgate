@@ -27,6 +27,8 @@ var scenarios = [...]Scenario{
 	{Name: "rbac"},
 	{Name: "replicas agree", NeedsPodReach: true},
 	{Name: "api outage", NeedsPodReach: true, NeedsNetworkPolicy: true},
+	{Name: "port selection", NeedsPodReach: true},
+	{Name: "port selection refused", NeedsPodReach: true},
 	{Name: "pgo-on-demand", NeedsPodReach: true},
 	{Name: "pgo-scheduled-slot", NeedsPodReach: true},
 	{Name: "pgo-cancel", NeedsPodReach: true},

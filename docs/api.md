@@ -71,8 +71,10 @@ and its `Allow` header lists what the route accepts.
 ## How a request is processed
 
 A profile request runs this full sequence, and the first failing step answers.
-The other routes run only steps 1 through 5 and then dispatch to their handler:
-a targets, policy, or Collection request never reaches selection, admission, confirmation, or the proxy.
+A targets request runs steps 1 through 7 — parameter validation, the port allowlist, and discovery included —
+and answers from what discovery found;
+it never reaches single-target selection, admission, confirmation, or the proxy.
+A policy or Collection request runs only steps 1 through 5 and then dispatches to its handler.
 
 1. **Route** — the path must match one of the seven routes (`404 route_unknown`),
    and a profile route must name a known profile (`404 profile_unknown`).
@@ -84,6 +86,10 @@ a targets, policy, or Collection request never reaches selection, admission, con
    (`403 realm_denied`; see [Realms](#realms)).
 6. **Parameters** — query string, request body, and preconditions are validated
    (`400 invalid_parameter` and friends).
+   `port` and `portName` (never both) are checked here too:
+   malformed or repeated is `400 invalid_parameter`,
+   and a well-formed value a non-empty allowlist excludes is `400 port_not_allowed` —
+   both answered before discovery runs.
 7. **Discovery** — the Service is resolved to its Ready Pods
    (`404 service_not_found`, `422 service_selectorless`, `503 discovery_unavailable`).
 8. **Select** — filters are applied and one target is chosen
@@ -103,7 +109,11 @@ GET /v1/namespaces/{ns}/services/{svc}/targets
 ```
 
 Answers the Pods the gateway would profile right now, as its informer caches see them.
-The endpoint takes no query parameters; any query string is `400 invalid_parameter`.
+The endpoint takes the optional `port` or `portName` parameter described under
+[Fetching a profile](#fetching-a-profile) and no other; any other query parameter is `400 invalid_parameter`.
+The list holds the Pods eligible under that port:
+`portName` excludes a Pod that has no TCP container port of that name,
+while `port` never excludes a Pod, since a numeric port is used without checking that the Pod declares it.
 
 ```sh
 curl http://localhost:8080/v1/namespaces/payments/services/checkout/targets
@@ -157,6 +167,12 @@ Each parameter may appear at most once, with a value; anything unknown is `400 i
 | `pod` | Pin the exact Pod to profile. A Pod that is not currently an eligible target answers `404 pod_not_found`. |
 | `version` | Keep only Pods whose version label equals this value, then select among them. The filter runs before the `pod` pin. |
 | `strategy` | Selection strategy; `random` is the only value and the default. |
+| `port` | A decimal integer from 1 to 65535: the pprof port for every Pod, replacing `discovery.pprof.port` or `portName` for this request. Must pass `discovery.pprof.allowedPorts` (`400 port_not_allowed` otherwise); excludes `portName`. |
+| `portName` | A container-port name (the Kubernetes rule for `containerPort` names): the named TCP container port, replacing the configured default for this request. Must pass `discovery.pprof.allowedPortNames` (`400 port_not_allowed` otherwise); excludes `port`. |
+
+`port` and `portName` exclude each other; sending both is `400 invalid_parameter`.
+The configured default `discovery.pprof.port` or `discovery.pprof.portName` always passes its allowlist,
+whatever the allowlist holds.
 
 ### Response
 
@@ -188,6 +204,20 @@ which still comes from the informer caches.
 but a retry reruns the same cached discovery and random selection,
 so it can land on the same stale target until the caches advance,
 and a request pinned with `pod=` keeps its pin.
+
+### What choosing ports reveals
+
+Choosing ports lets an authorized client observe three things that this design does not try to close:
+
+- `portName` on the targets endpoint changes per-Pod eligibility,
+  so calling it with different names reveals which admitted Pods declare each named TCP port.
+- A numeric `port` on the profile endpoint reaches the Pod without checking its declarations,
+  so an authorized caller can combine `pod=` with different numbers,
+  and the outcome then tells an open pprof port from a refused, silent, redirecting, or non-pprof HTTP port —
+  a port-scanning capability over admitted Pods,
+  bounded by the realm, `allowedPorts`, and NetworkPolicy, and nothing else.
+- `400 port_not_allowed` reveals that a value is outside the allowlist.
+  It reveals nothing about Pods: the realm is evaluated before it and discovery never runs.
 
 ### Examples
 
@@ -471,7 +501,8 @@ Every gateway-generated failure is a JSON envelope with a stable machine-readabl
 ```
 
 `error` is human-readable and may change; `code` is stable and is what clients should switch on.
-The message names at most a namespace, a Service, or a Pod — never an address.
+The message names at most a namespace, a Service, a Pod, or the `port`/`portName` value the client sent —
+never a Pod address, and never the port number a `portName` selection resolved to.
 When the target Pod itself answers an HTTP error,
 the gateway forwards that status and body verbatim instead of wrapping it.
 
@@ -479,6 +510,7 @@ the gateway forwards that status and body verbatim instead of wrapping it.
 |---|---|---|
 | 400 | `invalid_parameter` | A query parameter, request body, or precondition header is malformed or not accepted here. |
 | 400 | `seconds_exceeds_limit` | The effective duration exceeds `limits.cpuSeconds` or `limits.traceSeconds`. |
+| 400 | `port_not_allowed` | The `port` or `portName` value is outside its configured allowlist; names only the value sent. |
 | 400 | `limit_exceeded` | The effective PGO policy exceeds a `pgo.limits` ceiling; the message names the fields. |
 | 403 | `realm_denied` | The realm does not allow this namespace, Service, profile, or PGO action. |
 | 403 | `config_api_disabled` | `pgo.configAPI` is `disabled`; policy reads still work. |

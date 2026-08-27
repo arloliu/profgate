@@ -32,11 +32,25 @@ const (
 
 func ptr[T any](v T) *T { return &v }
 
+// isGranted reports whether the ClusterRole permits a verb-resource pair.
+// These seven are the only ones discovery may issue.
+func isGranted(verb, resource string) bool {
+	switch verb + " " + resource {
+	case "list services", "watch services",
+		"list pods", "watch pods", "get pods",
+		"list endpointslices", "watch endpointslices":
+		return true
+	default:
+		return false
+	}
+}
+
 // fixture holds the objects a subtest loads into its own fake clientset.
 // A subtest mutates these literals before the informers ever see them.
 type fixture struct {
 	svc    *corev1.Service
 	pod    *corev1.Pod
+	more   []*corev1.Pod // further Pods added by addPod, each with an endpoint in the first slice
 	slices []*discoveryv1.EndpointSlice
 }
 
@@ -96,13 +110,39 @@ func newSlice(name string, family discoveryv1.AddressType, address string) *disc
 // endpoint is the single endpoint of the fixture's first slice.
 func (f *fixture) endpoint() *discoveryv1.Endpoint { return &f.slices[0].Endpoints[0] }
 
+// addPod appends another ready Pod of the baseline Service, a copy of the baseline Pod under its own
+// name, UID, and address, and an endpoint for it in the first slice. It returns the Pod so a row can
+// give it different port declarations.
+func (f *fixture) addPod(name, uid, address string) *corev1.Pod {
+	pod := baseline().pod
+	pod.Name = name
+	pod.UID = types.UID(uid)
+	pod.Status.PodIPs = []corev1.PodIP{{IP: address}}
+	f.more = append(f.more, pod)
+	f.slices[0].Endpoints = append(f.slices[0].Endpoints, discoveryv1.Endpoint{
+		Addresses:  []string{address},
+		Conditions: discoveryv1.EndpointConditions{Ready: ptr(true)},
+		TargetRef: &corev1.ObjectReference{
+			Kind:      "Pod",
+			Namespace: fixtureNamespace,
+			Name:      name,
+			UID:       types.UID(uid),
+		},
+	})
+
+	return pod
+}
+
 func (f *fixture) objects() []runtime.Object {
-	objs := make([]runtime.Object, 0, 2+len(f.slices))
+	objs := make([]runtime.Object, 0, 2+len(f.more)+len(f.slices))
 	if f.svc != nil {
 		objs = append(objs, f.svc)
 	}
 	if f.pod != nil {
 		objs = append(objs, f.pod)
+	}
+	for _, p := range f.more {
+		objs = append(objs, p)
 	}
 	for _, s := range f.slices {
 		objs = append(objs, s)
@@ -167,11 +207,26 @@ func (s *sink) logged(sub string) bool {
 	return false
 }
 
+// altPort declares a second TCP container port named pprof-alt on the Pod.
+func altPort(pod *corev1.Pod, protocol corev1.Protocol) {
+	pod.Spec.Containers[0].Ports = append(pod.Spec.Containers[0].Ports,
+		corev1.ContainerPort{Name: "pprof-alt", ContainerPort: 6061, Protocol: protocol})
+}
+
+// numericOptions is the numeric default port mode.
+func numericOptions(port int32) func(*Options) {
+	return func(o *Options) {
+		o.Port = port
+		o.PortName = ""
+	}
+}
+
 func TestTargets(t *testing.T) {
 	tests := []struct {
 		name    string
 		mutate  func(*fixture)
 		options func(*Options)
+		sel     PortSelection
 		want    []Target
 		wantErr error
 		wantLog string
@@ -247,13 +302,67 @@ func TestTargets(t *testing.T) {
 			want:   wantTarget(nil),
 		},
 		{
-			name:   "numeric port mode",
+			name:    "numeric port mode",
+			mutate:  func(f *fixture) { f.pod.Spec.Containers[0].Ports = nil },
+			options: numericOptions(7070),
+			want:    wantTarget(func(tg *Target) { tg.Port = 7070 }),
+		},
+		{
+			// A request port is used for every Pod without checking its declarations.
+			name:   "numeric selection ignores declarations",
 			mutate: func(f *fixture) { f.pod.Spec.Containers[0].Ports = nil },
-			options: func(o *Options) {
-				o.Port = 7070
-				o.PortName = ""
+			sel:    PortSelection{Port: 7070},
+			want:   wantTarget(func(tg *Target) { tg.Port = 7070 }),
+		},
+		{
+			name:    "numeric selection over numeric default",
+			options: numericOptions(6060),
+			sel:     PortSelection{Port: 6061},
+			want:    wantTarget(func(tg *Target) { tg.Port = 6061 }),
+		},
+		{
+			name:    "name selection resolves per Pod",
+			mutate:  func(f *fixture) { altPort(f.pod, corev1.ProtocolTCP) },
+			options: numericOptions(6060),
+			sel:     PortSelection{PortName: "pprof-alt"},
+			want:    wantTarget(func(tg *Target) { tg.Port = 6061 }),
+		},
+		{
+			// The Pod that declares the requested name is a target; the one without it is ineligible.
+			name: "name selection on one Pod of two",
+			mutate: func(f *fixture) {
+				altPort(f.pod, corev1.ProtocolTCP)
+				f.addPod(secondPodName, secondUID, secondIPv4)
 			},
-			want: wantTarget(func(tg *Target) { tg.Port = 7070 }),
+			sel:  PortSelection{PortName: "pprof-alt"},
+			want: wantTarget(func(tg *Target) { tg.Port = 6061 }),
+		},
+		{
+			name: "name absent from every Pod",
+			sel:  PortSelection{PortName: "nowhere"},
+		},
+		{
+			name:   "name selection requires TCP",
+			mutate: func(f *fixture) { altPort(f.pod, corev1.ProtocolUDP) },
+			sel:    PortSelection{PortName: "pprof-alt"},
+		},
+		{
+			name:   "name selection protocol unset",
+			mutate: func(f *fixture) { altPort(f.pod, "") },
+			sel:    PortSelection{PortName: "pprof-alt"},
+			want:   wantTarget(func(tg *Target) { tg.Port = 6061 }),
+		},
+		{
+			name: "zero selection keeps the default name",
+			sel:  PortSelection{},
+			want: wantTarget(nil),
+		},
+		{
+			name:    "zero selection keeps the default number",
+			mutate:  func(f *fixture) { f.pod.Spec.Containers[0].Ports = nil },
+			options: numericOptions(7070),
+			sel:     PortSelection{},
+			want:    wantTarget(func(tg *Target) { tg.Port = 7070 }),
 		},
 		{
 			name:   "version absent",
@@ -313,9 +422,17 @@ func TestTargets(t *testing.T) {
 			log := &sink{}
 			opts.Logger = slog.New(log)
 
-			_, c, _ := startFixture(t, opts, f.objects()...)
+			cs, c, _ := startFixture(t, opts, f.objects()...)
 
-			got, err := c.Targets(context.Background(), fixtureNamespace, fixtureService)
+			got, err := c.Targets(context.Background(), fixtureNamespace, fixtureService, tc.sel)
+			// Whatever the selection, resolving reads only the caches:
+			// the seven granted read tuples are all the API server ever sees.
+			for _, a := range cs.Actions() {
+				if !isGranted(a.GetVerb(), a.GetResource().Resource) {
+					t.Fatalf("discovery issued %q; the ClusterRole grants seven read tuples and nothing else",
+						a.GetVerb()+" "+a.GetResource().Resource)
+				}
+			}
 			if tc.wantErr != nil {
 				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("Targets() error = %v, want %v", err, tc.wantErr)
@@ -338,6 +455,35 @@ func TestTargets(t *testing.T) {
 		})
 	}
 
+	t.Run("selection reads no API", func(t *testing.T) {
+		f := baseline()
+		altPort(f.pod, corev1.ProtocolTCP)
+		cs, c, _ := startFixture(t, baseOptions(), f.objects()...)
+
+		// Filling the informers is the only traffic the fixture is allowed:
+		// every resolution after this line has to come out of the caches.
+		cs.ClearActions()
+
+		for _, sel := range []PortSelection{{Port: 7070}, {PortName: "pprof-alt"}} {
+			got, err := c.Targets(context.Background(), fixtureNamespace, fixtureService, sel)
+			if err != nil {
+				t.Fatalf("Targets(%+v) error = %v, want nil", sel, err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("Targets(%+v) = %d targets, want 1", sel, len(got))
+			}
+			acts := cs.Actions()
+			if len(acts) == 0 {
+				continue
+			}
+			tuples := make([]string, 0, len(acts))
+			for _, a := range acts {
+				tuples = append(tuples, a.GetVerb()+" "+a.GetResource().Resource)
+			}
+			t.Fatalf("Targets(%+v) issued %v; a selection resolves from the informer caches and never reaches the API server", sel, tuples)
+		}
+	})
+
 	t.Run("not synced", func(t *testing.T) {
 		c := New(fake.NewClientset(), baseOptions())
 		if c.HasSynced() {
@@ -349,7 +495,7 @@ func TestTargets(t *testing.T) {
 		f := baseline()
 		cs, c, _ := startFixture(t, baseOptions(), f.objects()...)
 
-		got, err := c.Targets(context.Background(), fixtureNamespace, fixtureService)
+		got, err := c.Targets(context.Background(), fixtureNamespace, fixtureService, PortSelection{})
 		if err != nil || len(got) != 1 {
 			t.Fatalf("Targets() = %+v, %v, want one target and no error", got, err)
 		}
@@ -360,7 +506,7 @@ func TestTargets(t *testing.T) {
 		}
 
 		waitCache(t, func() bool {
-			targets, err := c.Targets(context.Background(), fixtureNamespace, fixtureService)
+			targets, err := c.Targets(context.Background(), fixtureNamespace, fixtureService, PortSelection{})
 
 			return err == nil && len(targets) == 0
 		})

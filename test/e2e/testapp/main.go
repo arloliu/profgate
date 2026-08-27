@@ -1,6 +1,7 @@
 // Command testapp is the workload the end-to-end suite profiles through the gateway:
-// the standard net/http/pprof handlers on :6060, a readiness probe the harness can flip,
-// and a count of profile requests so a scenario can prove none arrived.
+// the standard net/http/pprof handlers on :6060 and :6061, a readiness probe the harness can flip,
+// and a count of profile requests, in total and per listener,
+// so a scenario can prove none arrived or which port one arrived on.
 //
 // "testapp sleep <seconds>" only sleeps; the Deployment's preStop hook runs it
 // because the distroless image has no sleep binary.
@@ -9,22 +10,29 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 )
 
 const (
-	listenAddr        = ":6060"
 	readHeaderTimeout = 10 * time.Second
 	shutdownTimeout   = 10 * time.Second
+
+	// One shared handler is served on both addresses:
+	// the container port pprof and, for client-selected ports, pprof-alt.
+	pprofAddr    = ":6060"
+	pprofAltAddr = ":6061"
 )
 
 func main() {
@@ -62,10 +70,19 @@ func runSleep(args []string, logger *slog.Logger) int {
 	return 0
 }
 
-// app is the test application's state: the probe result and the profile request count.
+// app is the test application's state: the probe result, the profile request total,
+// and the same count per listen address so a scenario can tell which port a request arrived on.
 type app struct {
 	healthy atomic.Bool
 	pprof   atomic.Int64
+	mu      sync.Mutex
+	perAddr map[string]int64
+}
+
+// hitsResponse is the body of GET /hits.
+type hitsResponse struct {
+	Pprof int64            `json:"pprof"`
+	Hits  map[string]int64 `json:"hits"`
 }
 
 // handler builds the routes: pprof under /debug/pprof/ counted per request,
@@ -84,10 +101,18 @@ func (a *app) handler() http.Handler {
 	return mux
 }
 
-// counted increments the profile request counter before handing the request to next.
+// counted increments the profile request total and the count of the listener
+// the request arrived on, keyed ":<port>", before handing the request to next.
 func (a *app) counted(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.pprof.Add(1)
+		if addr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+			if _, port, err := net.SplitHostPort(addr.String()); err == nil {
+				a.mu.Lock()
+				a.perAddr[":"+port]++
+				a.mu.Unlock()
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -108,30 +133,52 @@ func (a *app) setHealth(healthy bool) http.HandlerFunc {
 }
 
 func (a *app) hits(w http.ResponseWriter, _ *http.Request) {
+	a.mu.Lock()
+	perAddr := make(map[string]int64, len(a.perAddr))
+	for addr, n := range a.perAddr {
+		perAddr[addr] = n
+	}
+	a.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]int64{"pprof": a.pprof.Load()})
+	_ = json.NewEncoder(w).Encode(hitsResponse{Pprof: a.pprof.Load(), Hits: perAddr})
 }
 
-// serve runs the HTTP server until ctx is done, then drains it.
+// serve runs one HTTP server per listen address, sharing the handler, until ctx is done
+// or the first listener fails, then drains them all.
 func serve(ctx context.Context, logger *slog.Logger) error {
-	a := &app{}
+	listenAddrs := []string{pprofAddr, pprofAltAddr}
+	a := &app{perAddr: make(map[string]int64, len(listenAddrs))}
 	a.healthy.Store(true)
-	srv := &http.Server{Addr: listenAddr, Handler: a.handler(), ReadHeaderTimeout: readHeaderTimeout}
+	for _, addr := range listenAddrs {
+		a.perAddr[addr] = 0
+	}
+	handler := a.handler()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
-	logger.Info("listening", "address", listenAddr)
+	errCh := make(chan error, len(listenAddrs))
+	servers := make([]*http.Server, 0, len(listenAddrs))
+	for _, addr := range listenAddrs {
+		srv := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
+		servers = append(servers, srv)
+		go func() {
+			if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("listen %s: %w", addr, err)
+			}
+		}()
+		logger.Info("listening", "address", addr)
+	}
 
+	var listenErr error
 	select {
-	case err := <-errCh:
-		return fmt.Errorf("listen %s: %w", listenAddr, err)
+	case listenErr = <-errCh:
 	case <-ctx.Done():
 	}
 	logger.Info("stop requested; draining")
 	drainCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if err := srv.Shutdown(drainCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+	for _, srv := range servers {
+		if err := srv.Shutdown(drainCtx); err != nil && listenErr == nil {
+			listenErr = fmt.Errorf("shutdown %s: %w", srv.Addr, err)
+		}
 	}
-	return nil
+	return listenErr
 }

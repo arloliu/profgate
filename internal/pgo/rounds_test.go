@@ -258,6 +258,25 @@ func TestRoundsTargetSelection(t *testing.T) {
 	})
 }
 
+// TestRoundsNeverNameAPort proves a Collection resolves every round with the
+// zero PortSelection: PGO samples the configured pprof port and offers no
+// client selection.
+func TestRoundsNeverNameAPort(t *testing.T) {
+	fixture := fixtureProfile(t, "cpu-a.pprof")
+	pod := newPodServer(t, "pod-a", "1.42.3", fixture)
+	discovery := newFakeDiscovery(pod.target)
+	r := newTestRounds(t, roundsOpts{discovery: discovery})
+	in := newRunInput(t, func(rec *Record) { rec.Policy.Sampling.Rounds = 2 })
+
+	if res := runRounds(t, r, in); res.Reason != "" {
+		t.Fatalf("the collection failed %q, want a success", res.Reason)
+	}
+	want := []k8s.PortSelection{{}, {}}
+	if got := discovery.selected(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("rounds resolved targets with %+v, want one zero selection per round %+v", got, want)
+	}
+}
+
 // TestRoundsSampleFailures proves the reason vocabulary one failed sample
 // records, and that a round survives every one of them.
 func TestRoundsSampleFailures(t *testing.T) {

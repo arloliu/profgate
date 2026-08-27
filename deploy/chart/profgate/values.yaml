@@ -323,4 +323,15 @@ pgo:
 # the chart renders them to match the container ports it declares, so
 # overriding them here moves the listener without moving the probe or the
 # Service.
-config: {}
+#
+# discovery.pprof.allowedPorts and allowedPortNames default to empty lists
+# below, which accept any port and any port name a request names; the
+# configured discovery.pprof.port or portName, once one is set, always
+# passes too. discovery.pprof.port is left out of the default on purpose:
+# config.Load refuses a file naming both port and portName, so a default
+# port here would collide with a user who sets only portName.
+config:
+  discovery:
+    pprof:
+      allowedPorts: []
+      allowedPortNames: []

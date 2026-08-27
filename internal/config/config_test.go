@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,22 @@ func loadOK(t *testing.T, path string) *config.Config {
 	return cfg
 }
 
+// wantDiscovery compares a loaded discovery block field by field.
+// The block holds two slices, so it cannot be compared with ==,
+// and comparing the lists by length alone would let a stray entry through.
+func wantDiscovery(t *testing.T, got, want config.DiscoveryConfig, ports []int32, names []string) {
+	t.Helper()
+	if got.VersionLabel != want.VersionLabel || got.Pprof.Port != want.Pprof.Port || got.Pprof.PortName != want.Pprof.PortName {
+		t.Fatalf("discovery = %+v, want %+v", got, want)
+	}
+	if !slices.Equal(got.Pprof.AllowedPorts, ports) {
+		t.Fatalf("discovery.pprof.allowedPorts = %v, want %v", got.Pprof.AllowedPorts, ports)
+	}
+	if !slices.Equal(got.Pprof.AllowedPortNames, names) {
+		t.Fatalf("discovery.pprof.allowedPortNames = %v, want %v", got.Pprof.AllowedPortNames, names)
+	}
+}
+
 func TestLoad(t *testing.T) {
 	t.Run("good", func(t *testing.T) {
 		cfg := loadOK(t, fixture("good.yaml"))
@@ -48,9 +65,10 @@ func TestLoad(t *testing.T) {
 			Limits:    config.LimitsConfig{CPUSeconds: 60, TraceSeconds: 60, MaxConcurrentProfiles: 16},
 			Auth:      config.AuthConfig{Mode: "disabled", AnonymousRealm: "developer"},
 		}
-		if cfg.Server != want.Server || cfg.Discovery != want.Discovery || cfg.Limits != want.Limits || cfg.Auth != want.Auth {
+		if cfg.Server != want.Server || cfg.Limits != want.Limits || cfg.Auth != want.Auth {
 			t.Fatalf("Load() = %+v, want %+v", *cfg, want)
 		}
+		wantDiscovery(t, cfg.Discovery, want.Discovery, nil, nil)
 		realm, ok := cfg.Realms["developer"]
 		if !ok || len(cfg.Realms) != 1 {
 			t.Fatalf("Realms = %+v, want only developer", cfg.Realms)
@@ -185,15 +203,91 @@ func TestLoad(t *testing.T) {
 			Limits:    config.LimitsConfig{CPUSeconds: 120, TraceSeconds: 30, MaxConcurrentProfiles: 4},
 			Auth:      config.AuthConfig{Mode: "disabled", AnonymousRealm: "ops"},
 		}
-		if cfg.Server != want.Server || cfg.Discovery != want.Discovery || cfg.Limits != want.Limits || cfg.Auth != want.Auth {
+		if cfg.Server != want.Server || cfg.Limits != want.Limits || cfg.Auth != want.Auth {
 			t.Fatalf("Load() = %+v, want %+v", *cfg, want)
 		}
+		wantDiscovery(t, cfg.Discovery, want.Discovery, nil, nil)
 	})
 	t.Run("env port name", func(t *testing.T) {
 		t.Setenv("PROFGATE_PPROF_PORT_NAME", "pprof")
 		cfg := loadOK(t, fixture("neither-port.yaml"))
 		if cfg.Discovery.Pprof.Port != 0 || cfg.Discovery.Pprof.PortName != "pprof" {
 			t.Fatalf("Pprof = %+v, want Port 0 and PortName pprof", cfg.Discovery.Pprof)
+		}
+	})
+
+	// The two allowlists bound what a request may name instead of the configured default.
+	// They are independent, both default empty, and an empty one accepts any value of its parameter,
+	// so a bare configuration has to load with both nil rather than with a list nobody wrote.
+	t.Run("lists from file", func(t *testing.T) {
+		cfg := loadOK(t, fixture("allowed-ports.yaml"))
+		want := config.DiscoveryConfig{VersionLabel: "app.kubernetes.io/version", Pprof: config.PprofConfig{Port: 6060}}
+		wantDiscovery(t, cfg.Discovery, want, []int32{6060, 6061}, []string{"pprof", "pprof-alt"})
+	})
+	t.Run("ports from env", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_ALLOWED_PORTS", "6060,6061")
+		cfg := loadOK(t, fixture("good.yaml"))
+		if got := cfg.Discovery.Pprof.AllowedPorts; !slices.Equal(got, []int32{6060, 6061}) {
+			t.Fatalf("allowedPorts = %v, want [6060 6061]", got)
+		}
+	})
+	t.Run("names from env", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_ALLOWED_PORT_NAMES", "pprof,pprof-alt")
+		cfg := loadOK(t, fixture("good.yaml"))
+		if got := cfg.Discovery.Pprof.AllowedPortNames; !slices.Equal(got, []string{"pprof", "pprof-alt"}) {
+			t.Fatalf("allowedPortNames = %v, want [pprof pprof-alt]", got)
+		}
+	})
+	// A ConfigMap or shell that spaces a list out for readability still names
+	// the same two ports; the reader that splits the value trims the space.
+	t.Run("env with spaces", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_ALLOWED_PORTS", "6060, 6061")
+		cfg := loadOK(t, fixture("good.yaml"))
+		if got := cfg.Discovery.Pprof.AllowedPorts; !slices.Equal(got, []int32{6060, 6061}) {
+			t.Fatalf("allowedPorts = %v, want [6060 6061]", got)
+		}
+	})
+	t.Run("port out of range in file", func(t *testing.T) {
+		loadErr(t, fixture("allowed-ports-range.yaml"), "discovery.pprof.allowedPorts")
+	})
+	t.Run("port out of range in env", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_ALLOWED_PORTS", "65536")
+		loadErr(t, fixture("good.yaml"), "discovery.pprof.allowedPorts")
+	})
+	// The loader refuses the value before validation runs, so the message is
+	// the loader's: it names the field and the entry it could not read.
+	t.Run("port not a number", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_ALLOWED_PORTS", "6060,abc")
+		loadErr(t, fixture("good.yaml"), "field 'AllowedPorts' (tag 'env'): invalid size format: abc")
+	})
+	t.Run("bad name in file", func(t *testing.T) {
+		loadErr(t, fixture("allowed-ports-name.yaml"), `discovery.pprof.allowedPortNames "Pprof"`)
+	})
+	t.Run("bad name in env", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_ALLOWED_PORT_NAMES", "-x")
+		loadErr(t, fixture("good.yaml"), `discovery.pprof.allowedPortNames "-x"`)
+	})
+	// A repeated entry says the operator meant two different values and wrote
+	// one twice, which is worth a startup failure rather than a silent merge.
+	t.Run("duplicate port", func(t *testing.T) {
+		loadErr(t, fixture("allowed-ports-dup.yaml"), "discovery.pprof.allowedPorts: duplicate entry 6060")
+	})
+	t.Run("duplicate name", func(t *testing.T) {
+		loadErr(t, fixture("allowed-ports-dup-name.yaml"), `discovery.pprof.allowedPortNames: duplicate entry "pprof"`)
+	})
+	t.Run("unknown key under pprof", func(t *testing.T) {
+		loadErr(t, fixture("allowed-ports-unknown.yaml"), "field allowedPort not found in type config.PprofConfig")
+	})
+	// The lists take no part in the rule that fills the default port:
+	// a gateway that bounds what clients may name still profiles 6060 by default.
+	t.Run("neither port still 6060", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_ALLOWED_PORTS", "7070")
+		cfg := loadOK(t, fixture("neither-port.yaml"))
+		if cfg.Discovery.Pprof.Port != 6060 {
+			t.Fatalf("port = %d, want 6060", cfg.Discovery.Pprof.Port)
+		}
+		if got := cfg.Discovery.Pprof.AllowedPorts; !slices.Equal(got, []int32{7070}) {
+			t.Fatalf("allowedPorts = %v, want [7070]", got)
 		}
 	})
 
@@ -220,6 +314,63 @@ func TestLoad(t *testing.T) {
 	t.Run("drain delay out of range", func(t *testing.T) {
 		t.Setenv("PROFGATE_DRAIN_DELAY", "61s")
 		loadErr(t, fixture("good.yaml"), "server.drainDelay")
+	})
+}
+
+// TestPprofAllows covers the rule that decides whether a request may name a
+// port or a container-port name.
+// Three properties carry it:
+// an empty list permits any value of its parameter,
+// the configured default is permitted whatever the list holds,
+// and each list bounds only its own parameter,
+// so a numeric default leaves every name to allowedPortNames alone.
+func TestPprofAllows(t *testing.T) {
+	t.Run("AllowsPort", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			pprof config.PprofConfig
+			port  int32
+			want  bool
+		}{
+			{"empty list takes the default", config.PprofConfig{Port: 6060}, 6060, true},
+			{"empty list takes any port", config.PprofConfig{Port: 6060}, 9999, true},
+			{"the default passes a list without it", config.PprofConfig{Port: 6060, AllowedPorts: []int32{7070}}, 6060, true},
+			{"a listed port passes", config.PprofConfig{Port: 6060, AllowedPorts: []int32{7070}}, 7070, true},
+			{"an unlisted port is refused", config.PprofConfig{Port: 6060, AllowedPorts: []int32{7070}}, 9999, false},
+			{"a name default lists ports on its own", config.PprofConfig{PortName: "pprof", AllowedPorts: []int32{7070}}, 7070, true},
+			{"a name default permits no port of its own", config.PprofConfig{PortName: "pprof", AllowedPorts: []int32{7070}}, 6060, false},
+			{"the unset default is not a port a request may name", config.PprofConfig{PortName: "pprof", AllowedPorts: []int32{7070}}, 0, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := tc.pprof.AllowsPort(tc.port); got != tc.want {
+					t.Fatalf("AllowsPort(%d) with %+v = %t, want %t", tc.port, tc.pprof, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("AllowsPortName", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			pprof    config.PprofConfig
+			portName string
+			want     bool
+		}{
+			{"empty list takes the default", config.PprofConfig{PortName: "pprof"}, "pprof", true},
+			{"empty list takes any name", config.PprofConfig{PortName: "pprof"}, "x", true},
+			{"the default passes a list without it", config.PprofConfig{PortName: "pprof", AllowedPortNames: []string{"metrics"}}, "pprof", true},
+			{"a listed name passes", config.PprofConfig{PortName: "pprof", AllowedPortNames: []string{"metrics"}}, "metrics", true},
+			{"an unlisted name is refused", config.PprofConfig{PortName: "pprof", AllowedPortNames: []string{"metrics"}}, "x", false},
+			{"a numeric default lists names on its own", config.PprofConfig{Port: 6060, AllowedPortNames: []string{"metrics"}}, "metrics", true},
+			{"a numeric default permits no name of its own", config.PprofConfig{Port: 6060, AllowedPortNames: []string{"metrics"}}, "pprof", false},
+			{"the unset default is not a name a request may send", config.PprofConfig{Port: 6060, AllowedPortNames: []string{"metrics"}}, "", false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := tc.pprof.AllowsPortName(tc.portName); got != tc.want {
+					t.Fatalf("AllowsPortName(%q) with %+v = %t, want %t", tc.portName, tc.pprof, got, tc.want)
+				}
+			})
+		}
 	})
 }
 

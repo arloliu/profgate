@@ -105,6 +105,22 @@ func TestCollectionCreate(t *testing.T) {
 	h.expectPGOAudit(t, http.StatusAccepted, codeOK)
 }
 
+// TestCollectionCreateResolvesTheDefaultPort proves the advisory target
+// resolution of a create never names a port: a Collection profiles the
+// configured default and nothing a client could choose.
+func TestCollectionCreateResolvesTheDefaultPort(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"duration":"10s","rounds":1}}`, nil)
+	if got.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %q)", got.Code, got.Body.String())
+	}
+	seen := h.disc.selectionsSeen()
+	if len(seen) != 1 || seen[0] != (k8s.PortSelection{}) {
+		t.Errorf("selections = %v, want exactly one zero PortSelection", seen)
+	}
+}
+
 // TestCollectionCreateCarriesTheStoredRevision proves the snapshot is layered
 // on the override the watched cache holds, and that the Collection records the
 // revision it came from.

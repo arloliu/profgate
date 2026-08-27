@@ -1,0 +1,29 @@
+# The realm's namespace list is a placeholder the port-selection-refused
+# scenario patches to its own namespace before applying.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: profgate-ports
+data:
+  config.yaml: |
+    server:
+      listen: ":8080"
+      opsListen: ":9090"
+    discovery:
+      versionLabel: app.kubernetes.io/version
+      pprof:
+        port: 6060
+        allowedPorts: [6060]
+        allowedPortNames: [pprof]
+    limits:
+      cpuSeconds: 60
+      traceSeconds: 60
+      maxConcurrentProfiles: 16
+    auth:
+      mode: disabled
+      anonymousRealm: developer
+    realms:
+      developer:
+        namespaces: ["placeholder"]
+        services: ["*"]
+        profiles: ["*"]

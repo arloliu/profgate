@@ -1572,6 +1572,7 @@ type fakeDiscovery struct {
 	err        error
 	confirmErr map[string]error
 	confirms   int
+	selections []k8s.PortSelection // the port selection of every Targets call, in order
 }
 
 func newFakeDiscovery(targets ...k8s.Target) *fakeDiscovery {
@@ -1583,9 +1584,10 @@ func newRollingDiscovery(rounds ...[]k8s.Target) *fakeDiscovery {
 	return &fakeDiscovery{rounds: rounds, confirmErr: make(map[string]error)}
 }
 
-func (d *fakeDiscovery) Targets(context.Context, string, string) ([]k8s.Target, error) {
+func (d *fakeDiscovery) Targets(_ context.Context, _, _ string, sel k8s.PortSelection) ([]k8s.Target, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.selections = append(d.selections, sel)
 	if d.err != nil {
 		return nil, d.err
 	}
@@ -1595,6 +1597,14 @@ func (d *fakeDiscovery) Targets(context.Context, string, string) ([]k8s.Target, 
 	copy(out, d.rounds[i])
 
 	return out, nil
+}
+
+// selected returns the port selections Targets was called with, in order.
+func (d *fakeDiscovery) selected() []k8s.PortSelection {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return append([]k8s.PortSelection(nil), d.selections...)
 }
 
 func (d *fakeDiscovery) HasSynced() bool { return true }

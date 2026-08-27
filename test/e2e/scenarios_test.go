@@ -712,7 +712,7 @@ func truncate(b []byte, n int) []byte {
 func scenarioErrors(t *testing.T, h *Harness) {
 	ns := h.Namespace(t)
 	pods := deployTestApp(t, h, ns)
-	c := deployErrorsGateway(t, h, ns)
+	c := deployScopedGateway(t, h, ns, "errors-gateway", "profgate-errors")
 
 	other := createNamespace(t, h, ns+"-other")
 	createService(t, h, testAppService(testAppName, other, testAppName, false))
@@ -754,25 +754,26 @@ func createNamespace(t *testing.T, h *Harness, name string) string {
 	return name
 }
 
-// deployErrorsGateway applies the errors-gateway overlay into ns with its realm limited to ns,
+// deployScopedGateway applies the overlay under test/e2e/overlays into ns with its realm limited to ns,
 // waits for its Pod, and returns a client that reaches its API listener.
+// name is the resource name every object in the overlay shares.
 // The realm is fixed in the ConfigMap before the Pod starts, so no restart is needed.
-func deployErrorsGateway(t *testing.T, h *Harness, ns string) *http.Client {
+func deployScopedGateway(t *testing.T, h *Harness, ns, overlay, name string) *http.Client {
 	t.Helper()
 	ctx := t.Context()
 	dir := t.TempDir()
-	overlay := filepath.Join(h.root, "test", "e2e", "overlays", "errors-gateway")
-	target, err := filepath.Rel(dir, overlay)
+	overlayDir := filepath.Join(h.root, "test", "e2e", "overlays", overlay)
+	target, err := filepath.Rel(dir, overlayDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	configMap, err := os.ReadFile(filepath.Join(overlay, "configmap.yaml")) //nolint:gosec // the overlay path is composed from the module root
+	configMap, err := os.ReadFile(filepath.Join(overlayDir, "configmap.yaml")) //nolint:gosec // the overlay path is composed from the module root
 	if err != nil {
 		t.Fatal(err)
 	}
 	patched := strings.Replace(string(configMap), `namespaces: ["placeholder"]`, fmt.Sprintf("namespaces: [%q]", ns), 1)
 	if patched == string(configMap) {
-		t.Fatal("errors-gateway configmap.yaml has no realm placeholder to patch")
+		t.Fatalf("%s configmap.yaml has no realm placeholder to patch", overlay)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "configmap.yaml"), []byte(patched), 0o600); err != nil { //nolint:gosec // dir is the test's temporary directory
 		t.Fatal(err)
@@ -786,18 +787,19 @@ func deployErrorsGateway(t *testing.T, h *Harness, ns string) *http.Client {
 	}
 	t.Cleanup(func() {
 		// The namespace deletion takes the rest; the ClusterRoleBinding is cluster-scoped.
-		err := h.Client.RbacV1().ClusterRoleBindings().Delete(context.Background(), "profgate-errors", metav1.DeleteOptions{})
+		err := h.Client.RbacV1().ClusterRoleBindings().Delete(context.Background(), name, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
-			t.Errorf("delete clusterrolebinding profgate-errors: %v", err)
+			t.Errorf("delete clusterrolebinding %s: %v", name, err)
 		}
 	})
-	if err := h.kubectl(ctx, "rollout", "status", "deployment/profgate-errors", "-n", ns, "--timeout="+rolloutTimeout.String()); err != nil {
-		_ = h.kubectl(ctx, "logs", "-n", ns, "-l", "app.kubernetes.io/name=profgate-errors", "--tail=50")
+	selector := "app.kubernetes.io/name=" + name
+	if err := h.kubectl(ctx, "rollout", "status", "deployment/"+name, "-n", ns, "--timeout="+rolloutTimeout.String()); err != nil {
+		_ = h.kubectl(ctx, "logs", "-n", ns, "-l", selector, "--tail=50")
 		t.Fatal(err)
 	}
-	pods := readyPods(t, h, ns, "app.kubernetes.io/name=profgate-errors")
+	pods := readyPods(t, h, ns, selector)
 	if len(pods) != 1 {
-		t.Fatalf("%d ready errors-gateway pods, want 1", len(pods))
+		t.Fatalf("%d ready %s pods, want 1", len(pods), name)
 	}
 	ports, stop, err := h.forward(ctx, ns, pods[0].Name, []string{"0:" + gatewayAPIPort})
 	if err != nil {
@@ -817,7 +819,7 @@ func deployErrorsGateway(t *testing.T, h *Harness, ns string) *http.Client {
 		return err == nil && len(names) > 0, nil
 	})
 	if err != nil {
-		t.Fatalf("errors gateway never listed the test app: %v", err)
+		t.Fatalf("%s gateway never listed the test app: %v", name, err)
 	}
 	return c
 }
@@ -1076,16 +1078,124 @@ func severAPIConnections(t *testing.T, h *Harness) {
 	}
 }
 
-// hits reads the test app's profile request counter.
-func hits(t *testing.T, app string) int64 {
+// hitsResponse mirrors the test app's /hits body: the profile request total and the same count per listen address.
+type hitsResponse struct {
+	Pprof int64            `json:"pprof"`
+	Hits  map[string]int64 `json:"hits"`
+}
+
+// readHits fetches and decodes the test app's /hits body.
+func readHits(t *testing.T, app string) hitsResponse {
 	t.Helper()
 	resp := get(t, http.DefaultClient, app+"/hits")
 	if resp.Status != http.StatusOK {
 		t.Fatalf("/hits: status %d", resp.Status)
 	}
-	var counts map[string]int64
+	var counts hitsResponse
 	if err := json.Unmarshal(resp.Body, &counts); err != nil {
 		t.Fatalf("/hits: %v", err)
 	}
-	return counts["pprof"]
+	return counts
+}
+
+// hits reads the test app's profile request counter across every listener.
+func hits(t *testing.T, app string) int64 {
+	t.Helper()
+	return readHits(t, app).Pprof
+}
+
+// listenerHits reads the test app's profile request counter for one listen address, such as ":6061".
+func listenerHits(t *testing.T, app, addr string) int64 {
+	t.Helper()
+	return readHits(t, app).Hits[addr]
+}
+
+// altPort is the test app's second pprof listener, container port pprof-alt;
+// it is not the configured default, so a request must name it.
+const (
+	altPort     = "6061"
+	altPortName = "pprof-alt"
+	altAddr     = ":" + altPort
+)
+
+// scenarioPortSelection proves that, against the default gateway whose allowlists are empty,
+// a request naming the test app's second port by number or by name is served from that port
+// and nothing the gateway generates carries the number.
+func scenarioPortSelection(t *testing.T, h *Harness) {
+	ns := h.Namespace(t)
+	pods := deployTestApp(t, h, ns)
+	app := h.ForwardTestApp(t, ns, pods[0].Name)
+	c := h.Gateways[0]
+
+	before := listenerHits(t, app, altAddr)
+	for _, query := range []string{"port=" + altPort, "portName=" + altPortName} {
+		resp := get(t, c, gatewayURL(ns, testAppName, "profiles/heap?"+query+"&pod="+pods[0].Name))
+		if resp.Status != http.StatusOK {
+			t.Fatalf("heap?%s: status %d: %s", query, resp.Status, resp.Body)
+		}
+		if _, err := profile.ParseData(resp.Body); err != nil {
+			t.Fatalf("heap?%s: profile.Parse: %v", query, err)
+		}
+		for name, values := range resp.Header {
+			if !strings.HasPrefix(name, "X-Pprof-Target-") {
+				continue
+			}
+			for _, v := range values {
+				if strings.Contains(v, altPort) {
+					t.Fatalf("heap?%s: header %s %q carries the port", query, name, v)
+				}
+			}
+		}
+		after := listenerHits(t, app, altAddr)
+		if after != before+1 {
+			t.Fatalf("heap?%s: %s hits went %d -> %d, want one more", query, altAddr, before, after)
+		}
+		before = after
+	}
+
+	resp := get(t, c, gatewayURL(ns, testAppName, "targets?portName="+altPortName))
+	if resp.Status != http.StatusOK {
+		t.Fatalf("targets?portName=%s: status %d: %s", altPortName, resp.Status, resp.Body)
+	}
+	var tr targetsResponse
+	if err := json.Unmarshal(resp.Body, &tr); err != nil {
+		t.Fatalf("targets?portName=%s: %v", altPortName, err)
+	}
+	var got []string
+	for _, tg := range tr.Targets {
+		got = append(got, tg.Pod)
+	}
+	slices.Sort(got)
+	if want := podNames(pods); !slices.Equal(got, want) {
+		t.Fatalf("targets?portName=%s = %v, want %v", altPortName, got, want)
+	}
+}
+
+// scenarioPortSelectionRefused proves that a gateway whose allowlists exclude the test app's
+// second port and name refuses both before discovery, so the test app never sees the request,
+// while the configured default still passes.
+func scenarioPortSelectionRefused(t *testing.T, h *Harness) {
+	ns := h.Namespace(t)
+	pods := deployTestApp(t, h, ns)
+	c := deployScopedGateway(t, h, ns, "ports-gateway", "profgate-ports")
+	app := h.ForwardTestApp(t, ns, pods[0].Name)
+
+	before := listenerHits(t, app, altAddr)
+	for _, tc := range []struct{ query, sent string }{
+		{query: "port=" + altPort, sent: altPort},
+		{query: "portName=" + altPortName, sent: altPortName},
+	} {
+		body := expectError(t, c, gatewayURL(ns, testAppName, "profiles/heap?"+tc.query), http.StatusBadRequest, "port_not_allowed")
+		if !bytes.Contains(body, []byte(tc.sent)) {
+			t.Fatalf("heap?%s: body %s does not name %q", tc.query, body, tc.sent)
+		}
+	}
+	if after := listenerHits(t, app, altAddr); after != before {
+		t.Fatalf("%s hits went %d -> %d after refused requests", altAddr, before, after)
+	}
+
+	resp := get(t, c, gatewayURL(ns, testAppName, "profiles/heap?port="+testAppPort))
+	if resp.Status != http.StatusOK {
+		t.Fatalf("heap?port=%s: status %d: %s", testAppPort, resp.Status, resp.Body)
+	}
 }

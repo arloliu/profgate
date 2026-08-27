@@ -13,11 +13,12 @@ import (
 // podKind is the targetRef kind Profgate follows; the target model stops at the Pod.
 const podKind = "Pod"
 
-// Targets returns the currently eligible backends of a Service. Order is unspecified.
+// Targets returns the currently eligible backends of a Service whose pprof port resolves under port.
+// Order is unspecified.
 // It reads only the informer caches and never calls the API server, which is why it ignores the context:
 // its answer is as current as the caches are,
 // and it cannot block.
-func (c *Cluster) Targets(_ context.Context, namespace, service string) ([]Target, error) {
+func (c *Cluster) Targets(_ context.Context, namespace, service string, port PortSelection) ([]Target, error) {
 	svc, err := c.services.Services(namespace).Get(service)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -49,7 +50,7 @@ func (c *Cluster) Targets(_ context.Context, namespace, service string) ([]Targe
 			continue
 		}
 		for i := range es.Endpoints {
-			target, ok := c.eligible(svc, selector, &es.Endpoints[i])
+			target, ok := c.eligible(svc, selector, &es.Endpoints[i], port)
 			if !ok {
 				continue
 			}
@@ -102,7 +103,7 @@ func addressFamily(epSlices []*discoveryv1.EndpointSlice) discoveryv1.AddressTyp
 // A rule that does not hold makes the entry ineligible, never an error:
 // an endpoint the gateway cannot vouch for is dropped,
 // and the rest of the Service is still resolvable.
-func (c *Cluster) eligible(svc *corev1.Service, selector labels.Selector, ep *discoveryv1.Endpoint) (Target, bool) {
+func (c *Cluster) eligible(svc *corev1.Service, selector labels.Selector, ep *discoveryv1.Endpoint, sel PortSelection) (Target, bool) {
 	ref := ep.TargetRef
 	if ref == nil || ref.Kind != podKind || ref.Namespace != svc.Namespace {
 		return Target{}, false
@@ -132,7 +133,7 @@ func (c *Cluster) eligible(svc *corev1.Service, selector labels.Selector, ep *di
 	if !hasPodIP(pod, address) {
 		return Target{}, false
 	}
-	port, ok := c.pprofPort(pod)
+	port, ok := c.pprofPort(pod, sel)
 	if !ok {
 		return Target{}, false
 	}
@@ -171,19 +172,30 @@ func hasPodIP(pod *corev1.Pod, address string) bool {
 	return false
 }
 
-// pprofPort resolves the Pod's pprof port:
-// the configured number, or the container port carrying the configured name over TCP.
-// A Pod with no such port has no pprof port at all.
-func (c *Cluster) pprofPort(pod *corev1.Pod) (int32, bool) {
-	if c.opts.Port != 0 {
+// pprofPort resolves the Pod's pprof port, the request's selection first and the configured default otherwise.
+// A number is used for every Pod without checking its declarations;
+// a name is the container port carrying it over TCP,
+// and a Pod with no such port has no pprof port at all.
+func (c *Cluster) pprofPort(pod *corev1.Pod, sel PortSelection) (int32, bool) {
+	switch {
+	case sel.Port != 0:
+		return sel.Port, true
+	case sel.PortName != "":
+		return namedPort(pod, sel.PortName)
+	case c.opts.Port != 0:
 		return c.opts.Port, true
-	}
-	if c.opts.PortName == "" {
+	case c.opts.PortName != "":
+		return namedPort(pod, c.opts.PortName)
+	default:
 		return 0, false
 	}
+}
+
+// namedPort is the Pod's TCP container port of that name.
+func namedPort(pod *corev1.Pod, name string) (int32, bool) {
 	for _, container := range pod.Spec.Containers {
 		for _, port := range container.Ports {
-			if port.Name != c.opts.PortName {
+			if port.Name != name {
 				continue
 			}
 			// Kubernetes defaults an unset protocol to TCP.
