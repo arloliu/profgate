@@ -173,15 +173,17 @@ the documents themselves are still in the tree.
 Spec: none;
 the decision record changes `docs/README.md` and `.agents/rules/900-design-and-review-loops.md`.
 
-### 10. OIDC transport from a library
+### 10. OIDC transport from a library — withdrawn
 
-`internal/auth/{discovery,jwks,issuer,verify}.go` implement discovery, key caching, and verification by hand.
-Replace the transport, cache, and discovery with a maintained library;
-keep the key-hardening rules in `internal/auth/jwks.go` —
-minimum RSA size, algorithm-to-curve binding, duplicate `kid` rejection —
-which the library does not provide.
-
-Spec: `docs/specs/auth.md` (revision required for the dependency).
+`internal/auth/{discovery,jwks,issuer,verify}.go` were compared against `github.com/coreos/go-oidc/v3` v3.20.0.
+The library provides discovery and audience membership,
+refetches keys on a miss with no periodic refresh and no cooldown across sequential requests,
+tries every key when a token carries no `kid`,
+applies no clock skew to `exp` and a fixed five-minute leeway to `nbf`,
+and reads response bodies without a bound;
+four normative cases in the authentication spec's testing section fail against it.
+Replacing the transport would delete nothing, keep the hardening, and add glue and one module.
+The dependency argument in `docs/specs/auth.md` stands; nothing changes.
 
 ### 11. PGO as an optional deployment with presets
 
