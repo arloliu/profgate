@@ -752,6 +752,8 @@ profgate collection cancel 7h2k9m4p6r8t0v1w3x5y
 profgate download 7h2k9m4p6r8t0v1w3x5y -o merged.pprof
 ```
 
+`collect` and `collection cancel` send `Content-Type: application/json`,
+the cancel with no body, because [`pgo.md`](pgo.md) *Request media type* refuses a `POST` without it.
 `collect` builds the request body of [`pgo.md`](pgo.md) *Create a Collection* from
 `--duration`, `--rounds`, `--round-interval`, `--replicas`, `--max-parallel`, `--target-version`, and `--retention`;
 a flag left unset is absent from the body, so the Service's effective policy decides it.
@@ -767,8 +769,12 @@ which does not say whether the live Collection is the one this command created o
 and carries no identifier to wait on.
 Every `collect` therefore generates one UUIDv4 and sends it in an `Idempotency-Key` header,
 under the Idempotency-Key contract in [`pgo.md`](pgo.md) *Create a Collection*:
-a repeat of the same key returns the Collection that key created, with its identifier,
-and a different key while a Collection is live is `429 collection_in_progress`.
+a repeat of the same key answers `200` with the identifier and state of the Collection that key created,
+and the `Location` header the first answer carried, from a durable read that no cache stands in front of;
+a different key while a Collection is live is `429 collection_in_progress`;
+and the same key whose effective policy snapshot has changed is `409 idempotency_mismatch`,
+which the same flags can produce after the Service's stored override or the operator defaults moved,
+reported with its envelope and exit 1.
 The key is generated once per invocation from `crypto/rand` with RFC 9562's version and variant bits set,
 which the standard library supplies (*Dependencies*),
 and the same key is reused for every retry of that invocation and never afterwards.
@@ -778,7 +784,12 @@ at one second doubling to eight, for at most 30 seconds.
 because it means a Collection this command did not create holds the Service.
 Any other `4xx` prints its envelope and stops.
 **`--wait` begins only once a response has carried a concrete identifier**, first answer or replay.
-`SIGINT` before that point prints that a Collection may already have been created
+A replay carries the identifier and the state and no more,
+because `POST .../collections` is a `pgo.collect` route and the record route is a `pgo.read` one;
+`--wait` then polls that record, which a principal holding `collect` alone cannot read.
+`collect --wait` under such a realm prints the identifier, reports that the record route is denied, and exits 1;
+the Collection it started keeps running.
+`SIGINT` before an identifier exists prints that a Collection may already have been created
 and names `profgate collections <ns>/<svc>` as the way to find out.
 
 **`--wait`** polls `GET /v1/collections/{id}` every `--poll-interval` (default 2s, 1s–1m)
@@ -946,7 +957,9 @@ and it does not turn a `403` into a probe.
 | `go` missing for `--open` | exit 2 naming `go` and `PATH`, before the profile is fetched |
 | `-o` path not writable | exit 2 before the request is sent, so no profile is collected and discarded |
 | Client disconnects mid-profile (`SIGINT`) | the partial file is removed; the gateway records `client_gone` (gateway *Proxy behavior*) |
-| `collect` loses the create response | retried with the same `Idempotency-Key`; the replay carries the identifier |
+| `collect` loses the create response | retried with the same `Idempotency-Key`; the replay carries the identifier and the state for as long as the record exists |
+| `collect` retried after the Service's policy moved | `409 idempotency_mismatch`; the envelope is printed and exit 1, because the key would otherwise stand for two different Collections |
+| `collect --wait` under a realm with `pgo.collect` and not `pgo.read` | the identifier is printed, the denied record route is reported, and exit 1; the Collection runs on |
 | `collect` answered `429 collection_in_progress` | another Collection holds the Service; reported; exit 1 without waiting |
 | `SIGINT` during `collect` before an identifier exists | a Collection may exist; `collections <ns>/<svc>` is named; exit 1 |
 | `SIGINT` during `--wait` | watching stops, collecting does not; the identifier is printed; exit 1 |
@@ -1061,6 +1074,10 @@ The security and recovery cases come first: their absence is a defect rather tha
 - **Idempotent create.**
   A lost response followed by a retry sends the same `Idempotency-Key`,
   and the replay's identifier is what `--wait` polls;
+  the replay body carries `id` and `state` and no record fields, asserted against the decoded answer;
+  a replay whose snapshot has moved is `409 idempotency_mismatch`, printed and exit 1, with no poll;
+  `--wait` against a realm that denies the record route reports the denial and exits 1 after printing the identifier;
+  `collect` and `collection cancel` each send `Content-Type: application/json`, the cancel with no body;
   two invocations generate different keys;
   a `5xx` is retried within the window and a `429 collection_in_progress` is not, exiting 1 with no poll;
   a `400` stops immediately;
@@ -1303,7 +1320,7 @@ Accepting this document amends the following text in the same change.
 | `docs/specs/auth.md` | *Non-goals* | "Token acquisition for the command line … That is a separate design with its own document" becomes a pointer to [`cli.md`](cli.md) |
 | `docs/specs/auth.md` | *Configuration* | the three `auth.oidc.cli` rows and the equality rule that binds `cli.clientID` to `audience` under `tokenType: id` |
 | `docs/specs/auth.md` | *Issuer notes* | the Keycloak note's "a `curl` user should raise the client's token lifespan or use the command-line client" names [`cli.md`](cli.md); the Dex note records that a refresh token needs `offline_access` |
-| `docs/specs/pgo.md` | *Create a Collection* | the Idempotency-Key contract: an `Idempotency-Key` header is accepted and retained for the Collection's lifetime; a repeat of a key returns the Collection that key created, with its identifier; a different key while a Collection is live is `429 collection_in_progress`. Written as a separate revision of that document, which this one references |
+| `docs/specs/pgo.md` | *Create a Collection* | none: the Idempotency-Key contract this document reads now exists there, with a receipt that binds one key to one Collection for the record's whole life, a `{id, state}` replay, and `409 idempotency_mismatch` on a changed effective policy snapshot |
 | `docs/specs/pgo.md` | *HTTP API* | a sentence naming [`cli.md`](cli.md) as the client that drives these routes, changing no behavior |
 | `.agents/rules/100-project-map.md` | *Planned Structure* | `internal/client/` |
 | `.agents/rules/100-project-map.md` | *External HTTP API* | `/v1/auth` |
@@ -1330,4 +1347,4 @@ Edits made to this document after it was accepted, each in the change that made 
 
 | Section | Change |
 |---|---|
-| — | none yet |
+| *Collections*, *Failure table*, *Testing*, *Changes to the accepted designs* | the Idempotency-Key contract this document reads exists in [`pgo.md`](pgo.md) *Create a Collection*: a replay answers `{id, state}` with a `Location` rather than the record, `--wait` needs `pgo.read` to poll what it names, a mismatch is decided on the effective policy snapshot, and `collect` and `collection cancel` send `Content-Type: application/json` |

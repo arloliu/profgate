@@ -106,28 +106,36 @@ Nothing after realm resolution changes.
 ## 2. Request algorithm
 
 The gateway *Request algorithm* has an **Authentication** step between readiness and realm evaluation,
-and [`pgo.md`](pgo.md) *HTTP API* inserts `501 pgo_disabled` and `503 pgo_unavailable` in the same gap.
+and [`pgo.md`](pgo.md) *HTTP API* inserts a media type step after the method step
+and `501 pgo_disabled` and `503 pgo_unavailable` between readiness and credential placement.
 The composed order for every route under `/v1` is:
 
 1. Route → `404 route_unknown`, `404 profile_unknown`.
 2. Method → `405 method_not_allowed`.
-3. Readiness → `503 not_ready`.
-4. PGO routes only: `501 pgo_disabled`, `503 pgo_unavailable`.
-5. **Credential placement.**
+3. **JSON media type.**
+   PGO write routes only: a `POST` that declares no `application/json` → `400 invalid_parameter`
+   ([`pgo.md`](pgo.md) *Request media type*).
+4. Readiness → `503 not_ready`.
+5. PGO routes only: `501 pgo_disabled`, `503 pgo_unavailable`.
+6. **Credential placement.**
    A query parameter named `access_token` → `400 invalid_parameter`, in every mode, before any credential is read.
-6. **Authentication.**
+7. **Authentication.**
    Resolve the principal and realm per `auth.mode` (this document)
    → `401 unauthenticated`, `429 too_many_auth`, `503 auth_unavailable`, or, for a browser navigation, `302`.
-7. Realm → `403 realm_denied`.
-8. Parameters and everything after, unchanged.
+8. Realm → `403 realm_denied`.
+9. Parameters and everything after, unchanged.
 
-Step 5 sits before authentication so that a token in the URL is refused even when a valid one is also in the header;
+Step 3 refuses a request another origin could have produced,
+and it sits where it does so that the refusal comes before anything reads a credential;
+under `oidc` the cross-site refusal of section 6.6 is a second layer over it and never the first rejection,
+because it runs at step 7.
+Step 6 sits before authentication so that a token in the URL is refused even when a valid one is also in the header;
 the point is to make the URL form never work, not to make it redundant.
 
 The three `/auth/` routes (section 6) are not under `/v1` and do not run this algorithm;
 section 6.5 defines theirs.
 
-Per mode, step 6 is:
+Per mode, step 7 is:
 
 | Mode | Step outcome |
 |---|---|
@@ -139,7 +147,7 @@ Under `oidc`, a request that carries both a bearer token and a session cookie is
 
 ### 2.1 Failure responses
 
-A request that fails step 6 answers **`401 unauthenticated`** with a `WWW-Authenticate` header,
+A request that fails step 7 answers **`401 unauthenticated`** with a `WWW-Authenticate` header,
 which names the scheme the mode accepts:
 `Basic realm="profgate"` or `Bearer realm="profgate"`.
 The status is `401`, not `403`,
@@ -943,7 +951,9 @@ Integration, in `internal/httpapi`:
 - The composed order of section 2: an unauthenticated request to an unknown route gets `404`;
   to a not-ready gateway `503 not_ready`; to a PGO route with PGO disabled `501`;
   with `?access_token=` `400` even when a valid bearer is also present;
-  to a denied namespace `401`, not `403`.
+  to a denied namespace `401`, not `403`;
+  and a `POST` to a PGO write route with no JSON media type `400 invalid_parameter`,
+  with no credential read and before readiness would have refused it.
 - The audit line for a `401` carries `auth_reason` and principal `-`;
   for a `302` carries code `auth_redirect`;
   for a successful callback carries the resolved principal.
@@ -1089,3 +1099,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *The `/auth/` routes*, *The session*, *Audit and metrics*, *Testing* | a successful callback answers `200` with a landing page that sends the browser to the return path, instead of `302`: a browser computes `Sec-Fetch-Site` over the whole redirect chain, so the redirect delivered the first request of every login as `cross-site` and the session rule refused it with `csrf`; the audit status of a successful callback is `200`; the unit and Dex tests send what a browser sends |
 | *Wire values and bounds* | the 1024-byte bound on the return path applies to the value as received, before percent-decoding, and a path with a `.` or `..` segment is refused: the bound is checked before anything is parsed, and a dot segment would reach a route the client did not name |
 | *Non-goals*, *What is redirected*, *The `/auth/` routes*, *Testing* | the console of [`ui.md`](ui.md): the UI non-goal points to that document; the `fetch` sentence names the console; logout's fallback `302` to `/` lands on `/ui/` when `ui.enabled`; the two end-to-end lanes gain the console steps of that document's *End to end* |
+| *Request algorithm*, *Testing* | the composed order gains a **JSON media type** step immediately after the method step, which the two PGO write routes run ([`pgo.md`](pgo.md) *Request media type*); the session's cross-site refusal is a second layer over it, because that runs at the authentication step; the numbered steps below the new one shift by one |

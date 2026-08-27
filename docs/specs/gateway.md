@@ -698,19 +698,27 @@ and the `/ui/` and `/` routes of [`ui.md`](ui.md) when `ui.enabled`.
 The four listing routes of [`ui.md`](ui.md) —
 `/v1/namespaces`, `/v1/namespaces/{namespace}/services`, `/v1/whoami`, and `/v1/limits` —
 are `/v1` routes defined in that document.
+`GET /v1/openapi.json` describes every route to a machine (*The OpenAPI document*).
 The product name does not appear in any path.
-Every response carries `Cache-Control: no-store`.
+Every response on both listeners carries `X-Request-Id` (*Request identifier*).
+Cache policy is per surface rather than one rule:
+the `/v1` routes, the console shell, the `/auth/` routes of [`auth.md`](auth.md),
+and the three ops paths answer `Cache-Control: no-store`,
+while the console's asset routes answer `Cache-Control: no-cache` with a per-file `ETag`
+([`ui.md`](ui.md) *Headers*), which is what lets a browser revalidate a file instead of refetching it.
 
 ### 6.1 Request algorithm
 
-Every `/v1` request passes through these steps in order;
+Before step 1 the request is given its identifier (*Request identifier*),
+which every response the steps below produce carries.
+Every `/v1` request then passes through these steps in order;
 the first failing step produces the response.
-Steps 8–10 differ by endpoint.
+Steps 8–12 differ by endpoint.
 
 1. **Route.** Unknown path → `404 route_unknown`; unknown `{profile}` → `404 profile_unknown`.
    Path segments for `{namespace}` and `{service}` must be DNS-1123 labels, otherwise `404 route_unknown`.
 2. **Method.** A method the route does not accept → `405 method_not_allowed` with `Allow` listing those it does;
-   the two routes defined here accept `GET` only.
+   the three routes defined here accept `GET` only.
 3. **Readiness.** `HasSynced()` false → `503 not_ready`.
 4. **Credential placement.**
    `access_token` as a query parameter → `400 invalid_parameter`.
@@ -754,7 +762,24 @@ while the namespace list is filtered and `whoami` and `limits` describe the call
 the parameter step refuses any query parameter;
 then they read the Service cache, with no discovery, admission, confirmation, or proxy step
 ([`ui.md`](ui.md) *Request algorithm for the listing endpoints*).
-They accept `GET` only, like the two routes defined here.
+They accept `GET` only, like the three routes defined here.
+
+A route may also require the request to declare a media type.
+No route defined here does;
+the two PGO `POST` routes do, in a step [`pgo.md`](pgo.md) adds immediately after the method step,
+so a request another origin could have produced is refused before anything else runs —
+before readiness, before PGO availability, before a credential is read, and before any store call.
+That document also adds the PGO availability step between readiness and credential placement.
+All four accepted designs therefore state one order:
+route, method, JSON media type, readiness, PGO availability, credential placement, authentication, realm.
+The media type is parsed with `mime.ParseMediaType`, must have an essence of `application/json`,
+and every parameter that parse returns is accepted and ignored.
+
+`GET /v1/openapi.json` runs the route, method, and readiness steps,
+and the parameter step in the form that refuses every query parameter,
+and then answers.
+It has no credential-placement, authentication, or realm step,
+because it describes the route grammar and names nothing a realm bounds (*The OpenAPI document*).
 
 ### 6.2 List targets
 
@@ -1002,6 +1027,71 @@ Upstream non-`2xx` responses are not gateway errors:
 they pass through with their own status, body, and `Content-Type`,
 and are recorded with code `upstream_<status>`.
 
+**Structured details.**
+An error body may carry a third field, `details`, naming the inputs the caller has to change:
+
+```json
+{
+  "error": "port 7000 is not allowed",
+  "code": "port_not_allowed",
+  "details": [{"field": "port", "code": "not_admitted", "message": "7000 is not an admitted selection"}]
+}
+```
+
+Each item has three fields:
+
+- `field` names the input at fault:
+  a JSON-pointer-like path into the request body (`/schedule/every`),
+  a query parameter name (`seconds`),
+  a header name (`Idempotency-Key`),
+  or empty when no single input is at fault.
+  The item's `code` says which of the four it is, so a client never has to guess from the string.
+- `code` is a closed vocabulary, one per error code, and is the stable contract the way the envelope's own `code` is.
+- `message` is free text and may change, exactly as `error` may.
+
+A `field` is empty only where the item's `code` says it can be:
+`body_not_allowed` and `body_malformed` name no input,
+and `malformed_parameter` names none when the raw query string is what failed to parse.
+`header_malformed` covers every header the request actually carried and the route refuses,
+whether that header was required or optional;
+`header_required` covers only a header the route requires and the request omitted.
+`Idempotency-Key` ([`pgo.md`](pgo.md) *Create a Collection*) is the optional case:
+it earns `header_malformed` when it is present and wrong, and no item at all when it is absent.
+
+`details` is omitted entirely — never `null`, never `[]` — when an error has none,
+so its presence is the claim that the gateway attributed the failure to named inputs.
+That is the opposite of `excluded` in *List targets*, which is `[]` when nothing was excluded,
+because there an empty array is an answer and here an empty array would be a promise the gateway did not keep.
+An error code no vocabulary below covers carries no `details` at all;
+giving one a vocabulary, or adding a value to a vocabulary, is a change to this document.
+Every vocabulary is an enumeration in the OpenAPI document,
+so the check of *The OpenAPI document* holds the sets closed rather than prose alone.
+Items appear in the order the parameters are validated, which is name order (*List targets*).
+
+`invalid_parameter`:
+
+| `code` | `field` | Raised by |
+|---|---|---|
+| `unknown_parameter` | the query parameter | a name the route does not take |
+| `repeated_parameter` | the query parameter | a parameter given more than once |
+| `empty_parameter` | the query parameter | a parameter present with an empty value |
+| `malformed_parameter` | the query parameter, or empty | a value outside the parameter's grammar; empty when the raw query string does not parse and no one name is at fault |
+| `parameter_not_applicable` | the query parameter | a parameter the route takes but not for this request, such as `seconds` on `heap` |
+| `mutually_exclusive` | each of the two query parameters, one item apiece in name order | `port` with `portName` |
+| `header_required` | the header | a header the route requires and the request omitted |
+| `header_malformed` | the header | a header the request carried and the route does not accept: repeated, unparseable, carrying a parameter or a value the route refuses |
+| `unknown_field` | a pointer into the body | a body field the route does not accept |
+| `field_not_applicable` | a pointer into the body | a body field the route accepts elsewhere but not here |
+| `body_not_allowed` | empty | a body sent to a route that accepts none |
+| `body_malformed` | empty | a body that is not JSON, or over the route's size limit |
+
+`port_not_allowed` has one item and one value:
+`code` is `not_admitted` and `field` is `port` or `portName`, whichever the client sent.
+The item names the parameter and the message names the value the client sent,
+which is what *Non-disclosure* already allows and no more.
+
+[`pgo.md`](pgo.md) *Ceilings* defines the vocabulary of `limit_exceeded` on the same rules.
+
 `pod_not_found` covers a Pod that does not exist,
 one that is not an eligible backend,
 and one filtered out by `version`.
@@ -1013,6 +1103,147 @@ receiving it does tell the client that `discovery.pprof.allowedSelections` does 
 such a route never answers an empty `200` in its place.
 `405 method_not_allowed` under `/ui/` and on `/` carries `Allow: GET, HEAD`,
 because those routes serve files and accept `HEAD`.
+
+### 6.6 Request identifier
+
+Every response the gateway writes carries `X-Request-Id`,
+so a client, an operator reading the audit log, and a bug report name one request the same way.
+
+The value comes from the client when the request carries exactly one `X-Request-Id` of 1 to 128 bytes,
+drawn from `[A-Za-z0-9._-]`.
+Every other request — one that omits the header, sends it empty, sends it twice,
+sends more than 128 bytes, or sends a byte outside that set — is given a generated one:
+16 bytes from `crypto/rand` as 32 lowercase hexadecimal characters.
+
+**A value the gateway will not take is replaced, never refused.**
+The identifier decides nothing:
+no step of *Request algorithm* reads it, no realm is evaluated against it, and no cache is keyed by it.
+Refusing a request over it would turn a diagnostic convenience into a failure mode,
+and a client whose identifier the gateway declined would lose the answer it came for.
+
+The byte set is what makes echoing client text safe.
+It excludes `CR`, `LF`, and every character that could split or forge a header,
+and the 128-byte bound caps what one request can reflect.
+The value is echoed into that one response header and written to that one audit record and nowhere else.
+
+The header is set on every response on both listeners:
+the three routes defined here, the four listing routes and the console routes of [`ui.md`](ui.md)
+(their `304` and `405` answers included),
+the `/auth/` routes of [`auth.md`](auth.md) and the `302`s they write,
+every gateway error envelope,
+and `/healthz`, `/readyz`, and `/metrics` on the ops listener (*Health*).
+A forwarded upstream response carries it too:
+it is a gateway-owned header, set the way `Cache-Control` is and overwriting whatever the upstream sent.
+
+The identifier does not travel upstream.
+The upstream request carries no headers from the client (*Proxy behavior*),
+and a proxied fetch is the gateway's own request to an application, not the client's;
+correlation stops at the gateway's answer and its audit line.
+
+Every audit record carries it as `requestId` (*Logging*),
+and a request that writes a record writes exactly one.
+Not every response has a record behind it:
+requests under `/ui/` and to `/`, and every request on the ops listener,
+carry the header and write none (*Logging*, *Health*).
+A diagnostic line a handler writes beside a record may name the identifier,
+which is what having one identifier is for.
+It is not a metric label:
+it is client-controlled and different on every request,
+so a label would mint one series per request (*Metrics*).
+
+### 6.7 The OpenAPI document
+
+```http
+GET /v1/openapi.json
+```
+
+`200` with `Content-Type: application/json` and an OpenAPI 3.1 document describing every route the API listener serves;
+the ops listener's three paths are not in it, for the reason below.
+It carries paths, methods, parameters and their grammars, request and response shapes,
+the `X-Request-Id` header, the error envelope, and the `details` schema with every vocabulary of *Errors*.
+
+**It is hand-maintained and served byte for byte.**
+The document is `internal/httpapi/openapi.json`, embedded with `go:embed`;
+the route answers with those bytes and transforms nothing,
+so the file a reviewer reads in a diff is the file a client parses.
+Nothing generates it, and no build step stands between the two.
+What keeps it true is not authorship but the check below.
+
+**No credential and no realm.**
+The document names namespaces and Services as path templates and never as values from a cluster,
+so a realm has nothing to bound and there is nothing for authentication to protect.
+What it publishes is the route grammar.
+`404 route_unknown` and the `Allow` header of a `405` already publish that grammar to an unauthenticated caller,
+one request at a time.
+It runs the readiness step like every other `/v1` route rather than earning an exception:
+one fewer exception in this algorithm is worth more than an answer during startup.
+
+**It does not vary with configuration.**
+It describes the PGO routes whether or not `pgo.enabled` is set — they answer `501 pgo_disabled`, which it says —
+and the console and `/auth/` routes whether or not those are configured.
+A document assembled from the running configuration would be a second configuration surface,
+and nothing could check it before the process started.
+It carries `Cache-Control: no-store` like every other `/v1` response:
+the bytes are in the binary and cost nothing to serve again.
+
+**The route table.**
+`internal/httpapi` holds one declaration per route the API listener serves:
+its path template and the methods it accepts.
+The package holds no such table today — its matching is three expressions and three exact paths —
+and writing one is part of this change.
+
+**Every API-listener route consumes one declaration**, with no dispatch beside it:
+the two routes of *List targets* and *Fetch a profile*, this document route,
+the four listing routes and the `/ui/` and `/` routes of [`ui.md`](ui.md),
+the three `/auth/` routes of [`auth.md`](auth.md),
+and the seven PGO routes of [`pgo.md`](pgo.md).
+The console and `/auth/` routes are dispatched outside the `/v1` parser today,
+which is exactly why a table that covered only `/v1` could prove nothing about "every route".
+Three things read that one declaration and nothing else:
+the router, which matches a request against it;
+the `Allow` header of a `405`, which is the methods the matched declaration lists;
+and the check below.
+A route present when a declaration is absent is a route the router cannot reach,
+so a declaration is not a list kept beside the code.
+
+The ops listener is outside the table and outside the document.
+`/healthz`, `/readyz`, and `/metrics` answer `text/plain`, carry no error envelope,
+are reached only by the kubelet and the metrics scraper, and are never routed by an Ingress (*Health*);
+"every route the binary serves" above means every route the API listener serves, and says so here.
+
+**The error-code registry.**
+`internal/httpapi` also holds one static registry of every code the gateway can write into an envelope:
+a declared set of constants, one per code in *Errors* and in [`pgo.md`](pgo.md) *Errors*.
+The registry is the comparison source, and it is what makes the codes checkable
+where reading the source could not:
+the package writes envelopes through one central `WriteError`, whose `code` argument is a value at that call site,
+and the proxy and store transports map their own failures onto codes through their own tables.
+A test that demanded a string literal at every call would fail on the central writer first.
+
+Instead, every constructor of a gateway error and every transport mapping takes its code from the registry,
+and each mapping is an exhaustive switch over its own closed input,
+so a new failure mode does not compile until it names a registry constant.
+That discipline is held by review, not by a test that reads the source:
+what the check automates is the registry against the document, which is the comparison that can be mechanical.
+
+**The check.**
+A Go test in `internal/httpapi` compares the document with the code, never with this document's prose:
+
+1. it walks the route table.
+   Every path-and-method pair must appear in the document,
+   and the document must declare no pair the table does not hold;
+2. it compares the registry with the codes the document enumerates, and the two sets must be equal;
+3. it requires every `details` vocabulary of *Errors* to appear as an enumeration in the document;
+4. it re-encodes the parsed document and requires the file to equal that encoding,
+   so a hand edit cannot leave the file formatted one way and read another.
+
+What the check does not catch is a code a constructor names and no route can answer with,
+which is a document that over-promises rather than one that lies.
+The two version refusals of [`pgo.md`](pgo.md) *Create a Collection*,
+which today build one error from a computed value, become two errors naming two registry constants.
+Upstream statuses passed through under `upstream_<status>` are not in the document
+and not in the registry:
+they carry the application's body, not a gateway envelope.
 
 ---
 
@@ -1089,8 +1320,12 @@ a realm decides namespaces, Services, and profiles, and no realm widens or narro
 ### 7.5 Non-disclosure
 
 A client's realm bounds everything the gateway generates on the API listener:
-the targets response, gateway error bodies, gateway-owned headers, and the transport-error envelopes
+the targets response, gateway error bodies and every `details` item inside one,
+gateway-owned headers, and the transport-error envelopes
 name only namespaces, Services, and Pods the realm admits and never a Pod address.
+A `details` item names an input the request itself carried —
+a query parameter, a header, or a path into its own body —
+and never a value the gateway read from the cluster.
 Of ports, the guarantee is narrower:
 no response carries the port number a `portName` selection resolved to,
 and the `X-Pprof-Target-*` headers never carry a port;
@@ -1125,6 +1360,17 @@ listed here so nobody mistakes them for leaks the design closes:
   it names no Pod, no address, and no node,
   and a realm that should not disclose a Service's size is a realm that should not admit the Service.
   A caller the realm denies learns none of it: the realm step precedes discovery, `explain` included.
+- `X-Request-Id` reflects up to 128 bytes of the client's own text back to that client,
+  and writes them to that request's audit line (*Request identifier*).
+  It reaches no other caller and names nothing of the cluster;
+  the byte set is what keeps the reflection from forging a header.
+- `/v1/openapi.json` answers every caller that can reach the API listener, with no credential
+  (*The OpenAPI document*).
+  It publishes paths, methods, parameter grammars, status codes, and the error vocabulary —
+  the route grammar collected into one answer:
+  `404 route_unknown` and the `Allow` header of a `405` already give the same answer one request at a time.
+  It carries no namespace, Service, Pod, node, version, port, realm, or principal —
+  path templates only, the same text this document holds.
 
 What an authorized upstream response carries — the profile bytes, a pass-through error body,
 an allowlisted upstream header such as `Content-Disposition` — is the application's to control;
@@ -1163,7 +1409,7 @@ it reads the same configuration file, so `config validate` answers for both.
 Every `/v1` request emits one record on completion:
 
 ```text
-principal, namespace, service, pod, profile, seconds, port, status, code, duration_ms
+requestId, principal, namespace, service, pod, profile, seconds, port, status, code, duration_ms
 ```
 
 `auth_reason` is added on authentication failures and login redirects,
@@ -1188,6 +1434,11 @@ The targets endpoint's `version` and `pod` filters add no field and overload non
 so a targets request writes it empty whatever it filtered on,
 and `version` is a field of no record on either endpoint.
 `code` is `ok` for a successful proxy, the gateway error code, or the upstream code from section 6.4.
+`requestId` is the identifier of *Request identifier*, client-sent or generated,
+and is on every record this section defines:
+the interactive one above, the listing ones, the PGO one ([`pgo.md`](pgo.md) *Logging*), and the `/auth/` one.
+It is the field a report from a client joins on, which is why it is first.
+Requests under `/ui/` and to `/` still write no record, so a console request's identifier lives in its response alone.
 This is the audit trail.
 Records never contain a Pod IP.
 
@@ -1200,6 +1451,14 @@ Both paths are on the ops listener and have no authentication or realm check.
 | `/healthz` | the process is serving HTTP |
 | `/readyz` | issuer discovery and the initial key fetch have succeeded when `auth.mode` is `oidc` ([`auth.md`](auth.md)), preflight has passed, and `HasSynced()` is true |
 
+**Both answer `text/plain`, when they pass and when they fail.**
+Their readers are the kubelet and a probe definition, which decide from the status line and read no body,
+so a JSON `{status}` would be a second response shape to keep in step for a reader that never parses one.
+The API listener's JSON envelope exists because clients act on `code`; nothing here does.
+`X-Request-Id` is set on all three ops paths as it is on the API listener (*Request identifier*),
+so a failed probe or scrape can be named in a report;
+no path on this listener writes an audit record, so the header is the whole of what it buys.
+
 `/readyz` reflects the initial sync of the informers as a whole.
 It does not track API reachability afterwards:
 a gateway that cannot reach the API server still answers the targets endpoint from its cache
@@ -1211,7 +1470,7 @@ and refuses to proxy (section 5.6), which is the correct behavior, not a reason 
 
 | Metric | Labels |
 |---|---|
-| `profgate_requests_total` (counter) | `endpoint` (`targets`/`profile`/`namespaces`/`services`/`whoami`/`limits`/`ui`), `profile`, `code` |
+| `profgate_requests_total` (counter) | `endpoint` (`targets`/`profile`/`namespaces`/`services`/`whoami`/`limits`/`ui`/`openapi`), `profile`, `code` |
 | `profgate_request_duration_seconds` (histogram) | `profile` |
 | `profgate_confirm_total` (counter) | `result` (`ok`/`changed`/`unavailable`) |
 | `profgate_profiles_in_flight` (gauge) | — |
@@ -1243,8 +1502,13 @@ with `profile` fixed to `none`;
 `ui` covers `/ui/`, every path under it, and `/`,
 and its `code` is `ok` for a `200` or the `302`, `route_unknown`, `method_not_allowed`,
 or `internal_error` for any other status the console wrote.
+`openapi` is the endpoint value of the document route, with `profile` fixed to `none`;
+its `code` is `ok`, `not_ready`, `route_unknown`, `method_not_allowed`, or `invalid_parameter`,
+which is every answer it has (*The OpenAPI document*).
 The client's port selection is not a label either;
 it is client-controlled and would add a series per value.
+The request identifier is not a label for the stronger form of the same reason:
+it differs on every request, so a label would mint a series per request (*Request identifier*).
 `explain` is not a label either:
 it would double every `targets` series to record a parameter the audit line already carries,
 and the label sets stay the closed ones above.
@@ -1290,6 +1554,15 @@ Nothing about `pgo.enabled` lengthens this drain.
 A gateway replica runs no Collection: the loops that do live in the collector process of [`pgo.md`](pgo.md),
 which drains on a bound of its own and has its own grace period.
 A replica's PGO routes are ordinary requests and finish inside the wait above.
+
+One of them would otherwise sit idle inside it.
+A `GET /v1/collections/{id}?wait=` holds its connection open for up to a minute waiting for a record to move
+([`pgo.md`](pgo.md) *Get a Collection*),
+which a deployment with `limits.cpuSeconds: 1` would find longer than the whole drain it sized.
+The drain therefore ends every wait:
+each waiting request answers at once with the record it last read,
+at the moment `/readyz` turns 503 and before `server.drainDelay`.
+The bound above is unchanged, and a client sees a well-formed answer to poll from rather than a reset.
 
 `server.drainDelay` is the window between `/readyz` turning 503 and the API listener closing:
 without it the listener closes before the EndpointSlice controllers and the kube-proxies have removed this replica,
@@ -1389,6 +1662,51 @@ Because the overall request budget already includes confirmation, the drain boun
   and the value as sent with `port_not_allowed` for a refused one;
   a `portName` selection never logs the resolved number,
   and no response or header carries the number a `portName` resolved to.
+- The request identifier, in `internal/httpapi` and against the ops handler:
+  a client value of one byte, of 128 bytes, and of every character the set holds is echoed unchanged;
+  an absent header, an empty value, 129 bytes, a space, a colon, a `CR`, an `LF`, a non-ASCII byte,
+  and two `X-Request-Id` headers on one request each yield a generated 32-character lowercase hexadecimal value,
+  and two requests never receive the same generated one;
+  the header is present on a `200`, on every error envelope, on a `405` beside `Allow`,
+  on the console's `304` and on its file responses, on an `/auth/` `302`,
+  and each of those responses carries the cache policy its surface names —
+  `no-store` on a `/v1`, shell, `/auth/`, or ops answer,
+  `no-cache` with an `ETag` on a console asset and on its `304`;
+  on a forwarded upstream response, where an upstream's own `X-Request-Id` is overwritten and never reaches the client,
+  and on `/healthz`, `/readyz`, and `/metrics`, whose bodies stay `text/plain` in both their outcomes;
+  the audit record carries `requestId`, one record is written per request,
+  a request under `/ui/` writes none while its response still carries the header,
+  and the recorder sees no label built from it.
+- The `details` array, in `internal/httpapi` against the encoded body rather than the struct:
+  the parameter tables of *List targets* and *Fetch a profile* each refuse with one item,
+  whose `code` is the value *Errors* names for that refusal and whose `field` is the parameter;
+  `port` with `portName` carries two items in name order;
+  a selection `allowedSelections` refuses carries `not_admitted` with the parameter the client sent;
+  an error whose code has no vocabulary carries no `details` key at all, and no body ever carries `"details": []`;
+  a raw query string that does not parse is `malformed_parameter` with an empty `field`,
+  and an optional header the route refuses — an `Idempotency-Key` outside its grammar — is `header_malformed`
+  while an omitted required one is `header_required`;
+  no item names a Pod, an address, or the number a `portName` resolved to.
+- The OpenAPI document, in `internal/httpapi`:
+  the route answers `200` with the embedded bytes byte for byte and `Content-Type: application/json`,
+  `503 not_ready` before the caches sync,
+  `400 invalid_parameter` for any query parameter, `access_token` included,
+  `405` with `Allow: GET`,
+  and `200` with no credential under `basic` and under `oidc`, proving no authentication step runs.
+  The check of *The OpenAPI document* is exercised against documents that differ from the code in exactly one way —
+  a missing route, an extra route, a missing method, a missing code, an extra code, a missing vocabulary value,
+  and a file reindented by hand — and each must fail;
+  the shipped document must pass.
+  The route table: every route the API listener serves has one declaration and the router reads no other source,
+  asserted by driving one request per declaration and by a scan that finds no path matched outside it;
+  the `Allow` header of a `405` on each route equals that route's declared methods;
+  a `/ui/` route, an `/auth/` route, and a PGO route each appear in the document
+  whether or not their configuration enables them,
+  and none of `/healthz`, `/readyz`, or `/metrics` appears at all.
+  The error-code registry: it holds exactly the codes of *Errors* and of [`pgo.md`](pgo.md) *Errors*,
+  a constant removed from it or added to it fails the comparison with the document,
+  and each transport mapping is exhaustive over its own input,
+  asserted by a table that drives every input value through it.
 - Target exclusion diagnostics, split by where each reason is decided:
   the eight cache-derived reasons in `internal/k8s` against the fake clientset,
   the two filter-derived reasons in `internal/httpapi` against the fake `Discovery`.
@@ -1983,16 +2301,19 @@ the browser code it vendors is listed in [`ui.md`](ui.md) *Dependencies*.
 cmd/profgate/        CLI: serve, collect, config validate, version
 internal/k8s/        the seam; sole non-test importer of client-go
 internal/proxy/      upstream HTTP to PodIP:Port, transport, budget, error mapping
-internal/httpapi/    routing, realm checks, handlers, error bodies, audit log
+internal/httpapi/    routing, realm checks, handlers, error bodies, audit log, the embedded OpenAPI document
 internal/config/     fuda-loaded Config, strict pre-parse, validation, hot/restart classification
 internal/metrics/    Recorder interface and the Prometheus implementation
 internal/tlscert/    the API listener's certificate: load, re-read on a ticker, GetCertificate
 internal/admit/      the admission gate interactive requests pass through
 internal/auth/       Authenticator; basic, oidc, and disabled modes; JWKS cache; browser flow
-internal/ui/         the console: embedded page and vendored browser libraries; sole user of go:embed
+internal/ui/         the console: embedded page and vendored browser libraries
 deploy/              kustomize base and Helm chart
 test/e2e/            harness, versions.yaml, testapp, overlays
 ```
+
+Two packages embed files and no others do:
+`internal/ui` the console tree, and `internal/httpapi` the one OpenAPI document it serves.
 
 ---
 
@@ -2030,6 +2351,14 @@ test/e2e/            harness, versions.yaml, testapp, overlays
 | Service cache read fails on a listing route | `503 discovery_unavailable`; never an empty `200` ([`ui.md`](ui.md)) |
 | Rolling update with two console asset hashes | each request a page makes may reach either build; an asset the answering replica lacks is `404 route_unknown` and the page does not render until the rollout converges, after which a reload recovers ([`ui.md`](ui.md)) |
 | `ui.enabled` false | `/ui/` and `/` are `404 route_unknown`; the four listing routes still answer |
+| Client sends no `X-Request-Id`, or one the grammar refuses | one is generated; the request is answered as it would have been, and the response and the audit record carry the generated value |
+| Client sends a usable `X-Request-Id` | it is echoed unchanged and written to the audit record; nothing else reads it |
+| `/v1/openapi.json` before the caches sync | `503 not_ready`, like every other `/v1` route; the document itself would have been correct, and the exception is not worth its cost |
+| Router and OpenAPI document disagree | the check of *The OpenAPI document* fails; no build ships a route, method, or error code the document does not hold |
+| `POST` to a PGO write route without `Content-Type: application/json` | `400 invalid_parameter` with a `details` item naming the header, immediately after the method step: before readiness, before authentication, and before any store call ([`pgo.md`](pgo.md)) |
+| A route the router serves with no declaration in the route table | the router cannot reach it, so it is `404 route_unknown`; a declaration is the only way a path is matched |
+| An envelope code a constructor names and the document does not | the check of *The OpenAPI document* fails against the registry; no build ships a code the document lacks |
+| Replica drains while a `wait=` request is parked | the wait ends at the drain signal and answers with the record it last read; the drain bound is unchanged ([`pgo.md`](pgo.md)) |
 
 ---
 
@@ -2200,3 +2529,69 @@ Updated with the implementation:
 |---|---|
 | `docs/deployment.md` | the collector Deployment: what the chart renders, what the kustomize tree leaves to an overlay, and how both roles are scraped |
 | `deploy/chart/profgate/values.yaml`, `deploy/chart/profgate/README.md` | the `component` labels, the collector block, and the gateway's static memory limit |
+
+A contract a program can build on —
+an identifier on every request, structured details inside the error envelope,
+an OpenAPI document served and checked against the router,
+and the media type the two PGO write routes require —
+amends the following text.
+The first table lists the edits made in the same change as this block;
+the second lists the documents that describe shipped behavior and are updated when the implementation lands;
+the third names the documents that read these routes and are revised on their own.
+
+Amended now:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *HTTP API* | the route inventory names `/v1/openapi.json`; every response carries `X-Request-Id` beside `Cache-Control: no-store` |
+| `docs/specs/gateway.md` | *Request algorithm* | the identifier is assigned before step 1; a route may require a media type, which only the two PGO `POST` routes do; the document route's shorter path |
+| `docs/specs/gateway.md` | *Errors* | the optional `details` array, its item shape, the rule that an error with no vocabulary carries no key at all, and the vocabularies of `invalid_parameter` and `port_not_allowed` |
+| `docs/specs/gateway.md` | *Request identifier* | a new subsection: the grammar a client value must meet, the generated value, why a bad one is replaced rather than refused, where the header is set, and that it never travels upstream |
+| `docs/specs/gateway.md` | *The OpenAPI document* | a new subsection: `GET /v1/openapi.json`, hand-maintained and served byte for byte, no credential and no realm, static across configuration, and the four comparisons its check makes against the router |
+| `docs/specs/gateway.md` | *Non-disclosure* | `details` items name only inputs the request carried; two observations, the reflected identifier and the published route grammar |
+| `docs/specs/gateway.md` | *Logging* | the `requestId` field, first in every record shape, and one record per request |
+| `docs/specs/gateway.md` | *Health* | `/healthz` and `/readyz` answer `text/plain` in both outcomes; the identifier is echoed on all three ops paths |
+| `docs/specs/gateway.md` | *Metrics* | the `openapi` endpoint value and its codes; no label built from the identifier |
+| `docs/specs/gateway.md` | *Startup and shutdown* | a parked `wait=` request ends at the drain signal, so the drain bound does not move |
+| `docs/specs/gateway.md` | *Layers* | unit rows for the identifier on both listeners, the `details` array against the encoded body, and the document route and its check against one-way-wrong documents |
+| `docs/specs/gateway.md` | *Package Layout* | `internal/httpapi` holds the embedded document; the two packages that embed files are named below the tree |
+| `docs/specs/gateway.md` | *Failure Scenarios* | rows for a refused and an accepted identifier, the document route before sync, a router the document disagrees with, a PGO write without the media type, and a drain during a wait |
+| `docs/specs/pgo.md` | *HTTP API*, *Create a Collection*, *List Collections*, *Get a Collection*, *The latest completed Collection*, *Ceilings*, *Record*, *Errors*, *Logging*, *Metrics*, *Testing*, *Failure Scenarios* | the PGO half of the same contract, listed in that document's own amendment block |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `docs/api.md` | `X-Request-Id` on every response, the `details` array with its vocabularies, `/v1/openapi.json`, and the route count the new routes move |
+| `internal/httpapi` | the route table the router and the check share, the embedded document, the check itself, and the two version refusals rewritten with literal codes so that check can read them |
+| `internal/metrics` | the `openapi` endpoint value |
+
+Carries a claim this change moves, and is revised on its own, not here:
+
+| File | Section | Change |
+|---|---|---|
+| `.agents/rules/100-project-map.md` | *Planned Structure* | `internal/ui/` is no longer the sole user of `go:embed`: `internal/httpapi` embeds the document it serves |
+| `.agents/rules/100-project-map.md` | *External HTTP API* | the route list gains `/v1/openapi.json`, and the two `latest` routes of [`pgo.md`](pgo.md) |
+
+Tightening that contract —
+one request-step order across the accepted designs,
+a route table every API-listener route consumes,
+a static registry of envelope codes for the document to be checked against,
+a cache policy stated per surface,
+and an idempotent create made durable in [`pgo.md`](pgo.md) —
+amends the following text.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *HTTP API* | every response carries `X-Request-Id`, and cache policy is per surface: `no-store` on `/v1`, the shell, `/auth/`, and ops, `no-cache` with an `ETag` on console assets |
+| `docs/specs/gateway.md` | *Request algorithm* | the JSON media type step sits immediately after the method step and the PGO availability step between readiness and credential placement, in the order all four designs now state identically; `mime.ParseMediaType`, an essence of `application/json`, and every parameter accepted; steps 8 to 12 differ by endpoint; three routes are defined here |
+| `docs/specs/gateway.md` | *Errors* | `header_malformed` covers any header the request carried and the route refuses, required or optional; `malformed_parameter` carries an empty field for a raw query string no name can be blamed for |
+| `docs/specs/gateway.md` | *Request identifier* | every audit record carries `requestId`, while console and ops responses carry the header and write no record |
+| `docs/specs/gateway.md` | *The OpenAPI document* | the route table is what every API-listener route is dispatched from, and what `405 Allow` and the check both read; the ops listener is outside it and says so; a static registry of envelope codes replaces reading the source for string literals |
+| `docs/specs/gateway.md` | *Layers*, *Failure Scenarios* | unit rows for the table's coverage, the `Allow` header, the registry, the two `details` codes, and the per-surface cache policy; rows for a route with no declaration and a code the document lacks |
+| `docs/specs/pgo.md` | *Create a Collection*, *List Collections*, *Get a Collection*, *The latest completed Collection*, *Atomicity primitives*, *Paths that touch each key*, *Algorithm*, *Record*, *Sweeper*, *Non-disclosure*, *Unit*, *Failure Scenarios* | the PGO half of the same tightening, listed in that document's own amendment block |
+
+Read these routes and are amended by that block rather than by this one:
+[`docs/specs/auth.md`](auth.md), whose composed order gains the media type step;
+[`docs/specs/ui.md`](ui.md), whose satisfied rows leave its pending table;
+and [`docs/specs/cli.md`](cli.md), whose `collect` reads a thin replay.

@@ -694,17 +694,22 @@ and a second press carrying the same key is answered with that Collection and it
 instead of a `429 collection_in_progress` that names nothing to wait on.
 
 The contract the key relies on is [`pgo.md`](pgo.md) *Create a Collection*'s,
-where [`cli.md`](cli.md) already schedules it.
+which [`cli.md`](cli.md) reads the same way.
 This page relies on these facts of it and defines none of them:
 the `Idempotency-Key` header is optional;
 a present value is 1 to 128 bytes of `[A-Za-z0-9._-]`, which a UUIDv4's 36 characters satisfy;
 a key is scoped to the realm principal, the namespace, and the Service, so no key of one caller reaches another's;
-the key is stored in the Collection's record;
-a replay is answered `200` with the original record and the same identifier;
+the key is bound to the Collection by a receipt the store holds;
+a replay is answered `200` with `{"id": ..., "state": ...}` and the same `Location` the first answer carried,
+not with the record, which stays behind `GET /v1/collections/{id}` and its `pgo.read` flag;
 a *different* key sent while a Collection of that Service is live is `429 collection_in_progress`;
-the *same* key sent with a different body is `409 idempotency_mismatch`;
-and a key lives exactly as long as the record that holds it.
+the *same* key sent with a different effective policy snapshot is `409 idempotency_mismatch`,
+which identical JSON can produce after the Service's stored override or the operator defaults have moved;
+and a key resolves for as long as the record it created exists,
+from an authoritative read rather than from any replica's cache.
 An attempt series is far shorter than that, so the page never depends on how long a key stays replayable.
+The thin replay costs the page nothing:
+it selects a record by identifier and refetches the list, which is what the answer already carries.
 A gateway that does not implement the header ignores an unknown request header,
 and the second press is answered `429 collection_in_progress` exactly as it is today.
 
@@ -769,8 +774,7 @@ so a `POST` with no body — which every cancel is — passes it.
 Under `oidc`, [`auth.md`](auth.md) *The session* refuses a cross-site request as well,
 but it runs at the authentication step and therefore after this one:
 it is a second layer over the modes this rule already covers, not the first rejection.
-The rule belongs to [`pgo.md`](pgo.md) *HTTP API* and is listed as an edit that document needs
-(*Required by this revision and not yet made*).
+The rule belongs to [`pgo.md`](pgo.md) *HTTP API*, which now holds it in this wording.
 
 **What each answer does.**
 The mapping from a response to the page's next state is two pure functions in `collectionmodel.js`,
@@ -782,7 +786,7 @@ one per control, so every arm is a test case rather than a branch a reader has t
 | any `2xx` whose `id` is absent or outside the grammar | the body is shown as an error, as text; nothing is selected and no path is built from it |
 | `429 collection_in_progress` | the list is refetched, because the live Collection is in it; the control returns; the key is dropped |
 | `429 rate_limited`, `429 capacity_exhausted` | the control is disabled for the `Retry-After` delay and says so; the key is dropped |
-| `409 idempotency_mismatch` | the key was sent with a body other than the one it was created with, which is a bug in the page; the error is shown and the key is dropped |
+| `409 idempotency_mismatch` | the key now stands for a different effective policy — the page sends one empty body per attempt series, so this means the Service's stored override or the operator defaults moved between the two presses; the error is shown, the list is refetched because the first attempt's Collection is in it, and the key is dropped |
 | `403 realm_denied` | `/v1/whoami` is refetched, since it is what decides whether the control exists; the key is dropped |
 | `501 pgo_disabled` | `/v1/limits` is refetched, since it is what decides whether the view exists; the key is dropped |
 | `503 pgo_unavailable` | the replica could not reach the store or had not finished replaying it, so the create may have committed; the error is shown, the control returns to its armed state, and the key is kept for the next press, which is the retry of the same attempt |
@@ -800,7 +804,7 @@ one per control, so every arm is a test case rather than a branch a reader has t
 
 The first row reads a `2xx` and not a `202` on purpose.
 A first press is answered `202`.
-A press replaying a key is answered `200` with the record that key created ([`pgo.md`](pgo.md) *Create a Collection*).
+A press replaying a key is answered `200` with the acknowledgement the first answer carried, `{"id": ..., "state": ...}` ([`pgo.md`](pgo.md) *Create a Collection*).
 Reading the whole `2xx` range rather than those two statuses is what keeps a later release
 that moves a replay to another success status from turning the answer the key exists to produce into an error.
 
@@ -1792,29 +1796,21 @@ Updated with the implementation: `docs/api.md` (the listing endpoints), `docs/co
 
 The table above records edits that have been made.
 The rows below are edits this document now requires and has not made.
-They land with the change that implements the write controls, the browser scenarios, and the stable asset paths;
-until then this document is ahead of the documents it names, which is stated here rather than left to be discovered.
+What remains is the browser scenarios and the stable asset paths;
+the write controls' own contract, in [`pgo.md`](pgo.md) *Create a Collection* and *HTTP API*, now exists,
+and the rows that named it have left this table.
+Until the rest lands this document is ahead of the documents it names,
+which is stated here rather than left to be discovered.
 
 | File | Section | Change |
 |---|---|---|
-| `docs/specs/pgo.md` | *HTTP API* | a `POST` to `.../collections` or to `/v1/collections/{id}/cancel` must declare `Content-Type: application/json`, with or without a body, and is `400 invalid_parameter` otherwise; the two routes run route, method, JSON media type, readiness, PGO availability, credential placement, authentication, realm, with the media type parsed by `mime.ParseMediaType`, `charset` and other parameters accepted, a missing, malformed, or repeated header refused, and the body never read; that order is what keeps a page on another origin from spending a caller's credential ([`ui.md`](ui.md) *Starting and cancelling a Collection*) |
-| `docs/specs/pgo.md` | *Create a Collection* | the `Idempotency-Key` contract, already scheduled by [`cli.md`](cli.md): the header is optional; a present value is 1 to 128 bytes of `[A-Za-z0-9._-]`; a key is scoped to the realm principal, the namespace, and the Service; it is stored in the record; a replay is answered `200` with the original record and the same identifier; a different key while a Collection of that Service is live is `429 collection_in_progress`; the same key with a different body is `409 idempotency_mismatch`; and a key lives as long as the record that holds it |
-| `docs/specs/pgo.md` | *The seam*, *Atomicity primitives*, *Paths that touch each key* | where the key is stored, which store and key name hold it, and the compare-and-swap that makes one create and its key one decision across replicas, so two replicas cannot both miss and both publish |
-| `docs/specs/pgo.md` | *Record*, *Sweeper* | the key as a field of the record, and its removal with the record, which is what makes "as long as the record" a mechanism and not a promise |
-| `docs/specs/pgo.md` | *Errors* | `409 idempotency_mismatch` in the code table |
-| `docs/specs/pgo.md` | *Failure Scenarios* | a create whose key write or record write loses its acknowledgement, and a replay of a key whose caller's realm no longer admits the record |
 | `docs/specs/pgo.md` | *Create a Collection*, *Errors* | whether `429 rate_limited` and `429 capacity_exhausted` carry `Retry-After`; the console reads the header when it is there and assumes a fixed delay when it is not |
-| `docs/specs/pgo.md` | *Unit* | the `Content-Type` cases of [`ui.md`](ui.md) *Unit*, and the key's cases: a replay, a different key against a live Collection, the same key with a different body, and two concurrent requests carrying one key |
-| `docs/specs/auth.md` | *Request algorithm* | the media-type step of the two PGO write routes, and its position before the credential and the session rule, which is a second layer over it rather than the first rejection |
-| `docs/specs/gateway.md` | *Request algorithm* | the same step and the same position, in the order this document names |
 | `docs/specs/gateway.md` | *Dependencies* | `github.com/chromedp/chromedp`, tests only, driving the console's browser scenarios; the interpreter's row names `collectionmodel.js` beside the other two models |
 | `docs/specs/gateway.md` | *Layers* | the `internal/ui` rows for entity tags and `304`, the `internal/httpapi` rows for the media-type step and the idempotency key, and the two browser scenarios in the end-to-end row |
 | `docs/specs/gateway.md` | *What end-to-end proves* | the two browser scenarios of [`ui.md`](ui.md) *End to end* |
 | `docs/specs/gateway.md` | *Failure Scenarios* | the rolling-update row: stable paths remove the `404` for an asset both builds carry; a release that adds or drops one, and the release that moves off hashed prefixes, still fail a load until the rollout converges, and a reload then recovers |
 | `docs/specs/auth.md` | *Testing* | the two authentication lanes gain the browser scenarios beside the wire proofs they already carry |
-| `docs/specs/cli.md` | *Collections* | `collect` and `collection cancel` send `Content-Type: application/json`, the cancel with no body |
 | `docs/api.md` | *PGO collection* | the same header on the create example and on the bodyless cancel |
-| `.agents/rules/100-project-map.md` | *External HTTP API* | `/ui/{file}` in place of `/ui/static/{hash}/{file}` |
 | `.agents/rules/500-validation-and-workflow.md` | *Before a PR* | "hashed assets" becomes the stable paths, and "the page's own JavaScript runs in no test" becomes the two browser scenarios that run it |
 | `.github/workflows/e2e.yml` | the `e2e` job | a step that installs the pinned Chromium and asserts the executable exists, before `mise run test:e2e` |
 | `docs/console.md` | *Console* | the introduction, which describes a page for pulling a profile and a read-only Collections view, names the two controls that write |
@@ -1851,3 +1847,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Routes*, *Layout and embedding*, *Headers*, *Vendoring rule*, *Errors*, *Audit and metrics*, *Unit*, *Failure scenarios*, *Package layout* | assets are served at stable paths under `/ui/` with a per-file `ETag` and `Cache-Control: no-cache` instead of under a tree hash marked immutable; the tree hash, the shell's two placeholders, and the render step are gone, and a rolling update no longer answers `404` for an asset both of its builds carry |
 | *Non-goals*, *Flow*, *Starting and cancelling a Collection*, *Errors*, *Layout and embedding*, *Failure scenarios*, *Unit*, *What is not proven*, *End to end*, *Dependencies*, *Changes to the accepted designs* | what stable paths guarantee is scoped to the assets both builds of a rollout carry, with the release that adds or drops a file and the release that moves off hashed prefixes named as the loads that still fail until the rollout converges; each PGO failure code carries one rule for the idempotency key, `503 pgo_unavailable` keeping it and `503 collector_unavailable` dropping it; the key's contract in [`pgo.md`](pgo.md) is relied on fact by fact instead of by reference alone, `409 idempotency_mismatch` included; the media-type check has a stated place in the two write routes' step order; the confirmation timer stops at the first request, and a retained attempt is abandoned only by **Keep** or a change of selection; a cancel after realm loss is the indistinguishable `404` that also refetches `/v1/whoami`; and each browser scenario is a registry entry of its own rather than a step inside an authentication scenario, provisioning and cleaning up its own gateway, enabling its Content Security Policy and exception observers before the first navigation, requiring its hostile issuer principal, and running a pinned, version-checked Chromium |
 | *Changes to the accepted designs* | the section carries a second table for the edits this document requires elsewhere and has not made |
+| *Starting and cancelling a Collection*, *Required by this revision and not yet made* | a replay is answered `200` with `{id, state}` and a `Location` rather than the stored record, because `pgo.collect` and `pgo.read` are independent flags and the record belongs to the second; a mismatch is decided on the effective policy snapshot, so identical JSON can produce `409 idempotency_mismatch` after the stored override or the operator defaults moved; the key resolves from an authoritative read for the record's whole life; and the rows naming the contract this page relies on have left the pending table, which now holds the browser scenarios and the stable asset paths alone |

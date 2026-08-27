@@ -661,14 +661,19 @@ Every piece of shared state has one primitive, named here and used nowhere else:
 | State | Key | Primitive | Who wins |
 |---|---|---|---|
 | one Collection per schedule slot | `schedule.<ns>.<svc>.<slot>` | `Create` | the first replica; the rest observe `ErrKeyExists` |
-| one live Collection per Service | `active.<ns>.<svc>` | `Create` after the `initializing` record exists and before it becomes `pending`; `Delete` at its revision after the terminal update | the creator whose `Create` succeeds, scheduler or API alike; every other creator observes `ErrKeyExists` |
+| one live Collection per Service | `active.<ns>.<svc>` | `Create` after the `initializing` record exists and before it becomes `pending`; `Delete` at its revision after the terminal update | the creator whose `Create` succeeds, scheduler or API alike; every other creator observes `ErrKeyExists` and answers `429 collection_in_progress`, or, carrying an idempotency key, resolves through the receipt below (section 10.2) |
 | live Collections cluster-wide | the set of Services with an `active.*` key or a nonterminal `job.*` record | counted from the watched caches (`cachedLive`) plus that publisher's local reservations for publications the caches have not delivered yet, before a creator writes anything, and only behind the replay barrier; no cluster-wide primitive, so the ceiling `pgo.limits.maxLiveCollections` is per publisher, giving `publishers × maxLiveCollections` (section 7.2) | — |
 | Collection ownership and every state transition | `job.<id>` | `Update` with the revision last read | the replica whose read was most recent; the loser re-reads |
 | policy override | `service.<ns>.<svc>` | `Create` for a new key; `Update` with the client's `If-Match` revision | the client whose ETag is current |
 | artifact bytes | `<id>-<attempt>.pprof` | `Put` by the owner of that attempt, then named in the `completed` `Update` | the attempt whose `Update` wins; every other attempt's object is unreferenced and is deleted by its writer or by the sweeper |
 | one collector's liveness | `collector.<instance>` | `Create`, then `Update` at the revision it last wrote | nobody contends: `<instance>` is unique per process, so the key has exactly one writer for its whole life |
+| what one idempotency key created | `idem.<hash>` | `Create` by the winner of `active.<ns>.<svc>`, before that winner's record becomes claimable; `Delete` at the revision the deleter read, once the record it names is gone | three writers that cannot meet: the winner, which holds the active key and is the only creator publishing in that scope, and which deletes a stale receipt at the revision a fresh `Get` returned only after that `Get` of the receipt's record found it absent, then creates its own; a keyed request that found the receipt stale; and the sweeper. The second and third act only on a receipt whose record a fresh `Get` shows absent, and each deletes at the revision it read, so a loser of that `Delete` does nothing (section 10.2) |
 
 Nothing takes a snapshot for reassurance, pre-checks before a conditional write, or reads one replica's memory to decide about another.
+The receipt read a keyed `POST /collections` makes before publishing is not such a pre-check:
+it decides whether to publish at all rather than predicting whether a conditional write will win,
+and a read that misses a receipt written since costs a lost `Create` of the active key,
+which the loser then resolves from the receipt (section 10.2).
 
 ### 5.3 Paths that touch each key
 
@@ -702,6 +707,7 @@ Where a rule below says "the creator", it holds for both.
 | scheduler, `POST /collections` | watched caches (`cachedLive` — Services with an active key or a nonterminal record — plus local reservations against `maxLiveCollections`; skip the write when the Service is already live) | `Create` with the new Collection's id, after `job.<id>` exists as `initializing` |
 | scheduler, `POST /collections` | own `Create` result | `Delete` of nothing here; a lost `Create` deletes the creator's own `initializing` record instead |
 | publisher, each pass | watched cache, then `Get` of the key (the release rule, section 7.2) | nothing |
+| `POST /collections` with an `Idempotency-Key`, after a lost `Create` | `Get` of the key, for the id it holds, only while the winner's receipt has not landed (section 10.2) | nothing |
 | owner loop finish, `POST /cancel`, worker scan | own last read of the key | `Delete` at its revision after the terminal `Update` of `job.<id>` succeeds, only when the key's `id` is that Collection |
 | sweeper | watched cache, then `Get` of the named job | `Delete` at its revision when the job is absent or terminal; an `initializing`, `pending`, or `running` job keeps it |
 
@@ -711,6 +717,8 @@ Where a rule below says "the creator", it holds for both.
 |---|---|---|
 | scheduler, `POST /collections` | watched caches (`cachedLive` plus local reservations) | `Create` (state `initializing`) before `active.<ns>.<svc>`; then `Update` `initializing` → `pending` after winning it; `Delete` at its revision when the active create loses |
 | publisher, each pass | watched cache, then `Get` of `job.<id>` (the release rule, section 7.2) | nothing |
+| `POST /collections` with an `Idempotency-Key` | `Get` of the record `idem.<hash>` names, and of the record an active key names while that receipt has not landed (section 10.2) | nothing |
+| `GET /collections/{id}?wait=` | `Get`, then the watched cache's signal for that id, then one `Get` per state change (section 10.4) | nothing |
 | worker claim | watched cache, then `Get`; the record's `policy` checked against this replica's `pgo.limits` | `Update` `pending`/expired-lease `running` → `running`; `Update` → `failed limit_exceeded` when the snapshot exceeds a local ceiling |
 | worker scan | watched cache, then `Get` | `Update` `initializing` past `createdAt + 1m + skewMargin` → `failed`; `pending` past `claimBy` → `failed`; `running` past `deadline` → `failed`; attempts exhausted → `failed` |
 | owner loop renew | own last revision | `Update` `running` → `running` (new `leaseUntil`) |
@@ -727,6 +735,19 @@ Where a rule below says "the creator", it holds for both.
 | owner loop finish | — | `Put`; `Delete` of its own object when the `completed` `Update` loses |
 | `GET .../profile` | `Get` | — |
 | sweeper | `List`, then `Get` of the job each object's name encodes | `Delete` at expiry; `Delete` of an object older than 10 minutes whose job, read fresh, is absent or terminal without naming it |
+
+`idem.<hash>` in `PROFGATE_JOBS`:
+
+| Path | Reads | Mutates |
+|---|---|---|
+| `POST /collections` with an `Idempotency-Key` | `Get` of the key, before anything is published | `Create` after winning `active.<ns>.<svc>`; `Delete` at the revision its `Get` returned when the record the receipt names is gone |
+| sweeper | the record it is deleting; hourly, `Keys("idem.")` and a `Get` of each name, for the receipts that delete missed | `Delete` right after the record it names is deleted, and `Delete` at its revision for an aged receipt whose record a fresh `Get` finds absent |
+
+No watch is opened on the prefix and no cache holds it:
+a receipt decides whether a Collection is created,
+so every read of one is authoritative and a replica's watch set stays the four of section 5.1.
+The key lives in `PROFGATE_JOBS`, which the account fragment of section 3.3 grants as `$KV.PROFGATE_JOBS.>`,
+so the prefix adds no NATS permission.
 
 `collector.<instance>` in `PROFGATE_JOBS`:
 
@@ -848,6 +869,28 @@ the rule reads the effective policy, never the override, which is what makes tha
 it is what guarantees a long enough retention is *available* under every preset,
 which is a different claim from every effective policy actually using one.
 
+**What `400 limit_exceeded` says in machine form.**
+Validation produces one violation per field it refuses,
+naming the field, the ceiling crossed, and a human-readable detail;
+`GET /pgo` already publishes those as `violations`.
+A refusal carries the same violations as the `details` array of the gateway spec's *Errors* section, one item apiece.
+`field` is the policy field written as a pointer — `schedule.every` becomes `/schedule/every` — and `code` is one of:
+
+| `code` | The value |
+|---|---|
+| `above_maximum` | is above the ceiling the message names |
+| `below_minimum` | is below the floor the message names |
+| `out_of_range` | is outside a range whose two ends are one rule, as `sampling.roundInterval` has |
+| `not_permitted` | is not one of the fixed values the field admits, as `target.versionPolicy` has |
+| `retention_under_interval` | is an `artifact.retention` under its own policy's `schedule.every`, the rule above |
+
+The last one is reported on `/artifact/retention`,
+the field the message asks the writer to raise, with `schedule.every` named in the message beside it.
+`message` keeps the text it writes today — the two values and the configuration key of the ceiling —
+and stays free to change.
+Each `violations` entry of `GET /pgo` carries the same `code` beside its `field`, `ceiling`, and `detail`,
+so a refused write and a Service that quietly stopped being scheduled report in one vocabulary rather than two.
+
 ### 6.4 Stored value
 
 ```json
@@ -923,20 +966,20 @@ for each (ns, svc) with an override in the watched PROFGATE_CONFIG cache:
                        {"retainUntil": slot + every + 24h})
     if err is ErrKeyExists: publisher.Release(); record schedule_slots_total{result="lost"}; continue
     if err is ErrUnavailable: publisher.Release(); log; continue    // no active key can exist yet
-    publish(ns, svc, origin=schedule, claimBy = now + every)   // section "Publishing a Collection"
+    publish(ns, svc, origin=schedule, claimBy = now + every, key="", principal="")   // section "Publishing a Collection"
 ```
 
 **Publishing a Collection.**
 The scheduler and `POST /collections` publish a record through a `publisher`,
 one per process in both kinds of process,
 which holds the reservation counter of the live-Collection ceiling (below)
-and performs the same three writes for both:
+and performs the same writes for both — three, and a fourth for a request that carried a key:
 
 ```text
-publish(ns, svc, origin, claimBy):                          // caller holds one reservation
+publish(ns, svc, origin, claimBy, key, principal):          // caller holds one reservation; key is empty for a schedule
   id := newID()
   rev, err := jobs.Create("job.<id>", record with state = initializing, origin, configRevision,
-                          the policy snapshot, claimBy)
+                          the policy snapshot, snapshotHash, claimBy, key, principal)
   if err is ErrUnavailable: publisher.Track(ns, svc, id); log or 503; return   // indeterminate; resolved later
   if err != nil: publisher.Release(); log or 503; return    // nothing exists yet
   err = jobs.Create("active.<ns>.<svc>", {"id": id, "createdAt": now})
@@ -944,9 +987,20 @@ publish(ns, svc, origin, claimBy):                          // caller holds one 
       derr := jobs.Delete("job.<id>", rev)                  // own record, own revision
       if derr is ErrUnavailable: publisher.Track(ns, svc, id)   // indeterminate: the record may still be initializing
       else: publisher.Release()                             // deleted, or already gone
-      record busy / answer 429 collection_in_progress; return
+      record busy / answer 429 collection_in_progress,
+      or, for a request that carried a key, resolve it as a loser does (section 10.2); return
   publisher.Track(ns, svc, id)                              // released only by the release rule, section "The live-Collection ceiling"
   if err is ErrUnavailable: log or 503; return              // indeterminate: the key may exist; the scan fails the record later
+  if key != "":                                             // the receipt, before the record becomes claimable
+      rerr := jobs.Create("idem.<hash>", {"id": id, "snapshotHash": snapshotHash, "createdAt": now})
+      if rerr is ErrUnavailable: rerr = the same Create, once more   // one retry behind the same generation
+      if rerr is ErrKeyExists:
+          existing := jobs.Get("idem.<hash>")
+          if existing.id == id: rerr = nil                  // the earlier attempt landed
+          else: jobs.Delete("idem.<hash>", existing.revision), then Create again   // a stale receipt
+      if rerr != nil:                                       // withdraw: nothing keyed becomes claimable unbound
+          jobs.Delete("job.<id>", rev); jobs.Delete("active.<ns>.<svc>", the revision Create returned)
+          answer 503 pgo_unavailable; return
   record.state = pending
   _, err = jobs.Update("job.<id>", record, rev)
   if err != nil: log or 503; return                         // the key exists; the release rule resolves the reservation
@@ -954,12 +1008,15 @@ publish(ns, svc, origin, claimBy):                          // caller holds one 
 ```
 
 An `initializing` record is never claimable; the worker ignores it.
+The receipt is written before the record becomes claimable,
+so a Collection a caller can poll is a Collection whose key is already durable.
 The order is what closes the publication race:
 the active key never exists without its job record already existing,
 so a sweeper that reads the job named by an active key finds `initializing` or later, never nothing,
 and keeps the key.
-A creator that dies between the writes leaves either an `initializing` record alone,
-or an `initializing` record plus an active key naming it;
+A creator that dies between the writes leaves an `initializing` record alone,
+that record plus an active key naming it,
+or those two plus the receipt of section 10.2;
 the worker scan fails any `initializing` record on its first pass after `createdAt + 1m + skewMargin`
 once that worker's watched cache holds the record, with reason `not_published`
 (no bound holds while NATS is unavailable or a watch is replaying),
@@ -967,6 +1024,10 @@ and then runs `releaseActive` for it, which deletes the active key only if it na
 A creator whose active create loses deletes its own `initializing` record at the revision it holds;
 if that delete returns `ErrUnavailable` the reservation stays tracked
 and the scan fails the record the same way if it still exists.
+A loser writes no receipt.
+A receipt outlives its record only until the next request carrying that key cleans it,
+or until the sweeper's own pass does (section 8.9),
+so a receipt never names a Collection that does not exist for longer than one of those passes.
 Nothing therefore depends on the sweeper telling "not created yet" from "failed to create".
 
 Two creates decide, and the cache decides nothing:
@@ -1084,7 +1145,9 @@ It answers `429 capacity_exhausted` when the publisher's `Reserve()` refuses (se
 and `429 collection_in_progress` when the active create loses,
 whether the live Collection came from the scheduler or from another request;
 the watched cache is consulted first only to answer without a write when the answer is already known.
-Concurrent requests for one Service therefore yield exactly one `202`.
+Concurrent requests for one Service therefore yield exactly one `202`,
+and concurrent requests carrying one idempotency key yield one `202` and a `200` naming that same Collection
+(section 10.2).
 
 ### 7.4 Slot retention
 
@@ -1190,6 +1253,8 @@ Key `job.<id>` in `PROFGATE_JOBS`:
   "progress": {"round": 1, "rounds": 2, "samplesOK": 5, "samplesFailed": 0},
   "manifest": null,
   "artifact": null,
+  "idempotencyKey": "3f0a1c7e-8b52-4d6a-9f11-2c4e6a8b0d31",
+  "snapshotHash": "9c1e5b0a4d7f2836a0b91c4e6d8f0a2b3c5d7e9f1a2b3c4d5e6f708192a3b4c5",
   "createdBy": "anonymous",
   "createdAt": "2026-08-23T12:03:12Z",
   "startedAt": "2026-08-23T12:03:13Z",
@@ -1215,6 +1280,8 @@ Key `job.<id>` in `PROFGATE_JOBS`:
 | `progress` | the owner's last renewal snapshot; informational |
 | `manifest` | section 9 |
 | `artifact` | `{"object": "<id>-<attempt>.pprof", "bytes": 123456}`; set only by the `completed` update, so it names exactly the object that update committed |
+| `idempotencyKey` | the `Idempotency-Key` the creating request sent; empty for a scheduled Collection and for a request that sent none (section 10.2) |
+| `snapshotHash` | SHA-256, as 64 lowercase hexadecimal characters, of the canonical encoding of `policy`; what an idempotent replay compares (section 10.2) |
 | `expiresAt` | `finishedAt + retention` for `completed` |
 
 The record is the durable source of truth.
@@ -1226,7 +1293,8 @@ A manifest sample at every field's maximum is:
 `result` and `reason` 32 each, `bytes` 20, and JSON keys, quotes, and punctuation at most 120 —
 781 bytes, rounded to 800.
 256 samples are then at most 200 KiB;
-the fixed fields, the policy snapshot, and the manifest's own scalars are under 8 KiB with every name at its limit;
+the fixed fields, the policy snapshot, and the manifest's own scalars are under 8 KiB with every name at its limit,
+the 128-byte idempotency key and the 64-character snapshot hash included;
 the whole record stays under 210 KiB.
 `maxRecordBytes` is a fixed 512 KiB, leaving that arithmetic a margin of more than two:
 the owner loop serializes the record before every `Update`
@@ -1661,10 +1729,11 @@ over the watched `job.*` and `schedule.*` caches and one `artifacts.List`:
 |---|---|---|
 | `completed` and `expiresAt + skewMargin < now` | `artifacts.Delete(artifact.object)` (absent is success), then `state = expired` | `Update` at the cached revision |
 | `completed` and `artifacts.Get(artifact.object)` is `ErrObjectNotFound` | `state = expired` | `Update` at the cached revision |
-| `expired`, `failed`, or `cancelled` and `finishedAt + pgo.jobRetention + skewMargin < now` | delete the record | `Delete` at the cached revision |
+| `expired`, `failed`, or `cancelled` and `finishedAt + pgo.jobRetention + skewMargin < now` | delete the record, then delete `idem.<hash>` when the record carried a key | `Delete` at the cached revision, then `Delete` at the receipt's revision |
 | slot key with `retainUntil + skewMargin < now` | delete the key | `Delete` at its revision |
 | object `<id>-<attempt>.pprof` not named by any `completed` record in the cache, `ModTime + 10m + skewMargin < now` | `jobs.Get("job.<id>")`; delete the object only when the record is absent, or terminal with `artifact.object` naming something else | `Get`, then `artifacts.Delete` |
 | `active.<ns>.<svc>` key | `jobs.Get` of the job it names; delete the key when that job is absent or terminal; `initializing`, `pending`, and `running` keep it | `Get`, then `Delete` at the key's revision |
+| `idem.*` key, on the reconciliation pass below, whose value's `createdAt + pgo.jobRetention + skewMargin` is past | `jobs.Get` of the record it names; delete the receipt only when that record is absent | `Get` of the receipt, `Get` of the record, then `Delete` at the receipt's revision |
 | `collector.*` key whose `writtenAt + 10m + skewMargin` is past | delete, no lookup | `Delete` at the cached revision |
 | `probe.*` key whose `Entry.Created`, or `probe-*` object whose `ModTime`, plus `10m + skewMargin` is past | delete, no lookup | `Delete` |
 
@@ -1675,6 +1744,18 @@ so a record always outlives its artifact:
 an object is unreferenced only when its attempt lost or its record has been deleted,
 and a record is deleted only after its object.
 The 10-minute age lets a slow `Put` finish before its `completed` update names it.
+
+**The receipt reconciliation runs hourly, not every sweep.**
+Receipts are removed by the record-deletion rule above, which knows the record and computes its receipt key from it.
+The reconciliation exists for the receipts that rule did not reach —
+a delete that returned `ErrUnavailable`, or a process that stopped between the two —
+and it is the one condition here with no watched cache behind it:
+no watch is opened on `idem.*` (section 5.3),
+so the pass must `Keys("idem.")` and then `Get` each name to see the `createdAt` its value carries.
+That is a read per receipt in the bucket, which is why it runs on one sweep in sixty rather than on every one.
+A receipt whose record is still there is left alone, and a young one is left alone without a record lookup.
+Nothing depends on the timing: a receipt outliving its record is invisible to every other rule,
+and the next request carrying its key cleans it in passing.
 
 **The cache is a candidate filter, never the authority for a delete.**
 A watched cache has no freshness bound,
@@ -1695,12 +1776,16 @@ Losers observe `ErrRevisionMismatch` and do nothing; the watch delivers the winn
 The sweeper never touches `initializing`, `pending`, or `running` records; the worker's scan does.
 
 **Cost.**
-Every condition is evaluated against the watched caches and one `List` of the artifact bucket;
-the NATS calls a sweep makes are that `List`,
+Every condition but the receipt reconciliation is evaluated against the watched caches
+and one `List` of the artifact bucket;
+the NATS calls an ordinary sweep makes are that `List`,
 one `Get` per orphan candidate and per active key,
 and one `Delete` per matching key or object.
 Orphan candidates are objects whose attempt lost or whose record is gone, a handful at most;
-active keys are at most `publishers × maxLiveCollections` (section 7.2).
+and active keys are at most `publishers × maxLiveCollections` (section 7.2).
+The hourly reconciliation adds one `Keys("idem.")` and one `Get` per receipt in the bucket,
+which is the number of keyed Collections inside `pgo.jobRetention`,
+plus one record `Get` for each receipt already past that retention.
 Per collector replica per minute that is at most one list, one read per Service with a live Collection,
 and the number of records, slot keys, and objects that crossed their threshold in that minute,
 which under steady load is the number of Collections finishing per minute,
@@ -1748,10 +1833,16 @@ All routes are on a gateway replica's API listener, under `/v1`, realm-checked, 
 The collector opens no API listener and serves none of them;
 every route below reads or writes NATS directly, from the gateway process, and reaches no collector.
 The gateway spec's *Request algorithm* applies with these additions:
-step 2 accepts the methods listed per route,
-step 5 evaluates the realm's `pgo` flags after namespace and Service,
-and a new step between readiness and authentication answers `501 pgo_disabled` when `pgo.enabled` is false
+the method step accepts the methods listed per route,
+the realm step evaluates the realm's `pgo` flags after namespace and Service,
+a **JSON media type** step immediately after the method step answers `400 invalid_parameter`
+when a `POST` to a write route declares no JSON media type (*Request media type*),
+and a **PGO availability** step between readiness and credential placement answers,
+in this order,
+`501 pgo_disabled` when `pgo.enabled` is false,
 and `503 pgo_unavailable` when the NATS connection is down.
+The full order every route here runs is the one all four accepted designs state identically:
+route, method, JSON media type, readiness, PGO availability, credential placement, authentication, realm.
 
 | Route | Methods | Realm flag |
 |---|---|---|
@@ -1759,6 +1850,8 @@ and `503 pgo_unavailable` when the NATS connection is down.
 | `/v1/namespaces/{ns}/services/{svc}/pgo` | `PUT`, `DELETE` | `pgo.configure` |
 | `/v1/namespaces/{ns}/services/{svc}/collections` | `GET` | `pgo.read` |
 | `/v1/namespaces/{ns}/services/{svc}/collections` | `POST` | `pgo.collect` |
+| `/v1/namespaces/{ns}/services/{svc}/collections/latest` | `GET` | `pgo.read` |
+| `/v1/namespaces/{ns}/services/{svc}/collections/latest/profile` | `GET` | `pgo.read` |
 | `/v1/collections/{id}` | `GET` | `pgo.read` |
 | `/v1/collections/{id}/profile` | `GET` | `pgo.read` |
 | `/v1/collections/{id}/cancel` | `POST` | `pgo.collect` |
@@ -1768,10 +1861,44 @@ and the realm is evaluated against the record's namespace and Service.
 A record the realm denies, and a record that does not exist, both answer `404 collection_not_found`.
 The identifier is opaque, so this leaks nothing the realm would hide.
 
+`latest` is a path segment under a Service, never an identifier.
+The two routes that carry it name a Service and are realm-checked against it like every other Service-scoped route,
+so the identifier grammar of section 8.1 is untouched
+and `/v1/collections/latest` stays `404 route_unknown`.
+
 Request bodies are JSON, at most 64 KiB, decoded with unknown fields rejected (`400 invalid_parameter`).
+An unknown field carries a `details` item with code `unknown_field` and a pointer to it,
+a body over the limit or one that is not JSON carries `body_malformed`,
+and a body sent to a route that accepts none carries `body_not_allowed`
+(the gateway spec's *Errors* section defines the vocabulary).
+
+**Request media type.**
+A `POST` to `.../collections` or to `/v1/collections/{id}/cancel` must declare `Content-Type: application/json`,
+with or without a body.
+An absent header is `400 invalid_parameter` with a `details` item naming it under `header_required`;
+every other refusal is the same status under `header_malformed`.
+The header is parsed with `mime.ParseMediaType`:
+the essence must be `application/json`, and every parameter it returns is accepted and ignored,
+`charset` among them, so no client is refused over a parameter the route does not read.
+A header that is repeated, that does not parse, or whose essence is anything else is refused.
+
+The check is its own step, immediately after the method step and before readiness:
+before `pgo_disabled`, before the replay barrier, and so before authentication, the realm, and every store call.
+Ordering it there leaks nothing.
+The answer is decided by the request's own headers and by the route grammar the client already holds,
+and it is the same answer for every caller —
+authenticated or not, admitted by a realm or denied,
+on a gateway with collection enabled or disabled, and on one whose caches have not synced.
+What it buys is that a request another origin could have produced dies before anything reads a credential:
+an HTML form can send only `application/x-www-form-urlencoded`, `multipart/form-data`, or `text/plain`,
+and a cross-origin `fetch` that sets the header earns a preflight the gateway answers no CORS header to
+([`ui.md`](ui.md) *Starting and cancelling a Collection*).
+`PUT /pgo` needs no such rule:
+no form can issue a `PUT` at all, and the `fetch` that could is preflighted the same way.
 
 `state` is a closed set for this release:
 the values listed in section 8.2 are exhaustive, and adding one is a spec change.
+The `state=` filter of section 10.3 takes exactly those values and refuses every other.
 `origin` and `reason` are open sets:
 this release enumerates the values in use today and later work can add more,
 so a client that switches on either needs a default arm for a value it does not recognize.
@@ -1832,7 +1959,8 @@ The body is the override, not the effective policy; fields absent from it fall b
 | effective policy violates a ceiling | `400 limit_exceeded` |
 | `pgo.configAPI` is `disabled` | `403 config_api_disabled` |
 
-`If-Match` is a quoted decimal revision; any other form, including `*`, is `400 invalid_parameter`.
+`If-Match` is a quoted decimal revision; any other form, including `*`, is `400 invalid_parameter`,
+with a `details` item naming the header under `header_malformed`.
 
 ```http
 DELETE /v1/namespaces/payment/services/payment-api/pgo
@@ -1892,6 +2020,172 @@ Location: /v1/collections/7h2k9m4p6r8t0v1w3x5y
 {"id": "7h2k9m4p6r8t0v1w3x5y", "state": "pending"}
 ```
 
+**The `Idempotency-Key` header.**
+The create commits before it answers,
+so a caller whose response never arrived holds no identifier for a Collection that may be running.
+A blind retry is answered `429 collection_in_progress`,
+which says neither whether that live Collection is the one this caller created nor what to poll.
+The header closes that:
+
+```http
+POST /v1/namespaces/payment/services/payment-api/collections
+Content-Type: application/json
+Idempotency-Key: 3f0a1c7e-8b52-4d6a-9f11-2c4e6a8b0d31
+```
+
+It is optional.
+When present it is 1 to 128 bytes drawn from `[A-Za-z0-9._-]`,
+the grammar the gateway spec's *Request identifier* section uses;
+anything else — empty, longer, a byte outside the set, or the header sent twice —
+is `400 invalid_parameter` with a `details` item naming it under `header_malformed`.
+A key the gateway cannot read is refused rather than replaced, unlike a request identifier:
+this header decides whether a Collection is created,
+so guessing at it would be guessing at that.
+
+**It is scoped to the principal, the namespace, and the Service.**
+Two principals sending one key are asking for two different things,
+and a key used on one Service says nothing about another.
+The scope decides a lookup and never a message:
+no answer tells a caller that another principal used its key,
+and two principals sending one key each get their own Collection without either learning of the other.
+
+**Where the key is answered from.**
+One key in one scope names one Collection, and that binding is a key of its own in `PROFGATE_JOBS`:
+
+```text
+idem.<first 32 hexadecimal characters of SHA-256(scope)>
+scope = len(principal):principal len(namespace):namespace len(service):service len(key):key
+```
+
+The value is `{"id": ..., "snapshotHash": ..., "createdAt": ...}` and nothing else.
+Each field is written as its byte length, a colon, and its bytes,
+so no value can be read as part of the one beside it
+and a principal carrying any separator character cannot borrow another's scope;
+32 hexadecimal characters are 128 bits, which no caller can collide by choosing keys.
+The key is hashed rather than spelled out because a principal is arbitrary text
+and a NATS subject token is not, and because a bucket key is not the place to publish a caller's name.
+The receipt is what a later request reads.
+The record still carries `idempotencyKey` and `createdBy` (section 8.2) —
+a reader of a record sees what created it — but no lookup scans records for them,
+and the `active.<ns>.<svc>` value carries neither: nothing reads them there.
+The scheduler writes no receipt: a scheduled Collection carries no key, so no replay can match one.
+
+**Every keyed request reads the receipt authoritatively.**
+Behind the replay barrier, the handler issues one `Get` of `idem.<hash>` before it publishes anything.
+A cache miss is never proof of absence:
+no watch is opened on the prefix, nothing indexes it, and the read is the store's answer or `ErrUnavailable`.
+The receipt names an identifier, so the answer costs at most one further `Get` of `job.<id>`:
+
+- **A receipt whose record exists** is a replay when its `snapshotHash` equals this request's,
+  and `409 idempotency_mismatch` when it differs.
+- **A receipt whose record is absent** is stale:
+  the record reached its retention and was deleted before its receipt followed it.
+  The handler deletes the receipt at the revision its own `Get` returned,
+  and then creates as a request with no history does.
+  Losing that `Delete` means another request cleaned it,
+  or a create has already written a newer one, and the handler re-reads once.
+- **No receipt** is a request with no history, which creates.
+
+**A keyed record never becomes claimable without its receipt.**
+The winner's receipt `Create` is the write that releases the Collection:
+the `initializing → pending` update that makes the record claimable follows a receipt the store acknowledged, never precedes it.
+A receipt `Create` that returns `ErrUnavailable` is retried once behind the same generation;
+a `Create` that finds the key already holding this identifier is the earlier attempt having landed, and counts as success.
+When the receipt still has not landed, the winner withdraws:
+it deletes its `initializing` record at the revision it holds, deletes the active key at the revision its `Create` returned,
+and answers `503 pgo_unavailable`, which promises the caller that nothing runs.
+A creator that dies between the active key and the receipt leaves an `initializing` record and an active key that names it;
+the loser's fallback below and the `not_published` scan both read that state as the unfinished create it is,
+and nothing claims it.
+A withdraw that loses its record `Delete` has been overtaken by the scan,
+which failed the record `not_published` first; the winner still deletes the active key and still answers `503`.
+The only records a reader can find without a receipt are therefore an `initializing` one
+and a `failed` one whose reason is `not_published`,
+and neither ever ran: no worker claimed it and no sample was taken.
+Neither answers a replay, and a retry that finds no receipt creates anew,
+which is a first Collection for that key rather than a duplicate.
+No `pending` or later non-terminal record carries a key its receipt does not bind.
+
+**Where the lookup sits in the handler.**
+The handler decodes the body and builds the snapshot it would produce, and reads the receipt next:
+before the ceiling refusal, the token bucket, the collector check, the advisory target resolution,
+and the reservation.
+A replay creates nothing, so none of the bounds those steps hold apply to it.
+Those steps would answer a retry `429 rate_limited`, `429 capacity_exhausted`, or `503 collector_unavailable`,
+withholding an identifier the caller already owns,
+which is the failure this header exists to prevent;
+or `400 limit_exceeded` because a ceiling moved in between,
+refusing a Collection that is already running.
+A ceiling bounds a request that would create something, and a replay would not.
+`409 idempotency_mismatch` is answered from the same place and for the same reason: neither answer writes.
+The snapshot is built before the lookup because the comparison needs it,
+and a violation in it is reported only once the lookup has found no replay to answer with.
+
+**What a replay answers.**
+`200`, with the create acknowledgement the first answer carried —
+`{"id": ..., "state": ...}`, the state read from the record — and the same `Location` header.
+Not `202`: this Collection was accepted earlier, and the answer reports it rather than accepting it again.
+Not the stored record either.
+`POST .../collections` is a `pgo.collect` route and `GET /v1/collections/{id}` is a `pgo.read` one,
+and the two flags are independent ([`ui.md`](ui.md) *Starting and cancelling a Collection*),
+so answering a replay with the full record would hand a collect-only principal the manifest and the placement
+that its realm denies on the route that serves them.
+Principal equality is not authorization.
+A caller that holds `pgo.read` fetches the record by the identifier this answer carries,
+and one that does not gets the identifier, which is what it came back for.
+
+**What is not a replay.**
+
+- The same key with a request that means something else is `409 idempotency_mismatch`, and nothing is written.
+  "Something else" is the canonical effective-policy snapshot:
+  the handler encodes the snapshot this body would produce in the canonical form of *Record*,
+  hashes it, and compares that hash with the receipt's `snapshotHash`.
+  Bytes, whitespace, and field order in the request therefore decide nothing,
+  and identical JSON can still mismatch:
+  a retry sent after the Service's stored override changed, or after the operator defaults moved under it,
+  produces a different effective policy and so a different hash.
+  That is the right answer rather than an unlucky one:
+  the key would otherwise stand for two Collections that differ.
+- A different key while a live Collection holds the Service is `429 collection_in_progress`, exactly as today.
+- No key at all is today's behavior, unchanged.
+
+**The conditional write is the one that was already there.**
+The `Create` of `active.<ns>.<svc>` (section 5.2) still decides which of two creators publishes;
+this contract adds one key and no lease, no lock, and no second decision.
+The winner writes the receipt immediately after winning and before its record becomes claimable
+(section 7.2), so the binding is durable before anything can act on the Collection.
+A receipt `Create` that finds the key already there is looking at one the winner's own read did not see,
+which only a stale receipt can be:
+the winner deletes it at the revision it reads and writes its own.
+
+**How a loser resolves.**
+The loser deletes its own `initializing` record at the revision it holds, as section 7.2 already has it,
+and reads `idem.<hash>` again.
+A receipt is the answer, under the rules above.
+No receipt means the winner has not written one yet —
+it holds the active key and its record is not yet claimable —
+or will never write one, because it carried a different key or none.
+The loser therefore reads the active key it lost to and the record that key names, once each,
+and answers `429 collection_in_progress` with `Retry-After: 1` whatever that record carries:
+an `initializing` record is a create still deciding whether it will be released or withdrawn,
+and an identifier handed out from it could name a Collection the winner deletes a moment later.
+The caller's retry, one second on, finds the receipt and is answered from it,
+or finds nothing and creates, because the winner withdrew.
+Those two reads cover the publication window and nothing else, and they never answer `200`.
+Every later retry — a new request, seconds or hours afterwards, on any replica — reads the receipt,
+which outlives the active key and depends on no cache.
+That is what makes the promise below hold where reading the active key alone could not:
+a winner that becomes terminal and deletes its active key takes nothing with it.
+
+**What the guarantee is.**
+A retry carries the key of a create whose answer was lost,
+and it is answered with that Collection's identifier for as long as the record exists.
+The receipt is deleted after the record it names, by the sweeper (section 8.9),
+so there is no moment at which the record is present and its key resolves to nothing.
+No watch, no cache, and no replica's replay lag stands between the retry and the answer:
+the read is authoritative on every request.
+What ends the promise is the record's own retention, which is when there is nothing left to name.
+
 ### 10.3 List Collections
 
 ```http
@@ -1908,8 +2202,73 @@ GET /v1/namespaces/payment/services/payment-api/collections
 }
 ```
 
-Newest `createdAt` first, at most 100 entries, no pagination, read from the watched cache.
-Query parameters are `400 invalid_parameter`.
+Read from the watched cache, newest first:
+by `createdAt` descending, and by `id` descending where two records share an instant.
+The identifier is random rather than time-ordered (section 8.1),
+so that second key is what makes the order total;
+without it two records created in the same instant could swap places between two reads,
+and a cursor would skip one or repeat it.
+Each entry is the shape above and gains no field.
+
+The endpoint takes these parameters and no others:
+
+| Parameter | Grammar | Meaning |
+|---|---|---|
+| `state` | one of the states of section 8.2, repeatable | keep records in any of the named states; absent keeps every state |
+| `since` | RFC 3339 timestamp | keep records whose `createdAt` is at or after it |
+| `origin` | `schedule` or `api` | keep records of that origin |
+| `limit` | decimal integer, 1 to 100 | return at most this many entries; absent means 100 |
+| `cursor` | an opaque token a previous response carried | continue after the entry that token names |
+
+`origin` takes the record's own two values rather than prettier ones.
+Every entry serializes the field as `schedule` or `api` (section 8.2),
+and a filter whose vocabulary differed from the field's would trap the client that reads both.
+
+Filters are applied first, then the cursor, then `limit`.
+Parameters are validated in name order, so a query with several faults reports the same one every time.
+A name the table does not hold, a repeated `since`, `origin`, `limit`, or `cursor`, an empty value,
+a `state` outside the closed set, a `since` that is not RFC 3339, a `limit` outside 1 to 100,
+a cursor that does not decode,
+and a cursor whose filters differ from the request's,
+are each `400 invalid_parameter`,
+carrying the `details` item the gateway spec's *Errors* section defines.
+
+**The cursor.**
+A response with more entries to give carries `nextCursor` beside `collections`;
+one that reached the end of the listing omits the field rather than sending it empty.
+The token encodes the `createdAt` and the `id` of the last entry the response carried,
+and the `state`, `since`, and `origin` filters the request that produced it carried.
+It is opaque: a client that parses it reads an encoding this document does not promise.
+
+A page is the entries that sort after that pair, compared by value rather than by position.
+
+**The cursor carries its filters, and a page must repeat them.**
+A cursor is `400 invalid_parameter`, with a `malformed_parameter` item naming `cursor`,
+when it is presented beside a `state`, `since`, or `origin` set other than the one it was minted under.
+The position is a point in one filtered listing.
+Reading it against another would skip records the second listing holds before that point,
+and repeat none of them —
+a silent wrong answer where a refusal costs the client one corrected request.
+`limit` is not part of the token: it bounds a page and not the order.
+
+**What the order promises.**
+For the records present when paging started, `(createdAt, id)` is a total order,
+so a client walking the pages sees each of them once.
+A record created while the client pages carries a fresh `createdAt` and is normally newer than any cursor it holds,
+but two records can share an instant,
+and a random identifier that sorts below the cursor's puts such a record on a page the client has passed.
+The promise is therefore the one the mechanism keeps:
+stable order over the records the listing already held, and no guarantee about records inserted mid-walk.
+Records the sweeper deletes stop appearing,
+and a cursor naming a record that has since been deleted still works,
+because nothing looks that record up — the pair is the position.
+
+This replaces the flat cap of at most 100 entries with nothing behind them.
+For a Service collected hourly that cap was under five days of a `jobRetention` of a week,
+and a client had no way to ask for the rest.
+`limit` still stops at 100:
+a page is built from a cache in memory and returned in one response,
+and a client that wants more asks again with the cursor.
 
 ### 10.4 Get a Collection
 
@@ -1921,6 +2280,100 @@ GET /v1/collections/7h2k9m4p6r8t0v1w3x5y
 It contains no Pod IP;
 the owner instance is a collector Pod name plus a random suffix,
 which a realm that may read PGO state may know.
+
+The endpoint takes one parameter and no others:
+
+| Parameter | Grammar | Meaning |
+|---|---|---|
+| `wait` | a duration, `1s` to `60s` | hold the request open until the record moves, or until the wait ends |
+
+**Long polling.**
+Without `wait` the answer is the record as read, which is what a client on a timer already gets.
+With it the handler registers first and reads second:
+it registers its channel under the record's identifier,
+then issues one authoritative `Get`,
+and answers at once when that record is terminal.
+Registering before the read is what closes the lost-wakeup window —
+a transition that lands between the two is delivered to a channel that already exists,
+where a handler that read first would park until its deadline over a change that had already happened.
+Otherwise it holds the request until the first of these:
+
+- an authoritative read after a pulse shows a `state` other than the one the first read returned:
+  a `pending` that became `running` answers, as does any terminal state;
+- that read finds the record gone,
+  which answers `404 collection_not_found` exactly as a plain `GET` of a deleted record does;
+- `wait` elapses, and the record as last read is the answer;
+- the client disconnects, and nothing is answered (audit `client_gone`);
+- the replica begins draining (below);
+- the connection generation moves, which ends the wait with `503 pgo_unavailable`.
+
+Only a change of `state` ends a wait.
+An owner renews its lease every `leaseTTL / 3` and writes `progress` with it,
+so a wait that answered on any write would answer every twenty seconds with a record that had not moved.
+A client that wants progress reads it from the record each answer carries.
+
+Each of these is `400 invalid_parameter`,
+with a `malformed_parameter` item naming `wait`,
+or, for a repetition, the item the gateway spec's *Errors* section defines:
+a value that is not a duration, one at or below zero, one above `60s`, an empty one, and a repeated `wait`.
+A value above the grammar is refused rather than clamped.
+The route table above states the grammar as `1s` to `60s`,
+and a parameter that silently becomes another value teaches a client that its input was accepted as sent.
+
+**Where the wake-up comes from.**
+The handler subscribes to the `job.*` cache this replica already watches:
+one channel registered under the record's identifier,
+signalled for each entry applied for it, and removed when the request ends.
+No NATS request is issued for a waiting client, no consumer is created, and the seam of section 5.1 gains no method —
+the fan-out is over entries one watch already delivers,
+so a hundred waiting clients cost a hundred channels and no additional traffic to the store.
+**A pulse is a hint and never the answer.**
+Every pulse is followed by one authoritative `Get`, and the handler decides from that read alone,
+never from what the pulse carried and never from the cached entry.
+A pulse therefore needs no payload, and coalescing costs nothing:
+a channel whose buffer is full drops the pulse rather than blocking `apply`,
+and the next pulse — or the wait's own deadline — brings the handler back to a read
+that sees whatever the bucket holds by then, including a terminal state two writes arrived for at once.
+The one thing a dropped pulse can cost is latency inside the wait, never a wrong answer.
+
+**The generation is a channel too.**
+A connection-generation change is broadcast on a channel of its own,
+which the handler selects on beside the drain signal and the request's own cancellation.
+The seam of section 5.1 exposes `Generation()` as a value, which a parked handler cannot read again on its own;
+without the broadcast a wait would sit out an entire outage and answer from a view the store had moved past.
+The broadcast carries no state: it ends the wait with `503 pgo_unavailable`, below.
+
+**The response.**
+Identical to the plain `GET` — the same statuses and the same record,
+with `404 collection_not_found` for a record the store lacks or the realm denies — plus one header:
+
+```http
+X-Wait-Elapsed: 12.480
+```
+
+Decimal seconds with millisecond precision,
+on every answer to a request that carried a `wait` the gateway accepted, `0.000` included.
+A client can tell a wait that ran from one that never started without timing the request itself.
+
+**A wait holds nothing.**
+It takes no admission slot: it fetches no profile, merges nothing, and reaches no Pod.
+What it holds is one parked goroutine, one registered channel, and its own connection,
+for at most the minute the ceiling allows.
+That ceiling is the bound: no client parks a connection here for longer,
+and every wait ends on its own without a second request.
+
+**Draining ends a wait.**
+When the replica begins draining — the moment `/readyz` turns 503, before `server.drainDelay` —
+every waiting request answers with the record it last read,
+`X-Wait-Elapsed` naming how long it had waited.
+The gateway spec's *Startup and shutdown* section states it from the drain's side:
+a poll that could otherwise outlast the whole drain window ends with the window, so the drain bound does not move.
+
+**A wait that loses the store ends `503 pgo_unavailable`.**
+The record the handler read was what the bucket held,
+but what `wait` promises is that the answer is current when it arrives,
+and a replica whose watches are replaying under a new generation cannot keep that promise.
+The client retries, as it does for every other `pgo_unavailable`.
 
 ### 10.5 Download
 
@@ -1948,7 +2401,77 @@ A download in progress does not protect its object from expiry;
 the sweeper deletes on schedule and the reader sees `artifact_stream_failed`.
 Retention is hours and a download is seconds, so the race is rare and the client retries.
 
-### 10.6 Cancel
+### 10.6 The latest completed Collection
+
+```http
+GET /v1/namespaces/payment/services/payment-api/collections/latest
+```
+
+`200` with the full record of section 8.2,
+written exactly as `GET /v1/collections/{id}` writes it,
+for the newest `completed` Collection of that Service whose artifact is still there.
+`404 collection_not_found` when the Service has none.
+
+```http
+GET /v1/namespaces/payment/services/payment-api/collections/latest/profile
+```
+
+The artifact of that same record, streamed under the rules, the headers, and the table of section 10.5,
+minus the two rows the selection below has already ruled out:
+a record this route answers for is `completed` with its object present.
+
+**Only a `completed` record with its bytes is the latest one.**
+A `running` Collection has no artifact and an `expired` one no longer has its bytes,
+so neither is what a caller asking for the latest wants:
+the endpoint exists to hand a build the newest profile it can actually download.
+A Service whose newest Collection failed answers with the completed one before it when there is one,
+and `404 collection_not_found` when there is not.
+That one `404` covers a Service that has never collected and a Service whose artifacts have all expired,
+because a build has the same thing to do about either.
+
+**Selection walks candidates rather than picking one.**
+A record can be `completed` and its object gone —
+the sweeper deletes on schedule and section 10.5 answers `410 artifact_gone` for exactly that —
+so choosing the newest `completed` entry from the cache and answering with it would hand a build a `410`
+while an older, intact artifact sat behind it.
+Both routes therefore run one selection:
+
+1. take the Service's records from the watched cache,
+   `completed` ones only, newest first under the order of section 10.3;
+2. for each candidate in turn, `Get job.<id>` authoritatively —
+   a cache is a candidate filter here as it is for the sweeper —
+   and drop it when the fresh read shows any state but `completed`;
+3. confirm the object the record names is in the store;
+   when it is absent, flip that record to `expired` with an `Update` at the revision the fresh read returned,
+   the same conditional update `GET /v1/collections/{id}/profile` performs, and continue with the next candidate;
+4. answer from the first candidate that survives all three.
+
+`404 collection_not_found` is the answer when no candidate does.
+`ErrUnavailable` at any point is `503 pgo_unavailable`, not a fall-through to an older Collection:
+a store the gateway cannot read says nothing about which artifact is newest.
+The walk costs one `Get` per candidate it discards, which is the number of artifacts
+that expired since the cache last moved — normally none, and bounded by the page cap of section 10.3.
+`latest` and `latest/profile` share the selection,
+so the record one answers with is the record whose bytes the other streams,
+and neither can answer `410 artifact_gone` while an intact artifact exists.
+
+**Retention is what makes the endpoint useful.**
+For a scheduled Service it answers with the previous interval's profile until the next one completes,
+which holds only while an artifact outlives the interval that produced it.
+That is the effective-policy rule of section 6.3, `artifact.retention` at least `schedule.every`,
+and the shipped defaults sit well inside it: a 24-hour retention against a six-hour interval.
+Without the rule, a Service could collect hourly and retain for a minute,
+and then answer `404` for fifty-nine minutes of every hour —
+the state that rule exists to prevent, now with an endpoint that would have shown it.
+
+**What it saves, and what it does not change.**
+A build that wanted the newest profile listed the Service's Collections, picked the newest `completed` entry,
+and then downloaded it; these two routes are that walk, done by the gateway from the cache it already holds.
+Both are Service-scoped routes, realm-checked on namespace, Service, and `pgo.read` before anything is read,
+so a caller learns nothing it could not have learned from the listing it replaces.
+The audit record names the identifier that answered, so a reader still sees which Collection a build took.
+
+### 10.7 Cancel
 
 ```http
 POST /v1/collections/7h2k9m4p6r8t0v1w3x5y/cancel
@@ -1959,7 +2482,7 @@ POST /v1/collections/7h2k9m4p6r8t0v1w3x5y/cancel
 `409 collection_terminal` when already terminal.
 No body is accepted (`400 invalid_parameter` if one is sent).
 
-### 10.7 Errors
+### 10.8 Errors
 
 Added to the gateway's table; same envelope, same rule that `code` is the contract.
 
@@ -1968,7 +2491,7 @@ Added to the gateway's table; same envelope, same rule that `code` is the contra
 | 400 | `limit_exceeded` |
 | 403 | `config_api_disabled` |
 | 404 | `collection_not_found`, `pgo_override_not_found` |
-| 409 | `version_conflict`, `version_missing`, `collection_not_completed`, `collection_initializing`, `collection_terminal` |
+| 409 | `version_conflict`, `version_missing`, `collection_not_completed`, `collection_initializing`, `collection_terminal`, `idempotency_mismatch` |
 | 410 | `artifact_gone` |
 | 412 | `precondition_failed` |
 | 428 | `precondition_required` |
@@ -1984,15 +2507,34 @@ while `collector_unavailable` means the store is fine and nothing is running Col
 which no retry resolves until an operator or a scheduler brings a collector back.
 It is answered by `POST /collections` alone.
 
+`idempotency_mismatch` is `409` rather than `400` because the request is well formed
+and the conflict is with a Collection that already exists (section 10.2).
+It is answered by `POST /collections` alone, and it carries no `details`:
+the fault is not in one input, it is that this key already stands for something else.
+
+`limit_exceeded` carries a `details` item per violating field, with the vocabulary section 6.3 defines.
+Every other code in this table carries no `details`;
+the rule and the vocabularies belong to the gateway spec's *Errors* section.
+
 `invalid_parameter`, `realm_denied`, `route_unknown`, `method_not_allowed`, `not_ready`,
 `service_not_found`, and `service_selectorless` are reused with their gateway meanings.
 Audit-only codes, never an HTTP status of their own: `cas_contended`, `artifact_stream_failed`, `client_gone`.
 
-### 10.8 Non-disclosure
+### 10.9 Non-disclosure
 
 The gateway spec's *Non-disclosure* section holds.
 Records, manifests, and error bodies name namespaces, Services, Pods, nodes, versions, and gateway Pod names;
 never a Pod IP or pprof port.
+A record also carries the idempotency key its creator sent, which is that caller's own text
+and names nothing of the cluster;
+a realm that may read the record reads it, and reading it grants nothing.
+A key resolves only through the receipt of section 10.2,
+whose name is a hash over the principal that sent it,
+so a reader of one principal's record cannot form another principal's receipt key,
+and a replay is answered from the scope that created the Collection and no other.
+The receipt itself is reachable through no route.
+The `details` of a `limit_exceeded` name policy fields and the ceilings they crossed,
+which are the operator's configuration and the caller's own request rather than cluster state.
 The merged profile is application data and passes through as the interactive profile body does.
 
 ---
@@ -2217,8 +2759,16 @@ and a bucket that fills fails the write as `artifact_store_failed` under `Discar
 Every PGO request emits one record on completion:
 
 ```text
-principal, namespace, service, collection, method, status, code, duration_ms
+requestId, principal, namespace, service, collection, method, status, code, duration_ms
 ```
+
+`requestId` is the gateway spec's *Request identifier*, on this record as on every other request record.
+`wait` is added to the record of a `GET /v1/collections/{id}` that carried a `wait` the gateway accepted,
+carrying the duration the request asked for, which is the only one it can now be,
+the way `explain` is added to a targets record rather than always present.
+A request that carried none writes no `wait`.
+A `latest` request names in `collection` the identifier that answered it,
+so a reader sees which Collection a build took although the request named none.
 
 Every Collection transition emits one record, from whichever process performed the terminal update —
 the collector for every transition its worker, owner loop, or sweeper makes,
@@ -2264,8 +2814,17 @@ and the client library reconnects on its own.
 `profgate_requests_total` gains `endpoint` values
 `pgo_policy`, `collections`, `collection`, `collection_profile`, `collection_cancel`,
 with `profile` fixed to `cpu` for the last three and `none` otherwise,
-and `code` gains the values of section 10.7 including the audit-only ones.
+and `code` gains the values of section 10.8 including the audit-only ones.
+The two `latest` routes are counted under `collection` and `collection_profile`:
+they answer those two shapes and differ only in how the record was chosen,
+and a label per route would split a series to record a path the audit line already names.
 No namespace, Service, or Collection identifier becomes a label.
+No parameter becomes one either, `wait` least of all.
+A long poll's duration lands in `profgate_request_duration_seconds`,
+whose only label is `profile` and which the Collection routes fix to `cpu`,
+so a minute spent waiting is indistinguishable there from a minute spent fetching a CPU profile.
+An operator reading that histogram is reading `wait` in it,
+and the alternative is the label per request parameter the gateway spec's *Metrics* section refuses.
 `profgate_collections_total` is emitted by whichever process wrote the terminal update,
 so its `cancelled` and `expired` counts come from gateway replicas and the rest from the collector.
 `profgate_collection_samples_total`, `profgate_collection_duration_seconds`, `profgate_schedule_slots_total`,
@@ -2641,6 +3200,35 @@ one server per subtest.
   an active key whose job is terminal, and one whose job is absent, are deleted; one whose job is `running` is kept;
   a probe key created a minute ago by `Entry.Created` is kept and one created eleven minutes ago is deleted,
   and the same for a probe object by `ModTime`.
+- `internal/pgo` caches:
+  a per-record subscription receives a pulse for every entry applied for that record,
+  is registered before the handler's first read and removed when its request ends,
+  and a subscriber that never reads blocks no `apply`, proven by a second subscriber that still receives;
+  a subscriber whose buffer is full has its pulse dropped rather than `apply` blocked,
+  and the next entry applied for the record pulses it again;
+  no cache indexes an idempotency key, asserted by a scan of the package's cache types,
+  because every read of one is authoritative;
+  a connection-generation change broadcasts on the channel a parked handler selects on,
+  reaching every subscriber once.
+- `internal/pgo` idempotency receipts, over the in-process server:
+  the receipt key is `idem.` followed by 32 hexadecimal characters,
+  the head of the SHA-256 of the four length-prefixed scope fields;
+  two scopes that differ only in where a `|` falls inside a principal produce different keys;
+  a keyed publication writes the receipt after winning `active.<ns>.<svc>` and before the `pending` update,
+  proven by a barrier between the two that finds the receipt already in the bucket;
+  a publication killed after its record and before its receipt leaves a record no key resolves;
+  a publication whose receipt `Create` returns `ErrUnavailable` retries once,
+  and one that fails twice withdraws — its record and its active key are gone and the answer is `503 pgo_unavailable`;
+  a same-key loser that finds no receipt and an `initializing` record answers `429 collection_in_progress` with `Retry-After: 1`
+  and never `200`, with a barrier proving the winner can still withdraw at that moment;
+  a keyed record the scan failed `not_published` answers no replay, and a retry with its key creates anew;
+  a scheduled publication writes no receipt;
+  a keyed publication whose active create loses writes none either;
+  the sweeper deletes the record before its receipt and never the other way round,
+  and a receipt left behind by a record deletion that did not reach it is deleted by the reconciliation pass
+  once its value's `createdAt + jobRetention + skewMargin` has passed,
+  while a receipt whose record is still there, and a receipt younger than that, both survive it;
+  the reconciliation runs on one sweep in sixty and reads no `idem.*` key on the other fifty-nine.
 - `internal/httpapi`:
   a table over every PGO route × method × realm flag × state → status and code, including `501` with `pgo.enabled` false
   and `503` with a fake `Client` whose `Connected()` reports false or with the replay barrier not yet cleared
@@ -2670,7 +3258,109 @@ one server per subtest.
   a replica behind the replay barrier answers the latter for every state-touching route,
   never the former, whatever its `collector.*` cache holds;
   `profgate_pgo_collector_available` reads `0` and `1` across those cases;
-  body size and unknown-field rejection;
+  body size and unknown-field rejection, each carrying its `details` item;
+  the media type of section 10:
+  a `POST` to `.../collections` and to `.../cancel` is `400 invalid_parameter` under four headers —
+  none at all, `text/plain`, `application/x-www-form-urlencoded`, and `multipart/form-data` —
+  each naming the header under `header_required` or `header_malformed`,
+  while `application/json`, `application/json; charset=utf-8`, and `application/json; profile=x` each pass,
+  which is `mime.ParseMediaType` returning parameters the route ignores;
+  a repeated `Content-Type` and one that does not parse are refused under `header_malformed`;
+  that refusal is the answer with `pgo.enabled` false, with the replay barrier not yet cleared,
+  with the caches unsynced so readiness would have refused, with no credential under `basic`,
+  and for a realm-denied Service,
+  and the fake store records no call in any of the four,
+  which is the ordering claim stated as a test;
+  `PUT /pgo` without a `Content-Type` is unchanged, because the rule names the two `POST` routes;
+  the `Idempotency-Key` contract of section 10.2:
+  a key of one byte and of 128 bytes is accepted,
+  and an empty one, 129 bytes, a byte outside the set, and the header sent twice are each
+  `400 invalid_parameter` naming it under `header_malformed`, with nothing written;
+  a second `POST` carrying the key of the first answers `200` with `{id, state}` and the same `Location`,
+  the state read from the record rather than fixed at `pending`,
+  and carries no other field, asserted against the encoded body;
+  it answers so for a record that is `initializing`, one that is `running`,
+  and one that is terminal with its active key already deleted;
+  a principal holding `pgo.collect` and not `pgo.read` receives that same `200`
+  while `GET /v1/collections/{id}` for the identifier it names is `404 collection_not_found`,
+  which is the disclosure the thin answer exists to prevent;
+  a replay whose principal's realm no longer admits the Service is `403 realm_denied` at the realm step,
+  before the receipt is read;
+  the same key from another principal and the same key on another Service each publish a new Collection,
+  and the two receipts are distinct keys in the bucket;
+  the same key with a body whose snapshot hash differs is `409 idempotency_mismatch` with nothing written,
+  including the case where the body is identical and the Service's stored override changed between the two requests,
+  and the case where the operator defaults moved instead;
+  a different key while a Collection is live is `429 collection_in_progress`;
+  two concurrent requests carrying one key, released from a barrier against a frozen cache,
+  yield one `202` and one `200` naming the same identifier,
+  one `job.*` key, one `active.*` key, and one `idem.*` key in the bucket,
+  and no `initializing` record left behind;
+  the same pair, with the winner held at a barrier between its active create and its receipt create,
+  yields one `202` and one `429 collection_in_progress` carrying `Retry-After: 1`,
+  and the loser's retry after the barrier lifts is answered `200` from the receipt;
+  with every `job.*` cache in the replica frozen from the moment the first create returned,
+  a replay still answers `200` with the original identifier,
+  which is the test that fails when the lookup reads a cache instead of the receipt;
+  a replay whose receipt names a record the sweeper has deleted deletes the receipt and publishes,
+  leaving one receipt naming the new Collection;
+  a record written without a receipt is never replayed;
+  a scheduled Collection's record carries no key, writes no receipt, and no replay matches it;
+  the `wait` parameter of section 10.4:
+  an absent `wait` answers as it does today and writes no `wait` audit field;
+  `wait=0`, `wait=-1s`, `wait=abc`, `wait=61s`, `wait=120s`, an empty value, and a repeated `wait` are each
+  `400 invalid_parameter`, carrying the item each earns, and register no subscription;
+  no answer to any of them carries `X-Wait-Elapsed`;
+  a terminal record answers at once with `X-Wait-Elapsed: 0.000`;
+  a record answers at once rather than at the deadline
+  when it moves from `pending` to `running` between the handler's registration and its first read,
+  which is the test that fails when the handler reads before it registers;
+  a `pending` record that becomes `running` answers with the record read after the pulse, not with the cached entry;
+  a subscriber whose pulse buffer is filled before the record is written terminal still answers terminal,
+  because the read and not the pulse decides;
+  a renewal that writes only `progress` does not answer, proven by a wait that outlives two renewals;
+  a record deleted mid-wait answers `404 collection_not_found`;
+  a wait that expires answers the record as last read with an elapsed value at least the duration asked for;
+  a client that disconnects mid-wait is audited `client_gone`,
+  and after the handler returns no subscription remains registered;
+  the generation moving mid-wait answers `503 pgo_unavailable`,
+  driven by the broadcast rather than by a timer,
+  and the test fails when the handler reads `Generation()` once and never learns of the move;
+  the drain signal answers every waiting request at once with the record it last read;
+  fifty concurrent waits on one record are woken by one applied entry,
+  and the fake store records one `Get` per woken request and opens no watch beyond the caches' own;
+  the two `latest` routes of section 10.6:
+  the newest `completed` record answers while a newer `failed`, a newer `running`, and a newer `expired` record exist,
+  and the body equals `GET /v1/collections/{id}` for that identifier;
+  three Services answer `404 collection_not_found`:
+  one with no `completed` record, one with no records at all, and one whose only completed record expired;
+  both routes answer with the completed record behind the newest one
+  when that newest one has lost its object,
+  and that newest record is `expired` in the bucket afterwards —
+  a test that fails when the selection takes the newest cached entry without confirming the object;
+  a Service whose two newest completed records have both lost their objects walks past both;
+  a record the cache shows `completed` and a fresh read shows `expired` is skipped;
+  `ErrUnavailable` during the walk is `503 pgo_unavailable` and never an older Collection;
+  the two routes select the same record for the same fixture, asserted by comparing the identifier
+  `latest` returns with the one `latest/profile` names in `X-Pprof-Collection`;
+  `latest/profile` streams the bytes and the headers the identifier route streams;
+  a denied namespace and a denied Service are `403 realm_denied` before the cache is read;
+  `/v1/collections/latest` stays `404 route_unknown`;
+  the audit record names the identifier that answered;
+  the filters and the cursor of section 10.3:
+  `state=` once and repeated, `since=`, `origin=schedule`, and `origin=api` each filter as specified
+  and intersect when combined;
+  an unknown name, an empty value, `state=running,pending` as one value, `state=nonsense`, `origin=on-demand`,
+  `since=yesterday`, `limit=0`, `limit=101`, `limit=abc`, a repeated `limit`,
+  a cursor that does not decode,
+  and a cursor minted under one `state`, `since`, or `origin` and presented beside another,
+  are each `400 invalid_parameter` with the item they earn;
+  the same cursor presented beside the filters it was minted under, and beside a different `limit`, both work;
+  a query with several faults reports the first fault in name order;
+  250 records including duplicate `createdAt` values page through in three requests with none repeated and none skipped,
+  and the same walk holds when records are inserted at the head and deleted at the tail between pages;
+  a cursor naming a record the sweeper has since deleted still returns the entries after it;
+  the last page carries no `nextCursor` key at all;
   no response, header, or manifest containing a Pod IP or port.
 - `internal/config`:
   every new environment variable lands on its field;
@@ -2709,6 +3399,9 @@ one server per subtest.
   so a build that drove the pass from `Scheduler.tick` fails both halves;
   `config validate` prints the preset name, the resolved ceilings, the collector memory figure,
   and the collector grace period, for a configuration of each preset;
+  `serve` closes the drain signal when `/readyz` turns 503 and before `server.drainDelay`,
+  and a request parked in `wait=` answers at that moment rather than at its own deadline,
+  which is what keeps the drain bound of the gateway spec's *Startup and shutdown* section where it is;
   `SIGTERM` to `collect` stops the loops and stops lease renewal,
   an owner that can finish inside the remaining lease commits,
   one that cannot writes nothing and leaves a reclaimable record,
@@ -2767,6 +3460,13 @@ Scenarios that need a proxy to a test-app Pod to complete declare `needsPodReach
    the downloaded artifact parses,
    the manifest lists six `ok` samples across three distinct Pod UIDs,
    and both gateways return the same record and the same bytes (`needsPodReach`).
+   The create carries an `Idempotency-Key`,
+   and a second `POST` with that key answers `200` with the same identifier rather than starting a second Collection.
+   The scenario waits with `GET /v1/collections/{id}?wait=60s` rather than a poll loop:
+   each call returns when the state moves, carries `X-Wait-Elapsed`,
+   and the walk reaches `completed` inside the scenario's deadline.
+   Once it has, `GET .../collections/latest` answers with that record
+   and `GET .../collections/latest/profile` with the same bytes the identifier route served.
 2. A `PUT /pgo` with `every` equal to `minEvery` and `jitter: 0`
    yields exactly one Collection for the slot;
    the harness watches `PROFGATE_JOBS` directly and counts `schedule.*` and `job.*` keys,
@@ -2833,7 +3533,7 @@ Everything else is already in the gateway's table or the standard library.
 ```text
 internal/natskv/     the NATS seam; sole non-test importer of nats.go; preflight and probes, KV, Objects
 internal/admit/      the admission gate interactive requests pass through
-internal/pgo/        policy layering, presets and ceilings, identifiers, publisher (reservation counter, Run and its pass, and the three publication writes), scheduler, worker scan and owner loop, merge, sweeper, collector heartbeat writer and reader, clock seam
+internal/pgo/        policy layering, presets and ceilings, identifiers, publisher (reservation counter, Run and its pass, and the publication writes: the record, the active key, the idempotency receipt, and the update that makes the record claimable), scheduler, worker scan and owner loop, merge, sweeper, collector heartbeat writer and reader, clock seam
 internal/httpapi/    gains the seven PGO routes and their realm flags
 internal/config/     gains nats, pgo, and realm pgo blocks, and expands pgo.preset into pgo.limits
 internal/metrics/    gains the PGO metrics
@@ -2895,6 +3595,24 @@ nothing depends on it except `httpapi` and `cmd`.
 | an effective policy whose `artifact.retention` is under its `schedule.every` | `400 limit_exceeded` at `PUT /pgo` and `POST /collections`; a stored one makes the Service ineligible for scheduling and appears in `violations`; a claim fails it `limit_exceeded` before reserving a slot |
 | two Collections on one collector, both at `maxParallel` | at most `maxParallel × maxActiveCollections` profile fetches open, in a process that serves no interactive request |
 | several Services selecting one Pod, all collecting | that Pod receives at most `C × maxActiveCollections` PGO fetches at once over `C` overlapping collectors, plus up to `gatewayReplicas × limits.maxConcurrentProfiles` interactive ones; there is no per-Pod exclusion |
+| a retry carrying the `Idempotency-Key` of a create whose answer was lost | `200` with the identifier and state of the Collection that key created, from one authoritative read of `idem.<hash>`, for as long as that record exists; no cache and no replica's replay lag stands in the way |
+| a create that wrote its record and died before its receipt | the record never becomes claimable: the scan fails it `not_published` and releases the active key; a retry in the window is `429 collection_in_progress` with `Retry-After: 1`, and one after it finds no receipt and creates, a first Collection for that key and not a duplicate, because nothing ran |
+| a create whose receipt `Create` fails twice | the winner withdraws: it deletes its `initializing` record and the active key and answers `503 pgo_unavailable`; a retry creates anew |
+| a retry whose receipt names a record the sweeper has already deleted | the receipt is deleted at the revision the read returned and the create proceeds, so the key binds the new Collection |
+| a replay reaching a principal with `pgo.collect` and not `pgo.read` | `200` with `{id, state}` and `Location`; the record itself stays behind `GET /v1/collections/{id}`, which that realm is denied |
+| a replay whose caller's realm no longer admits the Service | `403 realm_denied` at the realm step, before the receipt is read; the key is not a way past a realm |
+| the same `Idempotency-Key` with a request that means something else | `409 idempotency_mismatch`; nothing is written and the first Collection is untouched |
+| a `POST` to a write route with no JSON media type | `400 invalid_parameter` naming `Content-Type`, before authentication, the realm, and every store call |
+| a `wait=` request whose record never moves | it answers at its deadline with the record as last read, `X-Wait-Elapsed` naming how long it waited |
+| a `wait=` request when the NATS connection drops | `503 pgo_unavailable`, the answer every state-touching route gives under a moved generation |
+| a `wait=` request when its replica starts draining | it answers at once with the record it last read; the drain bound does not move |
+| `latest` for a Service whose artifacts have all expired | `404 collection_not_found`, the same answer a Service that never collected gets, because a build does the same thing about either |
+| a listing cursor naming a record the sweeper has deleted | the entries after it are still returned; the cursor is a position, not a lookup |
+| a listing cursor presented with a different `state`, `since`, or `origin` | `400 invalid_parameter` naming `cursor`; a position in one filtered listing is not a position in another |
+| a record created mid-walk that shares an instant with the cursor | it may fall on a page the client has passed; the order is stable for the records the listing held when paging started |
+| `wait` above `60s` | `400 invalid_parameter` naming `wait`; the value is outside the route's grammar and is not clamped to it |
+| `latest` for a Service whose newest completed record lost its object | that record is flipped to `expired` and the walk continues to the next completed one; `410 artifact_gone` is never the answer while an intact artifact exists |
+| a Service whose effective retention is under its interval, asked for `latest` | `404` for the tail of every interval; the rule of section 6.3 refuses that policy at every write, which is what makes the endpoint dependable |
 
 ---
 
@@ -2962,3 +3680,87 @@ Updated with the implementation:
 | `cmd/profgate` | the `collect` subcommand and the `serve` wiring that starts no loops |
 | `test/e2e` | the collector Deployment and scenarios 10 to 12 |
 | `CHANGELOG.md` | the client-visible moves: `pgo.defaults.artifact.retention` from `2h` to `24h`, the new rule that an effective policy's retention covers its interval, `slot_timeout` leaving the sample results, `503 collector_unavailable` joining the `POST /collections` answers, `pgo.limits` keys becoming preset overrides, and the chart's renamed memory value |
+
+A contract a program can build on —
+an `Idempotency-Key` on the create, a `wait=` long poll on the record route,
+the newest completed Collection and its artifact under two routes,
+filters and a cursor on the listing,
+structured details inside `limit_exceeded`,
+and the media type the two write routes require —
+amends the following text.
+The first table lists the edits made in the same change as this block;
+the second lists the documents that describe shipped behavior and are updated when the implementation lands;
+the third names the documents that read these routes and are revised on their own.
+
+Amended now:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *HTTP API* | the two `latest` routes; `latest` as a path segment and never an identifier; the media-type rule and its place in the step this section adds, with the argument that its ordering leaks nothing; the `details` items the body refusals carry; the `state=` filter's vocabulary |
+| `docs/specs/pgo.md` | *Ceilings* | the machine form of `limit_exceeded`: the field as a pointer, the five codes, and the same code beside every `violations` entry |
+| `docs/specs/pgo.md` | *Atomicity primitives*, *Paths that touch each key* | the active key's value carries the idempotency key and the principal, and a loser reads it to replay; rows for the key index and for a waiting request |
+| `docs/specs/pgo.md` | *Algorithm*, *On-demand Collections* | `publish` carries the key and the principal, empty for a schedule; the losing branch replays instead of refusing; concurrent requests under one key yield one `202` and one `200` |
+| `docs/specs/pgo.md` | *Record* | `idempotencyKey`, and the size arithmetic that still holds with it |
+| `docs/specs/pgo.md` | *Create a Collection* | the `Idempotency-Key` contract: grammar, scope, where the key is stored, the lookup through the watched index, the `200` replay of the stored record, `409 idempotency_mismatch`, the conditional write that was already there, and the bound the guarantee carries |
+| `docs/specs/pgo.md` | *List Collections* | the total order and why it needs two keys; `state`, `since`, `origin`, `limit`, and `cursor`; `nextCursor`; and the flat cap they replace |
+| `docs/specs/pgo.md` | *Get a Collection* | `wait=`: what ends a wait, the clamp, `X-Wait-Elapsed`, the subscription over the watch the replica already holds, and what a wait costs |
+| `docs/specs/pgo.md` | *The latest completed Collection* | a new subsection: the two routes, why only a `completed` record is the latest one, and the retention rule that makes the answer dependable |
+| `docs/specs/pgo.md` | *Cancel*, *Errors*, *Non-disclosure* | renumbered to 10.7, 10.8, and 10.9; `409 idempotency_mismatch` and which codes carry `details`; the idempotency key inside a record a realm may read |
+| `docs/specs/pgo.md` | *Logging* | `requestId` on the PGO record, the `wait` field, and a `latest` request naming the identifier that answered it |
+| `docs/specs/pgo.md` | *Metrics* | the `latest` routes counted under `collection` and `collection_profile`; no label for `wait`, and what that costs the duration histogram |
+| `docs/specs/pgo.md` | *Unit*, *End-to-end* | cases for the media type, the key, the wait, the two `latest` routes, the filters and the cursor, the cache's index and subscriptions, and the drain signal; scenario 1 gains the key, the wait, and the latest assertions |
+| `docs/specs/pgo.md` | *Failure Scenarios* | rows for a replay and its bound, a mismatch, a missing media type, the three ways a wait ends, an expired latest, a cursor whose record is gone, and a policy that retains less than it collects |
+| `docs/specs/gateway.md` | *HTTP API*, *Errors*, *Request identifier*, *The OpenAPI document*, *Logging*, *Health*, *Metrics*, *Startup and shutdown* | the gateway half of the same contract, listed in that document's own amendment block |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `docs/api.md` | `Idempotency-Key`, `wait=`, the two `latest` routes, the listing filters and the cursor, the media type the two `POST` routes require, and `409 idempotency_mismatch` |
+| `docs/pgo.md` | fetching the newest profile in one request, and what an idempotent create buys a script that loses its answer |
+| `internal/pgo` | `idempotencyKey` and `snapshotHash` on the record, the `idem.<hash>` receipt its publisher writes, the caches' per-record subscriptions and generation broadcast, and `code` on `Violation` |
+| `internal/httpapi` | the media-type check, the replay lookup, the wait handler, the two `latest` routes, and the listing's filters and cursor |
+| `cmd/profgate` | the drain signal a waiting request selects on |
+| `CHANGELOG.md` | the client-visible additions: the header, the parameter, the two routes, the filters and the cursor, the new `409`, and a `code` on every `violations` entry of `GET /pgo` |
+
+Read these routes and are amended by the block below rather than by this one:
+[`docs/specs/cli.md`](cli.md), [`docs/specs/ui.md`](ui.md),
+and [`.agents/rules/100-project-map.md`](../../.agents/rules/100-project-map.md).
+
+Making an idempotent create durable, and tightening the rest of that contract —
+a receipt key that answers a replay from the store rather than from a watch,
+a thin replay that discloses no more than the create it repeats,
+one request-step order across the accepted designs,
+a `wait=` that cannot lose a wake-up,
+a cursor bound to its filters,
+and a `latest` that confirms the artifact it names —
+amends the following text.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *Atomicity primitives*, *Paths that touch each key* | `idem.<hash>`: its one writer, its four paths, the sweep that removes it after the record, and that no watch or cache holds it; the `active.<ns>.<svc>` value loses the key and the principal, which nothing read |
+| `docs/specs/pgo.md` | *Algorithm* | `publish` writes the receipt after winning the active key and before the record becomes claimable, and carries `snapshotHash` on the record |
+| `docs/specs/pgo.md` | *Record* | `snapshotHash`, the canonical hash a replay compares, and the size arithmetic that still holds with it |
+| `docs/specs/pgo.md` | *Sweeper* | the receipt is deleted after the record it names, with a `Keys("idem.")` pass for what a record deletion missed, and the cost that adds |
+| `docs/specs/pgo.md` | *HTTP API* | the JSON media type is its own step immediately after the method step; `mime.ParseMediaType`, an essence of `application/json`, and every parameter accepted; the step order all four designs state identically |
+| `docs/specs/pgo.md` | *Create a Collection* | the receipt key and value, the authoritative read every keyed request makes, the two indeterminate-write recoveries, the thin `{id, state}` replay and why a full record would disclose what `pgo.collect` alone does not admit, the canonical snapshot hash, how a loser resolves, and a guarantee that runs for the record's whole life |
+| `docs/specs/pgo.md` | *List Collections* | the cursor carries `state`, `since`, and `origin` and is refused beside another set; stable order is promised for the records the listing already held |
+| `docs/specs/pgo.md` | *Get a Collection* | registration before the first read, every pulse a hint followed by an authoritative read, a dropped pulse costing latency and not correctness, the generation broadcast a parked handler selects on, a deleted record answering `404`, and a `wait` above `60s` refused rather than clamped |
+| `docs/specs/pgo.md` | *The latest completed Collection* | both routes walk completed candidates newest first, confirm each record and its object, expire a record whose object is gone, and share one selection |
+| `docs/specs/pgo.md` | *Logging* | the `wait` audit field carries the duration asked for, there being no other |
+| `docs/specs/pgo.md` | *Non-disclosure* | a replay is bounded by the receipt's hashed scope rather than by comparing principals, and the receipt is reachable through no route |
+| `docs/specs/pgo.md` | *Unit*, *Failure Scenarios* | receipt cases in `internal/pgo` and `internal/httpapi`, the wait's lost-wakeup and generation cases, the cursor's filter binding, the latest walk, the collect-only replay; rows for a record written without a receipt, a stale receipt, a thin replay, a refused wait, a mismatched cursor, and a latest whose object is gone |
+| `docs/specs/gateway.md` | *HTTP API*, *Request algorithm*, *Errors*, *Request identifier*, *The OpenAPI document*, *Logging* | the gateway half of the same tightening, listed in that document's own amendment block |
+| `docs/specs/ui.md` | *Starting and cancelling a Collection*, *Required by this revision and not yet made* | a replay answers `{id, state}` rather than the record, and mismatch is on the effective snapshot; the rows this change satisfies leave that table |
+| `docs/specs/cli.md` | *Collections*, *Testing* | `collect` reads the identifier out of a thin replay and polls the record only with `pgo.read`; mismatch is on the effective snapshot |
+| `docs/specs/auth.md` | *Request algorithm* | the composed order gains the JSON media type step between method and readiness |
+| `.agents/rules/100-project-map.md` | *Planned Structure*, *External HTTP API* | `internal/httpapi` embeds the OpenAPI document beside `internal/ui`'s console tree; the route list gains the two `latest` routes and `/v1/openapi.json`, and the console assets move to stable paths |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `docs/api.md` | a replay answering `{id, state}` with `Location`, the cursor's filter binding, a `wait` above `60s` refused, and the artifact `latest` confirms |
+| `internal/pgo` | the receipt writer and reader, the canonical snapshot hash, the sweeper's receipt rules, and the generation broadcast |
+| `internal/httpapi` | the media-type step ahead of readiness, the receipt lookup and the thin replay, the register-then-read wait, the cursor's filters, and the latest walk |
+| `CHANGELOG.md` | the client-visible moves: a replay's body, a `wait` above the grammar refused rather than clamped, and a cursor refused beside filters it was not minted under |
