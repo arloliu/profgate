@@ -178,6 +178,74 @@ Two details worth knowing:
   the kubelet's probe and the metrics scraper reach it by Pod address,
   where a certificate could never be verified.
 
+## Authentication secrets
+
+`auth.mode` (`disabled`, `basic`, or `oidc`) and the two credentialed modes are
+[`specs/auth.md`](specs/auth.md)'s subject and [`configuration.md`](configuration.md#auth)'s field reference;
+this section covers what the chart mounts and what an operator provisions.
+
+Basic mode's inline `auth.basic.users` needs nothing beyond the ConfigMap the gateway already reads.
+A users file, an issuer CA certificate, a browser client secret, or a cookie key each name a Secret data key instead,
+so that material never lands in the ConfigMap:
+
+```yaml
+auth:
+  secret:
+    enabled: true
+    existingSecret: profgate-auth
+    mountPath: /etc/profgate/auth
+  basic:
+    usersFile: users.yaml       # Secret data key, not a path
+  oidc:
+    caKey: issuer-ca.crt
+    browser:
+      clientSecretFile: client-secret
+```
+
+The chart mounts that Secret read-only at `auth.secret.mountPath` with mode 0440
+and derives each file path by joining the mount path with the data key:
+`auth.basic.usersFile`, `auth.oidc.caFile`, and `auth.oidc.browser.clientSecretFile` this way,
+and `auth.oidc.browser.cookieKeyFile` the same way at the fixed key `cookie.key`
+whenever `auth.oidc.browser` is set, because every replica has to share one cookie key file.
+The chart never creates this Secret;
+[`deploy/secret-auth-example.yaml`](../deploy/secret-auth-example.yaml) is a commented manifest with the
+`kubectl create secret generic` command and the `openssl rand -base64 32` line that generates a cookie key.
+Like the TLS certificate and unlike the NATS credentials, it is not optional once `auth.secret.enabled` is
+`true`: a missing Secret holds the Pod at mount time with an event naming it,
+rather than starting a Pod that exits over a file it cannot open.
+
+**oidc mode reaches the issuer.**
+With `auth.mode: oidc`, the gateway makes outbound HTTPS requests to the issuer:
+for discovery, its signing keys, and, with the browser flow, the token endpoint.
+A NetworkPolicy that restricts the gateway's egress needs a rule for it,
+alongside DNS, the Kubernetes API, the application pprof ports, and NATS when `pgo.enabled`;
+`deploy/chart/profgate/values.yaml`'s `networkPolicy` block carries the commented example:
+
+```yaml
+egress:
+  - to:
+      - ipBlock:
+          cidr: <the issuer's IP address or CIDR>/32
+    ports:
+      - protocol: TCP
+        port: 443
+```
+
+**Cookie key rotation is staged.**
+Every replica polls `cookieKeyFile` on its own 30-second cycle,
+so writing a single new key straight over the old one loses a session on any replica that has not re-read yet:
+it keeps sealing with a key another replica has already stopped accepting.
+Rotate in five steps instead, from [`specs/auth.md`](specs/auth.md) *Cookie key*:
+
+1. Write `old,new` — every replica learns to open `new` while still sealing with `old`.
+2. Wait until `profgate_auth_cookie_key_info{fingerprint,role}` on every replica reports both fingerprints.
+3. Write `new,old` — replicas begin sealing with `new`; `old` still opens.
+4. Wait one `sessionTTL` after every replica reports `new` as `role="current"`.
+5. Write `new` alone.
+
+`fingerprint` is the first 8 hex digits of `SHA-256(key)`,
+so the metric confirms propagation without reading key material off any replica.
+
 ## NATS for PGO collection
 
 PGO collection (`pgo.enabled: true`) keeps its control-plane state in three NATS JetStream stores,
@@ -235,9 +303,19 @@ It is deliberately not in the Service — scrape and probe Pods directly.
 
 `/readyz` answers 200 when all of these hold:
 the gateway is not draining, the Kubernetes informer caches have synced,
+with `auth.mode: oidc` issuer discovery and the initial signing-key fetch have succeeded,
 and, with PGO enabled, the NATS preflight has passed.
 A later NATS disconnect does not turn readiness off:
 the replica keeps serving interactive requests and answers the PGO routes 503.
+
+With `auth.mode: oidc`, startup passes through a `[discovering]` state between opening the listeners
+and the Kubernetes preflight:
+both listeners are up and `/healthz` is already 200,
+but `/readyz` stays 503 until discovery and the first key fetch succeed,
+logged as `issuer discovered; starting preflight`.
+A gateway that cannot reach its issuer within `auth.oidc.discoveryTimeout` exits,
+rather than serve `503` to every request while looking otherwise healthy;
+the log line is `issuer discovery failed`.
 
 There is no livenessProbe, by design.
 `/healthz` answers 200 whenever the HTTP server is up and depends on neither Kubernetes nor NATS,
@@ -316,6 +394,13 @@ All metrics are on the ops port at `/metrics`.
 | `profgate_nats_connected` | gauge | | 1 while the NATS connection is up |
 | `profgate_tls_reloads_total` | counter | `result` | Certificate load and reload outcomes, the startup load included |
 | `profgate_tls_certificate_expiry_seconds` | gauge | | When the served certificate expires, as a Unix timestamp |
+| `profgate_auth_failures_total` | counter | `mode`, `reason` | Authentication failures answered `401`, `429`, or `503`; a redirect is not a failure |
+| `profgate_auth_sessions_issued_total` | counter | | Browser sessions minted |
+| `profgate_oidc_jwks_refresh_total` | counter | `result` | Signing key fetches |
+| `profgate_oidc_jwks_keys` | gauge | | Usable signing keys currently held |
+| `profgate_oidc_jwks_age_seconds` | gauge | | Seconds since the last successful key fetch; `NaN` before the first — the alertable form of `keys_stale` |
+| `profgate_auth_file_reload_total` | counter | `file` (`users`/`cookie_key`), `result` | Re-reads of the users file or the cookie key file |
+| `profgate_auth_cookie_key_info` | gauge | `fingerprint`, `role` (`current`/`previous`) | One series per loaded cookie key, always `1` |
 
 ### Audit log
 
@@ -327,6 +412,16 @@ a PGO request carries
 `port` is the client's port selection as sent, a number or a name, empty when absent;
 for a name it is never the number the name resolved to.
 The record names the selected Pod or Collection and never the Pod's IP address.
+
+An authentication failure adds `auth_reason` — one of the reasons in
+[`specs/auth.md`](specs/auth.md#7-audit-and-metrics), such as `bad_credential`, `expired`, or `no_realm` —
+and `principal` is `-`, because no principal was resolved.
+The three `/auth/` routes write their own record, carrying only
+`principal` (the resolved principal on a successful callback, `-` for login and logout),
+`route` (`auth_login`, `auth_callback`, or `auth_logout`), `method`, `status`, `code`, and `duration_ms`,
+with no namespace, Service, or Pod.
+A browser navigation sent to `/auth/login` from `/v1` — no credential, or an expired session — is not counted
+as a failure: it carries `code auth_redirect` and status `302`.
 
 ### Smoke test
 

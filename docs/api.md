@@ -45,10 +45,11 @@ curl -sf -o heap.pprof --cacert ca.crt --resolve "<name>:8080:127.0.0.1" \
   "https://<name>:8080/v1/namespaces/payments/services/checkout/profiles/heap"
 ```
 
-The examples in the rest of this guide stay HTTP;
+The examples in the rest of this guide stay HTTP,
+except where authentication requires TLS;
 on an HTTPS listener this same shape applies to every one of them.
 
-There is no index route and no OpenAPI document; the seven routes are:
+There is no index route and no OpenAPI document; the seven routes under `/v1` are:
 
 | Route | Methods |
 |---|---|
@@ -71,33 +72,40 @@ and its `Allow` header lists what the route accepts.
 ## How a request is processed
 
 A profile request runs this full sequence, and the first failing step answers.
-A targets request runs steps 1 through 7 — parameter validation, the port allowlist, and discovery included —
+A targets request runs steps 1 through 9 — parameter validation, the port allowlist, and discovery included —
 and answers from what discovery found;
 it never reaches single-target selection, admission, confirmation, or the proxy.
-A policy or Collection request runs only steps 1 through 5 and then dispatches to its handler.
+A policy or Collection request runs only steps 1 through 7 and then dispatches to its handler.
 
 1. **Route** — the path must match one of the seven routes (`404 route_unknown`),
    and a profile route must name a known profile (`404 profile_unknown`).
 2. **Method** — `405 method_not_allowed` plus `Allow` otherwise.
-3. **Readiness** — until discovery has synced its caches, everything answers `503 not_ready`.
+3. **Readiness** — until discovery has synced its caches, everything answers `503 not_ready`;
+   under `auth.mode: oidc` the same answer also covers the time before issuer discovery
+   and the initial signing-key fetch have succeeded.
 4. **PGO gate** — a PGO route answers `501 pgo_disabled` when `pgo.enabled` is false,
    and `503 pgo_unavailable` while the NATS stores cannot be decided from.
-5. **Realm** — the request's realm must allow the namespace, Service, profile, and PGO action
+5. **Credential placement** — an `access_token` query parameter is refused with `400 invalid_parameter`,
+   in every authentication mode, before any credential is read.
+6. **Authentication** — the principal and its realm are resolved per `auth.mode`
+   (`401 unauthenticated`, `429 too_many_auth`, `503 auth_unavailable`, or, for a browser navigation, `302`;
+   see [Authentication](#authentication)).
+7. **Realm** — the request's realm must allow the namespace, Service, profile, and PGO action
    (`403 realm_denied`; see [Realms](#realms)).
-6. **Parameters** — query string, request body, and preconditions are validated
+8. **Parameters** — query string, request body, and preconditions are validated
    (`400 invalid_parameter` and friends).
    `port` and `portName` (never both) are checked here too:
    malformed or repeated is `400 invalid_parameter`,
    and a well-formed value a non-empty allowlist excludes is `400 port_not_allowed` —
    both answered before discovery runs.
-7. **Discovery** — the Service is resolved to its Ready Pods
+9. **Discovery** — the Service is resolved to its Ready Pods
    (`404 service_not_found`, `422 service_selectorless`, `503 discovery_unavailable`).
-8. **Select** — filters are applied and one target is chosen
-   (`404 pod_not_found`, `503 no_targets`).
-9. **Admission** — a concurrency slot is taken or the request is refused now (`429 too_many_profiles`).
-10. **Confirm** — the chosen Pod is re-checked against the API server just before dialing
+10. **Select** — filters are applied and one target is chosen
+    (`404 pod_not_found`, `503 no_targets`).
+11. **Admission** — a concurrency slot is taken or the request is refused now (`429 too_many_profiles`).
+12. **Confirm** — the chosen Pod is re-checked against the API server just before dialing
     (`503 target_changed`, which is safe to retry).
-11. **Proxy** — the profile is fetched from the Pod and streamed back.
+13. **Proxy** — the profile is fetched from the Pod and streamed back.
 
 Every response, success or failure, carries `Cache-Control: no-store`.
 Failures use the [error envelope](#errors) described at the end of this guide.
@@ -453,15 +461,84 @@ go build -pgo=merged.pprof ./cmd/yourapp
 (or commit it as `default.pgo` in the main package's directory,
 which `go build -pgo=auto` picks up automatically).
 
+## Authentication
+
+`auth.mode` picks how a request is attributed to a principal: `disabled` (every request is `anonymous`),
+`basic` (an HTTP Basic credential against a static user list), or `oidc` (a bearer JWT from an issuer,
+plus an optional browser login).
+The full design, including the failure reasons the audit log records, is
+[specs/auth.md](specs/auth.md); this section covers what a client sends and gets back.
+A request that fails authentication answers `401 unauthenticated`.
+The `WWW-Authenticate` header names the scheme the mode accepts,
+`Basic realm="profgate"` or `Bearer realm="profgate"`,
+and the body and message are the identical `authentication required` whatever the reason:
+the response never says which check failed.
+
+### `basic` mode
+
+```sh
+curl -u alice -sf -o cpu.pprof \
+  "https://profgate.example/v1/namespaces/payments/services/checkout/profiles/cpu?seconds=30"
+```
+
+`basic` mode requires `server.tls`, because the password crosses the network on every request;
+a gateway configured with `basic` and no server certificate refuses to start
+unless `auth.basic.allowPlaintext: true` is set, the escape hatch for a lab behind a TLS-terminating Ingress,
+and it then logs a warning that passwords cross the network in the clear
+(see [specs/auth.md](specs/auth.md), *Transport*).
+
+`go tool pprof` cannot set a header, but Go's HTTP client turns URL userinfo into a Basic header,
+so a password in the URL still works:
+
+```sh
+go tool pprof "https://alice:PASSWORD@profgate.example/v1/namespaces/payments/services/checkout/profiles/cpu"
+```
+
+That form puts the password in shell history and process listings.
+A browser that receives `401` with `WWW-Authenticate: Basic` shows its own login dialog and retries,
+so `basic` mode needs nothing else to serve one.
+
+### `oidc` mode
+
+A command-line client sends the token as a bearer credential:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/v1/namespaces/payments/services/checkout/profiles/cpu?seconds=30"
+```
+
+`go tool pprof <url>` fetches with `http.Client.Get` and offers no way to add a header,
+so it cannot present a bearer token; use `curl` to save the profile, then open the file.
+
+### The browser flow
+
+With `auth.oidc.browser` configured, a browser navigation under `/v1` that carries no credential
+and no session cookie is answered `302` to `/auth/login?return=<path>` instead of `401`.
+From a user's view: following a gateway link, or opening one directly, lands on the issuer's own login page;
+after signing in, the browser is sent to a same-origin landing page that reads "Signed in"
+and then to the original path, now carrying a session cookie that lasts `sessionTTL` (8 hours by default).
+The three routes exist only when the browser block is configured (`404 route_unknown` otherwise),
+serve `GET` only, and are not under `/v1`:
+
+| Route | What it does |
+|---|---|
+| `GET /auth/login?return=<path>` | starts a login; redirects to the issuer |
+| `GET /auth/callback?code=...&state=...` | completes a login; mints the session cookie |
+| `GET /auth/logout` | clears the session cookie and redirects to the issuer's logout, or to `/` |
+
+Without the browser block, `oidc` mode is bearer-only and a browser gets `401` like any other client.
+There is no command-line client that acquires a token — that is a separate, later tool;
+see [authentication.md](authentication.md) for the issuers this has been run against.
+
 ## Realms
 
 Authorization is a static ACL from the gateway's configuration.
 Each realm lists the namespaces, Services, and profiles it may reach
 (exact strings or `*`; there is no glob or prefix matching)
 plus three PGO flags.
-Authentication currently has one mode, `disabled`,
-under which every request is the `anonymous` principal
-and maps to the realm named by `auth.anonymousRealm`.
+The realm a request is evaluated against comes from authentication (see
+[Authentication](#authentication)): the resolved principal's realm under `basic` or `oidc`,
+or the realm named by `auth.anonymousRealm` while `auth.mode` is `disabled`.
 
 ```yaml
 realms:
@@ -508,13 +585,14 @@ the gateway forwards that status and body verbatim instead of wrapping it.
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `invalid_parameter` | A query parameter, request body, or precondition header is malformed or not accepted here. |
+| 400 | `invalid_parameter` | A query parameter, request body, or precondition header is malformed or not accepted here — including `access_token` as a query parameter, refused in every authentication mode before any credential is read. |
 | 400 | `seconds_exceeds_limit` | The effective duration exceeds `limits.cpuSeconds` or `limits.traceSeconds`. |
 | 400 | `port_not_allowed` | The `port` or `portName` value is outside its configured allowlist; names only the value sent. |
 | 400 | `limit_exceeded` | The effective PGO policy exceeds a `pgo.limits` ceiling; the message names the fields. |
+| 401 | `unauthenticated` | No credential, a wrong or expired one, or one that maps to no realm; see [Authentication](#authentication). `WWW-Authenticate` names the scheme. |
 | 403 | `realm_denied` | The realm does not allow this namespace, Service, profile, or PGO action. |
 | 403 | `config_api_disabled` | `pgo.configAPI` is `disabled`; policy reads still work. |
-| 404 | `route_unknown` | The path is not one of the seven routes (malformed names and identifiers included). |
+| 404 | `route_unknown` | The path is not one of the seven `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
 | 404 | `profile_unknown` | The profile name is not in the profile table. |
 | 404 | `service_not_found` | The Service does not exist in that namespace. |
 | 404 | `pod_not_found` | The pinned Pod is not currently an eligible target. |
@@ -530,6 +608,7 @@ the gateway forwards that status and body verbatim instead of wrapping it.
 | 412 | `precondition_failed` | `If-Match` names a revision the policy has moved past; re-read and retry. |
 | 422 | `service_selectorless` | The Service has no selector, so it has no Pods to profile. |
 | 428 | `precondition_required` | The Service already has an override; the write must send `If-Match`. |
+| 429 | `too_many_auth` | `basic` mode's per-replica bcrypt comparison gate is full; carries `Retry-After: 1`. |
 | 429 | `too_many_profiles` | All `limits.maxConcurrentProfiles` slots are busy; the gateway never queues. |
 | 429 | `rate_limited` | The on-demand Collection token bucket is empty; retry shortly. |
 | 429 | `collection_in_progress` | The Service already has a live Collection. |
@@ -537,7 +616,8 @@ the gateway forwards that status and body verbatim instead of wrapping it.
 | 501 | `pgo_disabled` | `pgo.enabled` is false; the PGO routes are recognized but unavailable on this gateway. |
 | 502 | `upstream_unreachable` | The Pod could not be dialed or reset the connection before headers. |
 | 502 | `upstream_redirect` | The Pod answered with a redirect, which the gateway never follows. |
-| 503 | `not_ready` | Discovery has not synced yet; the gateway is starting up. |
+| 503 | `not_ready` | Discovery has not synced yet, or, under `oidc`, issuer discovery and the initial signing-key fetch have not succeeded yet; the gateway is starting up. |
+| 503 | `auth_unavailable` | The gateway cannot decide: stale signing keys, a failed random read, or an unreachable issuer during a browser login; carries `Retry-After: 5`. |
 | 503 | `discovery_unavailable` | Discovery cannot resolve or confirm right now. |
 | 503 | `no_targets` | The Service has no eligible target (after any `version` filter). |
 | 503 | `target_changed` | The chosen Pod changed between selection and dialing; retry. |

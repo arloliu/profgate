@@ -6,8 +6,10 @@ The Helm chart gets the same effect by default:
 it annotates the Pod template with a checksum of the rendered configuration,
 so a configuration change rolls the Deployment,
 and `configChecksumAnnotation: false` opts out (see [`deployment.md`](deployment.md)).
-The one exception is the TLS certificate pair:
-the files named by `server.tls` are re-read from disk, so rotating a certificate needs no restart.
+Three file-path settings are the exception, re-read from disk without a restart:
+the TLS certificate pair named by `server.tls`,
+and, under `basic` and `oidc` mode, the two files [`auth`](#auth) covers —
+`auth.basic.usersFile` and `auth.oidc.browser.cookieKeyFile`.
 
 A key the schema does not define is rejected at any nesting depth,
 and the process fails at startup naming the file.
@@ -109,16 +111,172 @@ Like every other key, these change only by restart.
 
 ## `auth`
 
-| Key | Environment variable | Default | Constraints |
-|---|---|---|---|
-| `mode` | `PROFGATE_AUTH_MODE` | `disabled` | `disabled` is the only value |
-| `anonymousRealm` | `PROFGATE_ANONYMOUS_REALM` | — | required; must name a key under `realms` |
+`auth.mode` picks how a request is attributed to a principal:
+`disabled` (every request is the anonymous principal),
+`basic` (an HTTP Basic credential against a static user list),
+or `oidc` (a bearer JWT verified against an issuer, with an optional browser login).
+The design behind the two credentialed modes — the request algorithm, the failure reasons,
+the browser flow, and the issuer notes — is [`specs/auth.md`](specs/auth.md);
+this section is the field reference.
 
-`disabled` is the only authentication mode: every request is attributed to the anonymous principal
-and evaluated against the realm `anonymousRealm` names.
+The `Reload` column says which fields a hot configuration reloader could replace without a restart,
+once one ships (there is none yet; see [`specs/gateway.md`](specs/gateway.md) *Non-goals*).
+Only policy — `anonymousRealm`, the basic user set, and the oidc mapping — is `hot`,
+because every request reads one configuration snapshot and a hot reload can change who is admitted
+but never whom the gateway believes.
+Everything that establishes trust — the mode, the issuer, the audience, the CA, the client,
+the key file paths — is `restart`.
+Two files are the exception today, re-read on disk without any reloader:
+`auth.basic.usersFile` and `auth.oidc.browser.cookieKeyFile` are marked `restart (path)`,
+because the path itself is restart-only but a poller re-reads the file it names every 30 seconds
+and swaps its contents when they change (marked `hot` below at the field they populate).
+A read or parse failure — including a users file whose bcrypt cost differs from the inline users' —
+leaves the previous contents in place, logs a warning,
+and counts a `failed` reload in `profgate_auth_file_reload_total{file,result}`.
+
+| Key | Environment variable | Default | Reload | Constraints |
+|---|---|---|---|---|
+| `mode` | `PROFGATE_AUTH_MODE` | `disabled` | restart | `disabled`, `basic`, `oidc` |
+| `anonymousRealm` | `PROFGATE_ANONYMOUS_REALM` | — | hot | required in `disabled`, forbidden otherwise; names an entry in `realms` |
+
+`disabled` mode: every request is the anonymous principal, evaluated against the realm
+`anonymousRealm` names.
 Startup logs a warning that access is controlled only by the network boundary and static realm policy —
 reaching the listener at all is the credential,
 so put a NetworkPolicy or equivalent in front of it.
+
+### `auth.basic`
+
+| Key | Environment variable | Default | Reload | Constraints |
+|---|---|---|---|---|
+| `basic.users` | — | — | hot | inline user list; see below |
+| `basic.usersFile` | `PROFGATE_AUTH_BASIC_USERS_FILE` | — | restart (path) | a readable file of the same shape, merged with `users` |
+| `basic.allowPlaintext` | `PROFGATE_AUTH_BASIC_ALLOW_PLAINTEXT` | `false` | restart | must be `true` to run without `server.tls` |
+| `basic.maxConcurrent` | `PROFGATE_AUTH_BASIC_MAX_CONCURRENT` | `16` | restart | `1` to `1024` |
+
+`Authorization: Basic base64(name ":" password)` per RFC 7617, checked with
+`bcrypt.CompareHashAndPassword` against `passwordHash`.
+Every user in the set — inline and file together — shares one bcrypt cost:
+an unknown name is compared against a dummy hash computed at that cost,
+so the unknown-user path and the wrong-password path cost the same,
+and a set mixing two costs is a validation error naming both.
+`maxConcurrent` bounds how many of those comparisons run at once per replica;
+a request that finds no free slot is `429 too_many_auth` without running one.
+
+A user entry, inline or in the file:
+
+```yaml
+users:
+  - name: alice
+    passwordHash: "$2a$12$..."   # bcrypt; cost 10-14, shared by the whole set
+    realm: developer
+```
+
+| Field | Validation |
+|---|---|
+| `name` | required; 1-256 bytes; no `:` (RFC 7617 excludes it from the user-id); unique across `users` and the file |
+| `passwordHash` | required; a bcrypt hash (`$2a$`, `$2b$`, or `$2y$`) at cost 10-14 |
+| `realm` | required; names an entry in `realms` |
+
+At least one user is required in `basic` mode.
+Only hashes are accepted — a value that does not parse as one is a validation error naming the key,
+never a warning, so a plaintext password never reaches the file.
+
+```console
+$ profgate auth hash
+Password:
+$2a$12$KIXQ6hR8N5Fk3v6r4pB9OuY1z8v6b1XkS3wS4t8kK1qM5nD9pP2Ea
+```
+
+`profgate auth hash` reads a password from the terminal without echo — or one line from stdin when piped —
+and prints its bcrypt hash at cost 12, so an operator never has to find `htpasswd`.
+The password never appears in output; only the hash line does.
+
+### `auth.oidc`
+
+| Key | Environment variable | Default | Reload | Constraints |
+|---|---|---|---|---|
+| `oidc.issuer` | `PROFGATE_AUTH_OIDC_ISSUER` | — | restart | required; `https://` URL |
+| `oidc.audience` | `PROFGATE_AUTH_OIDC_AUDIENCE` | — | restart | required; 1-256 bytes |
+| `oidc.tokenType` | `PROFGATE_AUTH_OIDC_TOKEN_TYPE` | `id` | restart | `id`, `access`; must be `id` when `browser` is set |
+| `oidc.usernameClaim` | `PROFGATE_AUTH_OIDC_USERNAME_CLAIM` | `sub` | restart | 1-64 bytes |
+| `oidc.groupsClaim` | `PROFGATE_AUTH_OIDC_GROUPS_CLAIM` | `groups` | restart | 1-64 bytes |
+| `oidc.caFile` | `PROFGATE_AUTH_OIDC_CA_FILE` | — | restart | a readable PEM file with at least one certificate |
+| `oidc.httpProxy` | `PROFGATE_AUTH_OIDC_HTTP_PROXY` | — | restart | `http://`, `https://`, or `socks5://` URL |
+| `oidc.discoveryTimeout` | `PROFGATE_AUTH_OIDC_DISCOVERY_TIMEOUT` | `30s` | restart | `1s` to `10m` |
+| `oidc.clockSkew` | `PROFGATE_AUTH_OIDC_CLOCK_SKEW` | `30s` | restart | `0s` to `5m` |
+| `oidc.jwksRefresh` | `PROFGATE_AUTH_OIDC_JWKS_REFRESH` | `1h` | restart | `1m` to `24h` |
+| `oidc.jwksRefreshMin` | `PROFGATE_AUTH_OIDC_JWKS_REFRESH_MIN` | `1m` | restart | `1s` to `1h` |
+| `oidc.jwksMaxStale` | `PROFGATE_AUTH_OIDC_JWKS_MAX_STALE` | `24h` | restart | at least `jwksRefresh`, at most `7d` |
+
+At startup the gateway fetches `<issuer>/.well-known/openid-configuration`, requires the document's own
+`issuer` to equal the configured value byte for byte, and fetches the signing keys (JWKS).
+Both retry with backoff for up to `discoveryTimeout`;
+failing that, the process exits — a gateway that cannot reach its issuer cannot authenticate anyone,
+and `/readyz` stays `503` in the meantime.
+The held keys are trusted for `jwksMaxStale` past the last successful fetch;
+past that bound every token is `503 auth_unavailable` (audit reason `keys_stale`) until a fetch succeeds.
+A token naming an unknown `kid` triggers one refresh, at most once per `jwksRefreshMin`.
+`tokenType: id` verifies an ID token against `audience`;
+`tokenType: access` verifies an RFC 9068 access token (`typ: at+jwt`) the same way.
+[`authentication.md`](authentication.md) covers how Keycloak, Dex, Okta, Entra ID, and Google differ on these fields.
+
+### `auth.oidc.mapping`
+
+| Key | Environment variable | Default | Reload | Constraints |
+|---|---|---|---|---|
+| `oidc.mapping.users` | — | — | hot | see below |
+| `oidc.mapping.groups` | — | — | hot | see below |
+| `oidc.mapping.defaultRealm` | `PROFGATE_AUTH_OIDC_DEFAULT_REALM` | — | hot | names an entry in `realms`, when set |
+
+A verified token maps to a realm in this order, stopping at the first match:
+`mapping.users` by the username claim, then `mapping.groups` by the groups claim
+(entries tried in the order written), then `mapping.defaultRealm`.
+No match is `401 unauthenticated` (audit reason `no_realm`); there is no fall-through to `anonymousRealm`.
+At least one of `users`, `groups`, or `defaultRealm` is required, or `oidc` mode could admit nobody.
+
+```yaml
+mapping:
+  users:
+    - name: ci-bot
+      realm: automation
+  groups:
+    - name: platform-admins
+      realm: admin
+  defaultRealm: ""
+```
+
+### `auth.oidc.browser`
+
+| Key | Environment variable | Default | Reload | Constraints |
+|---|---|---|---|---|
+| `browser.clientID` | `PROFGATE_AUTH_OIDC_CLIENT_ID` | — | restart | required; must equal `oidc.audience` |
+| `browser.clientSecretFile` | `PROFGATE_AUTH_OIDC_CLIENT_SECRET_FILE` | — | restart | optional; a readable file, 1-1024 trimmed bytes |
+| `browser.redirectURL` | `PROFGATE_AUTH_OIDC_REDIRECT_URL` | — | restart | required; `https://` URL, no userinfo/query/fragment, path `/auth/callback` |
+| `browser.scopes` | — | `[openid, profile, email]` | restart | must contain `openid`; each 1-64 RFC 6749 scope bytes; unique |
+| `browser.cookieKeyFile` | `PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE` | — | restart (path) | required; see below |
+| `browser.sessionTTL` | `PROFGATE_AUTH_OIDC_SESSION_TTL` | `8h` | restart | `5m` to `24h` |
+| `browser.transactionTTL` | `PROFGATE_AUTH_OIDC_TRANSACTION_TTL` | `5m` | restart | `1m` to `15m` |
+
+Setting `oidc.browser` turns on the three `/auth/` routes and the authorization-code flow with PKCE;
+leaving it unset keeps `oidc` mode bearer-only, and a browser gets `401` like any other client without one.
+It requires `server.tls`, because the session cookie carries `Secure` and a `__Host-` prefix,
+which a plaintext listener cannot set.
+`clientID` must equal `oidc.audience`, because the ID token the flow receives carries the client ID as `aud`
+and is verified against `audience`.
+
+`cookieKeyFile` holds one or two 32-byte keys, base64-encoded, one per line:
+
+```text
+Zm9vYmFyYmF6cXV1eGZvb2JhcmJhenF1dXhmb28=
+b2xkZXItY29va2llLWtleS1nb2VzLW9uLWEtc2Vjb25kLWxpbmU=
+```
+
+The first line seals every new cookie; every line still opens one.
+The file is polled every 30 seconds, the same as the users file;
+a read that fails, or a file with zero or more than two keys, leaves the previous keys in place.
+Rotating straight to a single new key loses sessions on replicas that have not re-read yet —
+[`deployment.md`](deployment.md) walks the staged rotation and the metric that confirms propagation.
 
 ## `nats`
 
@@ -256,7 +414,18 @@ Always, whatever `pgo.enabled` says:
 - Exactly one of `discovery.pprof.port` and `discovery.pprof.portName` is set.
 - Every `discovery.pprof.allowedPortNames` entry is a valid container-port name.
 - `discovery.pprof.allowedPorts` and `discovery.pprof.allowedPortNames` each hold no duplicate entry.
-- `auth.anonymousRealm` must name a key under `realms`.
+- `auth.anonymousRealm` must name a key under `realms`, is required when `auth.mode` is `disabled`,
+  and must not be set otherwise.
+- `auth.basic` is a validation error unless `auth.mode` is `basic`, and `auth.oidc` unless it is `oidc`,
+  so a block that does not apply cannot be mistaken for one that does.
+- In `basic` mode: at least one user; one shared bcrypt cost across `users` and `usersFile`;
+  unique names; every `realm` names an entry in `realms`;
+  `allowPlaintext` must be `true` when `server.tls` is unset.
+- In `oidc` mode: `jwksMaxStale` at least `jwksRefresh`;
+  at least one of `mapping.users`, `mapping.groups`, or `mapping.defaultRealm`;
+  every mapping entry's `realm` names an entry in `realms`.
+- When `auth.oidc.browser` is set: `clientID` equals `oidc.audience`; `tokenType` is `id`;
+  `server.tls` is set; `redirectURL`'s path is `/auth/callback` with no query.
 - `pgo.limits.maxRounds × pgo.limits.maxTargetsPerRound` must be at most `256`.
 - `pgo.jobRetention` must be at least `pgo.limits.maxRetention + 1h`.
 - `pgo.limits.minEvery` must be at most `pgo.limits.maxEvery`.
@@ -306,7 +475,8 @@ On success it prints three deployment figures:
   whichever bound wins.
 - The PGO memory bytes figure from the formula under [`pgo.limits`](#pgolimits).
 
-The other subcommands are `profgate version`, which prints the build version, and
+The other subcommands are `profgate version`, which prints the build version,
+`profgate auth hash`, which prints a bcrypt hash for `auth.basic.users` (see [`auth.basic`](#authbasic)), and
 `profgate serve --config <path>`, which runs the gateway.
 Exit codes: `2` for a usage error or an invalid configuration, `1` for a fatal runtime error,
 `0` for a clean drain after SIGTERM or SIGINT.
@@ -412,3 +582,63 @@ realms:
 Every value under `pgo.limits` and `pgo.defaults` above is the shipped default,
 written out so the file shows the full shape;
 omitting any of them loads the same configuration.
+
+A `basic`-mode configuration, HTTPS required because `allowPlaintext` is unset:
+
+```yaml
+server:
+  tls:
+    certFile: /etc/profgate/tls/tls.crt
+    keyFile: /etc/profgate/tls/tls.key
+auth:
+  mode: basic
+  basic:
+    users:
+      - name: alice
+        passwordHash: "$2a$12$KIXQ6hR8N5Fk3v6r4pB9OuY1z8v6b1XkS3wS4t8kK1qM5nD9pP2Ea"
+        realm: developer
+    usersFile: /etc/profgate/auth/users.yaml
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
+```
+
+An `oidc`-mode configuration with the browser flow,
+mapping a group to a realm and everyone else to a default one:
+
+```yaml
+server:
+  tls:
+    certFile: /etc/profgate/tls/tls.crt
+    keyFile: /etc/profgate/tls/tls.key
+auth:
+  mode: oidc
+  oidc:
+    issuer: https://keycloak.example/realms/engineering
+    audience: profgate
+    usernameClaim: preferred_username
+    mapping:
+      groups:
+        - name: platform-admins
+          realm: admin
+      defaultRealm: developer
+    browser:
+      clientID: profgate
+      redirectURL: https://profgate.example/auth/callback
+      cookieKeyFile: /etc/profgate/auth/cookie.key
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["cpu", "heap", "goroutine"]
+  admin:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
+    pgo:
+      read: true
+      collect: true
+      configure: true
+```

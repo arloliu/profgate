@@ -22,6 +22,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The end-to-end test application now serves pprof on a second listener
   so the two allowlists have a real alternate port and port name to exercise.
 
+- **Two authentication modes.**
+  `auth.mode: basic` checks HTTP Basic credentials against a static, bcrypt-hashed user list;
+  `auth.mode: oidc` verifies a bearer JWT against an OpenID Connect issuer
+  and maps it to a realm by username, by group, or by a default.
+  A credential that fails to resolve to a realm is denied outright —
+  neither mode falls through to `auth.anonymousRealm` —
+  and every authentication failure answers `401 unauthenticated` with a `WWW-Authenticate` header naming the scheme,
+  `429 too_many_auth` when Basic's per-replica bcrypt gate is full,
+  or `503 auth_unavailable` when the gateway cannot decide
+  (stale signing keys, an unreachable issuer, a failed random read).
+  `internal/auth` is the only non-test importer of `github.com/go-jose/go-jose/v4` and `golang.org/x/crypto`.
+
+- **An optional browser login for `oidc` mode.**
+  `auth.oidc.browser` turns a browser navigation with no credential into a redirect to the issuer's login page,
+  instead of `401`, using the authorization-code flow with PKCE,
+  and mints an encrypted, stateless session cookie from the ID token it receives.
+  The three `/auth/login`, `/auth/callback`, and `/auth/logout` routes exist only when it is configured.
+  A session cannot be revoked before it expires; `sessionTTL` (8 hours by default) bounds that exposure.
+  The cookie key rotates across replicas in a staged five-step procedure that never drops a session,
+  and `profgate_auth_cookie_key_info` reports which fingerprints every replica has loaded.
+
+- **`profgate auth hash`.**
+  Reads a password from the terminal without echo and prints its bcrypt hash at cost 12,
+  so an operator never has to find `htpasswd`.
+
+- **Authentication metrics, audit fields, and the authentication Secret.**
+  The ops listener gains `profgate_auth_failures_total`, `profgate_auth_sessions_issued_total`,
+  `profgate_oidc_jwks_refresh_total`, `profgate_oidc_jwks_keys`, `profgate_oidc_jwks_age_seconds`,
+  `profgate_auth_file_reload_total`, and `profgate_auth_cookie_key_info`.
+  The audit log gains `auth_reason` on a failure, and the `/auth/` routes write their own record.
+  The Helm chart mounts a Secret at `auth.secret.mountPath` for the users file, the issuer CA certificate,
+  a browser client secret, and the cookie key, none of which belong in the rendered ConfigMap;
+  [`deploy/secret-auth-example.yaml`](deploy/secret-auth-example.yaml) is a commented manifest for it.
+
 ### Changed
 
 - **The targets endpoint now accepts `port` and `portName`.**
@@ -31,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It now says the gateway connects to application ports the operator permits,
   and that an empty allowlist accepts any port or port name a client names,
   rather than naming one fixed port as the only one reachable.
+- **The request algorithm gained two steps.**
+  Credential placement rejects an `access_token` query parameter before any credential is read,
+  and authentication resolves the principal and its realm; every later step renumbers.
+  `401 unauthenticated` now precedes `403 realm_denied`,
+  so a client can tell "present a credential" from "your credential does not reach this."
 
 ## [0.3.0] - 2026-08-26
 

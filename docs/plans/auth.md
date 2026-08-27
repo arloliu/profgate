@@ -1,6 +1,6 @@
 # Authentication Implementation Plan
 
-**Status:** Approved
+**Status:** In Progress
 
 > **For agentic workers:** implement this plan one task at a time, in order;
 > each task is written test-first and ends with its own validation block and commit.
@@ -227,7 +227,7 @@ so the 63-byte label bound is what keeps the cookie under its size cap.
 `scripts/check-repo.py` gains `check_term_importers`, the shape of `check_auth_importers`:
 `"golang.org/x/term` may appear only under `cmd/profgate/`.
 
-- [ ] **Write the configuration tests**
+- [x] **Write the configuration tests**
 
 `config_test.go` gains a table over `testdata/auth-*.yaml` fixtures, one per row,
 and `users_test.go` covers `LoadUsersFile` and `ValidateBasicUsers` directly.
@@ -287,9 +287,9 @@ The tables restate *`basic` mode*, *Users*, *Transport*, *Discovery*, *Principal
 | unknown keys | `auth.basic.user`; `auth.oidc.browser.clientId` | error names the key (yaml `KnownFields`) |
 | env overrides | every `PROFGATE_AUTH_*` name in the spec's *Configuration* table set on a matching block | the field carries the value |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 The realm loop in `validate` first checks `isDNSLabel(name)` on each key
 and fails with `realms.<name>: not a DNS-1123 label`.
@@ -312,7 +312,7 @@ Error text follows the existing style: the key path, the offending value, the ru
 `check_term_importers` in `scripts/check-repo.py` walks every `.go` file outside `cmd/profgate/`
 and reports any that contains `"golang.org/x/term`; `main()` appends its result like the other importer checks.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/config/
@@ -362,7 +362,7 @@ type CookieKey struct {
     CookieKeys(keys []CookieKey)
 ```
 
-- [ ] **Write the metrics tests**
+- [x] **Write the metrics tests**
 
 `prometheus_test.go` rows, each scraping the registry and asserting the series (*Audit and metrics*):
 
@@ -376,9 +376,9 @@ type CookieKey struct {
 | file reloads | `AuthFileReload("users","failed")`, `AuthFileReload("cookie_key","ok")` | two series with those labels |
 | cookie keys | `CookieKeys([{aaaa,current},{bbbb,previous}])`, then `CookieKeys([{bbbb,current}])` | first scrape has two `profgate_auth_cookie_key_info` series at 1; second has exactly one, `{fingerprint="bbbb",role="current"}` |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `profgate_oidc_jwks_age_seconds` is a `GaugeFunc` over an atomic Unix timestamp set by `JWKSFetched`,
 so the scraped value is the age at scrape time rather than at the last fetch.
@@ -395,7 +395,7 @@ and the *HTTP API integration* task's closed-set row checks that every `auth_rea
 `CookieKeys` calls `Reset()` on the `GaugeVec` and sets each key to 1, so a removed key's series disappears.
 `Noop` and every fake gain the seven methods; a fake that embeds `metrics.Noop` needs nothing.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/metrics/ ./internal/httpapi/ ./internal/pgo/ ./internal/tlscert/ ./cmd/profgate/
@@ -492,7 +492,7 @@ and records `AuthFileReload(file, result)`;
 `Run(ctx)` ticks every 30 seconds and calls `Poll()`.
 A read or `apply` that fails leaves the previous state, logs at warn, and counts `failed`.
 
-- [ ] **Write the core and basic tests**
+- [x] **Write the core and basic tests**
 
 `auth_test.go`: `Disabled` returns `anonymous` and `cfg.Auth.AnonymousRealm`;
 `Challenge` for the three modes;
@@ -538,9 +538,9 @@ Every row asserts the `Failure` status and reason, and the comparer's call count
 | dummy cost | inline users at cost 10 | the dummy hash parses with cost 10 |
 | plaintext hash rejected upstream | — | covered by the *Configuration* task; `NewBasic` trusts a validated config |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 ```bash
 mise exec -- go get golang.org/x/crypto@v0.55.0
@@ -564,7 +564,7 @@ and re-runs `config.ValidateBasicUsers(inline, file, realms)` against the snapsh
 the inline users and realm names it captured from the startup configuration.
 No reloader replaces that snapshot (*Configuration*), so a file user is judged against the same policy on every poll.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go mod tidy && mise exec -- go test -race ./internal/auth/
@@ -670,7 +670,7 @@ func (c *jwksCache) current() *keySet
 func (c *jwksCache) stale() bool
 ```
 
-- [ ] **Write the issuer client and discovery tests**
+- [x] **Write the issuer client and discovery tests**
 
 `issuer_test.go` serves everything from `httptest.NewTLSServer` and hands the client the server's transport as the `RoundTripper` seam
 (or writes the server certificate to a temporary `CAFile`; the CA row does the latter).
@@ -701,7 +701,7 @@ Each row asserts the fetch fails with an error naming the rule (*Issuer client*,
 | no environment proxy | `HTTP_PROXY=http://127.0.0.1:1` in the test's environment, no `HTTPProxy` | the fetch succeeds |
 | configured proxy | `HTTPProxy` naming an `httptest` proxy that records `CONNECT` | the proxy sees one request |
 
-- [ ] **Write the key set tests**
+- [x] **Write the key set tests**
 
 `jwks_test.go` uses a `fakeFetcher` returning a programmable `jose.JSONWebKeySet` or error and counting calls,
 keys generated once per package with `rsa.GenerateKey` (2048 and 1024) and `ecdsa.GenerateKey` (P-256, P-384).
@@ -723,9 +723,9 @@ The clock is a variable the test moves.
 | stale | clock moved `maxStale + 1s` past `fetched` | `stale()` true; after a successful `Refresh` false |
 | fetched recorded | successful `Refresh` | `JWKSFetched(now)` called with the fake clock's value |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 ```bash
 mise exec -- go get github.com/go-jose/go-jose/v4@v4.1.4
@@ -747,7 +747,7 @@ Key usability follows *Signing keys*;
 compatibility between `alg` and a key is a function `compatible(alg string, k jose.JSONWebKey) bool`
 that the next task's verifier reuses.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go mod tidy && mise exec -- go test -race ./internal/auth/
@@ -822,7 +822,7 @@ func (o *OIDC) Authenticate(ctx context.Context, r *http.Request, cfg *config.Co
 The allowed algorithms are a package constant slice
 `[]jose.SignatureAlgorithm{RS256, RS384, RS512, ES256, ES384, ES512, PS256, PS384, PS512}`.
 
-- [ ] **Write the verification tests**
+- [x] **Write the verification tests**
 
 `verify_test.go` mints tokens with the package's test keys through `go-jose`'s signer,
 serves them against a `fakeFetcher` holding the matching public keys
@@ -909,9 +909,9 @@ and calls `Authenticate` with real `http.Request`s:
 | discovery ok, keys fail, retry | discovery answers a valid document, the JWKS handler answers 500; `Discover`; then the JWKS handler answers a usable set; `Discover` again | the first `Discover` errors and publishes nothing: the pointer is nil, a valid bearer is 503 `keys_stale`, and no request reached the token endpoint; the second `Discover` publishes document and keys together, and the same bearer verifies |
 | retry replaces the state | after a successful `Discover`, discovery answers a document with a different `jwks_uri` and keys served only there; `Discover` again | the pointer holds a new `issuerState`; a token under a `kid` only the new URI serves verifies, and the old `jwksCache` is no longer the one `Run` would drive |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `verify`: length check;
 `jose.ParseSignedCompact(token, allowedAlgs)` — the compact parser only,
@@ -949,7 +949,7 @@ and every success replaces the whole value.
 `Run` loads the pointer once (the caller starts it only after `Discover` succeeded) and starts that cache's `Run`,
 returning when ctx ends.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/auth/
@@ -1021,7 +1021,7 @@ func challenge(verifier string) string
 func canonicalReturn(raw string) string
 ```
 
-- [ ] **Write the sealing and wire tests**
+- [x] **Write the sealing and wire tests**
 
 `cookie_test.go` (*Cookie key*, *Wire values and bounds*, *Testing* "Sealing", "Key rotation"):
 
@@ -1066,9 +1066,9 @@ func canonicalReturn(raw string) string
 | path re-escaped | `/v1/a%20b` | `/v1/a%20b` from `EscapedPath` |
 | dot segments | `/v1/../ops`; `/v1/./x` | `/` each |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `seal`: `aes.NewCipher(current)`, `cipher.NewGCM`, `io.ReadFull(rand, nonce[:12])` (an error is `entropy`),
 `gcm.Seal(nil, nonce, plaintext, []byte(name))`, `base64.RawURLEncoding`.
@@ -1088,7 +1088,7 @@ return `u.EscapedPath()` plus `?` plus `u.RawQuery` unchanged when the query is 
 so both parts are judged decoded and both travel escaped, and a `%2F` inside a value stays escaped.
 Anything refused is `/`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/auth/
@@ -1157,7 +1157,7 @@ and `Run` starts the key file poller beside the key refresh timer.
 The poller's `apply` parses the keys, swaps the sealer's pointer,
 and calls `Recorder.CookieKeys` with the fingerprints and roles.
 
-- [ ] **Write the browser flow tests**
+- [x] **Write the browser flow tests**
 
 `browser_test.go` runs the whole `OIDC` against an `httptest` issuer that serves discovery, JWKS,
 an authorization endpoint that records its query and redirects to the callback with a code,
@@ -1175,10 +1175,11 @@ so each hop is asserted.
 | no fetch metadata | no `Sec-Fetch-*` headers | 401 `missing`, no redirect |
 | login sets txn | `GET /auth/login?return=/v1/x` | `302` to `authorization_endpoint` with `response_type=code`, `client_id`, `redirect_uri`, `scope=openid profile email`, `state`, `nonce`, `code_challenge`, `code_challenge_method=S256`; jar holds `__Host-profgate_txn` with `Max-Age=300`; outcome `{302, auth_redirect, "", "-"}` |
 | login vectors | fixed `rand` | `state`, `nonce`, and `code_challenge` equal the known vectors |
-| login bad return | `return=//evil.example` | the sealed return is `/` (asserted after the callback lands on `/`) |
+| login bad return | `return=//evil.example` | the sealed return is `/` (asserted after the callback's landing page names `/`) |
 | login entropy | failing `rand` | `503 auth_unavailable` with `Retry-After: 5`, outcome reason `entropy`; no cookie set |
-| callback ok | login, then `GET /auth/callback?code=c&state=<state>` with the token endpoint answering an ID token with the sealed `nonce` | `302` to `/v1/x`; jar holds exactly `__Host-profgate_session` (`Max-Age=28800`) and no txn cookie; `AuthSessionIssued()`; outcome `{302, ok, "", <principal>}` |
-| callback then request | the session cookie with `Sec-Fetch-Site: none` on `/v1/…` | `Principal{<username>, <realm>}` |
+| callback ok | login, then `GET /auth/callback?code=c&state=<state>` with the token endpoint answering an ID token with the sealed `nonce` | `200 text/html`, no `Location`, `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none'`, a `<meta http-equiv="refresh">` to `/v1/x` and a `Continue` link to it; jar holds exactly `__Host-profgate_session` (`Max-Age=28800`) and no txn cookie; `AuthSessionIssued()`; outcome `{200, ok, "", <principal>}` |
+| callback escapes the return | `return=/v1/x?a=<b>&c="d"` | the refresh URL and the link carry `&lt;`, `&gt;`, `&amp;`, and `&#34;`; the raw characters appear nowhere in the body |
+| callback then request | the session cookie with `Sec-Fetch-Site: same-origin` on `/v1/…`, as the navigation the landing page starts arrives | `Principal{<username>, <realm>}` |
 | token endpoint request | the row above | the endpoint saw `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier` matching `code_challenge`, no `client_secret` |
 | client secret | `clientSecretFile` set | `client_secret` sent as a form field |
 | no txn cookie | callback without a jar | `401`, reason `state`; a deletion of `__Host-profgate_txn` is in the response |
@@ -1213,9 +1214,9 @@ so each hop is asserted.
 | routes before discovery | `GET /auth/login` and `/auth/logout` on an `OIDC` whose `Discover` has not succeeded | `503 not_ready` with the standard envelope; outcome `{503, not_ready, "", "-"}`; no cookie set and no redirect |
 | routes after a failed key fetch | discovery valid, JWKS answering 500, `Discover` failed | the same `503 not_ready`: a validated document alone publishes no endpoint |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `ServeAuth` loads `st := b.state.Load()` once per request and switches on `r.URL.Path`;
 a nil `st` answers `503 not_ready` (outcome code `not_ready`, no reason) before anything else,
@@ -1224,6 +1225,8 @@ Every endpoint below (`authorization_endpoint`, `token_endpoint`, `end_session_e
 `login`: `canonicalReturn(r.URL.Query().Get("return"))`, three `randomValue`s, seal the transaction,
 `setCookie(cookieTxn, …, transactionTTL)`, `302` to the authorization URL built with `url.Values`.
 `callback`: the seven steps of *The `/auth/` routes* in order,
+the success answering the `200` landing page (a browser computes `Sec-Fetch-Site` over the whole redirect chain,
+so a `302` would land the first request `cross-site` and the session rule would refuse it),
 each failure writing the `401` or `503` envelope itself (every `503` with `Retry-After: 5`)
 (the same bytes `httpapi.writeError` produces; `internal/auth` cannot import `httpapi`,
 so the envelope writer moves to a tiny shared helper or is duplicated with a test that diffs the two)
@@ -1237,7 +1240,7 @@ The ID token is verified by the same `verifier` with `tokenType: id` and then `c
 `Sec-Fetch-Site` not `same-origin` or `none` → `csrf`;
 else `Principal{s.Principal, s.Realm}`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/auth/
@@ -1274,7 +1277,7 @@ package httpapi
 (emitted for the `/auth/` routes as `auth_login`, `auth_callback`, `auth_logout`).
 `principalRealm` and `anonymousPrincipal` leave `realm.go`; `auth.Disabled` is where they went.
 
-- [ ] **Write the integration tests**
+- [x] **Write the integration tests**
 
 `auth_test.go` uses the existing `harness` with a `fakeAuth`
 whose `Authenticate` returns a programmed `Principal` or `*auth.Failure` and records the `cfg` pointer it was handed,
@@ -1320,7 +1323,7 @@ Rows restate *Request algorithm*, *Failure responses*, *What is redirected*, *Th
 | auth routes absent | `GET /auth/login` with `AuthRoutes == nil` | 404 `route_unknown` |
 | auth routes method | `POST /auth/login` | 405, `Allow: GET` |
 | auth routes readiness | `ready=false` with `synced=true` | 503 `not_ready`; `ServeAuth` not called |
-| auth routes dispatch | `GET /auth/callback?code=x` with `fakeRoutes` returning `{302, ok, "", "alice"}` | `ServeAuth` called once with the snapshot; audit `route auth_callback`, `principal alice`, `status 302`, `code ok`, no namespace or service keys; `Request(EndpointAuth, "none", "ok", _)` |
+| auth routes dispatch | `GET /auth/callback?code=x` with `fakeRoutes` returning `{200, ok, "", "alice"}` | `ServeAuth` called once with the snapshot; audit `route auth_callback`, `principal alice`, `status 200`, `code ok`, no namespace or service keys; `Request(EndpointAuth, "none", "ok", _)` |
 | auth routes login | `GET /auth/login` with `{302, auth_redirect, "", "-"}` | audit `route auth_login`, `principal "-"`, `status 302`, `code auth_redirect`, no `auth_reason` key; `AuthFailure` not called |
 | auth routes logout | `GET /auth/logout` with `{302, auth_redirect, "", "-"}` | audit `route auth_logout`, `principal "-"`, `status 302`, `code auth_redirect`, no `auth_reason` key |
 | auth routes failure | `{401, unauthenticated, state, "-"}` | audit `auth_reason state`, `principal "-"`; `AuthFailure(mode, state)` |
@@ -1332,9 +1335,9 @@ Rows restate *Request algorithm*, *Failure responses*, *What is redirected*, *Th
 `server_test.go` and `realm_test.go`: replace every use of `principalRealm` with the `Deps.Auth` default;
 the existing rows keep passing, their `synced=false` rows now through the nil-`Ready` default.
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `ServeHTTP`: before `parseRoute`, `strings.HasPrefix(r.URL.Path, "/auth/")` dispatches to `serveAuthRoute`,
 which matches the three exact paths (anything else is `404 route_unknown`),
@@ -1368,7 +1371,7 @@ Then `realm, ok := cfg.Realms[p.Realm]`; `!ok` → `Failure{401, no_realm}` thro
 `q.audit.principal = p.Name`; the realm step and everything after are unchanged.
 `writeAudit` adds `auth_reason` when set and, for `/auth/` records, `route` in place of the namespace and Service keys.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/
@@ -1408,7 +1411,7 @@ func runAuth(args []string, stdin io.Reader, stdout, stderr io.Writer) int
 the serve tests reach an `httptest` issuer through `auth.oidc.caFile` holding the test server's certificate,
 which is the production path.
 
-- [ ] **Write the CLI tests**
+- [x] **Write the CLI tests**
 
 `auth_test.go`:
 
@@ -1420,7 +1423,7 @@ which is the production path.
 | over 72 bytes | 73 bytes | exit 2: bcrypt would truncate |
 | usage | `auth`; `auth other` | exit 2 with the usage line, which now lists `auth hash` |
 
-- [ ] **Write the serve tests**
+- [x] **Write the serve tests**
 
 Rows extend `TestServe` with `gatewayOpts` gaining `authBlock string` (a raw YAML block replacing the disabled one)
 and `writeConfig` writing it.
@@ -1441,9 +1444,9 @@ with `jwksRefreshMin: 1s` and `discoveryTimeout: 3s`.
 | users file polled | `basic` with `usersFile` in a temp directory, `authPoll: 100ms`; the file rewritten after start | the new user is admitted within 5s; the Pod-equivalent (the process) did not restart |
 | cookie key fails startup | `oidc` with the browser block and an unreadable `cookieKeyFile` | `config.Load` already refuses it; the row asserts exit 2 and the key name |
 
-- [ ] **Run the tests and watch them fail to compile**
+- [x] **Run the tests and watch them fail to compile**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 ```bash
 mise exec -- go get golang.org/x/term@v0.45.0
@@ -1471,7 +1474,7 @@ an error logs `issuer discovery failed`, runs `shutdown(drainAll)`, and returns 
 success sets `issuerReady`, logs `issuer discovered`, starts `go o.Run(runCtx)` and the preflight goroutine.
 Under `basic`, `go b.Run(runCtx)` starts at listen time.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go mod tidy && mise exec -- go test -race ./cmd/profgate/
@@ -1493,7 +1496,7 @@ git commit -m "feat(serve): wire auth, discovery, and auth hash"
 The ClusterRole, the ClusterRoleBinding, and the ServiceAccount do not change;
 `TestClusterRoleTuples` and `TestChartClusterRoleMatchesBase` stay green untouched (*Permission boundary*).
 
-- [ ] **Write the manifest tests**
+- [x] **Write the manifest tests**
 
 | Subtest | Assertion |
 |---|---|
@@ -1515,9 +1518,9 @@ The ClusterRole, the ClusterRoleBinding, and the ServiceAccount do not change;
 | notes basic | `renderNotes(t, "--set", "auth.mode=basic", "--set", "auth.secret.enabled=true", …)` | contains the `kubectl create secret generic profgate-auth --from-file=users.yaml` line, the mount path, and `profgate auth hash`; does not contain "Authentication is disabled" or `anonymousRealm` |
 | notes oidc | `renderNotes(t, "--set", "auth.mode=oidc", "--set", "auth.oidc.issuer=https://issuer.example", …)` with and without the browser block | contains the issuer URL; with the browser block also `<redirectURL host>/auth/login`; without it, no `/auth/login`; never "Authentication is disabled" |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement**
+- [x] **Implement**
 
 `secret-auth-example.yaml` is fully commented, like the other two,
 and shows `kubectl create secret generic profgate-auth --from-file=users.yaml --from-file=cookie.key --from-file=issuer-ca.crt --from-file=client-secret`,
@@ -1546,7 +1549,7 @@ names the mount path, and shows `profgate auth hash` as the way to produce a `pa
 and, when the browser block is set, prints the login URL as `https://<redirectURL host>/auth/login`.
 The realm listing that follows stays in every mode.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./deploy/
@@ -1570,12 +1573,12 @@ and the unit of a proof is a scenario, so they are two scenarios that run on eve
 (*Cluster matrix* in the gateway spec).
 Both need a reachable Pod, so a degraded lane skips them.
 
-- [ ] **Register the scenarios**
+- [x] **Register the scenarios**
 
 `registry.go` gains `{Name: "auth-oidc-browser", NeedsPodReach: true}` and `{Name: "auth-basic", NeedsPodReach: true}`;
 `lanes_test.go`'s registry rows follow; `runners()` maps them to `scenarioAuthOIDCBrowser` and `scenarioAuthBasic`.
 
-- [ ] **Write the harness pieces**
+- [x] **Write the harness pieces**
 
 - `loadImage(ctx, image)` generalizes `loadNATSImage` (which becomes a call to it)
   and loads `ghcr.io/dexidp/dex:v2.45.1` in `TestMain`;
@@ -1601,7 +1604,7 @@ Both need a reachable Pod, so a degraded lane skips them.
   and a `DialContext` that maps `gateway:443` to the gateway forward and `dex:5556` to the Dex forward,
   so the browser walk follows real `Location` headers with real hostnames.
 
-- [ ] **Write the scenarios**
+- [x] **Write the scenarios**
 
 `scenarioAuthOIDCBrowser` (*Testing*, end to end):
 
@@ -1612,8 +1615,8 @@ Both need a reachable Pod, so a degraded lane skips them.
 | navigation | the same with `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document` | 302 to `/auth/login?return=…` |
 | login | follow it | 302 to `https://dex:5556/auth?…`; the jar holds `__Host-profgate_txn` |
 | dex | follow to Dex; Dex answers its password form (a 200 with a form, or a 302 to `/auth/local?…` first); `POST` the form with `login=alice@example.com`, `password` | 303 to `/approval?…` or straight to `https://gateway/auth/callback?code=…&state=…` (follow `/approval` when Dex returns it) |
-| callback | follow to the gateway | 302 to the original path and query; the jar holds exactly `__Host-profgate_session` and no txn cookie |
-| profile with session | `GET …/profiles/heap` with the jar and `Sec-Fetch-Site: none` | 200, the body parses as a profile (`profile.Parse`) |
+| callback | follow to the gateway with `Sec-Fetch-Site: cross-site`, as a chain that began at Dex arrives | 200 `text/html` whose body names the original path and query; the jar holds exactly `__Host-profgate_session` and no txn cookie |
+| profile with session | `GET …/profiles/heap` with the jar and `Sec-Fetch-Site: same-origin`, as the navigation the landing page starts arrives | 200, the body parses as a profile (`profile.Parse`) |
 | csrf | the same with `Sec-Fetch-Site: cross-site` | 401 |
 | bearer | `POST https://dex:5556/token` with `grant_type=password`, `client_id=profgate`, `username`, `password`, `scope=openid email` through the Dex forward; take `id_token` | `GET …/profiles/heap` with `Authorization: Bearer` is 200 |
 | query token refused | `…/profiles/heap?access_token=<id_token>` with the bearer header too | 400 `invalid_parameter` |
@@ -1635,13 +1638,13 @@ Both need a reachable Pod, so a degraded lane skips them.
 
 Keycloak is not run here; the next task verifies it by hand.
 
-- [ ] **Run the suite on the current lane**
+- [x] **Run the suite on the current lane**
 
 ```bash
 PROFGATE_E2E_LANE=current mise run test:e2e
 ```
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go vet -tags e2e ./test/e2e/... && mise exec -- go mod tidy
@@ -1664,7 +1667,7 @@ the realm export the run imported, and the spec sentence turned into a fact.
 The export lives in `docs/` because that is where the spec says the issuer notes live,
 and `docs/authentication.md` (the *Documentation* task) links to it.
 
-- [ ] **Build the realm export**
+- [x] **Build the realm export**
 
 `docs/keycloak-realm.json` is a Keycloak realm export (`kc.sh export --realm profgate`) holding:
 realm `profgate`;
@@ -1674,7 +1677,7 @@ a client scope with an audience mapper adding `profgate`,
 and a "Group Membership" mapper on claim `groups` with "Full group path" off;
 groups `engineering` and `payments`; user `alice` (password `secret`) in `engineering`.
 
-- [ ] **Run the checklist**
+- [x] **Run the checklist**
 
 Each line is done when the observed response matches; record the Keycloak version from its admin console.
 
@@ -1690,7 +1693,7 @@ Each line is done when the observed response matches; record the Keycloak versio
 | logout | `/auth/logout` | 302 to Keycloak's `end_session_endpoint` with `post_logout_redirect_uri` and `client_id`; Keycloak returns to `/` |
 | lifetimes | inspect the realm's token settings | ID and access tokens 5 minutes, SSO session 30 minutes idle and 10 hours maximum, as the spec's note says |
 
-- [ ] **Record the result**
+- [x] **Record the result**
 
 Edit the spec's *Issuer notes*:
 the sentence saying Keycloak is verified during implementation becomes
@@ -1698,7 +1701,7 @@ the sentence saying Keycloak is verified during implementation becomes
 and any Keycloak bullet the run proved wrong is corrected in the same edit.
 Nothing else in the spec moves.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/specs/auth.md
@@ -1716,7 +1719,7 @@ git commit -m "docs(spec): record the Keycloak verification"
   `deploy/chart/profgate/README.md` (if the deployment task left anything), `.agents/rules/100-project-map.md`
 - Create: `docs/authentication.md`
 
-- [ ] **Update the guides**
+- [x] **Update the guides**
 
 | File | Change |
 |---|---|
@@ -1729,7 +1732,7 @@ git commit -m "docs(spec): record the Keycloak verification"
 | `.agents/rules/100-project-map.md` | confirm `internal/auth/` and the three `/auth/` routes are already listed (they are); add `docs/authentication.md` nowhere — the map does not list guides |
 | `deploy/chart/profgate/README.md` | the *Values* table rows for the `auth` block |
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/api.md docs/configuration.md docs/deployment.md docs/authentication.md docs/README.md CHANGELOG.md
