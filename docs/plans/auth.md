@@ -1,6 +1,7 @@
 # Authentication Implementation Plan
 
-**Status:** In Progress
+**Status:** Done
+**Outcome:** commit 260bd0f on main; CI passed check and all three e2e lanes once the preflight probe fix df3793b landed.
 
 > **For agentic workers:** implement this plan one task at a time, in order;
 > each task is written test-first and ends with its own validation block and commit.
@@ -1745,13 +1746,13 @@ git commit -m "docs: describe the authentication modes"
 
 ## Finish the plan
 
-- [ ] Confirm the `main` run passed every lane (the existing workflows need no change:
+- [x] Confirm the `main` run passed every lane (the existing workflows need no change:
   `check.yml` covers the new unit tests and `e2e.yml` the lanes).
-- [ ] Decide whether `internal/auth` changes should trigger the end-to-end suite before a PR
+- [x] Decide whether `internal/auth` changes should trigger the end-to-end suite before a PR
   and record the decision in `.agents/rules/500-validation-and-workflow.md` either way.
-- [ ] In the same change: set line 3 of this file to `**Status:** Done` and add line 4
+- [x] In the same change: set line 3 of this file to `**Status:** Done` and add line 4
   `**Outcome:** <tag or commit that shipped authentication>`.
-- [ ] `mise run lint && mise run test && mise run check`;
+- [x] `mise run lint && mise run test && mise run check`;
   `git add docs/plans/auth.md .agents/rules/`; `git commit -m "docs: mark the authentication plan done"`.
 
 ---
