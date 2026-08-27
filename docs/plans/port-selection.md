@@ -1,6 +1,7 @@
 # Client-Selected pprof Port Implementation Plan
 
-**Status:** In Progress
+**Status:** Done
+**Outcome:** commit 337b492 on main; CI passed check and all three e2e lanes.
 
 > **For agentic workers:** implement this plan one task at a time, in order;
 > each task is written test-first and ends with its own validation block and commit.
@@ -662,11 +663,11 @@ git commit -m "docs: describe client-selected pprof ports"
 
 ## Finish the plan
 
-- [ ] Confirm the `main` run passed every lane (the existing workflows need no change:
+- [x] Confirm the `main` run passed every lane (the existing workflows need no change:
   `check.yml` covers the new unit tests and `e2e.yml` the lanes).
-- [ ] In the same change: set line 3 of this file to `**Status:** Done` and add line 4
+- [x] In the same change: set line 3 of this file to `**Status:** Done` and add line 4
   `**Outcome:** <tag or commit that shipped client-selected pprof ports>`.
-- [ ] `mise run lint && mise run test && mise run check`;
+- [x] `mise run lint && mise run test && mise run check`;
   `git add docs/plans/port-selection.md`; `git commit -m "docs: mark the port selection plan done"`.
 
 ---
