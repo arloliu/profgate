@@ -207,7 +207,10 @@ checks the configuration contract above,
 and exercises every operation it will later need with reversible probes, under one 30-second deadline per bucket:
 in each KV bucket, a `Watch` on the key `probe.<instanceID>` is opened first,
 then `Create`, `Update` at the returned revision, `Get`, and `Delete` of that key run in order,
-and the watch must deliver all three revisions — the create, the update, and the delete — before it is closed;
+and the watch must deliver all three revisions — the create, the update, and the delete — before it is closed,
+each awaited in turn before the next write runs,
+because a bucket with a history depth of one drops the previous revision on the next write
+and a watch that has not delivered it yet then never will;
 in the Object Store, `Put`, `Get`, `List` (whose result must contain the probe), and `Delete` of the object `probe-<instanceID>`.
 Opening a bucket only looks the stream up;
 the probes are what turn a missing publish or subscribe permission into a startup failure

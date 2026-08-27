@@ -134,8 +134,13 @@ func (c *client) probeErr(bucket, op string, err error) error {
 }
 
 // probeKV exercises one KV bucket under one probeDeadline: watch first, then
-// create, update, get, and delete of the probe key, and the watch must
-// deliver the create, update, and delete revisions before it is closed.
+// create, update, get, and delete of the probe key, each write awaited on the
+// watch before the next runs.
+// A bucket may keep one revision per key (History: 1), and the server drops
+// the previous revision the moment the next write lands, while the watch's
+// consumer loads asynchronously; writing back-to-back and reading afterwards
+// could therefore find the earlier revisions gone and only the tombstone
+// delivered.
 func (c *client) probeKV(ctx context.Context, bucket string, kv KV, instanceID string) error {
 	key := "probe." + instanceID
 	pctx, cancel := context.WithTimeout(ctx, c.probeDeadline)
@@ -146,14 +151,24 @@ func (c *client) probeKV(ctx context.Context, bucket string, kv KV, instanceID s
 		return c.probeErr(bucket, "watch of "+key, err)
 	}
 
+	// The writes prove publish permissions; the watch delivering each one
+	// proves subscription delivery rather than subscription creation.
 	createRev, err := kv.Create(pctx, key, []byte("profgate preflight probe"))
 	if err != nil {
 		return c.probeErr(bucket, "create of "+key, err)
+	}
+	if !c.awaitRevision(pctx, bucket, key, ch, func(e Entry) bool { return e.Revision == createRev }) {
+		c.cleanupProbeKey(kv, key)
+		return c.probeWatchErr(bucket, key)
 	}
 	updateRev, err := kv.Update(pctx, key, []byte("profgate preflight probe update"), createRev)
 	if err != nil {
 		c.cleanupProbeKey(kv, key)
 		return c.probeErr(bucket, "update of "+key, err)
+	}
+	if !c.awaitRevision(pctx, bucket, key, ch, func(e Entry) bool { return e.Revision == updateRev }) {
+		c.cleanupProbeKey(kv, key)
+		return c.probeWatchErr(bucket, key)
 	}
 	if _, err := kv.Get(pctx, key); err != nil {
 		c.cleanupProbeKey(kv, key)
@@ -163,35 +178,36 @@ func (c *client) probeKV(ctx context.Context, bucket string, kv KV, instanceID s
 		c.cleanupProbeKey(kv, key)
 		return c.probeErr(bucket, "delete of "+key, err)
 	}
+	if !c.awaitRevision(pctx, bucket, key, ch, func(e Entry) bool { return e.Value == nil && e.Revision > updateRev }) {
+		return c.probeWatchErr(bucket, key)
+	}
+	return nil
+}
 
-	// The writes prove publish permissions; the watch delivering them proves
-	// subscription delivery rather than subscription creation.
-	var sawCreate, sawUpdate, sawDelete bool
-	for !sawCreate || !sawUpdate || !sawDelete {
+// awaitRevision reads the probe watch until an entry for key satisfies
+// match, and reports false when pctx ends or the watch closes first.
+// The replay marker and entries of other keys (a leftover probe from a
+// crashed instance replayed before the marker) are skipped.
+func (c *client) awaitRevision(pctx context.Context, bucket, key string, ch <-chan Entry, match func(Entry) bool) bool {
+	for {
 		select {
 		case <-pctx.Done():
-			return c.probeWatchErr(bucket, key)
+			return false
 		case e, ok := <-ch:
 			if !ok {
-				return c.probeWatchErr(bucket, key)
+				return false
 			}
 			if hook := c.testInterceptProbeWatch; hook != nil && hook(bucket, e) {
 				continue
 			}
-			switch {
-			case e.Synced || e.Key != key:
-				// the replay marker, or a leftover probe from a crashed
-				// instance replayed before it; both are ignored
-			case e.Revision == createRev:
-				sawCreate = true
-			case e.Revision == updateRev:
-				sawUpdate = true
-			case e.Value == nil && e.Revision > updateRev:
-				sawDelete = true
+			if e.Synced || e.Key != key {
+				continue
+			}
+			if match(e) {
+				return true
 			}
 		}
 	}
-	return nil
 }
 
 // probeWatchErr names the watch that did not deliver; a connection that

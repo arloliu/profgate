@@ -526,3 +526,41 @@ func TestPublishedSubjects(t *testing.T) {
 		}
 	})
 }
+
+func TestPreflightProbeOrder(t *testing.T) {
+	t.Run("a watch that lags the writes on a history-1 bucket still passes", func(t *testing.T) {
+		f := startServerFixture(t)
+		c := f.connectClient()
+		c.probeDeadline = 2 * time.Second
+		ctx := t.Context()
+
+		// The fixture's buckets keep one revision per key, so the server
+		// drops a revision the moment the next write lands.
+		// Whether the watch's consumer loaded it first is a timing question
+		// that cannot be forced on the server, so the interceptor decides
+		// it the slow way at the point the probe reads: an entry the bucket
+		// no longer holds when the probe reads it is swallowed, the way a
+		// consumer that loaded after the next write never sees it.
+		// A probe that writes back-to-back and reads afterwards then sees
+		// only the tombstone; a probe that awaits each revision before the
+		// next write sees all three.
+		c.testInterceptProbeWatch = func(bucket string, e Entry) bool {
+			if e.Synced || e.Value == nil {
+				return false
+			}
+			gctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+			defer cancel()
+			kv, err := f.js.KeyValue(gctx, bucket)
+			if err != nil {
+				t.Errorf("open %s as admin: %v", bucket, err)
+				return false
+			}
+			head, err := kv.Get(gctx, e.Key)
+			return err != nil || head.Revision() != e.Revision
+		}
+		if err := c.runPreflight(ctx, testInstanceID); err != nil {
+			t.Fatalf("preflight with a watch that lags the writes: %v", err)
+		}
+		assertNoProbeResidue(t, f)
+	})
+}
