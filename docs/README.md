@@ -22,7 +22,8 @@ because what decides whether a document can still be trusted is its lifecycle, n
 | `plans/` | Executable work orders | Living while `Approved` or `In Progress`; frozen history once `Done` |
 | `decisions/` | One decision that is expensive to revisit, per file | Immutable once accepted; superseded rather than edited |
 
-`plans/` holds the gateway, PGO, client-selected pprof port, authentication, and console implementation plans.
+`plans/` holds the gateway, PGO, client-selected pprof port, authentication, and console implementation plans,
+and [`plans/roadmap.md`](plans/roadmap.md), which orders the work that follows them.
 
 Review reports and working notes stay in `tmp/`, which is not tracked.
 They are byproducts of producing the documents above,
