@@ -737,7 +737,7 @@ Steps 8–10 differ by endpoint.
    if `pod` is absent and no target remains → `503 no_targets`;
    otherwise pick `pod`, or one target by `strategy` (`random` when absent).
 10. **Admit** (profile endpoint only).
-   Acquire one of `limits.maxConcurrentProfiles` slots from the shared admission gate (`internal/admit`) without waiting;
+   Acquire one of `limits.maxConcurrentProfiles` slots from the admission gate (`internal/admit`) without waiting;
    none free → `429 too_many_profiles`.
    The slot is held through confirmation and proxying and released when the response completes.
    The overall request budget (section 6.4) starts here.
@@ -1145,12 +1145,17 @@ deployments that need non-disclosure against in-cluster callers must run an enfo
 
 ```text
 profgate serve --config <path>
+profgate collect --config <path>
 profgate config validate --config <path>
 profgate auth hash
 profgate version
 ```
 
 Standard-library `flag` with hand-written subcommand dispatch.
+
+`serve` is the gateway this document describes.
+`collect` runs the PGO collection loops of [`pgo.md`](pgo.md) and opens no API listener;
+it reads the same configuration file, so `config validate` answers for both.
 
 ### 8.2 Logging
 
@@ -1278,9 +1283,13 @@ SIGTERM
 [draining]    /readyz 503; after server.drainDelay the API listener stops accepting;
               in-flight requests finish up to max(limits.cpuSeconds, limits.traceSeconds) + 30s;
               the ops listener answers /readyz, /healthz, and /metrics for the whole drain;
-              with pgo.enabled the Collection drain of pgo.md section 12.4 runs beside it,
-              and the process exits once both waits have ended
+              the process exits once that wait has ended
 ```
+
+Nothing about `pgo.enabled` lengthens this drain.
+A gateway replica runs no Collection: the loops that do live in the collector process of [`pgo.md`](pgo.md),
+which drains on a bound of its own and has its own grace period.
+A replica's PGO routes are ordinary requests and finish inside the wait above.
 
 `server.drainDelay` is the window between `/readyz` turning 503 and the API listener closing:
 without it the listener closes before the EndpointSlice controllers and the kube-proxies have removed this replica,
@@ -1297,6 +1306,8 @@ which covers the drain delay and the default limits (60s) with margin.
 An operator who raises either limit must raise the grace period with it:
 at least `server.drainDelay` plus the larger limit plus 60s,
 which `profgate config validate` prints.
+The figure is the same whether `pgo.enabled` is true or false;
+no PGO ceiling appears in it.
 A second `SIGTERM` or `SIGINT` during the drain ends the process at once with a non-zero exit,
 logging that it did not finish:
 the drain's own waits are the ones the work legitimately needs,
@@ -1304,10 +1315,7 @@ so only the operator can say it has gone on long enough.
 
 A listener that fails is fatal:
 the process logs the failure, waits out the in-flight requests, and exits 1.
-It skips `server.drainDelay`, because a listener that has failed receives nothing that window protects,
-and it never waits for the Collection drain of [`pgo.md`](pgo.md) section 12.4,
-because a replica with no listener has nothing left to serve
-and a Collection left running stops renewing its lease for another replica to reclaim.
+It skips `server.drainDelay`, because a listener that has failed receives nothing that window protects.
 
 An unreachable API server is never fatal after preflight and does not change `/readyz`:
 the targets endpoint keeps serving the cache, confirmation fails closed, and the failure table in section 13 applies.
@@ -1465,11 +1473,14 @@ Because the overall request budget already includes confirmation, the drain boun
   the handshake is the case that cannot be written against a stand-in
   ([`300-testing.md`](../../.agents/rules/300-testing.md)).
 - The golden ClusterRole test (section 3.1) parses `deploy/` and compares rule tuples.
-- A manifest test pins the gateway NetworkPolicy's selectors and ports and the Service's port list;
+- A manifest test pins each role's NetworkPolicy selectors and ports,
+  the `PodMonitor` selector and the container port it names,
+  and the Service's port list;
   the kind lanes cannot prove NetworkPolicy enforcement, only that the manifest is shaped as specified.
 - Chart tests render `deploy/chart/profgate` with the `helm` binary mise pins, and assert on the objects:
-  the derived memory limit equals `PGOMemoryBytes` applied to the rendered ConfigMap loaded through `internal/config`,
-  which also proves the rendered configuration parses;
+  the gateway Deployment's memory limit and grace period are the same with `pgo.enabled` true and false,
+  the collector's memory limit equals what `internal/config` computes for the ConfigMap the same render produced,
+  which also proves the rendered configuration parses ([`pgo.md`](pgo.md) *Deployment*);
   `checksum/config` moves with a configuration change, with `tls.enabled`, and stays put for an unrelated one;
   `tls.enabled` renders the certificate volume, its read-only mount, `defaultMode: 0440`, and a non-optional Secret;
   a null `fsGroup` renders no key;
@@ -1851,6 +1862,13 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
   a NetworkPolicy for the gateway Pods that admits the API port from the Ingress controller's namespace
   and the ops port from the monitoring namespace (both namespace selectors are kustomize-patched per cluster),
   and an example NetworkPolicy for application pprof ports.
+- The collector Deployment of [`pgo.md`](pgo.md) and its NetworkPolicy ship in `deploy/`
+  and are not named by `deploy/base/kustomization.yaml`,
+  the way the example Secrets and the application policy are not.
+  A kustomize base has no conditional and `pgo.enabled` is false by default,
+  and a base that listed them would give every plain-kustomize install a collector Pod,
+  for a feature its configuration has turned off.
+  An operator enabling collection adds both to an overlay beside the `pgo` keys.
 - The kustomize base serves plaintext HTTP.
   `deploy/secret-tls-example.yaml` is a commented example of the `kubernetes.io/tls` Secret an operator creates,
   next to the commented NATS one and outside `deploy/base` for the same reason.
@@ -1874,13 +1892,24 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
   - `checksum/config` on the pod template, holding a hash of the rendered ConfigMap,
     because the binary reads its configuration once at startup and has no reload,
     so without it a `helm upgrade` that changes only configuration rolls nothing out.
-  - `limits.memory` derived from `pgo.limits` through the sizing rule of `PGOMemoryBytes`,
-    so the limit cannot drift from the configuration it is sized for.
+  - A static `limits.memory` of 512Mi on the gateway Deployment,
+    whether `pgo.enabled` is true or false:
+    a gateway replica holds no decoded profile, so no PGO ceiling sizes it.
     An explicit `resources.limits` overrides it,
     and `resources.requests` is a separate half rendered as written,
-    shipping the CPU request a namespace whose quota counts `requests.cpu` needs;
-    with PGO off the limit is a static 512Mi, because the formula reads `pgo.limits`
-    and never `pgo.enabled` and would otherwise size a merge that never happens.
+    shipping the CPU request a namespace whose quota counts `requests.cpu` needs.
+    The derived limit belongs to the collector Deployment below, and to it alone.
+  - Common labels on every Pod of both roles —
+    `app.kubernetes.io/name: profgate` and the release instance —
+    beside `app.kubernetes.io/component`, whose value is `gateway` or `collector`.
+    One selector therefore reaches both roles and another reaches exactly one,
+    which is what lets the `PodMonitor` scrape both while each NetworkPolicy binds one.
+  - A collector Deployment, rendered only when `pgo.enabled`,
+    running `profgate collect` at one replica with the ops port and no API port,
+    selected by no Service,
+    and carrying its own `resources.limits.memory` and `terminationGracePeriodSeconds`,
+    both derived from the PGO ceilings and neither shared with the gateway
+    ([`pgo.md`](pgo.md) *Deployment*).
   - `podSecurityContext.fsGroup`, 65532 by default, rendering no key at all when set to null,
     for a cluster that assigns its own ranges through a security context constraint.
   - Release-scoped ClusterRole and ClusterRoleBinding names, so two releases in one cluster do not collide,
@@ -1893,8 +1922,18 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
     It never routes the ops port, which stays reachable only by the kubelet and the metrics scraper.
   - A prometheus-operator `PodMonitor`, off by default, for the ops port.
     It selects Pods and names the container port, because the ops port is absent from the Service by design.
+    Its selector carries the common labels and no `component`,
+    so it reaches the gateway Pods and the collector Pod alike;
+    each role emits part of the PGO metric set ([`pgo.md`](pgo.md) *Metrics*),
+    and a selector naming one role would drop the other half.
+  - One NetworkPolicy per role, each selecting its own `component` value.
+    The gateway's admits the API port from the Ingress controller's namespace
+    and the ops port from the monitoring namespace, as the kustomize base does.
+    The collector's admits the ops port from the monitoring namespace and nothing else,
+    beside the egress [`pgo.md`](pgo.md) *Deployment* lists.
   - A prometheus-operator `PrometheusRule`, off by default,
     over the metrics section's readiness, admission, and signing-key gauges,
+    and, when `pgo.enabled`, the collector-availability alert of [`pgo.md`](pgo.md) *Metrics*,
     replaceable outright by a rule set the operator supplies.
 
   `tls.enabled` gates the certificate volume, its mount, and the `server.tls` keys in the rendered configuration.
@@ -1941,14 +1980,14 @@ the browser code it vendors is listed in [`ui.md`](ui.md) *Dependencies*.
 ## 12. Package Layout
 
 ```text
-cmd/profgate/        CLI: serve, config validate, version
+cmd/profgate/        CLI: serve, collect, config validate, version
 internal/k8s/        the seam; sole non-test importer of client-go
 internal/proxy/      upstream HTTP to PodIP:Port, transport, budget, error mapping
 internal/httpapi/    routing, realm checks, handlers, error bodies, audit log
 internal/config/     fuda-loaded Config, strict pre-parse, validation, hot/restart classification
 internal/metrics/    Recorder interface and the Prometheus implementation
 internal/tlscert/    the API listener's certificate: load, re-read on a ticker, GetCertificate
-internal/admit/      the admission gate shared by interactive requests and Collections
+internal/admit/      the admission gate interactive requests pass through
 internal/auth/       Authenticator; basic, oidc, and disabled modes; JWKS cache; browser flow
 internal/ui/         the console: embedded page and vendored browser libraries; sole user of go:embed
 deploy/              kustomize base and Helm chart
@@ -2135,3 +2174,29 @@ Reads this endpoint and is revised on its own, not here:
 | File | Section | Change |
 |---|---|---|
 | `docs/specs/cli.md` | *`targets`* | `--explain` sends `explain=true` and prints the `excluded` rows beside the list; that document is `Draft` and its text is not edited by this change |
+
+Running PGO collection in its own process —
+the `profgate collect` subcommand, the collector Deployment the chart renders when `pgo.enabled`,
+and the gateway's release from every PGO ceiling —
+amends the following text.
+The first table lists the edits made in the same change as this block;
+the second lists the documents that describe shipped behavior and are updated when the implementation lands.
+
+Amended now:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *CLI* | `profgate collect --config <path>`, which runs the collection loops and opens no API listener, over the configuration file `serve` reads |
+| `docs/specs/gateway.md` | *Request algorithm* | step 10 acquires from the admission gate, which interactive requests alone pass through |
+| `docs/specs/gateway.md` | *Startup and shutdown* | the drain waits only for in-flight requests; no Collection wait beside it, and none on the listener-failure path; the grace period does not vary with `pgo.enabled` |
+| `docs/specs/gateway.md` | *Layers* | the manifest test pins both roles' NetworkPolicy selectors and the `PodMonitor`; the chart test compares the collector's derived limit with the binary's and pins the gateway's static one |
+| `docs/specs/gateway.md` | *Build and Deployment* | the gateway's static 512Mi limit; the common and `component` labels; the conditional collector Deployment with its own resources and grace period; the `PodMonitor` selecting both roles; one NetworkPolicy per role; the collector alert in the `PrometheusRule`; the collector Deployment and its policy ship outside `deploy/base/kustomization.yaml` |
+| `docs/specs/gateway.md` | *Package Layout* | `cmd/profgate/` lists `collect`; `internal/admit/` is the gate interactive requests pass through |
+| `docs/specs/pgo.md` | *Changes to the accepted gateway design* | the two `internal/admit` rows carry the wording the gateway spec now holds |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `docs/deployment.md` | the collector Deployment: what the chart renders, what the kustomize tree leaves to an overlay, and how both roles are scraped |
+| `deploy/chart/profgate/values.yaml`, `deploy/chart/profgate/README.md` | the `component` labels, the collector block, and the gateway's static memory limit |
