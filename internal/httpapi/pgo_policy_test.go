@@ -81,8 +81,8 @@ func TestPolicyReadWithAnOverride(t *testing.T) {
 	if body.Effective.Sampling.Rounds != testPGODefaults().Sampling.Rounds {
 		t.Errorf("effective.sampling.rounds = %d, want the default", body.Effective.Sampling.Rounds)
 	}
-	if body.UpdatedBy != anonymousPrincipal {
-		t.Errorf("updatedBy = %q, want %q", body.UpdatedBy, anonymousPrincipal)
+	if body.UpdatedBy != "anonymous" {
+		t.Errorf("updatedBy = %q, want %q", body.UpdatedBy, "anonymous")
 	}
 }
 

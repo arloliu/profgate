@@ -1202,6 +1202,20 @@ func (r *countingRecorder) TLSReload(string) {}
 
 func (r *countingRecorder) TLSCertificateExpiry(time.Time) {}
 
+func (r *countingRecorder) AuthFailure(string, string) {}
+
+func (r *countingRecorder) AuthSessionIssued() {}
+
+func (r *countingRecorder) JWKSRefresh(string) {}
+
+func (r *countingRecorder) JWKSKeys(int) {}
+
+func (r *countingRecorder) JWKSFetched(time.Time) {}
+
+func (r *countingRecorder) AuthFileReload(string, string) {}
+
+func (r *countingRecorder) CookieKeys([]metrics.CookieKey) {}
+
 // logCapture collects the records a replica logs, so a test can count
 // transition records and violation warnings.
 type logCapture struct {

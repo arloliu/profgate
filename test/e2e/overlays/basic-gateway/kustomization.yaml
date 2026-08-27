@@ -1,0 +1,16 @@
+# A one-replica gateway whose API listener serves HTTPS and whose auth.mode is
+# basic, with one user inline and the rest in the users file the auth Secret
+# holds. Everything is named profgate-basic and the ClusterRoleBinding reuses
+# the shipped ClusterRole, so the gateway's Kubernetes access is exactly the
+# shipped one; the certificate and the users file reach it through volumes
+# rather than through the API.
+# The scenario wraps this overlay in a kustomization that sets the namespace,
+# patches the configuration, and creates both Secrets first; only one scenario
+# may run it at a time, because the ClusterRoleBinding is cluster-scoped.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - clusterrolebinding.yaml
+  - configmap.yaml
+  - deployment.yaml

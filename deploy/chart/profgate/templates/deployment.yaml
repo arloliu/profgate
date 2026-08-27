@@ -1,4 +1,5 @@
 {{- include "profgate.validateNoDerivedOverrides" . -}}
+{{- include "profgate.validateAuthSecret" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -99,6 +100,11 @@ spec:
               mountPath: {{ .Values.tls.mountPath | quote }}
               readOnly: true
             {{- end }}
+            {{- if include "profgate.authSecretEnabled" . }}
+            - name: auth
+              mountPath: {{ .Values.auth.secret.mountPath | quote }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -129,6 +135,19 @@ spec:
         - name: tls
           secret:
             secretName: {{ .Values.tls.existingSecret | quote }}
+            defaultMode: 0440
+            optional: false
+        {{- end }}
+        {{- if include "profgate.authSecretEnabled" . }}
+        # The operator creates this Secret from the files auth.mode needs;
+        # the chart never does. Not optional, unlike the NATS one:
+        # auth.secret.enabled asserts the files it names exist, so a missing
+        # Secret should hold the Pod at mount time with an event naming it.
+        # 0440 with the pod fsGroup is the narrowest mode the non-root image
+        # can read.
+        - name: auth
+          secret:
+            secretName: {{ .Values.auth.secret.existingSecret | quote }}
             defaultMode: 0440
             optional: false
         {{- end }}

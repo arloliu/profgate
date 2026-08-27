@@ -1,0 +1,11 @@
+auth:
+  mode: oidc
+  oidc:
+    audience: profgate
+    mapping:
+      defaultRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

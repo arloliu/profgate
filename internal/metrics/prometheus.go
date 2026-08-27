@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +24,17 @@ type Prometheus struct {
 	natsConnected      prometheus.Gauge
 	tlsReloads         *prometheus.CounterVec
 	tlsCertificateTTL  prometheus.Gauge
+	authFailures       *prometheus.CounterVec
+	authSessions       prometheus.Counter
+	jwksRefreshes      *prometheus.CounterVec
+	jwksKeys           prometheus.Gauge
+	jwksAge            prometheus.GaugeFunc
+	authFileReloads    *prometheus.CounterVec
+	cookieKeys         *prometheus.GaugeVec
+
+	// jwksFetched is the Unix time of the last successful key fetch, or 0
+	// before the first. jwksAge reads it on the scrape goroutine.
+	jwksFetched atomic.Int64
 }
 
 // NewPrometheus builds the gateway's metrics and registers them with reg.
@@ -85,12 +98,55 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 			Name: "profgate_tls_certificate_expiry_seconds",
 			Help: "When the certificate the API listener serves stops being valid, in seconds since the epoch.",
 		}),
+		authFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "profgate_auth_failures_total",
+			Help: "Total number of authentication failures answered 401, 429, or 503, by mode and reason.",
+		}, []string{"mode", "reason"}),
+		authSessions: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "profgate_auth_sessions_issued_total",
+			Help: "Total number of browser sessions minted.",
+		}),
+		jwksRefreshes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "profgate_oidc_jwks_refresh_total",
+			Help: "Total number of signing key fetches, by result.",
+		}, []string{"result"}),
+		jwksKeys: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "profgate_oidc_jwks_keys",
+			Help: "Number of usable signing keys currently held.",
+		}),
+		authFileReloads: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "profgate_auth_file_reload_total",
+			Help: "Total number of re-reads of an authentication file, by file and result.",
+		}, []string{"file", "result"}),
+		cookieKeys: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "profgate_auth_cookie_key_info",
+			Help: "One per loaded cookie key, by fingerprint and role, always 1.",
+		}, []string{"fingerprint", "role"}),
 	}
+
+	// The age is computed when the scrape asks, not when the fetch happened,
+	// so a gateway that stopped fetching keeps climbing towards jwksMaxStale
+	// on its own. Before the first successful fetch the value is NaN: process
+	// start is not a fetch, and NaN crosses no alert threshold the way 0 or a
+	// growing age would.
+	p.jwksAge = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "profgate_oidc_jwks_age_seconds",
+		Help: "Seconds since the last successful signing key fetch, or NaN before the first.",
+	}, func() float64 {
+		at := p.jwksFetched.Load()
+		if at == 0 {
+			return math.NaN()
+		}
+
+		return time.Since(time.Unix(at, 0)).Seconds()
+	})
 
 	reg.MustRegister(
 		p.requests, p.requestDuration, p.confirms, p.profilesInFlight, p.discoverySynced,
 		p.collections, p.collectionSamples, p.collectionDuration, p.scheduleSlots, p.sweeperDeletes,
 		p.collectionsActive, p.natsConnected, p.tlsReloads, p.tlsCertificateTTL,
+		p.authFailures, p.authSessions, p.jwksRefreshes, p.jwksKeys, p.jwksAge,
+		p.authFileReloads, p.cookieKeys,
 	)
 
 	return p
@@ -168,4 +224,44 @@ func (p *Prometheus) TLSReload(result string) {
 // TLSCertificateExpiry implements Recorder.
 func (p *Prometheus) TLSCertificateExpiry(notAfter time.Time) {
 	p.tlsCertificateTTL.Set(float64(notAfter.Unix()))
+}
+
+// AuthFailure implements Recorder.
+func (p *Prometheus) AuthFailure(mode, reason string) {
+	p.authFailures.WithLabelValues(mode, reason).Inc()
+}
+
+// AuthSessionIssued implements Recorder.
+func (p *Prometheus) AuthSessionIssued() {
+	p.authSessions.Inc()
+}
+
+// JWKSRefresh implements Recorder.
+func (p *Prometheus) JWKSRefresh(result string) {
+	p.jwksRefreshes.WithLabelValues(result).Inc()
+}
+
+// JWKSKeys implements Recorder.
+func (p *Prometheus) JWKSKeys(n int) {
+	p.jwksKeys.Set(float64(n))
+}
+
+// JWKSFetched implements Recorder.
+func (p *Prometheus) JWKSFetched(at time.Time) {
+	p.jwksFetched.Store(at.Unix())
+}
+
+// AuthFileReload implements Recorder.
+func (p *Prometheus) AuthFileReload(file, result string) {
+	p.authFileReloads.WithLabelValues(file, result).Inc()
+}
+
+// CookieKeys implements Recorder.
+// The set is replaced rather than added to, so a key no longer in the file
+// loses its series instead of reporting 1 forever.
+func (p *Prometheus) CookieKeys(keys []CookieKey) {
+	p.cookieKeys.Reset()
+	for _, k := range keys {
+		p.cookieKeys.WithLabelValues(k.Fingerprint, k.Role).Set(1)
+	}
 }

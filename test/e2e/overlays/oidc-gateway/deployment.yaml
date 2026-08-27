@@ -1,0 +1,73 @@
+# The shipped Deployment's container, volumes, and security context, at one
+# replica, with the certificate Secret and the authentication Secret mounted
+# the way the Helm chart mounts them: read-only, mode 0440, and not optional,
+# so a missing Secret holds the Pod at mount time instead of crash-looping the
+# gateway on a file it cannot read.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: profgate-oidc
+  labels:
+    app.kubernetes.io/name: profgate-oidc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: profgate-oidc
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: profgate-oidc
+    spec:
+      serviceAccountName: profgate-oidc
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: profgate
+          image: ko.local/profgate:e2e
+          args:
+            - serve
+            - --config
+            - /etc/profgate/config.yaml
+          ports:
+            - name: api
+              containerPort: 8080
+            - name: ops
+              containerPort: 9090
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # The probe stays on the ops port, which is plain HTTP: only the API
+          # listener serves TLS.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ops
+          volumeMounts:
+            - name: config
+              mountPath: /etc/profgate
+              readOnly: true
+            - name: profgate-tls
+              mountPath: /etc/profgate/tls
+              readOnly: true
+            - name: profgate-auth
+              mountPath: /etc/profgate/auth
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: profgate-oidc
+        - name: profgate-tls
+          secret:
+            secretName: profgate-tls
+            defaultMode: 0440
+            optional: false
+        - name: profgate-auth
+          secret:
+            secretName: profgate-auth
+            defaultMode: 0440
+            optional: false

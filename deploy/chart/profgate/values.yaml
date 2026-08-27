@@ -63,9 +63,10 @@ podDisruptionBudget:
 configChecksumAnnotation: true
 
 # Pod-level security context.
-# fsGroup is what makes the NATS credentials Secret and the TLS key readable by
-# the non-root image: both are mounted at 0440, and the kubelet only changes a
-# volume's group ownership when fsGroup is set.
+# fsGroup is what makes the NATS credentials, the TLS key, and the
+# authentication files readable by the non-root image: each is mounted at
+# 0440, and the kubelet only changes a volume's group ownership when fsGroup
+# is set.
 # 65532 is the uid and gid the distroless image runs as.
 # Set fsGroup to null to render no pod securityContext at all, which is what a
 # cluster that assigns its own ranges through an SCC needs; that cluster has to
@@ -166,6 +167,22 @@ networkPolicy:
   # Namespaces allowed to reach the ops port.
   opsFromNamespaces:
     - monitoring
+  # networkPolicy above renders policyTypes: [Ingress] only, so every
+  # destination stays open; there is no key here that turns Egress on. Once
+  # a policy elsewhere selects the gateway Pods for egress too, every
+  # destination the gateway reaches needs its own rule or it stops working:
+  # DNS, the Kubernetes API, the Pod pprof ports across every application
+  # namespace, NATS when pgo.enabled, and the OpenID Connect issuer when
+  # auth.mode is oidc. The issuer rule alone, once the destinations above are
+  # also covered:
+  #
+  # egress:
+  #   - to:
+  #       - ipBlock:
+  #           cidr: <the issuer's IP address or CIDR>/32
+  #     ports:
+  #       - protocol: TCP
+  #         port: 443
 
 # --- Configuration file ---------------------------------------------------
 # The keys below are rendered into the ConfigMap the gateway loads from
@@ -184,9 +201,74 @@ server:
   drainDelay: 5s
 
 auth:
+  # disabled, basic, or oidc.
+  mode: disabled
   # The realm every request gets while authentication is disabled.
-  # It must name one of the realms below.
+  # It must name one of the realms below. Rejected when mode is not disabled.
   anonymousRealm: developer
+  basic:
+    # Inline users, rendered into auth.basic.users verbatim. Each carries a
+    # bcrypt hash from `profgate auth hash`, never a plaintext password:
+    #   users:
+    #     - name: alice
+    #       passwordHash: "$2a$12$..."
+    #       realm: developer
+    users: []
+    # The Secret data key an operator's users file appears under, mounted at
+    # auth.secret.mountPath. "" renders no auth.basic.usersFile key, which is
+    # fine when every user is inline above. A non-empty value needs
+    # auth.secret.enabled true; the users file is what a Secret volume, not a
+    # ConfigMap, is for -- see the chart's README.
+    usersFile: ""
+    # true lets basic mode run without server.tls. A gateway reachable only
+    # from inside the cluster, behind a mesh that already encrypts the hop,
+    # is the case this covers; see the chart's README before turning it on.
+    allowPlaintext: false
+    maxConcurrent: 16
+  oidc:
+    issuer: ""
+    audience: ""
+    # id or access. Must stay id when browser below is set.
+    tokenType: id
+    usernameClaim: sub
+    groupsClaim: groups
+    # The Secret data key the issuer's CA certificate appears under, mounted
+    # at auth.secret.mountPath. "" means the issuer's certificate chains to a
+    # certificate authority the image already trusts.
+    caKey: ""
+    httpProxy: ""
+    mapping:
+      # Username and group entries turn a verified token into a realm; at
+      # least one of users, groups, or defaultRealm is required in oidc mode.
+      #   users:
+      #     - name: alice
+      #       realm: developer
+      #   groups:
+      #     - name: platform-team
+      #       realm: developer
+      users: []
+      groups: []
+      defaultRealm: ""
+    # The optional relying-party block that turns a browser login into a
+    # session cookie. Empty renders no auth.oidc.browser block at all, which
+    # is what makes bearer-token-only oidc mode possible. Requires
+    # tls.enabled, because the session cookie carries Secure and a __Host-
+    # prefix, which a plaintext listener cannot set.
+    #   browser:
+    #     clientID: profgate
+    #     redirectURL: https://profgate.example.com/auth/callback
+    #     # The Secret data key a confidential client's secret appears
+    #     # under. "" means a public client using PKCE, which is enough for
+    #     # Keycloak, Dex, and Okta.
+    #     clientSecretFile: ""
+    browser: {}
+  # The Secret the files named above -- the users file, the issuer CA, the
+  # client secret, and the cookie key -- are read from. The chart never
+  # creates it; see deploy/secret-auth-example.yaml.
+  secret:
+    enabled: false
+    existingSecret: profgate-auth
+    mountPath: /etc/profgate/auth
 
 # What each principal may reach. Every list is exact strings or "*".
 # The shipped realm is wide open, which is a deliberate default for a gateway

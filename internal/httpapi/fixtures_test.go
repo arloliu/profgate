@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/arloliu/profgate/internal/admit"
+	"github.com/arloliu/profgate/internal/auth"
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
@@ -192,14 +193,21 @@ type requestCall struct {
 	code     string
 }
 
+// authFailureCall is one Recorder.AuthFailure call.
+type authFailureCall struct {
+	mode   string
+	reason string
+}
+
 // recorder is a Recorder that remembers every call.
 type recorder struct {
-	mu          sync.Mutex
-	requests    []requestCall
-	confirms    []string
-	collections []string
-	inFlight    int
-	peak        int
+	mu           sync.Mutex
+	requests     []requestCall
+	confirms     []string
+	collections  []string
+	authFailures []authFailureCall
+	inFlight     int
+	peak         int
 }
 
 func (r *recorder) Request(endpoint metrics.Endpoint, profile, code string, _ time.Duration) {
@@ -252,6 +260,32 @@ func (r *recorder) NATSConnected(bool) {}
 func (r *recorder) TLSReload(string) {}
 
 func (r *recorder) TLSCertificateExpiry(time.Time) {}
+
+func (r *recorder) AuthFailure(mode, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.authFailures = append(r.authFailures, authFailureCall{mode, reason})
+}
+
+// authFailureRows is every AuthFailure call recorded, in order.
+func (r *recorder) authFailureRows() []authFailureCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]authFailureCall(nil), r.authFailures...)
+}
+
+func (r *recorder) AuthSessionIssued() {}
+
+func (r *recorder) JWKSRefresh(string) {}
+
+func (r *recorder) JWKSKeys(int) {}
+
+func (r *recorder) JWKSFetched(time.Time) {}
+
+func (r *recorder) AuthFileReload(string, string) {}
+
+func (r *recorder) CookieKeys([]metrics.CookieKey) {}
 
 func (r *recorder) snapshot() ([]requestCall, []string, int) {
 	r.mu.Lock()
@@ -336,10 +370,13 @@ type harness struct {
 	logs      *syncBuffer
 	cfg       atomic.Pointer[config.Config]
 	choose    func(int) int
-	discovery k8s.Discovery // overrides disc when set
-	upstream  Upstream      // overrides up when set
-	gate      *admit.Gate   // overrides the per-handler gate when set
-	runtime   *pgo.Runtime  // nil leaves the handler an unbound one
+	discovery k8s.Discovery      // overrides disc when set
+	upstream  Upstream           // overrides up when set
+	gate      *admit.Gate        // overrides the per-handler gate when set
+	runtime   *pgo.Runtime       // nil leaves the handler an unbound one
+	auth      auth.Authenticator // nil leaves the handler on auth.Disabled
+	routes    auth.AuthRoutes    // nil leaves the /auth/ routes unknown
+	ready     func() bool        // nil leaves readiness on disc.synced
 	// beforeAllowlist, when set, runs between the realm check and the allowlist check.
 	beforeAllowlist func()
 }
@@ -379,14 +416,17 @@ func (h *harness) handler() http.Handler {
 	}
 
 	handler := New(Deps{
-		Discovery: discovery,
-		Upstream:  upstream,
-		Config:    &h.cfg,
-		Recorder:  h.rec,
-		Gate:      gate,
-		PGO:       h.runtime,
-		Logger:    h.logger(),
-		Choose:    h.choose,
+		Discovery:  discovery,
+		Upstream:   upstream,
+		Config:     &h.cfg,
+		Recorder:   h.rec,
+		Gate:       gate,
+		PGO:        h.runtime,
+		Auth:       h.auth,
+		AuthRoutes: h.routes,
+		Ready:      h.ready,
+		Logger:     h.logger(),
+		Choose:     h.choose,
 	})
 	if h.beforeAllowlist != nil {
 		setBeforeAllowlist(handler, h.beforeAllowlist)
@@ -1267,7 +1307,7 @@ func (p *pgoHarness) seedOverride(t *testing.T, override *pgo.PolicyOverride) ui
 	t.Helper()
 
 	revision := p.nats.config.put(t, overrideKeyPrefix+fixtureNamespace+"."+fixtureService,
-		pgo.StoredOverride{Policy: override, UpdatedBy: anonymousPrincipal, UpdatedAt: pgoFixtureNow})
+		pgo.StoredOverride{Policy: override, UpdatedBy: "anonymous", UpdatedAt: pgoFixtureNow})
 	p.waitCache(t, "the policy override", func() bool {
 		_, rev := p.caches.Override(fixtureNamespace, fixtureService)
 

@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/arloliu/profgate/internal/admit"
+	"github.com/arloliu/profgate/internal/auth"
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
@@ -69,7 +70,19 @@ type Deps struct {
 	// The server starts before the NATS preflight has succeeded, so an unbound
 	// runtime is the normal early state and every PGO route answers
 	// 503 pgo_unavailable through it; nil means one that is never bound.
-	PGO    *pgo.Runtime
+	PGO *pgo.Runtime
+	// Auth resolves the principal; nil means auth.Disabled{}.
+	Auth auth.Authenticator
+	// AuthRoutes serves /auth/*; nil means the three routes are 404 route_unknown.
+	AuthRoutes auth.AuthRoutes
+	// Ready gates the /v1 and /auth/ readiness steps: discovery synced and,
+	// under oidc, the issuer discovered.
+	// It is narrower than /readyz, which also turns 503 for the drain and for
+	// a pending NATS preflight, because the drain delay exists to keep serving
+	// requests already routed here, and a replica whose NATS is down still
+	// serves interactive requests.
+	// nil means Discovery.HasSynced alone.
+	Ready  func() bool
 	Logger *slog.Logger
 	Choose func(n int) int // nil means math/rand/v2 IntN
 }
@@ -96,6 +109,9 @@ func New(d Deps) http.Handler {
 	}
 	if d.PGO == nil {
 		d.PGO = pgo.NewRuntime()
+	}
+	if d.Auth == nil {
+		d.Auth = auth.Disabled{}
 	}
 
 	return &server{deps: d}
@@ -192,14 +208,19 @@ func parseRoute(path string) (route, bool) {
 type request struct {
 	routed bool
 	route  route
-	port   portParams // the client's port selection; zero on PGO routes
-	audit  auditRecord
+	// authRoute marks a request under /auth/, which has labels and an audit shape of its own.
+	authRoute bool
+	port      portParams // the client's port selection; zero on PGO routes
+	audit     auditRecord
 }
 
 // labels are the metrics endpoint and profile for this request:
 // the resolved route when there is one, ("profile","none") before a route resolves
 // or when the profile name is unknown.
 func (q *request) labels() (metrics.Endpoint, string) {
+	if q.authRoute {
+		return metrics.EndpointAuth, labelNone
+	}
 	if !q.routed {
 		return metrics.EndpointProfile, labelNone
 	}
@@ -238,9 +259,11 @@ func (q *request) fail(w http.ResponseWriter, e *requestError) {
 }
 
 // ServeHTTP runs the request algorithm:
-// route, method, readiness, authentication, realm, parameters, discovery, filter and select, admit, confirm, proxy.
+// route, method, readiness, credential placement, authentication, realm, parameters, discovery,
+// filter and select, admit, confirm, proxy.
 // The first failing step answers.
 // The configuration is loaded once here and the request uses that snapshot throughout.
+// A path under /auth/ is not a /v1 route and takes the shorter algorithm of serveAuthRoute.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	cfg := s.deps.Config.Load()
@@ -253,6 +276,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.deps.Recorder.Request(endpoint, profile, q.audit.code, q.audit.duration)
 		writeAudit(s.deps.Logger, q.audit)
 	}()
+
+	if strings.HasPrefix(r.URL.Path, authPrefix) {
+		s.serveAuthRoute(w, r, q, cfg)
+
+		return
+	}
 
 	rt, ok := parseRoute(r.URL.Path)
 	if !ok {
@@ -285,8 +314,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.deps.Discovery.HasSynced() {
-		q.fail(w, &requestError{status: http.StatusServiceUnavailable, code: "not_ready", message: "discovery has not synced"})
+	if !s.ready() {
+		q.fail(w, &requestError{status: http.StatusServiceUnavailable, code: "not_ready", message: "the gateway is not ready"})
 
 		return
 	}
@@ -309,19 +338,30 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	principal, realm, ok := principalRealm(cfg)
-	q.audit.principal = principal
+	// A token in the URL is refused before any credential is read, even when
+	// a valid one is also in the header: the URL form must never work.
+	if hasAccessToken(r.URL.RawQuery) {
+		q.fail(w, invalidParameter("access_token is not accepted as a query parameter"))
+
+		return
+	}
+
+	p, realm, ok := s.authenticate(w, r, q, cfg)
+	if !ok {
+		return
+	}
+	principal := p.Name
 
 	// A Collection-scoped route reads its record first: the realm is evaluated
 	// against the record's namespace and Service, and a denied record and a
 	// missing one answer alike.
 	if rt.kind.isCollectionScoped() {
-		s.servePGOCollection(w, r, q, cfg, sess, realm, ok)
+		s.servePGOCollection(w, r, q, cfg, sess, realm)
 
 		return
 	}
 
-	if !ok || !realmAllows(realm, rt, r.Method) {
+	if !realmAllows(realm, rt, r.Method) {
 		// The denial names nothing: the same body whether or not the Service exists.
 		q.fail(w, &requestError{status: http.StatusForbidden, code: "realm_denied", message: "access denied by realm"})
 

@@ -5,9 +5,11 @@ package config
 
 import (
 	"bytes"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -112,10 +114,74 @@ type LimitsConfig struct {
 	MaxConcurrentProfiles int `yaml:"maxConcurrentProfiles" env:"LIMIT_MAX_CONCURRENT_PROFILES" default:"16" validate:"min=1,max=1024"`
 }
 
-// AuthConfig selects the authentication mode and the realm for anonymous requests.
+// AuthConfig selects the authentication mode and the block that mode reads.
+// AnonymousRealm is the realm every request gets in disabled mode, and is a
+// validation error in the other two, so a mode change cannot silently activate
+// a realm nobody re-read.
+// Basic and OIDC are pointers so an absent block and one present with only
+// defaults are distinguishable: the loader never walks a nil pointer, which is
+// what stops an environment default from making an absent block look configured.
 type AuthConfig struct {
-	Mode           string `yaml:"mode"           env:"AUTH_MODE"       default:"disabled" validate:"oneof=disabled"`
-	AnonymousRealm string `yaml:"anonymousRealm" env:"ANONYMOUS_REALM" validate:"required"`
+	Mode           string       `yaml:"mode"           env:"AUTH_MODE"       default:"disabled" validate:"oneof=disabled basic oidc"`
+	AnonymousRealm string       `yaml:"anonymousRealm" env:"ANONYMOUS_REALM"`
+	Basic          *BasicConfig `yaml:"basic"`
+	OIDC           *OIDCConfig  `yaml:"oidc"`
+}
+
+// BasicConfig is the user list basic mode authenticates against and the gate
+// that bounds what unauthenticated traffic can spend on bcrypt.
+type BasicConfig struct {
+	Users          []BasicUser `yaml:"users"`
+	UsersFile      string      `yaml:"usersFile"      env:"AUTH_BASIC_USERS_FILE"`
+	AllowPlaintext bool        `yaml:"allowPlaintext" env:"AUTH_BASIC_ALLOW_PLAINTEXT" default:"false"`
+	MaxConcurrent  int         `yaml:"maxConcurrent"  env:"AUTH_BASIC_MAX_CONCURRENT"  default:"16" validate:"min=1,max=1024"`
+}
+
+// OIDCConfig points oidc mode at an issuer and says how its tokens are read.
+// Everything that establishes trust — the issuer, the audience, the CA, the
+// client, the key paths — is read once at startup.
+type OIDCConfig struct {
+	Issuer           string        `yaml:"issuer"           env:"AUTH_OIDC_ISSUER"`
+	Audience         string        `yaml:"audience"         env:"AUTH_OIDC_AUDIENCE"`
+	TokenType        string        `yaml:"tokenType"        env:"AUTH_OIDC_TOKEN_TYPE"        default:"id" validate:"oneof=id access"`
+	UsernameClaim    string        `yaml:"usernameClaim"    env:"AUTH_OIDC_USERNAME_CLAIM"    default:"sub"    validate:"min=1,max=64"`
+	GroupsClaim      string        `yaml:"groupsClaim"      env:"AUTH_OIDC_GROUPS_CLAIM"      default:"groups" validate:"min=1,max=64"`
+	CAFile           string        `yaml:"caFile"           env:"AUTH_OIDC_CA_FILE"`
+	HTTPProxy        string        `yaml:"httpProxy"        env:"AUTH_OIDC_HTTP_PROXY"`
+	DiscoveryTimeout time.Duration `yaml:"discoveryTimeout" env:"AUTH_OIDC_DISCOVERY_TIMEOUT" default:"30s" validate:"min=1s,max=10m"`
+	ClockSkew        time.Duration `yaml:"clockSkew"        env:"AUTH_OIDC_CLOCK_SKEW"        default:"30s" validate:"min=0,max=5m"`
+	JWKSRefresh      time.Duration `yaml:"jwksRefresh"      env:"AUTH_OIDC_JWKS_REFRESH"      default:"1h"  validate:"min=1m,max=24h"`
+	JWKSRefreshMin   time.Duration `yaml:"jwksRefreshMin"   env:"AUTH_OIDC_JWKS_REFRESH_MIN"  default:"1m"  validate:"min=1s,max=1h"`
+	JWKSMaxStale     time.Duration `yaml:"jwksMaxStale"     env:"AUTH_OIDC_JWKS_MAX_STALE"    default:"24h" validate:"max=168h"`
+	Mapping          OIDCMapping   `yaml:"mapping"`
+	Browser          *OIDCBrowser  `yaml:"browser"`
+}
+
+// OIDCMappingEntry maps one username or one group name to a realm.
+type OIDCMappingEntry struct {
+	Name  string `yaml:"name"`
+	Realm string `yaml:"realm"`
+}
+
+// OIDCMapping turns a verified token into a realm: the username list first,
+// then the group list in the order written, then DefaultRealm when it is set.
+type OIDCMapping struct {
+	Users        []OIDCMappingEntry `yaml:"users"`
+	Groups       []OIDCMappingEntry `yaml:"groups"`
+	DefaultRealm string             `yaml:"defaultRealm" env:"AUTH_OIDC_DEFAULT_REALM"`
+}
+
+// OIDCBrowser is the optional relying-party block that turns an
+// authorization-code login into an encrypted session cookie.
+// Its presence is what creates the three /auth/ routes.
+type OIDCBrowser struct {
+	ClientID         string        `yaml:"clientID"         env:"AUTH_OIDC_CLIENT_ID"`
+	ClientSecretFile string        `yaml:"clientSecretFile" env:"AUTH_OIDC_CLIENT_SECRET_FILE"`
+	RedirectURL      string        `yaml:"redirectURL"      env:"AUTH_OIDC_REDIRECT_URL"`
+	Scopes           []string      `yaml:"scopes"`
+	CookieKeyFile    string        `yaml:"cookieKeyFile"    env:"AUTH_OIDC_COOKIE_KEY_FILE"`
+	SessionTTL       time.Duration `yaml:"sessionTTL"       env:"AUTH_OIDC_SESSION_TTL"     default:"8h" validate:"min=5m,max=24h"`
+	TransactionTTL   time.Duration `yaml:"transactionTTL"   env:"AUTH_OIDC_TRANSACTION_TTL" default:"5m" validate:"min=1m,max=15m"`
 }
 
 // Realm lists what a principal may reach; each list is exact strings or "*".
@@ -210,6 +276,52 @@ type PGOArtifactDefaults struct {
 
 // defaultPprofPort is used when neither port nor portName is configured.
 const defaultPprofPort = 6060
+
+// The three authentication modes, as auth.mode names them; cmd/profgate
+// branches on them when it builds the authenticator.
+const (
+	ModeDisabled = "disabled"
+	ModeBasic    = "basic"
+	ModeOIDC     = "oidc"
+)
+
+// maxAudienceBytes and maxMappingNameBytes bound the token values a mapping
+// compares, so a token cannot make the gateway hold an unbounded string.
+const (
+	maxAudienceBytes    = 256
+	maxMappingNameBytes = 256
+)
+
+// callbackPath is the only path the browser flow accepts as a redirect target,
+// because it is the path the gateway serves the callback on.
+const callbackPath = "/auth/callback"
+
+// maxClientSecretBytes bounds the trimmed contents of clientSecretFile.
+const maxClientSecretBytes = 1024
+
+// maxScopeBytes bounds one authorization-request scope.
+const maxScopeBytes = 64
+
+// openidScope is the scope that makes the authorization request an OpenID
+// Connect request; without it the issuer returns no ID token.
+const openidScope = "openid"
+
+// defaultScopes is the browser flow's scope list when the operator writes none.
+// A default tag cannot express a list, so normalize applies it.
+var defaultScopes = [...]string{openidScope, "profile", "email"}
+
+// browserDefaultScopes returns a copy of the browser flow's default scope list.
+func browserDefaultScopes() []string {
+	return slices.Clone(defaultScopes[:])
+}
+
+// proxySchemes are the schemes auth.oidc.httpProxy may name.
+var proxySchemes = [...]string{"http", "https", "socks5"}
+
+// proxySchemeNames returns a copy of the schemes auth.oidc.httpProxy may name.
+func proxySchemeNames() []string {
+	return slices.Clone(proxySchemes[:])
+}
 
 // gracePeriodSlack is added to the longest profile duration to form the grace period.
 const gracePeriodSlack = 60 * time.Second
@@ -366,6 +478,9 @@ func normalize(cfg *Config) {
 	if cfg.Discovery.Pprof.Port == 0 && cfg.Discovery.Pprof.PortName == "" {
 		cfg.Discovery.Pprof.Port = defaultPprofPort
 	}
+	if oidc := cfg.Auth.OIDC; oidc != nil && oidc.Browser != nil && len(oidc.Browser.Scopes) == 0 {
+		oidc.Browser.Scopes = browserDefaultScopes()
+	}
 }
 
 // validate runs the checks that struct tags cannot express; each error names the key.
@@ -399,10 +514,12 @@ func validate(cfg *Config) error {
 	if err := validateTLS(cfg.Server.TLS); err != nil {
 		return err
 	}
-	if _, ok := cfg.Realms[cfg.Auth.AnonymousRealm]; !ok {
-		return fmt.Errorf("auth.anonymousRealm %q is not a realm", cfg.Auth.AnonymousRealm)
-	}
 	for name, realm := range cfg.Realms {
+		// A realm name is sealed into the session cookie, which is what holds
+		// it to a DNS-1123 label and that label's 63-byte bound.
+		if !isDNSLabel(name) {
+			return fmt.Errorf("realms.%s: not a DNS-1123 label", name)
+		}
 		for _, list := range []struct {
 			key     string
 			entries []string
@@ -419,6 +536,10 @@ func validate(cfg *Config) error {
 			}
 		}
 	}
+	if err := validateAuth(cfg); err != nil {
+		return err
+	}
+
 	return validatePGO(cfg)
 }
 
@@ -501,6 +622,273 @@ func validateTLS(tls TLSConfig) error {
 	}
 
 	return nil
+}
+
+// validateAuth runs the authentication rules that relate one key to another.
+// It runs after the realm loop, so every rule that names a realm can look it up.
+// The mode decides which block must be present and which must be absent,
+// so a block that does not apply cannot be mistaken for one that does.
+func validateAuth(cfg *Config) error {
+	auth := &cfg.Auth
+	if auth.Mode == ModeDisabled {
+		if auth.AnonymousRealm == "" {
+			return errors.New("auth.anonymousRealm is required when auth.mode is disabled")
+		}
+	} else if auth.AnonymousRealm != "" {
+		return fmt.Errorf("auth.anonymousRealm %q must not be set when auth.mode is %q", auth.AnonymousRealm, auth.Mode)
+	}
+	if auth.AnonymousRealm != "" {
+		if _, ok := cfg.Realms[auth.AnonymousRealm]; !ok {
+			return fmt.Errorf("auth.anonymousRealm %q is not a realm", auth.AnonymousRealm)
+		}
+	}
+	if auth.Basic != nil && auth.Mode != ModeBasic {
+		return fmt.Errorf("auth.basic must not be set when auth.mode is %q", auth.Mode)
+	}
+	if auth.OIDC != nil && auth.Mode != ModeOIDC {
+		return fmt.Errorf("auth.oidc must not be set when auth.mode is %q", auth.Mode)
+	}
+
+	switch auth.Mode {
+	case ModeBasic:
+		if auth.Basic == nil {
+			return errors.New("auth.basic is required when auth.mode is basic")
+		}
+
+		return validateBasic(cfg)
+	case ModeOIDC:
+		if auth.OIDC == nil {
+			return errors.New("auth.oidc is required when auth.mode is oidc")
+		}
+
+		return validateOIDC(cfg)
+	}
+
+	return nil
+}
+
+// validateBasic checks the user set as one list and then the transport it
+// travels over, because Basic sends the password on every request.
+func validateBasic(cfg *Config) error {
+	basic := cfg.Auth.Basic
+	var file []BasicUser
+	if basic.UsersFile != "" {
+		users, err := LoadUsersFile(basic.UsersFile)
+		if err != nil {
+			return fmt.Errorf("auth.basic.usersFile: %w", err)
+		}
+		file = users
+	}
+	if _, err := ValidateBasicUsers(basic.Users, file, cfg.Realms); err != nil {
+		return err
+	}
+	if !cfg.Server.TLS.Enabled() && !basic.AllowPlaintext {
+		return errors.New("auth.basic.allowPlaintext must be true to run basic authentication without server.tls")
+	}
+
+	return nil
+}
+
+// validateOIDC checks the issuer the gateway will trust, the transport it
+// reaches that issuer over, and the mapping that turns a token into a realm.
+// The files are opened here so a path typo names its key at startup rather
+// than failing every discovery fetch once the process is running.
+func validateOIDC(cfg *Config) error {
+	oidc := cfg.Auth.OIDC
+	if oidc.Issuer == "" {
+		return errors.New("auth.oidc.issuer is required when auth.mode is oidc")
+	}
+	if err := validateHTTPSURL("auth.oidc.issuer", oidc.Issuer); err != nil {
+		return err
+	}
+	if n := len(oidc.Audience); n < 1 || n > maxAudienceBytes {
+		return fmt.Errorf("auth.oidc.audience: 1 to %d bytes, found %d", maxAudienceBytes, n)
+	}
+	if oidc.CAFile != "" {
+		pem, err := os.ReadFile(oidc.CAFile) //nolint:gosec // the operator names the file; reading it is the purpose
+		if err != nil {
+			return fmt.Errorf("auth.oidc.caFile: %w", err)
+		}
+		if !x509.NewCertPool().AppendCertsFromPEM(pem) {
+			return fmt.Errorf("auth.oidc.caFile %q: holds no certificate", oidc.CAFile)
+		}
+	}
+	if oidc.HTTPProxy != "" {
+		proxy, err := url.Parse(oidc.HTTPProxy)
+		if err != nil {
+			return fmt.Errorf("auth.oidc.httpProxy %q: %w", oidc.HTTPProxy, err)
+		}
+		if proxy.Host == "" || !slices.Contains(proxySchemeNames(), proxy.Scheme) {
+			return fmt.Errorf("auth.oidc.httpProxy %q: scheme must be one of %s and a host is required",
+				oidc.HTTPProxy, strings.Join(proxySchemeNames(), ", "))
+		}
+	}
+	// A set trusted for less time than the gateway waits to refresh it would
+	// go stale on every cycle.
+	if oidc.JWKSMaxStale < oidc.JWKSRefresh {
+		return fmt.Errorf("auth.oidc.jwksMaxStale %v must be at least auth.oidc.jwksRefresh %v",
+			oidc.JWKSMaxStale, oidc.JWKSRefresh)
+	}
+	if err := validateMapping(&oidc.Mapping, cfg.Realms); err != nil {
+		return err
+	}
+	if oidc.Browser != nil {
+		return validateBrowser(cfg)
+	}
+
+	return nil
+}
+
+// validateMapping checks the lists that turn a verified token into a realm.
+// A mapping that names no user, no group, and no default admits nobody,
+// which is a configuration nobody meant to write.
+func validateMapping(mapping *OIDCMapping, realms map[string]Realm) error {
+	if len(mapping.Users) == 0 && len(mapping.Groups) == 0 && mapping.DefaultRealm == "" {
+		return errors.New("auth.oidc.mapping: at least one of users, groups, or defaultRealm is required; oidc mode would otherwise admit nobody")
+	}
+	for _, list := range []struct {
+		key     string
+		entries []OIDCMappingEntry
+	}{
+		{"auth.oidc.mapping.users", mapping.Users},
+		{"auth.oidc.mapping.groups", mapping.Groups},
+	} {
+		names := make([]string, 0, len(list.entries))
+		for i, entry := range list.entries {
+			key := fmt.Sprintf("%s[%d]", list.key, i)
+			if n := len(entry.Name); n < 1 || n > maxMappingNameBytes {
+				return fmt.Errorf("%s.name: 1 to %d bytes, found %d", key, maxMappingNameBytes, n)
+			}
+			names = append(names, entry.Name)
+			if entry.Realm == "" {
+				return fmt.Errorf("%s.realm is required", key)
+			}
+			if _, ok := realms[entry.Realm]; !ok {
+				return fmt.Errorf("%s.realm %q is not a realm", key, entry.Realm)
+			}
+		}
+		if name, ok := firstDuplicate(names); ok {
+			return fmt.Errorf("%s: duplicate entry %q", list.key, name)
+		}
+	}
+	if mapping.DefaultRealm != "" {
+		if _, ok := realms[mapping.DefaultRealm]; !ok {
+			return fmt.Errorf("auth.oidc.mapping.defaultRealm %q is not a realm", mapping.DefaultRealm)
+		}
+	}
+
+	return nil
+}
+
+// validateBrowser checks the relying-party block.
+// The session cookie carries Secure and a __Host- prefix, which a plaintext
+// listener cannot set, so this block requires server.tls with no escape hatch.
+func validateBrowser(cfg *Config) error {
+	oidc := cfg.Auth.OIDC
+	browser := oidc.Browser
+	if browser.ClientID == "" {
+		return errors.New("auth.oidc.browser.clientID is required")
+	}
+	// The ID token the flow receives carries the client ID in aud and is
+	// verified against audience; two values would validate and admit nobody.
+	if browser.ClientID != oidc.Audience {
+		return fmt.Errorf("auth.oidc.browser.clientID %q must equal auth.oidc.audience %q", browser.ClientID, oidc.Audience)
+	}
+	if oidc.TokenType != "id" {
+		return fmt.Errorf("auth.oidc.tokenType must be id when auth.oidc.browser is set, found %q", oidc.TokenType)
+	}
+	if !cfg.Server.TLS.Enabled() {
+		return errors.New("server.tls is required when auth.oidc.browser is set")
+	}
+	if browser.RedirectURL == "" {
+		return errors.New("auth.oidc.browser.redirectURL is required")
+	}
+	if err := validateHTTPSURL("auth.oidc.browser.redirectURL", browser.RedirectURL); err != nil {
+		return err
+	}
+	redirect, _ := url.Parse(browser.RedirectURL)
+	if redirect.RawQuery != "" || redirect.ForceQuery {
+		return fmt.Errorf("auth.oidc.browser.redirectURL %q: must carry no query", browser.RedirectURL)
+	}
+	if redirect.Path != callbackPath {
+		return fmt.Errorf("auth.oidc.browser.redirectURL %q: path must be %s", browser.RedirectURL, callbackPath)
+	}
+	if err := validateScopes(browser.Scopes); err != nil {
+		return err
+	}
+	if browser.CookieKeyFile == "" {
+		return errors.New("auth.oidc.browser.cookieKeyFile is required")
+	}
+	f, err := os.Open(browser.CookieKeyFile) //nolint:gosec // the operator names the file; reading it is the purpose
+	if err != nil {
+		return fmt.Errorf("auth.oidc.browser.cookieKeyFile: %w", err)
+	}
+	_ = f.Close()
+	if browser.ClientSecretFile == "" {
+		return nil
+	}
+	secret, err := os.ReadFile(browser.ClientSecretFile) //nolint:gosec // the operator names the file; reading it is the purpose
+	if err != nil {
+		return fmt.Errorf("auth.oidc.browser.clientSecretFile: %w", err)
+	}
+	if n := len(strings.TrimSpace(string(secret))); n < 1 || n > maxClientSecretBytes {
+		return fmt.Errorf("auth.oidc.browser.clientSecretFile %q: the trimmed contents must be 1 to %d bytes, found %d",
+			browser.ClientSecretFile, maxClientSecretBytes, n)
+	}
+
+	return nil
+}
+
+// validateHTTPSURL holds a URL the gateway will send a browser or a client
+// secret to: https, a host, no userinfo, and no fragment.
+func validateHTTPSURL(key, raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s %q: %w", key, raw, err)
+	}
+	switch {
+	case parsed.Scheme != "https":
+		return fmt.Errorf("%s %q: must be an https:// URL", key, raw)
+	case parsed.Host == "":
+		return fmt.Errorf("%s %q: must name a host", key, raw)
+	case parsed.User != nil:
+		return fmt.Errorf("%s %q: must carry no userinfo", key, raw)
+	case parsed.Fragment != "":
+		return fmt.Errorf("%s %q: must carry no fragment", key, raw)
+	}
+
+	return nil
+}
+
+// validateScopes checks the authorization request's scope list.
+// Without openid the issuer returns no ID token, and the flow mints its
+// session from the ID token.
+func validateScopes(scopes []string) error {
+	if !slices.Contains(scopes, openidScope) {
+		return fmt.Errorf("auth.oidc.browser.scopes %v: must contain %q", scopes, openidScope)
+	}
+	for _, scope := range scopes {
+		if n := len(scope); n < 1 || n > maxScopeBytes {
+			return fmt.Errorf("auth.oidc.browser.scopes %q: 1 to %d bytes, found %d", scope, maxScopeBytes, n)
+		}
+		for i := range len(scope) {
+			if !isScopeByte(scope[i]) {
+				return fmt.Errorf("auth.oidc.browser.scopes %q: %q is not a scope character", scope, scope[i])
+			}
+		}
+	}
+	if scope, ok := firstDuplicate(scopes); ok {
+		return fmt.Errorf("auth.oidc.browser.scopes: duplicate entry %q", scope)
+	}
+
+	return nil
+}
+
+// isScopeByte reports whether b is one of the characters RFC 6749 allows in a
+// scope token: printable ASCII without the space, the double quote, and the
+// backslash.
+func isScopeByte(b byte) bool {
+	return b == 0x21 || (b >= 0x23 && b <= 0x5B) || (b >= 0x5D && b <= 0x7E)
 }
 
 // validateNATS checks the connection settings the PGO stores are reached through.

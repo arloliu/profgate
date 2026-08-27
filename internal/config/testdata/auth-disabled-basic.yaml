@@ -1,0 +1,13 @@
+auth:
+  mode: disabled
+  anonymousRealm: developer
+  basic:
+    users:
+      - name: alice
+        passwordHash: "$2a$12$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ."
+        realm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

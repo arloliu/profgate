@@ -24,3 +24,17 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: monitoring
+  # policyTypes above is Ingress only, so every destination stays open. Once
+  # a policy adds Egress here too, every destination the gateway reaches
+  # needs its own rule or it stops working: DNS, the Kubernetes API, the Pod
+  # pprof ports across every application namespace, NATS when PGO collection
+  # is enabled, and the OpenID Connect issuer when auth.mode is oidc. The
+  # issuer rule alone, once the destinations above are also covered:
+  #
+  # egress:
+  #   - to:
+  #       - ipBlock:
+  #           cidr: <the issuer's IP address or CIDR>/32
+  #     ports:
+  #       - protocol: TCP
+  #         port: 443

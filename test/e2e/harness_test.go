@@ -81,6 +81,15 @@ const (
 	natsClientPort  = "4222"
 	natsMonitorPort = "8222"
 
+	// dexImage is the OpenID Connect issuer the auth scenarios log in
+	// through; TestMain loads it the way it loads the NATS server.
+	dexImage = "ghcr.io/dexidp/dex:v2.45.1"
+
+	// authSecret is the Secret deploy/base mounts for authentication, and
+	// authMountPath is where its keys appear in the container.
+	authSecret    = "profgate-auth" //nolint:gosec // the Secret's name, not its contents
+	authMountPath = "/etc/profgate/auth"
+
 	// credsSecret is the Secret deploy/base mounts, credsSecretKey the entry in
 	// it, and credsFile where the pair appears in the container.
 	credsSecret    = "profgate-nats-creds" //nolint:gosec // the Secret's name, not its contents
@@ -157,6 +166,8 @@ func runners() map[string]func(t *testing.T, h *Harness) {
 		"pgo-clusterrole":                scenarioPGOClusterRole,
 		"pgo-preflight-negative":         scenarioPGOPreflightNegative,
 		"tls-rotation":                   scenarioTLSRotation,
+		"auth-oidc-browser":              scenarioAuthOIDCBrowser,
+		"auth-basic":                     scenarioAuthBasic,
 	}
 }
 
@@ -208,6 +219,9 @@ func TestMain(m *testing.M) {
 	}
 	if err := h.loadNATSImage(ctx); err != nil {
 		fail("load nats image", err)
+	}
+	if err := h.loadImage(ctx, dexImage); err != nil {
+		fail("load dex image", err)
 	}
 
 	kubeconfigDir, err := os.MkdirTemp("", "profgate-e2e-")
@@ -352,8 +366,13 @@ func (h *Harness) buildImages(ctx context.Context) error {
 }
 
 // loadNATSImage pulls the NATS server and loads it onto the node.
+func (h *Harness) loadNATSImage(ctx context.Context) error {
+	return h.loadImage(ctx, natsImage)
+}
+
+// loadImage pulls a published image and loads it onto the node.
 // The two images ko builds carry one platform each and go in directly, but
-// nats is published as a multi-platform index: a plain export of it names
+// published images are multi-platform indexes: a plain export of one names
 // every platform's manifest while the daemon holds only the blobs of the one
 // it pulled, and the node's import rejects the archive for the digests that
 // are missing.
@@ -362,26 +381,26 @@ func (h *Harness) buildImages(ctx context.Context) error {
 // That export still carries the attestation manifest attached to the platform
 // manifest, which older node containerd unpacks as an image and rejects, so
 // the archive goes to the node without its OCI index.
-func (h *Harness) loadNATSImage(ctx context.Context) error {
-	if err := h.run(ctx, nil, "docker", "pull", natsImage); err != nil {
-		return fmt.Errorf("pull %s: %w", natsImage, err)
+func (h *Harness) loadImage(ctx context.Context, image string) error {
+	if err := h.run(ctx, nil, "docker", "pull", image); err != nil {
+		return fmt.Errorf("pull %s: %w", image, err)
 	}
 	dir, err := os.MkdirTemp("", "profgate-e2e-image-")
 	if err != nil {
 		return fmt.Errorf("image archive directory: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	archive := filepath.Join(dir, "nats.tar")
+	archive := filepath.Join(dir, "image.tar")
 	if err := h.run(ctx, nil, "docker", "save", "--platform", "linux/"+runtime.GOARCH,
-		"--output", archive, natsImage); err != nil {
-		return fmt.Errorf("save %s: %w", natsImage, err)
+		"--output", archive, image); err != nil {
+		return fmt.Errorf("save %s: %w", image, err)
 	}
-	loadable := filepath.Join(dir, "nats-docker.tar")
+	loadable := filepath.Join(dir, "image-docker.tar")
 	if err := dropOCIIndex(archive, loadable); err != nil {
-		return fmt.Errorf("rewrite %s archive: %w", natsImage, err)
+		return fmt.Errorf("rewrite %s archive: %w", image, err)
 	}
 	if err := h.kind(ctx, "load", "image-archive", "--name", h.Cluster, loadable); err != nil {
-		return fmt.Errorf("load %s: %w", natsImage, err)
+		return fmt.Errorf("load %s: %w", image, err)
 	}
 	return nil
 }
@@ -734,6 +753,9 @@ type gatewayConfigOptions struct {
 	// TLSMount, when set, is where the certificate Secret is mounted, and
 	// turns the API listener into an HTTPS listener serving the pair under it.
 	TLSMount string
+	// AuthBlock, when set, is the whole auth block, written in place of the
+	// disabled one the other gateways run with.
+	AuthBlock string
 }
 
 // gatewayConfig renders the configuration one gateway runs with:
@@ -764,10 +786,15 @@ limits:
   cpuSeconds: 60
   traceSeconds: 60
   maxConcurrentProfiles: 16
-auth:
+`)
+	if o.AuthBlock != "" {
+		b.WriteString(o.AuthBlock)
+	} else {
+		b.WriteString(`auth:
   mode: disabled
   anonymousRealm: developer
 `)
+	}
 	if o.NATSURL != "" {
 		fmt.Fprintf(&b, `nats:
   url: %s
@@ -1475,8 +1502,14 @@ func (h *Harness) applyCredsSecret(ctx context.Context, ns string, creds []byte)
 // The harness holds the cluster's administrative kubeconfig; the gateway reads
 // the pair through a mounted volume and needs no Secrets permission for it.
 func (h *Harness) applyTLSSecret(ctx context.Context, ns string, cert, key []byte) error {
+	return h.applyNamedTLSSecret(ctx, ns, tlsSecret, cert, key)
+}
+
+// applyNamedTLSSecret is applyTLSSecret for a Secret of any name, which is how
+// the issuer the auth scenarios deploy gets a certificate of its own.
+func (h *Harness) applyNamedTLSSecret(ctx context.Context, ns, name string, cert, key []byte) error {
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: tlsSecret, Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 		Type:       corev1.SecretTypeTLS,
 		Data:       map[string][]byte{corev1.TLSCertKey: cert, corev1.TLSPrivateKeyKey: key},
 	}
@@ -1486,7 +1519,29 @@ func (h *Harness) applyTLSSecret(ctx context.Context, ns string, cert, key []byt
 		_, err = api.Update(ctx, secret, metav1.UpdateOptions{})
 	}
 	if err != nil {
-		return fmt.Errorf("apply secret %s/%s: %w", ns, tlsSecret, err)
+		return fmt.Errorf("apply secret %s/%s: %w", ns, name, err)
+	}
+
+	return nil
+}
+
+// applyAuthSecret creates or replaces the authentication Secret in ns with
+// exactly the files given, keyed by the name each appears under the mount.
+// The harness holds the cluster's administrative kubeconfig; the gateway reads
+// the files through a mounted volume and needs no Secrets permission for them.
+func (h *Harness) applyAuthSecret(ctx context.Context, ns string, files map[string][]byte) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: authSecret, Namespace: ns},
+		Type:       corev1.SecretTypeOpaque,
+		Data:       files,
+	}
+	api := h.Client.CoreV1().Secrets(ns)
+	_, err := api.Create(ctx, secret, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = api.Update(ctx, secret, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		return fmt.Errorf("apply secret %s/%s: %w", ns, authSecret, err)
 	}
 
 	return nil

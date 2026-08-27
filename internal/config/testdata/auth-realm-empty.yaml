@@ -1,0 +1,12 @@
+auth:
+  mode: disabled
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
+  "":
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["cpu"]

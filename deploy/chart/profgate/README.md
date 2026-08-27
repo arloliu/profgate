@@ -132,7 +132,7 @@ for a cluster whose quota or LimitRange demands requests or a CPU limit.
 
 **`fsGroup` can be omitted entirely.**
 `podSecurityContext.fsGroup` defaults to 65532, the uid and gid the distroless image runs as,
-which is what makes the NATS credentials Secret readable.
+which is what makes the mounted Secrets -- NATS credentials, the TLS key, and authentication files -- readable.
 Setting it to `null` renders no pod `securityContext` key at all,
 which is what a cluster that assigns its own ranges through a security context constraint needs.
 The container `securityContext` is not configurable:
@@ -300,9 +300,91 @@ and renews in place.
 The chart renders neither the `Certificate` nor an issuer annotation,
 the same posture it takes toward the NATS account and its Secret.
 
-Certificate contents are the only part of the configuration that changes without a restart.
-Both paths and `tls.minVersion` are read once at startup,
+Certificate contents are the only part of *this* configuration that changes without a restart —
+*Authentication* below covers the two other files the gateway re-reads while running.
+Both TLS paths and `tls.minVersion` are read once at startup,
 so changing them rolls the Pods through `checksum/config`, as any other configuration change does.
+
+## Authentication
+
+`auth.mode` selects `disabled` (the shipped default), `basic`, or `oidc`,
+each defined in [`../../../docs/specs/auth.md`](../../../docs/specs/auth.md).
+The chart renders only the block the mode selects,
+and `auth.anonymousRealm` is rejected outside `disabled`,
+so a mode change cannot leave a wide-open realm dormant in the rendered configuration.
+
+**Basic mode** compares a request's HTTP Basic credentials against `auth.basic.users`,
+a bcrypt hash per user from `profgate auth hash`, never a plaintext password:
+
+```yaml
+auth:
+  mode: basic
+  basic:
+    users:
+      - name: alice
+        passwordHash: "$2a$12$..."
+        realm: developer
+```
+
+`auth.basic.allowPlaintext` has to be `true` to run Basic without `tls.enabled`,
+because Basic sends the password on every request.
+A users file, instead of or beside the inline list,
+is a Secret data key named by `auth.basic.usersFile`, mounted from `auth.secret`;
+see below.
+
+**oidc mode** verifies a bearer token against an issuer:
+
+```yaml
+auth:
+  mode: oidc
+  oidc:
+    issuer: https://issuer.example.com/realms/profgate
+    audience: profgate
+    mapping:
+      defaultRealm: developer
+```
+
+The optional `auth.oidc.browser` block turns a browser's top-level navigation with no credential into a redirect to a login page,
+instead of `401`,
+and a successful login into a session cookie;
+`curl`, `go tool pprof`, and `fetch`-shaped requests without a credential still receive `401`:
+
+```yaml
+auth:
+  oidc:
+    browser:
+      clientID: profgate
+      redirectURL: https://profgate.example.com/auth/callback
+tls:
+  enabled: true
+```
+
+`clientID` has to equal `auth.oidc.audience`, and `tls.enabled` is required:
+the session cookie carries `Secure` and a `__Host-` prefix, which a plaintext listener cannot set.
+Every replica needs the same cookie key, so `auth.oidc.browser` also always needs `auth.secret`; see below.
+
+**The authentication Secret.**
+The chart mounts the Secret named by `auth.secret.existingSecret`, `profgate-auth` by default,
+read-only at `auth.secret.mountPath` with mode 0440.
+`auth.basic.usersFile`, `auth.oidc.caKey`, and `auth.oidc.browser.clientSecretFile`
+each name the data key their file appears under inside it.
+A cookie key at the fixed data key `cookie.key` is mounted the same way whenever `auth.oidc.browser` is set,
+because `auth.oidc.browser.cookieKeyFile` is always required and every replica has to share one file.
+Naming a file without turning `auth.secret.enabled` on fails at render time,
+because the config would then name a file nothing mounts:
+
+```yaml
+auth:
+  secret:
+    enabled: true
+```
+
+The chart never creates this Secret;
+[`../../secret-auth-example.yaml`](../../secret-auth-example.yaml) is a commented example, with the
+`kubectl create secret generic` command and the `openssl rand -base64 32` line that generates a cookie key.
+Unlike the TLS certificate, this Secret is not optional once `auth.secret.enabled` is `true`:
+a missing Secret holds the Pod at mount time with an event naming it,
+rather than starting a Pod that exits over a file it cannot open.
 
 ## NATS credentials
 
@@ -360,7 +442,13 @@ that provision the buckets, the account, and the Secret.
 | `networkPolicy.enabled`, `.apiFromNamespaces`, `.opsFromNamespaces` | `false`, `[ingress-nginx]`, `[monitoring]` | Ingress policy for the gateway Pods. |
 | `server.logLevel` | `info` | `debug`, `info`, `warn`, or `error`. |
 | `server.drainDelay` | `5s` | The wait between `/readyz` turning 503 and the API listener closing. |
-| `auth.anonymousRealm` | `developer` | The realm every request gets while authentication is disabled. |
+| `auth.mode` | `disabled` | `disabled`, `basic`, or `oidc`. |
+| `auth.anonymousRealm` | `developer` | The realm every request gets while `auth.mode` is `disabled`. |
+| `auth.basic.users`, `.usersFile`, `.allowPlaintext`, `.maxConcurrent` | `[]`, `""`, `false`, `16` | Basic mode's user set; `usersFile` names a Secret data key. |
+| `auth.oidc.issuer`, `.audience`, `.tokenType`, `.usernameClaim`, `.groupsClaim`, `.caKey`, `.httpProxy` | empty, empty, `id`, `sub`, `groups`, `""`, `""` | oidc mode's issuer and how it reads a token; `caKey` names a Secret data key. |
+| `auth.oidc.mapping.users`, `.groups`, `.defaultRealm` | `[]`, `[]`, `""` | How a verified token maps to a realm. |
+| `auth.oidc.browser` | `{}` | The relying-party block that turns a login into a session cookie; empty renders no `auth.oidc.browser` block. See *Authentication*. |
+| `auth.secret.enabled`, `.existingSecret`, `.mountPath` | `false`, `profgate-auth`, `/etc/profgate/auth` | The Secret the files above are read from. |
 | `realms` | one wide-open realm | What each principal may reach. |
 | `tls.enabled`, `.existingSecret`, `.certKey`, `.keyKey`, `.mountPath`, `.minVersion` | `false`, `profgate-tls`, `tls.crt`, `tls.key`, `/etc/profgate/tls`, `1.2` | HTTPS on the API port, from a Secret the operator creates. |
 | `nats.url`, `.credsFile`, `.existingSecret`, `.secretKey`, `.mountPath` | empty, `/etc/profgate/nats/nats.creds`, `profgate-nats-creds`, `nats.creds`, `/etc/profgate/nats` | NATS, used only with `pgo.enabled`. |

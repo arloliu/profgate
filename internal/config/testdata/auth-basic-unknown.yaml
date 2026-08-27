@@ -1,0 +1,17 @@
+server:
+  tls:
+    certFile: testdata/tls.crt
+    keyFile: testdata/tls.key
+auth:
+  mode: basic
+  basic:
+    users:
+      - name: alice
+        passwordHash: "$2a$12$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ."
+        realm: developer
+    user: alice
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

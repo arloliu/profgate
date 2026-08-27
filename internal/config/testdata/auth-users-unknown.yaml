@@ -1,0 +1,4 @@
+users:
+  - name: bob
+    password: hunter2
+    realm: developer

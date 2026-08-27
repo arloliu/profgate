@@ -22,9 +22,9 @@ spec:
       terminationGracePeriodSeconds: 125
       securityContext:
         # The uid and gid the distroless image runs as. Without it the kubelet
-        # leaves the credentials Secret owned by root:root and the gateway
-        # cannot read it. It only widens group ownership, so the ConfigMap and
-        # the ServiceAccount token stay readable exactly as before.
+        # leaves the mounted Secrets owned by root:root and the gateway
+        # cannot read them. It only widens group ownership, so the ConfigMap
+        # and the ServiceAccount token stay readable exactly as before.
         fsGroup: 65532
       containers:
         - name: profgate
@@ -62,6 +62,9 @@ spec:
             - name: profgate-nats-creds
               mountPath: /etc/profgate/nats/
               readOnly: true
+            - name: profgate-auth
+              mountPath: /etc/profgate/auth/
+              readOnly: true
       # This base serves plain HTTP on the API port. To serve HTTPS, create the
       # Secret deploy/secret-tls-example.yaml describes, mount it here, and add
       # the server.tls keys to the ConfigMap; the Helm chart's tls.enabled
@@ -76,5 +79,14 @@ spec:
         - name: profgate-nats-creds
           secret:
             secretName: profgate-nats-creds
+            defaultMode: 0440
+            optional: true
+        # The operator creates this Secret from the files auth.mode needs --
+        # see deploy/secret-auth-example.yaml. It is optional so the base
+        # applies before the Secret exists; the gateway itself refuses to
+        # start when a configured file is missing.
+        - name: profgate-auth
+          secret:
+            secretName: profgate-auth
             defaultMode: 0440
             optional: true

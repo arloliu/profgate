@@ -1,0 +1,7 @@
+auth:
+  mode: basic
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

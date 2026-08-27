@@ -87,7 +87,7 @@ func TestCollectionCreate(t *testing.T) {
 	switch {
 	case rec.Origin != pgo.OriginAPI:
 		t.Errorf("origin = %q, want %q", rec.Origin, pgo.OriginAPI)
-	case rec.CreatedBy != anonymousPrincipal:
+	case rec.CreatedBy != "anonymous":
 		t.Errorf("createdBy = %q, want the requesting principal", rec.CreatedBy)
 	case rec.Policy.Sampling.Rounds != 1 || rec.Policy.Sampling.Duration.Duration() != 10*time.Second:
 		t.Errorf("policy = %+v, want the body's fields over the effective policy", rec.Policy.Sampling)

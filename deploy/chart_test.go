@@ -14,6 +14,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -112,6 +113,109 @@ func tlsValues(t *testing.T) []string {
 	}
 
 	return []string{"--set", "tls.enabled=true", "--set", "tls.mountPath=" + dir}
+}
+
+// testCACert is a self-signed certificate config.Load's auth.oidc.caFile
+// check accepts: x509.NewCertPool().AppendCertsFromPEM needs a real,
+// parseable certificate, not just PEM armor.
+const testCACert = `-----BEGIN CERTIFICATE-----
+MIIDGTCCAgGgAwIBAgIUN27LpcuyXJXo/z55vsEBkDWj8OUwDQYJKoZIhvcNAQEL
+BQAwGzEZMBcGA1UEAwwQcHJvZmdhdGUtdGVzdC1jYTAgFw0yNjA4MjcwMzQ4MjNa
+GA8yMTI2MDgwMzAzNDgyM1owGzEZMBcGA1UEAwwQcHJvZmdhdGUtdGVzdC1jYTCC
+ASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALqPEHIssCQ0tApOFbGYhMxj
+JgXFMtGwHdqS5i3ZrD4PmhkZfzPa+4akmWR45waemwsMtM68vG+Wula9TEZdDIGf
+ZXiVnwYJM0Hvdw2MPCt+JHX/bceY9poYF/JprJ8hZS9ewkYVQBkhXSsUGgmkwBSI
+D7yWYooPR0UPQgryOuXWGmeHiUh5DLopmcr+YnlqF3MzBOOq1mMesdJ/DzHRGAIf
+lNZSvD/um8RkGU2zl03seU3twjA8/J8TpYzXf5DZCzXQT4/+C+m10muoEfbEOLmS
+EhWlxta5ld6jI42h08KzNOb3qnvL+/gRzmYWt+gyNQx4qQHEbXmtyjftwbXzhgcC
+AwEAAaNTMFEwHQYDVR0OBBYEFMRY2AD2lgsZUTB4tvqmffuVRG+7MB8GA1UdIwQY
+MBaAFMRY2AD2lgsZUTB4tvqmffuVRG+7MA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZI
+hvcNAQELBQADggEBAKOYtD1umNATO3oLYOsGU25Snl/vWQQsf+dC4rAXwAANl7N+
+GfGIm0p3GnQoBqhOAnKOfhPndhztTmw57P14jCa1u4q7RjSNdgTi86lYf87Wbkpe
+EBZ+igP4MqgEJhu3i4Aeg53PWWOR/VjJR0XmvNtDaJzGxOyq/J5slLfxYJbW037A
+3R4nbkyWUHw8c2T84ksEV/N64l+HZjy0FkT+pGZ2bllPLhR2equtxsn69QVqJMBg
+iSBB4sqH/USaz0abaJMY7wpISk8wB53EgO/vD33cH/O/Eh64wVqhnuR83aDWBZhM
+D2ipjwOdVt7xl9JW3LtryTAbmT/w+I2etSwx29A=
+-----END CERTIFICATE-----
+`
+
+// authBasicValues turns basic mode on with a users file that exists on this
+// machine, because config.Load opens the file auth.basic.usersFile names.
+// It also sets an inline user, so both halves of the user set render.
+// The two users share bcrypt cost 12 and carry different names, which is
+// what ValidateBasicUsers needs to accept them as one set.
+func authBasicValues(t *testing.T) (values []string, mountDir string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	body := "users:\n" +
+		"  - name: bob\n" +
+		"    passwordHash: \"$2y$12$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/\"\n" +
+		"    realm: developer\n"
+	if err := os.WriteFile(filepath.Join(dir, "users.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write a stand-in users file: %v", err)
+	}
+
+	return []string{
+		"--set", "auth.mode=basic",
+		"--set", "auth.basic.allowPlaintext=true",
+		"--set-json", `auth.basic.users=[{"name":"alice","passwordHash":"$2a$12$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.","realm":"developer"}]`,
+		"--set", "auth.basic.usersFile=users.yaml",
+		"--set", "auth.secret.enabled=true",
+		"--set", "auth.secret.mountPath=" + dir,
+	}, dir
+}
+
+// authOIDCValues turns oidc mode on with a mapping that admits someone,
+// carrying no file-backed key, so it renders with auth.secret left off.
+func authOIDCValues(t *testing.T) []string {
+	t.Helper()
+
+	return []string{
+		"--set", "auth.mode=oidc",
+		"--set", "auth.oidc.issuer=https://issuer.example",
+		"--set", "auth.oidc.audience=profgate",
+		"--set", "auth.oidc.mapping.defaultRealm=developer",
+	}
+}
+
+// authOIDCCAValues is authOIDCValues with auth.oidc.caKey naming a CA file
+// that exists on this machine, because config.Load opens it.
+func authOIDCCAValues(t *testing.T) (values []string, mountDir string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "issuer-ca.crt"), []byte(testCACert), 0o600); err != nil {
+		t.Fatalf("write a stand-in CA certificate: %v", err)
+	}
+
+	return append(authOIDCValues(t),
+		"--set", "auth.oidc.caKey=issuer-ca.crt",
+		"--set", "auth.secret.enabled=true",
+		"--set", "auth.secret.mountPath="+dir,
+	), dir
+}
+
+// authBrowserValues is authOIDCValues with the browser block set, a cookie
+// key that exists on this machine, and tls.enabled, all three of which
+// config.Load and validateBrowser require.
+func authBrowserValues(t *testing.T) (values []string, mountDir string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cookie.key"), []byte("placeholder cookie key; internal/config only opens this file\n"), 0o600); err != nil {
+		t.Fatalf("write a stand-in cookie key: %v", err)
+	}
+
+	values = append(authOIDCValues(t),
+		"--set", "auth.secret.enabled=true",
+		"--set", "auth.secret.mountPath="+dir,
+		"--set", "auth.oidc.browser.clientID=profgate",
+		"--set", "auth.oidc.browser.redirectURL=https://profgate.example/auth/callback",
+	)
+	values = append(values, tlsValues(t)...)
+
+	return values, dir
 }
 
 // volumeNamed returns the pod's volume of that name, or nil.
@@ -706,6 +810,26 @@ func TestChartRejectsDerivedKeyOverrides(t *testing.T) {
 			want:   "set nats.credsFile and nats.existingSecret instead",
 		},
 		{
+			name:   "config.auth.basic.usersFile",
+			values: []string{"--set", "config.auth.basic.usersFile=/elsewhere/users.yaml"},
+			want:   "set auth.basic.usersFile and auth.secret.mountPath instead",
+		},
+		{
+			name:   "config.auth.oidc.caFile",
+			values: []string{"--set", "config.auth.oidc.caFile=/elsewhere/ca.crt"},
+			want:   "set auth.oidc.caKey and auth.secret.mountPath instead",
+		},
+		{
+			name:   "config.auth.oidc.browser.clientSecretFile",
+			values: []string{"--set", "config.auth.oidc.browser.clientSecretFile=/elsewhere/client-secret"},
+			want:   "set auth.oidc.browser.clientSecretFile and auth.secret.mountPath instead",
+		},
+		{
+			name:   "config.auth.oidc.browser.cookieKeyFile",
+			values: []string{"--set", "config.auth.oidc.browser.cookieKeyFile=/elsewhere/cookie.key"},
+			want:   "set auth.secret.mountPath instead",
+		},
+		{
 			name:   "config.server.tls.certFile",
 			values: []string{"--set", "config.server.tls.certFile=/elsewhere/tls.crt"},
 			want:   "set tls.enabled and tls.existingSecret instead",
@@ -784,6 +908,26 @@ func TestChartRejectsDerivedKeyOverrides(t *testing.T) {
 			name:   "extraEnv PROFGATE_TLS_KEY_FILE",
 			values: extraEnv("PROFGATE_TLS_KEY_FILE"),
 			want:   "set tls.enabled and tls.existingSecret instead",
+		},
+		{
+			name:   "extraEnv PROFGATE_AUTH_BASIC_USERS_FILE",
+			values: extraEnv("PROFGATE_AUTH_BASIC_USERS_FILE"),
+			want:   "the users file mount follows auth.basic.usersFile and auth.secret.mountPath, so set those instead",
+		},
+		{
+			name:   "extraEnv PROFGATE_AUTH_OIDC_CA_FILE",
+			values: extraEnv("PROFGATE_AUTH_OIDC_CA_FILE"),
+			want:   "the CA certificate mount follows auth.oidc.caKey and auth.secret.mountPath, so set those instead",
+		},
+		{
+			name:   "extraEnv PROFGATE_AUTH_OIDC_CLIENT_SECRET_FILE",
+			values: extraEnv("PROFGATE_AUTH_OIDC_CLIENT_SECRET_FILE"),
+			want:   "the client secret mount follows auth.oidc.browser.clientSecretFile and auth.secret.mountPath, so set those instead",
+		},
+		{
+			name:   "extraEnv PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE",
+			values: extraEnv("PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE"),
+			want:   "the cookie key mount follows auth.secret.mountPath, so set that instead",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -877,6 +1021,26 @@ func TestChartGuardedEnvNamesMatchTheBinary(t *testing.T) {
 			t.Errorf("TLSConfig.%s env override is %s, but the chart guard watches %s", field, got, want)
 		}
 	}
+
+	authBasic := reflect.TypeOf(config.BasicConfig{})
+	if got, want := envTag(authBasic, "UsersFile"), "PROFGATE_AUTH_BASIC_USERS_FILE"; got != want {
+		t.Errorf("BasicConfig.UsersFile env override is %s, but the chart guard watches %s", got, want)
+	}
+
+	authOIDC := reflect.TypeOf(config.OIDCConfig{})
+	if got, want := envTag(authOIDC, "CAFile"), "PROFGATE_AUTH_OIDC_CA_FILE"; got != want {
+		t.Errorf("OIDCConfig.CAFile env override is %s, but the chart guard watches %s", got, want)
+	}
+
+	authBrowser := reflect.TypeOf(config.OIDCBrowser{})
+	for field, want := range map[string]string{ //nolint:gosec // env override names, not credentials
+		"ClientSecretFile": "PROFGATE_AUTH_OIDC_CLIENT_SECRET_FILE",
+		"CookieKeyFile":    "PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE",
+	} {
+		if got := envTag(authBrowser, field); got != want {
+			t.Errorf("OIDCBrowser.%s env override is %s, but the chart guard watches %s", field, got, want)
+		}
+	}
 }
 
 // TestChartConfigIsMergedAndParses covers the configuration design: structured
@@ -937,6 +1101,22 @@ func TestChartConfigIsMergedAndParses(t *testing.T) {
 
 		if got, want := cfg.NATS.URL, "nats://raw.profgate.svc:4222"; got != want {
 			t.Errorf("nats.url = %q, want the raw block's %q", got, want)
+		}
+	})
+
+	// The basic and oidc value sets each render a configuration config.Load
+	// accepts, with the mounted files stubbed the same way tlsValues and
+	// pgoValues stub theirs.
+	t.Run("auth basic loads", func(t *testing.T) {
+		values, _ := authBasicValues(t)
+		if cfg := loadRenderedConfig(t, values...); cfg.Auth.Mode != "basic" {
+			t.Errorf("auth.mode = %q, want basic", cfg.Auth.Mode)
+		}
+	})
+
+	t.Run("auth oidc loads", func(t *testing.T) {
+		if cfg := loadRenderedConfig(t, authOIDCValues(t)...); cfg.Auth.Mode != "oidc" {
+			t.Errorf("auth.mode = %q, want oidc", cfg.Auth.Mode)
 		}
 	})
 }
@@ -1819,6 +1999,238 @@ func TestChartTLS(t *testing.T) {
 		for key := range annotations {
 			if strings.Contains(key, "tls") {
 				t.Errorf("the pod template carries %q; a renewal would then roll the Deployment", key)
+			}
+		}
+	})
+}
+
+// TestChartAuth covers auth.mode and the Secret its files come from.
+// Each mode's block renders alone -- disabled carries anonymousRealm and
+// nothing else, basic and oidc carry their own block and no anonymousRealm.
+// A file-backed key requires auth.secret.enabled, because the chart derives
+// every path from auth.secret.mountPath, and a value naming a file without
+// the mount would render a gateway that exits at startup over it.
+func TestChartAuth(t *testing.T) {
+	t.Run("off by default", func(t *testing.T) {
+		podSpec := render[appsv1.Deployment](t, "deployment.yaml").Spec.Template.Spec
+		if vol := volumeNamed(podSpec, "auth"); vol != nil {
+			t.Errorf("Volumes carries %+v with auth.secret.enabled false, want none", vol)
+		}
+
+		cfg := loadRenderedConfig(t)
+		if cfg.Auth.Mode != "disabled" {
+			t.Errorf("auth.mode = %q, want disabled", cfg.Auth.Mode)
+		}
+		if cfg.Auth.AnonymousRealm != "developer" {
+			t.Errorf("auth.anonymousRealm = %q, want the default developer", cfg.Auth.AnonymousRealm)
+		}
+	})
+
+	t.Run("basic", func(t *testing.T) {
+		values, dir := authBasicValues(t)
+		cfg := loadRenderedConfig(t, values...)
+
+		if cfg.Auth.Mode != "basic" {
+			t.Fatalf("auth.mode = %q, want basic", cfg.Auth.Mode)
+		}
+		if cfg.Auth.AnonymousRealm != "" {
+			t.Errorf("auth.anonymousRealm = %q, want empty in basic mode", cfg.Auth.AnonymousRealm)
+		}
+		if cfg.Auth.Basic == nil {
+			t.Fatal("auth.basic is nil")
+		}
+		if len(cfg.Auth.Basic.Users) != 1 || cfg.Auth.Basic.Users[0].Name != "alice" {
+			t.Errorf("auth.basic.users = %+v, want the inline alice entry", cfg.Auth.Basic.Users)
+		}
+		if want := filepath.Join(dir, "users.yaml"); cfg.Auth.Basic.UsersFile != want {
+			t.Errorf("auth.basic.usersFile = %q, want %q", cfg.Auth.Basic.UsersFile, want)
+		}
+
+		podSpec := render[appsv1.Deployment](t, "deployment.yaml", values...).Spec.Template.Spec
+		vol := volumeNamed(podSpec, "auth")
+		if vol == nil || vol.Secret == nil {
+			t.Fatalf("Volumes = %+v, want a Secret volume named auth", podSpec.Volumes)
+		}
+		if vol.Secret.SecretName != "profgate-auth" {
+			t.Errorf("the auth volume names Secret %q, want the default profgate-auth", vol.Secret.SecretName)
+		}
+		if vol.Secret.DefaultMode == nil || *vol.Secret.DefaultMode != 0o440 {
+			t.Errorf("defaultMode = %v, want 0440, the narrowest mode the non-root image can read", vol.Secret.DefaultMode)
+		}
+		// Not optional, unlike the NATS volume: auth.secret.enabled asserts
+		// the files it names exist.
+		if vol.Secret.Optional == nil || *vol.Secret.Optional {
+			t.Errorf("optional = %v, want an explicit false", vol.Secret.Optional)
+		}
+		mount := mountNamed(podSpec, "auth")
+		if mount == nil {
+			t.Fatalf("volumeMounts = %+v, want one named auth", podSpec.Containers[0].VolumeMounts)
+		}
+		if !mount.ReadOnly {
+			t.Error("the auth mount is writable, want read-only")
+		}
+	})
+
+	t.Run("oidc", func(t *testing.T) {
+		t.Run("without caKey renders no caFile", func(t *testing.T) {
+			cfg := loadRenderedConfig(t, authOIDCValues(t)...)
+			if cfg.Auth.Mode != "oidc" {
+				t.Fatalf("auth.mode = %q, want oidc", cfg.Auth.Mode)
+			}
+			if cfg.Auth.AnonymousRealm != "" {
+				t.Errorf("auth.anonymousRealm = %q, want empty in oidc mode", cfg.Auth.AnonymousRealm)
+			}
+			if cfg.Auth.OIDC == nil {
+				t.Fatal("auth.oidc is nil")
+			}
+			if cfg.Auth.OIDC.CAFile != "" {
+				t.Errorf("auth.oidc.caFile = %q, want empty when auth.oidc.caKey is unset", cfg.Auth.OIDC.CAFile)
+			}
+		})
+
+		t.Run("caKey set derives caFile", func(t *testing.T) {
+			values, dir := authOIDCCAValues(t)
+			cfg := loadRenderedConfig(t, values...)
+			want := filepath.Join(dir, "issuer-ca.crt")
+			if cfg.Auth.OIDC.CAFile != want {
+				t.Errorf("auth.oidc.caFile = %q, want %q", cfg.Auth.OIDC.CAFile, want)
+			}
+		})
+	})
+
+	t.Run("browser", func(t *testing.T) {
+		values, dir := authBrowserValues(t)
+		cfg := loadRenderedConfig(t, values...)
+
+		if cfg.Auth.OIDC.Browser == nil {
+			t.Fatal("auth.oidc.browser is nil")
+		}
+		if want := filepath.Join(dir, "cookie.key"); cfg.Auth.OIDC.Browser.CookieKeyFile != want {
+			t.Errorf("auth.oidc.browser.cookieKeyFile = %q, want %q", cfg.Auth.OIDC.Browser.CookieKeyFile, want)
+		}
+		if cfg.Auth.OIDC.Browser.ClientID != "profgate" {
+			t.Errorf("auth.oidc.browser.clientID = %q, want profgate", cfg.Auth.OIDC.Browser.ClientID)
+		}
+
+		t.Run("fails without tls.enabled", func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "cookie.key"), []byte("placeholder cookie key\n"), 0o600); err != nil {
+				t.Fatalf("write a stand-in cookie key: %v", err)
+			}
+			values := append(authOIDCValues(t),
+				"--set", "auth.secret.enabled=true",
+				"--set", "auth.secret.mountPath="+dir,
+				"--set", "auth.oidc.browser.clientID=profgate",
+				"--set", "auth.oidc.browser.redirectURL=https://profgate.example/auth/callback",
+			)
+			stderr := renderFailure(t, values...)
+			want := "tls.enabled must be true when auth.oidc.browser is set"
+			if !strings.Contains(stderr, want) {
+				t.Errorf("helm failed with %q, want it to contain %q", stderr, want)
+			}
+		})
+	})
+
+	t.Run("secret required", func(t *testing.T) {
+		stderr := renderFailure(t,
+			"--set", "auth.mode=basic",
+			"--set", "auth.basic.allowPlaintext=true",
+			"--set", "auth.basic.usersFile=users.yaml",
+			"--set", "auth.secret.enabled=false",
+		)
+		want := "auth.secret.enabled must be true"
+		if !strings.Contains(stderr, want) {
+			t.Errorf("helm failed with %q, want it to contain %q", stderr, want)
+		}
+	})
+
+	t.Run("the Secret is not hashed into the pod template", func(t *testing.T) {
+		// The users file and the cookie key are polled while the gateway
+		// runs, the same way the TLS certificate is, so a rotation must not
+		// roll the Deployment.
+		values, _ := authBasicValues(t)
+		annotations := render[appsv1.Deployment](t, "deployment.yaml", values...).Spec.Template.Annotations
+		for key := range annotations {
+			if strings.Contains(key, "auth") {
+				t.Errorf("the pod template carries %q; a rotation would then roll the Deployment", key)
+			}
+		}
+	})
+}
+
+// TestChartNetworkPolicyEgress pins the chart's NetworkPolicy template to
+// carrying no Egress rule and no values key that renders one: once a policy
+// selects the gateway Pods for egress too, every destination it reaches
+// needs its own rule, which is a per-cluster decision the chart does not
+// make on an operator's behalf.
+func TestChartNetworkPolicyEgress(t *testing.T) {
+	np := render[networkingv1.NetworkPolicy](t, "networkpolicy.yaml", "--set", "networkPolicy.enabled=true")
+
+	if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
+		t.Fatalf("PolicyTypes = %v, want exactly [Ingress]", np.Spec.PolicyTypes)
+	}
+	if len(np.Spec.Egress) != 0 {
+		t.Errorf("Egress = %+v, want none", np.Spec.Egress)
+	}
+}
+
+// TestChartAuthNotes covers NOTES.txt's second item, which branches on
+// auth.mode: disabled keeps the sentence that has always been there,
+// basic and oidc each replace it and never claim authentication is off.
+func TestChartAuthNotes(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		notes := renderNotes(t)
+		for _, want := range []string{"Authentication is disabled", "auth.anonymousRealm"} {
+			if !strings.Contains(notes, want) {
+				t.Errorf("NOTES does not contain %q:\n%s", want, notes)
+			}
+		}
+		for _, notWant := range []string{"auth hash", "/auth/login"} {
+			if strings.Contains(notes, notWant) {
+				t.Errorf("NOTES contains %q, want it absent in disabled mode:\n%s", notWant, notes)
+			}
+		}
+	})
+
+	t.Run("basic", func(t *testing.T) {
+		values, dir := authBasicValues(t)
+		notes := renderNotes(t, values...)
+		for _, want := range []string{
+			"kubectl -n profgate create secret generic profgate-auth",
+			"--from-file=users.yaml",
+			dir,
+			"profgate auth hash",
+		} {
+			if !strings.Contains(notes, want) {
+				t.Errorf("NOTES does not contain %q:\n%s", want, notes)
+			}
+		}
+		for _, notWant := range []string{"Authentication is disabled", "auth.anonymousRealm"} {
+			if strings.Contains(notes, notWant) {
+				t.Errorf("NOTES contains %q, want it absent in basic mode:\n%s", notWant, notes)
+			}
+		}
+	})
+
+	t.Run("oidc without browser", func(t *testing.T) {
+		notes := renderNotes(t, authOIDCValues(t)...)
+		if !strings.Contains(notes, "https://issuer.example") {
+			t.Errorf("NOTES does not contain the issuer URL:\n%s", notes)
+		}
+		if strings.Contains(notes, "/auth/login") {
+			t.Errorf("NOTES contains /auth/login with no browser block set:\n%s", notes)
+		}
+		if strings.Contains(notes, "Authentication is disabled") {
+			t.Errorf("NOTES contains \"Authentication is disabled\" in oidc mode:\n%s", notes)
+		}
+	})
+
+	t.Run("oidc with browser", func(t *testing.T) {
+		values, _ := authBrowserValues(t)
+		notes := renderNotes(t, values...)
+		for _, want := range []string{"https://issuer.example", "https://profgate.example/auth/login"} {
+			if !strings.Contains(notes, want) {
+				t.Errorf("NOTES does not contain %q:\n%s", want, notes)
 			}
 		}
 	})

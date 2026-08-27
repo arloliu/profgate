@@ -86,7 +86,7 @@ func (s *server) servePGOService(
 // A record the realm denies and a record that does not exist answer alike.
 func (s *server) servePGOCollection(
 	w http.ResponseWriter, r *http.Request, q *request, _ *config.Config,
-	sess *pgo.Session, realm config.Realm, realmOK bool,
+	sess *pgo.Session, realm config.Realm,
 ) {
 	if r.URL.RawQuery != "" {
 		q.fail(w, invalidParameter("this endpoint takes no parameters"))
@@ -107,7 +107,7 @@ func (s *server) servePGOCollection(
 	scoped := q.route
 	scoped.namespace = rec.Namespace
 	scoped.service = rec.Service
-	if !realmOK || !realmAllows(realm, scoped, r.Method) {
+	if !realmAllows(realm, scoped, r.Method) {
 		q.fail(w, errCollectionNotFound)
 
 		return

@@ -6,9 +6,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	cryptorand "crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -18,6 +20,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +29,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -340,6 +345,10 @@ func writeConfig(t *testing.T, listen, opsListen string, l limits, o gatewayOpts
 		tlsBlock = fmt.Sprintf("  tls:\n    certFile: %q\n    keyFile: %q\n",
 			filepath.Join(o.tlsDir, "tls.crt"), filepath.Join(o.tlsDir, "tls.key"))
 	}
+	authBlock := o.authBlock
+	if authBlock == "" {
+		authBlock = "auth:\n  mode: disabled\n  anonymousRealm: developer\n"
+	}
 	body := fmt.Sprintf(`server:
   listen: %q
   opsListen: %q
@@ -352,10 +361,7 @@ limits:
   cpuSeconds: %d
   traceSeconds: %d
   maxConcurrentProfiles: %d
-auth:
-  mode: disabled
-  anonymousRealm: developer
-realms:
+%srealms:
   developer:
     namespaces: ["*"]
     services: ["*"]
@@ -364,7 +370,7 @@ realms:
       read: true
       collect: true
       configure: true
-`, listen, opsListen, o.drainDelay.String(), tlsBlock, l.cpu, l.trace, l.maxConcurrent)
+`, listen, opsListen, o.drainDelay.String(), tlsBlock, l.cpu, l.trace, l.maxConcurrent, authBlock)
 	if o.enabled {
 		body += pgoBlock
 	}
@@ -416,6 +422,11 @@ type gatewayOpts struct {
 	// into an HTTPS listener; tlsRefresh is how often they are read again.
 	tlsDir     string
 	tlsRefresh time.Duration
+	// authBlock, when set, is the raw top-level auth block written in place
+	// of the disabled one; authPoll is the users-file and cookie-key poll
+	// interval, zero meaning the production 30 seconds.
+	authBlock string
+	authPoll  time.Duration
 }
 
 // startGateway runs serve over cs with PGO off.
@@ -456,6 +467,7 @@ func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o gatewayOpts)
 		stop:     gw.stop,
 	}
 	deps.tlsRefresh = o.tlsRefresh
+	deps.authPoll = o.authPoll
 	if o.preflight != nil {
 		deps.natsPreflight = o.preflight.fn()
 	}
@@ -1083,6 +1095,8 @@ type preflightStub struct {
 	mu      sync.Mutex
 	calls   int
 	results []preflightResult
+	// hold, when set, keeps every attempt pending until it is closed.
+	hold <-chan struct{}
 }
 
 func newPreflightStub(results ...preflightResult) *preflightStub {
@@ -1090,7 +1104,14 @@ func newPreflightStub(results ...preflightResult) *preflightStub {
 }
 
 func (p *preflightStub) fn() natsPreflightFunc {
-	return func(_ context.Context, opts natskv.Options, _ string, _ *slog.Logger) (natskv.Client, error) {
+	return func(ctx context.Context, opts natskv.Options, _ string, _ *slog.Logger) (natskv.Client, error) {
+		if p.hold != nil {
+			select {
+			case <-p.hold:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		p.mu.Lock()
 		res := p.results[min(p.calls, len(p.results)-1)]
 		p.calls++
@@ -1569,6 +1590,530 @@ func TestWaitSynced(t *testing.T) {
 		}
 		if got := strings.TrimSpace(buf.String()); got != "" {
 			t.Fatalf("fast sync logged %q, want nothing", got)
+		}
+	})
+}
+
+// testIssuer is an OpenID Connect issuer on an httptest TLS listener: the
+// discovery document, a key set that a subtest can rotate, and a gate that
+// holds discovery until the subtest releases it.
+type testIssuer struct {
+	srv *httptest.Server
+	mu  sync.Mutex
+	// discoveryStatus is what discovery answers; anything but 200 fails it.
+	discoveryStatus int
+	// hold, when set, keeps every discovery request pending until closed.
+	hold  chan struct{}
+	keys  map[string]*rsa.PrivateKey // by kid, published in the key set
+	order []string                   // kids in publication order
+}
+
+const (
+	testAudience  = "profgate"
+	testSubject   = "alice"
+	wellKnownPath = "/.well-known/openid-configuration"
+)
+
+func newTestIssuer(t *testing.T) *testIssuer {
+	t.Helper()
+	is := &testIssuer{discoveryStatus: http.StatusOK, keys: map[string]*rsa.PrivateKey{}}
+	is.rotate(t, "k1")
+	is.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		is.mu.Lock()
+		hold, status := is.hold, is.discoveryStatus
+		is.mu.Unlock()
+		switch r.URL.Path {
+		case wellKnownPath:
+			if hold != nil {
+				<-hold
+			}
+			if status != http.StatusOK {
+				http.Error(w, "down", status)
+
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 is.srv.URL,
+				"jwks_uri":               is.srv.URL + "/keys",
+				"authorization_endpoint": is.srv.URL + "/auth",
+				"token_endpoint":         is.srv.URL + "/token",
+			})
+		case "/keys":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(is.keySet())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(is.srv.Close)
+
+	return is
+}
+
+// rotate publishes a fresh key under kid in place of every earlier one.
+func (is *testIssuer) rotate(t *testing.T, kid string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	is.mu.Lock()
+	defer is.mu.Unlock()
+	is.keys = map[string]*rsa.PrivateKey{kid: key}
+	is.order = []string{kid}
+}
+
+func (is *testIssuer) keySet() jose.JSONWebKeySet {
+	is.mu.Lock()
+	defer is.mu.Unlock()
+	var set jose.JSONWebKeySet
+	for _, kid := range is.order {
+		set.Keys = append(set.Keys, jose.JSONWebKey{Key: &is.keys[kid].PublicKey, KeyID: kid, Algorithm: "RS256", Use: "sig"})
+	}
+
+	return set
+}
+
+// caFile writes the issuer's certificate where auth.oidc.caFile can name it.
+func (is *testIssuer) caFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "issuer-ca.pem")
+	block := &pem.Block{Type: "CERTIFICATE", Bytes: is.srv.Certificate().Raw}
+	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	return path
+}
+
+// bearer mints a valid ID token for testSubject under kid.
+func (is *testIssuer) bearer(t *testing.T, kid string) string {
+	t.Helper()
+	is.mu.Lock()
+	key := is.keys[kid]
+	is.mu.Unlock()
+	if key == nil {
+		t.Fatalf("no key under kid %q", kid)
+	}
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: &jose.JSONWebKey{Key: key, KeyID: kid}}, nil)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	now := time.Now()
+	payload, err := json.Marshal(map[string]any{
+		"iss": is.srv.URL,
+		"sub": testSubject,
+		"aud": testAudience,
+		"iat": now.Unix(),
+		"exp": now.Add(5 * time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jws, err := signer.Sign(payload)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	token, err := jws.CompactSerialize()
+	if err != nil {
+		t.Fatalf("CompactSerialize: %v", err)
+	}
+
+	return "Bearer " + token
+}
+
+// oidcBlock is the auth block for oidc mode against is, mapping testSubject
+// to the developer realm; browser adds the relying-party block.
+func oidcBlock(t *testing.T, is *testIssuer, browser bool) string {
+	t.Helper()
+	block := fmt.Sprintf(`auth:
+  mode: oidc
+  oidc:
+    issuer: %q
+    audience: %s
+    caFile: %q
+    discoveryTimeout: 3s
+    jwksRefreshMin: 1s
+    mapping:
+      users:
+        - name: %s
+          realm: developer
+`, is.srv.URL, testAudience, is.caFile(t), testSubject)
+	if browser {
+		block += fmt.Sprintf(`    browser:
+      clientID: %s
+      redirectURL: "https://profgate.example/auth/callback"
+      scopes: [openid]
+      cookieKeyFile: %q
+`, testAudience, cookieKeyFile(t))
+	}
+
+	return block
+}
+
+// cookieKeyFile writes one 32-byte key, base64 on one line.
+func cookieKeyFile(t *testing.T) string {
+	t.Helper()
+	var key [32]byte
+	if _, err := cryptorand.Read(key[:]); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "cookie.key")
+	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(key[:])+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	return path
+}
+
+// basicHash is one bcrypt hash of basicPassword at the lowest accepted cost,
+// generated once because bcrypt is slow by design.
+var basicHash = sync.OnceValue(func() string {
+	hash, err := bcrypt.GenerateFromPassword([]byte(basicPassword), 10)
+	if err != nil {
+		panic(err)
+	}
+
+	return string(hash)
+})
+
+const basicPassword = "correct horse"
+
+// basicBlock is the auth block for basic mode with one inline user, alice,
+// in the developer realm.
+func basicBlock(allowPlaintext bool) string {
+	return fmt.Sprintf(`auth:
+  mode: basic
+  basic:
+    allowPlaintext: %t
+    users:
+      - name: alice
+        passwordHash: %q
+        realm: developer
+`, allowPlaintext, basicHash())
+}
+
+// usersFileYAML is a users file naming the given users, each with basicHash.
+func usersFileYAML(names ...string) string {
+	body := "users:\n"
+	for _, name := range names {
+		body += fmt.Sprintf("  - name: %s\n    passwordHash: %q\n    realm: developer\n", name, basicHash())
+	}
+
+	return body
+}
+
+func basicCredential(name string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(name+":"+basicPassword))
+}
+
+// reply is what one request came back with.
+type reply struct {
+	status int
+	header http.Header
+	body   string
+}
+
+// request runs one GET against addr, over TLS when pool is set, with header
+// and without following redirects, so a 302 is observed as one.
+func request(t *testing.T, addr, path string, pool *x509.CertPool, header http.Header) reply {
+	t.Helper()
+	scheme := "http"
+	transport := &http.Transport{DisableKeepAlives: true}
+	if pool != nil {
+		scheme = "https"
+		transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	}
+	client := &http.Client{
+		Transport:     transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	defer client.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://"+addr+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return reply{status: resp.StatusCode, header: resp.Header, body: string(body)}
+}
+
+// recordIndex returns the position of the first record whose msg starts with
+// prefix, or -1.
+func recordIndex(records []map[string]any, prefix string) int {
+	for i, rec := range records {
+		if strings.HasPrefix(fmt.Sprint(rec["msg"]), prefix) {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// assertNoDisabledWarning fails when the disabled-mode warning was logged:
+// a gateway that authenticates must not claim it does not.
+func assertNoDisabledWarning(t *testing.T, gw *gateway) {
+	t.Helper()
+	if recordIndex(gw.records(t), "authentication disabled") >= 0 {
+		t.Fatalf("the disabled-mode warning was logged under an authenticating mode:\n%s", gw.stdout.String())
+	}
+}
+
+func TestServeAuth(t *testing.T) {
+	t.Run("basic plaintext warns", func(t *testing.T) {
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{authBlock: basicBlock(true)})
+		gw.waitReady(t, waitTimeout)
+		rec := gw.record(t, "basic authentication over plaintext HTTP; passwords cross the network in the clear")
+		if rec["level"] != "WARN" {
+			t.Fatalf("plaintext record level = %v, want WARN", rec["level"])
+		}
+		assertNoDisabledWarning(t, gw)
+	})
+
+	t.Run("basic serves", func(t *testing.T) {
+		dir := t.TempDir()
+		pool := writeSelfSigned(t, dir)
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{tlsDir: dir, authBlock: basicBlock(false)})
+		gw.waitReady(t, waitTimeout)
+
+		anon := request(t, gw.apiAddr, targetsPath, pool, nil)
+		if anon.status != http.StatusUnauthorized || anon.header.Get("WWW-Authenticate") != `Basic realm="profgate"` {
+			t.Fatalf("targets without a credential = %d %q, want 401 with the Basic challenge", anon.status, anon.header.Get("WWW-Authenticate"))
+		}
+		if !strings.Contains(anon.body, `"unauthenticated"`) {
+			t.Fatalf("401 body = %q, want code unauthenticated", anon.body)
+		}
+		got := request(t, gw.apiAddr, targetsPath, pool, http.Header{"Authorization": {basicCredential("alice")}})
+		if got.status != http.StatusOK {
+			t.Fatalf("targets with the credential = %d %q, want 200", got.status, got.body)
+		}
+		if recordIndex(gw.records(t), "basic authentication over plaintext") >= 0 {
+			t.Fatal("the plaintext warning was logged over TLS")
+		}
+		assertNoDisabledWarning(t, gw)
+	})
+
+	t.Run("oidc discovering", func(t *testing.T) {
+		is := newTestIssuer(t)
+		is.hold = make(chan struct{})
+		cs := fake.NewClientset(fixtureObjects()...)
+		gw := startGatewayWith(t, cs, defaultLimits(), gatewayOpts{authBlock: oidcBlock(t, is, false)})
+
+		gw.waitStatus(t, waitTimeout, gw.opsAddr, "/healthz", http.StatusOK)
+		if code, _ := mustGet(t, gw.opsAddr, "/readyz"); code != http.StatusServiceUnavailable {
+			t.Fatalf("/readyz while discovering = %d, want 503", code)
+		}
+		code, body := mustGet(t, gw.apiAddr, targetsPath)
+		if code != http.StatusServiceUnavailable || !strings.Contains(body, `"not_ready"`) {
+			t.Fatalf("targets while discovering = %d %q, want 503 not_ready", code, body)
+		}
+		if actions := cs.Actions(); len(actions) != 0 {
+			t.Fatalf("the Kubernetes preflight ran before discovery: %d actions", len(actions))
+		}
+		close(is.hold)
+		gw.waitReady(t, waitTimeout)
+
+		records := gw.records(t)
+		discovered := recordIndex(records, "issuer discovered")
+		passed := recordIndex(records, "preflight passed")
+		if discovered < 0 || passed < 0 || discovered > passed {
+			t.Fatalf("issuer discovered at %d, preflight passed at %d; want discovery first:\n%s", discovered, passed, gw.stdout.String())
+		}
+		assertNoDisabledWarning(t, gw)
+	})
+
+	t.Run("oidc discovery timeout", func(t *testing.T) {
+		is := newTestIssuer(t)
+		is.discoveryStatus = http.StatusInternalServerError
+		cs := fake.NewClientset(fixtureObjects()...)
+		gw := startGatewayWith(t, cs, defaultLimits(), gatewayOpts{authBlock: oidcBlock(t, is, false)})
+
+		if code := gw.exitCode(t, 3*time.Second+2*time.Second); code != 1 {
+			t.Fatalf("exit code = %d, want 1: a gateway that cannot reach its issuer cannot authenticate anyone", code)
+		}
+		gw.record(t, "issuer discovery failed")
+		if actions := cs.Actions(); len(actions) != 0 {
+			t.Fatalf("the Kubernetes preflight ran without discovery: %d actions", len(actions))
+		}
+		if recordIndex(gw.records(t), "issuer discovery attempt") < 0 {
+			t.Fatalf("no retry was logged before giving up:\n%s", gw.stdout.String())
+		}
+	})
+
+	t.Run("oidc bearer", func(t *testing.T) {
+		is := newTestIssuer(t)
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{authBlock: oidcBlock(t, is, false)})
+		gw.waitReady(t, waitTimeout)
+
+		anon := request(t, gw.apiAddr, targetsPath, nil, nil)
+		if anon.status != http.StatusUnauthorized || anon.header.Get("WWW-Authenticate") != `Bearer realm="profgate"` {
+			t.Fatalf("targets without a credential = %d %q, want 401 with the Bearer challenge", anon.status, anon.header.Get("WWW-Authenticate"))
+		}
+		got := request(t, gw.apiAddr, targetsPath, nil, http.Header{"Authorization": {is.bearer(t, "k1")}})
+		if got.status != http.StatusOK {
+			t.Fatalf("targets with a bearer token = %d %q, want 200", got.status, got.body)
+		}
+
+		// The issuer rotates: a token under the new kid verifies once the
+		// on-demand refresh has fetched the new set, without a restart.
+		is.rotate(t, "k2")
+		rotated := is.bearer(t, "k2")
+		waitFor(t, 3*time.Second, "a token under the rotated key verifying", func() bool {
+			return request(t, gw.apiAddr, targetsPath, nil, http.Header{"Authorization": {rotated}}).status == http.StatusOK
+		})
+	})
+
+	t.Run("oidc readiness order", func(t *testing.T) {
+		is := newTestIssuer(t)
+		is.hold = make(chan struct{})
+		natsHold := make(chan struct{})
+		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
+		pf.hold = natsHold
+		cs := fake.NewClientset(fixtureObjects()...)
+		gw := startGatewayWith(t, cs, defaultLimits(),
+			gatewayOpts{enabled: true, preflight: pf, worker: newStubWorker(), authBlock: oidcBlock(t, is, false)})
+
+		gw.waitStatus(t, waitTimeout, gw.opsAddr, "/healthz", http.StatusOK)
+		if code, _ := mustGet(t, gw.opsAddr, "/readyz"); code != http.StatusServiceUnavailable {
+			t.Fatalf("/readyz before discovery = %d, want 503", code)
+		}
+		if actions := cs.Actions(); len(actions) != 0 {
+			t.Fatalf("the Kubernetes preflight ran before discovery: %d actions", len(actions))
+		}
+		close(is.hold)
+		waitFor(t, waitTimeout, "the informers syncing", func() bool {
+			return recordIndex(gw.records(t), "discovery synced") >= 0
+		})
+		if code, _ := mustGet(t, gw.opsAddr, "/readyz"); code != http.StatusServiceUnavailable {
+			t.Fatalf("/readyz with discovery, preflight, and sync done but NATS pending = %d, want 503", code)
+		}
+		close(natsHold)
+		gw.waitReady(t, waitTimeout)
+	})
+
+	t.Run("/auth/ waits for the preflight", func(t *testing.T) {
+		is := newTestIssuer(t)
+		dir := t.TempDir()
+		pool := writeSelfSigned(t, dir)
+		cs := fake.NewClientset(fixtureObjects()...)
+		release := make(chan struct{})
+		cs.PrependReactor("list", "services", func(k8stesting.Action) (bool, runtime.Object, error) {
+			<-release
+
+			return false, nil, nil
+		})
+		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
+		gw := startGatewayWith(t, cs, defaultLimits(),
+			gatewayOpts{enabled: true, preflight: pf, worker: newStubWorker(), tlsDir: dir, authBlock: oidcBlock(t, is, true)})
+
+		waitFor(t, waitTimeout, "issuer discovery", func() bool {
+			return recordIndex(gw.records(t), "issuer discovered") >= 0
+		})
+		if code, _ := mustGet(t, gw.opsAddr, "/readyz"); code != http.StatusServiceUnavailable {
+			t.Fatalf("/readyz during the preflight = %d, want 503", code)
+		}
+		for _, path := range []string{"/auth/login", targetsPath} {
+			got := request(t, gw.apiAddr, path, pool, nil)
+			if got.status != http.StatusServiceUnavailable || !strings.Contains(got.body, `"not_ready"`) {
+				t.Fatalf("GET %s during the preflight = %d %q, want 503 not_ready", path, got.status, got.body)
+			}
+		}
+		close(release)
+		gw.waitReady(t, waitTimeout)
+		if got := request(t, gw.apiAddr, "/auth/login", pool, nil); got.status != http.StatusFound {
+			t.Fatalf("GET /auth/login once ready = %d %q, want 302 to the issuer", got.status, got.body)
+		}
+		if got := request(t, gw.apiAddr, targetsPath, pool, nil); got.status != http.StatusUnauthorized {
+			t.Fatalf("GET targets once ready = %d %q, want 401", got.status, got.body)
+		}
+	})
+
+	t.Run("/auth/ through the drain delay", func(t *testing.T) {
+		const delay = 3 * time.Second
+		is := newTestIssuer(t)
+		dir := t.TempDir()
+		pool := writeSelfSigned(t, dir)
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{tlsDir: dir, authBlock: oidcBlock(t, is, true), drainDelay: delay})
+		gw.waitReady(t, waitTimeout)
+
+		gw.stopOnce()
+		gw.waitStatus(t, waitTimeout, gw.opsAddr, "/readyz", http.StatusServiceUnavailable)
+		// The endpoint-removal window: readiness is already 503, and the
+		// /auth/ routes keep answering the way /v1 does, until the listener
+		// closes after the delay.
+		if got := request(t, gw.apiAddr, "/auth/login", pool, nil); got.status != http.StatusFound {
+			t.Fatalf("GET /auth/login during the drain delay = %d %q, want 302", got.status, got.body)
+		}
+		if code := gw.exitCode(t, 2*delay); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if !refuses(gw.apiAddr) {
+			t.Fatal("the API listener still accepts connections after exit")
+		}
+	})
+
+	t.Run("users file polled", func(t *testing.T) {
+		usersPath := filepath.Join(t.TempDir(), "users.yaml")
+		if err := os.WriteFile(usersPath, []byte(usersFileYAML("alice")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		block := fmt.Sprintf("auth:\n  mode: basic\n  basic:\n    allowPlaintext: true\n    usersFile: %q\n", usersPath)
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{authBlock: block, authPoll: 100 * time.Millisecond})
+		gw.waitReady(t, waitTimeout)
+
+		if got := request(t, gw.apiAddr, targetsPath, nil, http.Header{"Authorization": {basicCredential("bob")}}); got.status != http.StatusUnauthorized {
+			t.Fatalf("targets as bob before the rewrite = %d, want 401", got.status)
+		}
+		if err := os.WriteFile(usersPath, []byte(usersFileYAML("alice", "bob")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, waitTimeout, "bob being admitted", func() bool {
+			return request(t, gw.apiAddr, targetsPath, nil, http.Header{"Authorization": {basicCredential("bob")}}).status == http.StatusOK
+		})
+		select {
+		case <-gw.exited:
+			t.Fatal("serve exited; the users file must be re-read by the running process")
+		default:
+		}
+		if n := strings.Count(gw.stdout.String(), `"msg":"listening"`); n != 1 {
+			t.Fatalf("listening records = %d, want 1: no restart", n)
+		}
+		gw.record(t, "file reloaded")
+	})
+
+	t.Run("cookie key fails startup", func(t *testing.T) {
+		is := newTestIssuer(t)
+		dir := t.TempDir()
+		writeSelfSigned(t, dir)
+		block := oidcBlock(t, is, true)
+		block = strings.Replace(block, "cookieKeyFile: ", "cookieKeyFile: \"/nonexistent/cookie.key\" # ", 1)
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{tlsDir: dir, authBlock: block})
+
+		if code := gw.exitCode(t, waitTimeout); code != 2 {
+			t.Fatalf("exit code = %d, want 2: an unreadable cookie key file is a configuration error", code)
+		}
+		if !strings.Contains(gw.stderr.String(), "auth.oidc.browser.cookieKeyFile") {
+			t.Fatalf("stderr = %q, want it to name auth.oidc.browser.cookieKeyFile", gw.stderr.String())
 		}
 	})
 }

@@ -1,5 +1,6 @@
 // Command profgate is the pprof gateway's entry point,
-// with subcommands for version reporting, configuration validation, and serving.
+// with subcommands for version reporting, configuration validation,
+// password hashing for basic authentication, and serving.
 package main
 
 import (
@@ -31,7 +32,7 @@ const secondSignalExit = 1
 // version is set by the linker at build time; "dev" is the fallback for local builds.
 var version = "dev"
 
-const usage = "usage: profgate <version|config validate|serve> [flags]"
+const usage = "usage: profgate <version|config validate|auth hash|serve> [flags]"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -49,6 +50,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runVersion(args[1:], stdout, stderr)
 	case "config":
 		return runConfig(args[1:], stdout, stderr)
+	case "auth":
+		return runAuth(args[1:], os.Stdin, stdout, stderr)
 	case "serve":
 		return runServe(args[1:], stdout, stderr)
 	default:

@@ -1,0 +1,19 @@
+server:
+  tls:
+    certFile: testdata/tls.crt
+    keyFile: testdata/tls.key
+auth:
+  mode: basic
+  basic:
+    users:
+      - name: alice
+        passwordHash: "$2a$12$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ."
+        realm: developer
+  oidc:
+    issuer: https://issuer.example
+    audience: profgate
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

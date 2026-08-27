@@ -9,8 +9,33 @@ Check these three things first.
      kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "profgate.fullname" . }}
      kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "profgate.fullname" . }}
 
-2. The realms. Authentication is disabled, so every request is granted the
-   realm named by auth.anonymousRealm, which is {{ .Values.auth.anonymousRealm }}. This release grants it:
+2. The realms.
+{{- if eq .Values.auth.mode "disabled" }}
+   Authentication is disabled, so every request is granted the realm named by
+   auth.anonymousRealm, which is {{ .Values.auth.anonymousRealm }}. This release grants it:
+{{- else if eq .Values.auth.mode "basic" }}
+   Every request needs a user from the list below, sent as HTTP Basic
+   credentials. `profgate auth hash` turns a password into the passwordHash
+   each user carries.
+{{- if .Values.auth.basic.usersFile }}
+   This release also reads users from a mounted file, at
+   {{ .Values.auth.secret.mountPath }}. Create the Secret before this
+   release, or its Pods wait at mount time:
+
+     kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.auth.secret.existingSecret }} \
+       --from-file=users.yaml
+{{- end }}
+   This release grants:
+{{- else }}
+   Every request needs a bearer token {{ .Values.auth.oidc.issuer }} issued
+   for audience {{ .Values.auth.oidc.audience }}.
+{{- if .Values.auth.oidc.browser }}
+   A browser without one is sent to log in instead of getting 401, at
+
+     https://{{ (urlParse .Values.auth.oidc.browser.redirectURL).host }}/auth/login
+{{- end }}
+   This release maps a token to:
+{{- end }}
 
 {{- range $name, $realm := .Values.realms }}
      {{ $name }}: namespaces {{ $realm.namespaces | join "," }} | services {{ $realm.services | join "," }} | profiles {{ $realm.profiles | join "," }}

@@ -29,7 +29,10 @@ Sentinel errors live in the package that produces them and are exported when a c
 - The only package-level mutable state is the `atomic.Pointer[config.Config]` that holds the loaded configuration,
   plus the linker-set `version` string in `cmd/profgate`.
   Unexported arrays of constants behind an accessor function are immutable and allowed.
-  The e2e package's `harness` variable, filled by `TestMain`, is the test-only exception.
+  So is an unexported compiled regular expression (`regexp.MustCompile`),
+  the shape `internal/httpapi/pgo_policy.go` already holds.
+  The test-only exceptions are the e2e package's `harness` variable, filled by `TestMain`,
+  and a `sync.Once` memo of a fixture that is slow to generate, such as a key pair or a bcrypt hash.
 
 ## The Kubernetes seam
 

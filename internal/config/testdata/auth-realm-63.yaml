@@ -1,0 +1,8 @@
+auth:
+  mode: disabled
+  anonymousRealm: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+realms:
+  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["cpu"]

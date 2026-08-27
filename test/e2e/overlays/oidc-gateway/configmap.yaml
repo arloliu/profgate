@@ -1,0 +1,9 @@
+# A placeholder: the scenario patches config.yaml with the configuration it
+# needs, so what stands here is never what runs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: profgate-oidc
+data:
+  config.yaml: |
+    placeholder: true

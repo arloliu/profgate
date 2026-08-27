@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/arloliu/profgate/internal/admit"
+	"github.com/arloliu/profgate/internal/auth"
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
@@ -147,10 +148,13 @@ func TestGate(t *testing.T) {
 	})
 
 	t.Run("realm missing from config denies", func(t *testing.T) {
+		// Validation refuses this configuration; a snapshot that carries it
+		// anyway fails closed as a principal mapped to no realm.
 		h := newHarness(baseTarget())
 		h.configure(func(cfg *config.Config) { cfg.Auth.AnonymousRealm = "nobody" })
 		rec := h.do(t, http.MethodGet, targetsPath)
-		h.expectError(t, rec, http.StatusForbidden, "realm_denied")
+		h.expectError(t, rec, http.StatusUnauthorized, "unauthenticated")
+		h.expectAuthAudit(t, http.StatusUnauthorized, "unauthenticated", auth.ReasonNoRealm)
 	})
 
 	t.Run("snapshot", func(t *testing.T) {

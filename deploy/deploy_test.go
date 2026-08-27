@@ -36,6 +36,16 @@ const credsMountPath = "/etc/profgate/nats/" //nolint:gosec // a mount path, not
 // from; the base serves plain HTTP and ships only a commented example of it.
 const tlsSecretName = "profgate-tls" //nolint:gosec // the Secret's name, not its contents
 
+// authSecretName is the Secret an auth.mode's files come from -- the users
+// file, the cookie key file, the issuer CA, and a client secret, whichever a
+// mode needs.
+// The Deployment mounts it optionally, so the base stays deployable while
+// authentication is disabled and nothing has created it.
+const authSecretName = "profgate-auth" //nolint:gosec // the Secret's name, not its contents
+
+// authMountPath is where the authentication files appear in the container.
+const authMountPath = "/etc/profgate/auth/" //nolint:gosec // a mount path, not a credential
+
 // ptr returns a pointer to v, for the pointer-typed fields k8s.io/api uses.
 func ptr[T any](v T) *T { return &v }
 
@@ -197,8 +207,8 @@ func TestDeployment(t *testing.T) {
 		t.Errorf("pod securityContext.fsGroup = %+v, want 65532, the uid/gid the image runs as", podSpec.SecurityContext)
 	}
 
-	if len(podSpec.Volumes) != 2 {
-		t.Fatalf("Volumes = %+v, want exactly two: the config and the NATS credentials", podSpec.Volumes)
+	if len(podSpec.Volumes) != 3 {
+		t.Fatalf("Volumes = %+v, want exactly three: the config, the NATS credentials, and the authentication files", podSpec.Volumes)
 	}
 	vols := map[string]corev1.Volume{}
 	for _, v := range podSpec.Volumes {
@@ -231,8 +241,30 @@ func TestDeployment(t *testing.T) {
 		t.Errorf("the credentials volume optional = %v, want true", creds.Secret.Optional)
 	}
 
-	if len(c.VolumeMounts) != 2 {
-		t.Fatalf("VolumeMounts = %+v, want exactly two: the config and the NATS credentials", c.VolumeMounts)
+	auth, ok := vols[authSecretName]
+	if !ok || auth.Secret == nil {
+		t.Fatalf("Volumes = %+v, want a Secret volume named %s", podSpec.Volumes, authSecretName)
+	}
+	if auth.Secret.SecretName != authSecretName {
+		t.Errorf("the authentication volume names Secret %q, want %q", auth.Secret.SecretName, authSecretName)
+	}
+	if auth.Secret.DefaultMode == nil || *auth.Secret.DefaultMode != 0o440 {
+		t.Errorf("the authentication volume defaultMode = %v, want 0440", auth.Secret.DefaultMode)
+	}
+	// optional is what keeps the base deployable while auth.mode is disabled
+	// and the operator has created no Secret.
+	if auth.Secret.Optional == nil || !*auth.Secret.Optional {
+		t.Errorf("the authentication volume optional = %v, want true", auth.Secret.Optional)
+	}
+
+	// fsGroup is asserted once above; it is what makes this Secret volume
+	// readable too, the same way it makes the NATS credentials readable.
+	if podSpec.SecurityContext == nil || podSpec.SecurityContext.FSGroup == nil || *podSpec.SecurityContext.FSGroup != 65532 {
+		t.Errorf("pod securityContext.fsGroup = %+v, want it unchanged at 65532", podSpec.SecurityContext)
+	}
+
+	if len(c.VolumeMounts) != 3 {
+		t.Fatalf("VolumeMounts = %+v, want exactly three: the config, the NATS credentials, and the authentication files", c.VolumeMounts)
 	}
 	mounts := map[string]corev1.VolumeMount{}
 	for _, m := range c.VolumeMounts {
@@ -259,6 +291,17 @@ func TestDeployment(t *testing.T) {
 	}
 	if !credsMount.ReadOnly {
 		t.Error("the credentials mount is writable, want readOnly")
+	}
+
+	authMount, ok := mounts[authSecretName]
+	if !ok {
+		t.Fatalf("VolumeMounts = %+v, want one named %s", c.VolumeMounts, authSecretName)
+	}
+	if authMount.MountPath != authMountPath {
+		t.Errorf("the authentication mount path = %q, want %q", authMount.MountPath, authMountPath)
+	}
+	if !authMount.ReadOnly {
+		t.Error("the authentication mount is writable, want readOnly")
 	}
 }
 
@@ -312,6 +355,61 @@ func TestGatewayNetworkPolicy(t *testing.T) {
 	}
 	checkRule(t, np.Spec.Ingress[0], 8080, "ingress-nginx")
 	checkRule(t, np.Spec.Ingress[1], 9090, "monitoring")
+
+	// The live policy stays ingress-only; a commented example is the only
+	// mention of Egress, so applying the base never isolates a destination
+	// the gateway or auth.mode oidc needs.
+	b, err := os.ReadFile(filepath.Join(baseDir, "networkpolicy-gateway.yaml"))
+	if err != nil {
+		t.Fatalf("read networkpolicy-gateway.yaml: %v", err)
+	}
+	var sawEgress bool
+	for _, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.Contains(trimmed, "Egress") {
+			t.Errorf("networkpolicy-gateway.yaml line %q is live YAML naming Egress, want it commented", line)
+		}
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.Contains(line, "Egress") {
+			sawEgress = true
+			break
+		}
+	}
+	if !sawEgress {
+		t.Error("networkpolicy-gateway.yaml never mentions Egress, want a commented example rule for the issuer")
+	}
+	if !strings.Contains(string(b), "issuer") {
+		t.Error("networkpolicy-gateway.yaml's commented Egress block never names the issuer")
+	}
+}
+
+// TestEgressCommentNamesRequiredDestinations pins the commented Egress
+// example the base NetworkPolicy and the chart's values.yaml both carry:
+// once a policy selects the gateway Pods for egress too, every destination
+// needs its own rule or the gateway stops working, and the comment has to
+// name all of them, not just the issuer that motivated it.
+func TestEgressCommentNamesRequiredDestinations(t *testing.T) {
+	for _, tc := range []struct{ name, path string }{
+		{"base", filepath.Join(baseDir, "networkpolicy-gateway.yaml")},
+		{"chart values", filepath.Join(chartDir, "values.yaml")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatalf("read %s: %v", tc.path, err)
+			}
+			body := string(b)
+			for _, want := range []string{"DNS", "Kubernetes API", "pprof port", "NATS", "issuer"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s does not name %q in its egress comment", tc.path, want)
+				}
+			}
+		})
+	}
 }
 
 // TestAppExampleNetworkPolicy covers the application-side policy template.
@@ -595,9 +693,18 @@ func TestSecretExamplesAreCommented(t *testing.T) {
 	for _, tc := range []struct {
 		file   string
 		secret string
+		// names holds extra text every line of tc.file must be checked for
+		// presence of, beyond the Secret's own name: the data keys an
+		// auth.mode's files appear under.
+		names []string
 	}{
 		{file: "secret-nats-example.yaml", secret: credsSecretName},
 		{file: "secret-tls-example.yaml", secret: tlsSecretName},
+		{
+			file:   "secret-auth-example.yaml",
+			secret: authSecretName,
+			names:  []string{"users.yaml", "cookie.key", "issuer-ca.crt", "client-secret"},
+		},
 	} {
 		t.Run(tc.file, func(t *testing.T) {
 			b, err := os.ReadFile(tc.file) //nolint:gosec // the file name is a fixed literal from this table
@@ -620,6 +727,11 @@ func TestSecretExamplesAreCommented(t *testing.T) {
 			}
 			if !mentionsSecret {
 				t.Errorf("%s never names the Secret %q it is an example of", tc.file, tc.secret)
+			}
+			for _, name := range tc.names {
+				if !strings.Contains(string(b), name) {
+					t.Errorf("%s never names %q", tc.file, name)
+				}
 			}
 
 			if _, err := os.Stat(filepath.Join(baseDir, tc.file)); err == nil {

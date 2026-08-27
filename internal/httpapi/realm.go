@@ -7,21 +7,8 @@ import (
 	"github.com/arloliu/profgate/internal/config"
 )
 
-// anonymousPrincipal is the principal every request carries while authentication is disabled.
-const anonymousPrincipal = "anonymous"
-
 // wildcard is the list entry that matches every value.
 const wildcard = "*"
-
-// principalRealm resolves the request's principal and its realm from cfg.
-// The only authentication mode is disabled,
-// which attributes every request to the anonymous principal and maps it to auth.anonymousRealm.
-// A realm the configuration does not hold denies, so a bad snapshot fails closed rather than open.
-func principalRealm(cfg *config.Config) (principal string, realm config.Realm, ok bool) {
-	realm, ok = cfg.Realms[cfg.Auth.AnonymousRealm]
-
-	return anonymousPrincipal, realm, ok
-}
 
 // realmAllows evaluates namespace, then Service, then the route's own check:
 // the profile list for the profile endpoint, and the realm's pgo flag for a PGO route.

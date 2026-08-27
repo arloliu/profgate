@@ -13,6 +13,7 @@
 - k8s.io/client-go, k8s.io/api, and k8s.io/apimachinery share one minor version.
 - Only internal/natskv imports github.com/nats-io/nats.go outside tests and test/.
 - Only internal/auth imports github.com/go-jose/go-jose and golang.org/x/crypto outside tests and test/.
+- Only cmd/profgate imports golang.org/x/term, which reads a password without echo.
 
 Checks whose subject does not exist yet stay silent rather than failing.
 The golden ClusterRole test (.agents/rules/800-security-invariant.md) lives in
@@ -159,6 +160,17 @@ def check_auth_importers(root):
     return bad
 
 
+def check_term_importers(root):
+    bad = []
+    for path in root.rglob("*.go"):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith("cmd/profgate/"):
+            continue
+        if '"golang.org/x/term' in path.read_text():
+            bad.append(f"{rel}: imports golang.org/x/term outside cmd/profgate")
+    return bad
+
+
 def main():
     errors = []
     check_links(errors)
@@ -169,6 +181,7 @@ def main():
     errors.extend(check_k8s_minor_alignment(root))
     errors.extend(check_nats_importers(root))
     errors.extend(check_auth_importers(root))
+    errors.extend(check_term_importers(root))
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

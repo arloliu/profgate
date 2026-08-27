@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -748,4 +749,532 @@ func TestPGOSizing(t *testing.T) {
 	if got, want := cfg.RequiredPGOGracePeriod(), 122465*time.Second; got != want {
 		t.Fatalf("RequiredPGOGracePeriod() = %v, want %v", got, want)
 	}
+}
+
+// loadErrAll loads path and fails the test unless the error mentions every want.
+// The authentication rules that relate two keys name both, so a single
+// substring would not show that the message points at the pair.
+func loadErrAll(t *testing.T, path string, wants ...string) {
+	t.Helper()
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatalf("Load(%q) = nil error, want one containing %q", path, wants)
+	}
+	for _, want := range wants {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Load(%q) error = %q, want it to contain %q", path, err.Error(), want)
+		}
+	}
+}
+
+func TestLoadAuth(t *testing.T) {
+	t.Run("disabled unchanged", func(t *testing.T) {
+		cfg := loadOK(t, fixture("good.yaml"))
+		if cfg.Auth.Mode != "disabled" || cfg.Auth.AnonymousRealm != "developer" {
+			t.Fatalf("auth = %+v, want disabled with anonymousRealm developer", cfg.Auth)
+		}
+		if cfg.Auth.Basic != nil || cfg.Auth.OIDC != nil {
+			t.Fatalf("auth = %+v, want no basic and no oidc block", cfg.Auth)
+		}
+	})
+
+	// A realm name is sealed into the session cookie, so it is held to a
+	// DNS-1123 label and its 63-byte bound the same way a namespace is.
+	t.Run("realm name label", func(t *testing.T) {
+		for _, tc := range []struct{ name, file, realm string }{
+			{"empty", "auth-realm-empty.yaml", "realms."},
+			{"64 bytes", "auth-realm-long.yaml", "realms." + strings.Repeat("b", 64)},
+			{"uppercase", "auth-realm-upper.yaml", "realms.Developer"},
+			{"underscore", "auth-realm-under.yaml", "realms.dev_team"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				loadErrAll(t, fixture(tc.file), tc.realm, "DNS-1123")
+			})
+		}
+		t.Run("63 bytes", func(t *testing.T) {
+			loadOK(t, fixture("auth-realm-63.yaml"))
+		})
+	})
+
+	// fuda never walks a nil pointer, so a default inside a block nobody wrote
+	// cannot make that block look configured.
+	t.Run("absent block stays nil", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_BASIC_MAX_CONCURRENT", "8")
+		cfg := loadOK(t, fixture("good.yaml"))
+		if cfg.Auth.Basic != nil {
+			t.Fatalf("auth.basic = %+v, want nil", *cfg.Auth.Basic)
+		}
+	})
+
+	// anonymousRealm is the wide-open realm every request gets in disabled mode.
+	// Refusing it in the other two modes is what stops a mode change from
+	// silently activating a realm nobody re-read.
+	t.Run("anonymousRealm required in disabled", func(t *testing.T) {
+		loadErr(t, fixture("auth-disabled-no-anon.yaml"), "auth.anonymousRealm")
+	})
+	t.Run("anonymousRealm forbidden in basic", func(t *testing.T) {
+		t.Setenv("PROFGATE_ANONYMOUS_REALM", "developer")
+		loadErr(t, fixture("auth-basic.yaml"), "auth.anonymousRealm")
+	})
+	t.Run("anonymousRealm forbidden in oidc", func(t *testing.T) {
+		t.Setenv("PROFGATE_ANONYMOUS_REALM", "developer")
+		loadErr(t, fixture("auth-oidc.yaml"), "auth.anonymousRealm")
+	})
+
+	// A block that does not apply cannot be mistaken for one that does.
+	t.Run("basic block under oidc", func(t *testing.T) {
+		loadErr(t, fixture("auth-oidc-basic.yaml"), "auth.basic")
+	})
+	t.Run("oidc block under basic", func(t *testing.T) {
+		loadErr(t, fixture("auth-basic-oidc.yaml"), "auth.oidc")
+	})
+	t.Run("basic block under disabled", func(t *testing.T) {
+		loadErr(t, fixture("auth-disabled-basic.yaml"), "auth.basic")
+	})
+	t.Run("basic needs a block", func(t *testing.T) {
+		loadErr(t, fixture("auth-basic-none.yaml"), "auth.basic")
+	})
+	t.Run("oidc needs a block", func(t *testing.T) {
+		loadErr(t, fixture("auth-oidc-none.yaml"), "auth.oidc")
+	})
+
+	t.Run("basic ok", func(t *testing.T) {
+		cfg := loadOK(t, fixture("auth-basic.yaml"))
+		basic := cfg.Auth.Basic
+		if basic == nil {
+			t.Fatal("auth.basic = nil, want a block")
+		}
+		if basic.MaxConcurrent != 16 || basic.AllowPlaintext || basic.UsersFile != "" {
+			t.Fatalf("auth.basic = %+v, want maxConcurrent 16 and no other setting", *basic)
+		}
+		if len(basic.Users) != 1 || basic.Users[0].Name != "alice" || basic.Users[0].Realm != "developer" {
+			t.Fatalf("auth.basic.users = %+v, want one alice in developer", basic.Users)
+		}
+	})
+
+	t.Run("user name rules", func(t *testing.T) {
+		for _, tc := range []struct{ name, file string }{
+			{"empty", "auth-basic-name-empty.yaml"},
+			{"257 bytes", "auth-basic-name-long.yaml"},
+			{"colon", "auth-basic-name-colon.yaml"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				loadErr(t, fixture(tc.file), "auth.basic.users[0].name")
+			})
+		}
+	})
+
+	// Only hashes are accepted, so a plaintext password in configuration
+	// fails at startup instead of becoming a password nobody can use.
+	t.Run("hash grammar", func(t *testing.T) {
+		for _, tc := range []struct{ name, file string }{
+			{"plaintext", "auth-basic-hash-plain.yaml"},
+			{"52 trailing characters", "auth-basic-hash-short.yaml"},
+			{"md5 prefix", "auth-basic-hash-prefix.yaml"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				loadErr(t, fixture(tc.file), "auth.basic.users[0].passwordHash")
+			})
+		}
+	})
+
+	t.Run("cost range", func(t *testing.T) {
+		for _, tc := range []struct{ name, file, cost string }{
+			{"cost 09", "auth-basic-cost-low.yaml", "9"},
+			{"cost 15", "auth-basic-cost-high.yaml", "15"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				loadErrAll(t, fixture(tc.file), `"alice"`, tc.cost)
+			})
+		}
+	})
+
+	t.Run("mixed costs", func(t *testing.T) {
+		loadErrAll(t, fixture("auth-basic-cost-mixed.yaml"), `"alice"`, `"bob"`, "12", "10")
+	})
+	t.Run("mixed costs across file", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_BASIC_USERS_FILE", fixture("auth-users-cost10.yaml"))
+		loadErrAll(t, fixture("auth-basic.yaml"), "auth.basic.usersFile", `"alice"`, `"bob"`, "12", "10")
+	})
+
+	t.Run("user realm", func(t *testing.T) {
+		loadErr(t, fixture("auth-basic-realm.yaml"), "auth.basic.users[0].realm")
+	})
+
+	t.Run("duplicate names", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_BASIC_USERS_FILE", fixture("auth-users-dup.yaml"))
+		loadErrAll(t, fixture("auth-basic.yaml"), "auth.basic.usersFile", `"alice"`)
+	})
+
+	t.Run("no users", func(t *testing.T) {
+		loadErrAll(t, fixture("auth-basic-empty.yaml"), "auth.basic", "at least one user")
+	})
+
+	t.Run("users file unreadable", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_BASIC_USERS_FILE", fixture("nonexistent.yaml"))
+		loadErr(t, fixture("auth-basic.yaml"), "auth.basic.usersFile")
+	})
+	t.Run("users file unknown key", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_BASIC_USERS_FILE", fixture("auth-users-unknown.yaml"))
+		loadErrAll(t, fixture("auth-basic.yaml"), "auth.basic.usersFile", "field password not found")
+	})
+	// The file half of the user set is what a Secret volume carries,
+	// so a readable file at the shared cost simply loads.
+	t.Run("users file merges", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_BASIC_USERS_FILE", fixture("auth-users.yaml"))
+		cfg := loadOK(t, fixture("auth-basic.yaml"))
+		if cfg.Auth.Basic.UsersFile != fixture("auth-users.yaml") {
+			t.Fatalf("auth.basic.usersFile = %q, want the file the environment named", cfg.Auth.Basic.UsersFile)
+		}
+	})
+
+	// Basic sends the password on every request, so plaintext is refused
+	// unless the operator says the network is already protected.
+	t.Run("plaintext refused", func(t *testing.T) {
+		loadErrAll(t, fixture("auth-basic-plain.yaml"), "auth.basic.allowPlaintext", "server.tls")
+	})
+	t.Run("plaintext allowed", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_BASIC_ALLOW_PLAINTEXT", "true")
+		loadOK(t, fixture("auth-basic-plain.yaml"))
+	})
+
+	t.Run("maxConcurrent range", func(t *testing.T) {
+		for _, value := range []string{"0", "1025"} {
+			t.Run(value, func(t *testing.T) {
+				t.Setenv("PROFGATE_AUTH_BASIC_MAX_CONCURRENT", value)
+				loadErr(t, fixture("auth-basic.yaml"), "auth.basic.maxConcurrent")
+			})
+		}
+	})
+
+	t.Run("oidc ok", func(t *testing.T) {
+		cfg := loadOK(t, fixture("auth-oidc.yaml"))
+		oidc := cfg.Auth.OIDC
+		if oidc == nil {
+			t.Fatal("auth.oidc = nil, want a block")
+		}
+		want := config.OIDCConfig{
+			Issuer: "https://issuer.example", Audience: "profgate",
+			TokenType: "id", UsernameClaim: "sub", GroupsClaim: "groups",
+			DiscoveryTimeout: 30 * time.Second, ClockSkew: 30 * time.Second,
+			JWKSRefresh: time.Hour, JWKSRefreshMin: time.Minute, JWKSMaxStale: 24 * time.Hour,
+		}
+		got := *oidc
+		got.Mapping = config.OIDCMapping{}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("auth.oidc = %+v, want %+v", got, want)
+		}
+		if oidc.Mapping.DefaultRealm != "developer" || oidc.Browser != nil {
+			t.Fatalf("auth.oidc = %+v, want defaultRealm developer and no browser block", *oidc)
+		}
+	})
+
+	t.Run("issuer required", func(t *testing.T) {
+		loadErr(t, fixture("auth-oidc-no-issuer.yaml"), "auth.oidc.issuer")
+	})
+	// A plaintext issuer has no override. auth.basic.allowPlaintext covers the
+	// gateway's own listener behind an Ingress and could not reach this rule
+	// anyway: no basic block can exist alongside oidc mode.
+	t.Run("issuer plaintext", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_OIDC_ISSUER", "http://issuer.example")
+		loadErr(t, fixture("auth-oidc.yaml"), "auth.oidc.issuer")
+	})
+	t.Run("issuer shape", func(t *testing.T) {
+		for _, tc := range []struct{ name, value string }{
+			{"userinfo", "https://user@issuer.example"},
+			{"fragment", "https://issuer.example/#x"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("PROFGATE_AUTH_OIDC_ISSUER", tc.value)
+				loadErr(t, fixture("auth-oidc.yaml"), "auth.oidc.issuer")
+			})
+		}
+	})
+
+	t.Run("audience", func(t *testing.T) {
+		t.Run("absent", func(t *testing.T) {
+			loadErr(t, fixture("auth-oidc-no-audience.yaml"), "auth.oidc.audience")
+		})
+		t.Run("257 bytes", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_AUDIENCE", strings.Repeat("a", 257))
+			loadErr(t, fixture("auth-oidc.yaml"), "auth.oidc.audience")
+		})
+	})
+
+	t.Run("claim lengths", func(t *testing.T) {
+		t.Run("usernameClaim 65 bytes", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_USERNAME_CLAIM", strings.Repeat("a", 65))
+			loadErr(t, fixture("auth-oidc.yaml"), "auth.oidc.usernameClaim")
+		})
+		t.Run("groupsClaim empty", func(t *testing.T) {
+			loadErr(t, fixture("auth-oidc-claim-empty.yaml"), "auth.oidc.groupsClaim")
+		})
+	})
+
+	// The CA is opened and parsed here so a path typo or an empty file names
+	// the key at startup rather than failing every discovery fetch later.
+	t.Run("caFile", func(t *testing.T) {
+		for _, tc := range []struct{ name, value string }{
+			{"nonexistent", fixture("nonexistent.pem")},
+			{"no certificate", fixture("auth-ca-empty.pem")},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("PROFGATE_AUTH_OIDC_CA_FILE", tc.value)
+				loadErr(t, fixture("auth-oidc.yaml"), "auth.oidc.caFile")
+			})
+		}
+		t.Run("one certificate", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_CA_FILE", fixture("auth-ca.pem"))
+			loadOK(t, fixture("auth-oidc.yaml"))
+		})
+	})
+
+	t.Run("httpProxy", func(t *testing.T) {
+		t.Run("ftp", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_HTTP_PROXY", "ftp://x")
+			loadErr(t, fixture("auth-oidc.yaml"), "auth.oidc.httpProxy")
+		})
+		t.Run("http", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_HTTP_PROXY", "http://proxy:3128")
+			loadOK(t, fixture("auth-oidc.yaml"))
+		})
+	})
+
+	t.Run("duration ranges", func(t *testing.T) {
+		for _, tc := range []struct{ name, env, value, key string }{
+			{"discoveryTimeout 0s", "PROFGATE_AUTH_OIDC_DISCOVERY_TIMEOUT", "0s", "auth.oidc.discoveryTimeout"},
+			{"clockSkew 6m", "PROFGATE_AUTH_OIDC_CLOCK_SKEW", "6m", "auth.oidc.clockSkew"},
+			{"jwksRefresh 30s", "PROFGATE_AUTH_OIDC_JWKS_REFRESH", "30s", "auth.oidc.jwksRefresh"},
+			{"jwksRefreshMin 2h", "PROFGATE_AUTH_OIDC_JWKS_REFRESH_MIN", "2h", "auth.oidc.jwksRefreshMin"},
+			{"jwksMaxStale 8d", "PROFGATE_AUTH_OIDC_JWKS_MAX_STALE", "192h", "auth.oidc.jwksMaxStale"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv(tc.env, tc.value)
+				loadErr(t, fixture("auth-oidc.yaml"), tc.key)
+			})
+		}
+	})
+
+	// A set the gateway may keep trusting for less time than it waits to
+	// refresh would go stale on every cycle.
+	t.Run("maxStale below refresh", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_OIDC_JWKS_REFRESH", "2h")
+		t.Setenv("PROFGATE_AUTH_OIDC_JWKS_MAX_STALE", "1h")
+		loadErrAll(t, fixture("auth-oidc.yaml"), "auth.oidc.jwksMaxStale", "auth.oidc.jwksRefresh")
+	})
+
+	// An oidc gateway with no mapping at all can admit nobody.
+	t.Run("mapping empty", func(t *testing.T) {
+		loadErr(t, fixture("auth-oidc-no-mapping.yaml"), "auth.oidc.mapping")
+	})
+	t.Run("mapping names", func(t *testing.T) {
+		for _, tc := range []struct{ name, file, key string }{
+			{"empty", "auth-oidc-map-empty.yaml", "auth.oidc.mapping.users[0].name"},
+			{"257 bytes", "auth-oidc-map-long.yaml", "auth.oidc.mapping.users[0].name"},
+			{"duplicate group", "auth-oidc-map-dup.yaml", "auth.oidc.mapping.groups"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				loadErr(t, fixture(tc.file), tc.key)
+			})
+		}
+	})
+	t.Run("mapping realms", func(t *testing.T) {
+		t.Run("user", func(t *testing.T) {
+			loadErr(t, fixture("auth-oidc-map-realm.yaml"), "auth.oidc.mapping.users[0].realm")
+		})
+		t.Run("default", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_DEFAULT_REALM", "nobody")
+			loadErr(t, fixture("auth-oidc.yaml"), "auth.oidc.mapping.defaultRealm")
+		})
+	})
+	// An empty defaultRealm is the key written out rather than a realm named "",
+	// so it loads and the default step simply never matches.
+	t.Run("defaultRealm empty is unset", func(t *testing.T) {
+		cfg := loadOK(t, fixture("auth-oidc-groups.yaml"))
+		if cfg.Auth.OIDC.Mapping.DefaultRealm != "" {
+			t.Fatalf("mapping.defaultRealm = %q, want empty", cfg.Auth.OIDC.Mapping.DefaultRealm)
+		}
+	})
+
+	t.Run("browser ok", func(t *testing.T) {
+		cfg := loadOK(t, fixture("auth-browser.yaml"))
+		browser := cfg.Auth.OIDC.Browser
+		if browser == nil {
+			t.Fatal("auth.oidc.browser = nil, want a block")
+		}
+		if !slices.Equal(browser.Scopes, []string{"openid", "profile", "email"}) {
+			t.Fatalf("scopes = %v, want [openid profile email]", browser.Scopes)
+		}
+		if browser.SessionTTL != 8*time.Hour || browser.TransactionTTL != 5*time.Minute {
+			t.Fatalf("browser = %+v, want sessionTTL 8h and transactionTTL 5m", *browser)
+		}
+	})
+
+	// The ID token the flow receives carries the client ID in aud and is
+	// verified against audience; two values would validate and admit nobody.
+	t.Run("clientID equals audience", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_OIDC_CLIENT_ID", "other")
+		loadErrAll(t, fixture("auth-browser.yaml"), "auth.oidc.browser.clientID", "auth.oidc.audience")
+	})
+
+	t.Run("clientSecretFile", func(t *testing.T) {
+		for _, tc := range []struct{ name, value string }{
+			{"nonexistent", fixture("nonexistent")},
+			{"empty", fixture("auth-secret-empty")},
+			{"1025 bytes", fixture("auth-secret-big")},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("PROFGATE_AUTH_OIDC_CLIENT_SECRET_FILE", tc.value)
+				loadErr(t, fixture("auth-browser.yaml"), "auth.oidc.browser.clientSecretFile")
+			})
+		}
+		t.Run("1024 bytes", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_CLIENT_SECRET_FILE", fixture("auth-secret"))
+			loadOK(t, fixture("auth-browser.yaml"))
+		})
+	})
+
+	t.Run("redirectURL", func(t *testing.T) {
+		for _, tc := range []struct{ name, value string }{
+			{"plaintext", "http://profgate.example/auth/callback"},
+			{"userinfo", "https://u@profgate.example/auth/callback"},
+			{"query", "https://profgate.example/auth/callback?x=1"},
+			{"fragment", "https://profgate.example/auth/callback#f"},
+			{"other path", "https://profgate.example/callback"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("PROFGATE_AUTH_OIDC_REDIRECT_URL", tc.value)
+				loadErr(t, fixture("auth-browser.yaml"), "auth.oidc.browser.redirectURL")
+			})
+		}
+	})
+
+	t.Run("scopes", func(t *testing.T) {
+		for _, tc := range []struct{ name, file string }{
+			{"without openid", "auth-browser-scope-noopenid.yaml"},
+			{"duplicate", "auth-browser-scope-dup.yaml"},
+			{"65 bytes", "auth-browser-scope-long.yaml"},
+			{"with a space", "auth-browser-scope-space.yaml"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				loadErr(t, fixture(tc.file), "auth.oidc.browser.scopes")
+			})
+		}
+	})
+
+	t.Run("cookieKeyFile", func(t *testing.T) {
+		t.Run("absent", func(t *testing.T) {
+			loadErr(t, fixture("auth-browser-no-key.yaml"), "auth.oidc.browser.cookieKeyFile")
+		})
+		t.Run("unreadable", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE", fixture("nonexistent.key"))
+			loadErr(t, fixture("auth-browser.yaml"), "auth.oidc.browser.cookieKeyFile")
+		})
+	})
+
+	t.Run("ttl ranges", func(t *testing.T) {
+		for _, tc := range []struct{ name, env, value, key string }{
+			{"sessionTTL 4m", "PROFGATE_AUTH_OIDC_SESSION_TTL", "4m", "auth.oidc.browser.sessionTTL"},
+			{"sessionTTL 25h", "PROFGATE_AUTH_OIDC_SESSION_TTL", "25h", "auth.oidc.browser.sessionTTL"},
+			{"transactionTTL 30s", "PROFGATE_AUTH_OIDC_TRANSACTION_TTL", "30s", "auth.oidc.browser.transactionTTL"},
+			{"transactionTTL 16m", "PROFGATE_AUTH_OIDC_TRANSACTION_TTL", "16m", "auth.oidc.browser.transactionTTL"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv(tc.env, tc.value)
+				loadErr(t, fixture("auth-browser.yaml"), tc.key)
+			})
+		}
+	})
+
+	// The session cookie carries Secure and a __Host- prefix, which a plaintext
+	// listener cannot set, and no escape hatch covers that:
+	// auth.basic.allowPlaintext lives in a block oidc mode cannot carry.
+	t.Run("browser needs tls", func(t *testing.T) {
+		loadErr(t, fixture("auth-browser-plain.yaml"), "server.tls")
+	})
+	t.Run("browser needs id tokens", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_OIDC_TOKEN_TYPE", "access")
+		loadErr(t, fixture("auth-browser.yaml"), "auth.oidc.tokenType")
+	})
+
+	t.Run("unknown keys", func(t *testing.T) {
+		t.Run("auth.basic.user", func(t *testing.T) {
+			loadErr(t, fixture("auth-basic-unknown.yaml"), "field user not found in type config.BasicConfig")
+		})
+		t.Run("auth.oidc.browser.clientId", func(t *testing.T) {
+			loadErr(t, fixture("auth-browser-unknown.yaml"), "field clientId not found in type config.OIDCBrowser")
+		})
+	})
+
+	t.Run("env overrides", func(t *testing.T) {
+		t.Run("basic", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_MODE", "basic")
+			t.Setenv("PROFGATE_AUTH_BASIC_USERS_FILE", fixture("auth-users.yaml"))
+			t.Setenv("PROFGATE_AUTH_BASIC_ALLOW_PLAINTEXT", "true")
+			t.Setenv("PROFGATE_AUTH_BASIC_MAX_CONCURRENT", "32")
+			cfg := loadOK(t, fixture("auth-basic-plain.yaml"))
+			want := config.BasicConfig{
+				UsersFile: fixture("auth-users.yaml"), AllowPlaintext: true, MaxConcurrent: 32,
+			}
+			got := *cfg.Auth.Basic
+			got.Users = nil
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("auth.basic = %+v, want %+v", got, want)
+			}
+		})
+
+		t.Run("oidc", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_MODE", "oidc")
+			t.Setenv("PROFGATE_AUTH_OIDC_ISSUER", "https://other.example/realms/x")
+			t.Setenv("PROFGATE_AUTH_OIDC_AUDIENCE", "gateway")
+			t.Setenv("PROFGATE_AUTH_OIDC_TOKEN_TYPE", "access")
+			t.Setenv("PROFGATE_AUTH_OIDC_USERNAME_CLAIM", "preferred_username")
+			t.Setenv("PROFGATE_AUTH_OIDC_GROUPS_CLAIM", "roles")
+			t.Setenv("PROFGATE_AUTH_OIDC_CA_FILE", fixture("auth-ca.pem"))
+			t.Setenv("PROFGATE_AUTH_OIDC_HTTP_PROXY", "socks5://proxy:1080")
+			t.Setenv("PROFGATE_AUTH_OIDC_DISCOVERY_TIMEOUT", "45s")
+			t.Setenv("PROFGATE_AUTH_OIDC_CLOCK_SKEW", "10s")
+			t.Setenv("PROFGATE_AUTH_OIDC_JWKS_REFRESH", "2h")
+			t.Setenv("PROFGATE_AUTH_OIDC_JWKS_REFRESH_MIN", "30s")
+			t.Setenv("PROFGATE_AUTH_OIDC_JWKS_MAX_STALE", "48h")
+			t.Setenv("PROFGATE_AUTH_OIDC_DEFAULT_REALM", "developer")
+			cfg := loadOK(t, fixture("auth-oidc.yaml"))
+			want := config.OIDCConfig{
+				Issuer: "https://other.example/realms/x", Audience: "gateway", TokenType: "access",
+				UsernameClaim: "preferred_username", GroupsClaim: "roles",
+				CAFile: fixture("auth-ca.pem"), HTTPProxy: "socks5://proxy:1080",
+				DiscoveryTimeout: 45 * time.Second, ClockSkew: 10 * time.Second,
+				JWKSRefresh: 2 * time.Hour, JWKSRefreshMin: 30 * time.Second, JWKSMaxStale: 48 * time.Hour,
+			}
+			got := *cfg.Auth.OIDC
+			got.Mapping = config.OIDCMapping{}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("auth.oidc = %+v, want %+v", got, want)
+			}
+			if cfg.Auth.OIDC.Mapping.DefaultRealm != "developer" {
+				t.Fatalf("mapping.defaultRealm = %q, want developer", cfg.Auth.OIDC.Mapping.DefaultRealm)
+			}
+		})
+
+		t.Run("browser", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_CLIENT_ID", "gateway")
+			t.Setenv("PROFGATE_AUTH_OIDC_AUDIENCE", "gateway")
+			t.Setenv("PROFGATE_AUTH_OIDC_CLIENT_SECRET_FILE", fixture("auth-secret"))
+			t.Setenv("PROFGATE_AUTH_OIDC_REDIRECT_URL", "https://gw.example/auth/callback")
+			t.Setenv("PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE", fixture("cookie.key"))
+			t.Setenv("PROFGATE_AUTH_OIDC_SESSION_TTL", "12h")
+			t.Setenv("PROFGATE_AUTH_OIDC_TRANSACTION_TTL", "10m")
+			cfg := loadOK(t, fixture("auth-browser.yaml"))
+			want := config.OIDCBrowser{
+				ClientID: "gateway", ClientSecretFile: fixture("auth-secret"),
+				RedirectURL: "https://gw.example/auth/callback", CookieKeyFile: fixture("cookie.key"),
+				SessionTTL: 12 * time.Hour, TransactionTTL: 10 * time.Minute,
+			}
+			got := *cfg.Auth.OIDC.Browser
+			got.Scopes = nil
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("auth.oidc.browser = %+v, want %+v", got, want)
+			}
+		})
+	})
 }

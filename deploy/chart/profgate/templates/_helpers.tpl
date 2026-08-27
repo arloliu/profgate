@@ -99,6 +99,18 @@ holds it to an actual boolean.
 {{- end -}}
 
 {{/*
+Whether the authentication Secret is mounted: "true", or "" when it is off.
+auth.secret.enabled decides the Secret volume, its mount, and every derived
+file path in the rendered configuration -- auth.basic.usersFile,
+auth.oidc.caFile, auth.oidc.browser.clientSecretFile, and
+auth.oidc.browser.cookieKeyFile -- so every template reads it through this
+helper, which holds it to an actual boolean.
+*/}}
+{{- define "profgate.authSecretEnabled" -}}
+{{- include "profgate.boolValue" (dict "key" "auth.secret.enabled" "value" .Values.auth.secret.enabled) -}}
+{{- end -}}
+
+{{/*
 Validate one of the four pgo.limits ceilings the memory limit is derived
 from, and print it as the plain integer both the arithmetic and the rendered
 configuration carry.
@@ -314,6 +326,33 @@ shapes are refused the way config.pgo is.
 {{- if hasKey (dig "nats" dict $raw | default dict) "credsFile" -}}
 {{- fail "config.nats.credsFile is not supported: the credentials mount follows nats.credsFile, so a path set here can name a file nothing mounts; set nats.credsFile and nats.existingSecret instead" -}}
 {{- end -}}
+{{- /* The four authentication file paths are the same coupling: each is
+derived from auth.secret.mountPath and a Secret data key, so a path arriving
+through the raw block can name a file the auth Secret does not mount. A
+scalar or malformed config.auth, config.auth.basic, config.auth.oidc, or
+config.auth.oidc.browser folds to an empty mapping here rather than failing
+on its own -- the four leaf keys below are the coupling the chart guards, not
+the shape of the blocks around them. */ -}}
+{{- $rawAuth := dict -}}
+{{- if kindIs "map" (dig "auth" dict $raw) -}}{{- $rawAuth = dig "auth" dict $raw -}}{{- end -}}
+{{- $rawAuthBasic := dict -}}
+{{- if kindIs "map" (dig "basic" dict $rawAuth) -}}{{- $rawAuthBasic = dig "basic" dict $rawAuth -}}{{- end -}}
+{{- if hasKey $rawAuthBasic "usersFile" -}}
+{{- fail "config.auth.basic.usersFile is not supported: the users file mount follows auth.basic.usersFile and auth.secret.mountPath, so a path set here can name a file nothing mounts; set auth.basic.usersFile and auth.secret.mountPath instead" -}}
+{{- end -}}
+{{- $rawAuthOIDC := dict -}}
+{{- if kindIs "map" (dig "oidc" dict $rawAuth) -}}{{- $rawAuthOIDC = dig "oidc" dict $rawAuth -}}{{- end -}}
+{{- if hasKey $rawAuthOIDC "caFile" -}}
+{{- fail "config.auth.oidc.caFile is not supported: the CA certificate mount follows auth.oidc.caKey and auth.secret.mountPath, so a path set here can name a file nothing mounts; set auth.oidc.caKey and auth.secret.mountPath instead" -}}
+{{- end -}}
+{{- $rawAuthBrowser := dict -}}
+{{- if kindIs "map" (dig "browser" dict $rawAuthOIDC) -}}{{- $rawAuthBrowser = dig "browser" dict $rawAuthOIDC -}}{{- end -}}
+{{- if hasKey $rawAuthBrowser "clientSecretFile" -}}
+{{- fail "config.auth.oidc.browser.clientSecretFile is not supported: the client secret mount follows auth.oidc.browser.clientSecretFile and auth.secret.mountPath, so a path set here can name a file nothing mounts; set auth.oidc.browser.clientSecretFile and auth.secret.mountPath instead" -}}
+{{- end -}}
+{{- if hasKey $rawAuthBrowser "cookieKeyFile" -}}
+{{- fail "config.auth.oidc.browser.cookieKeyFile is not supported: the cookie key mount follows auth.secret.mountPath, so a path set here can name a file nothing mounts; set auth.secret.mountPath instead" -}}
+{{- end -}}
 {{- /* Each Secret mount is assembled from parts -- a Secret name, a mount
 path, and data keys -- and rendering holds every part of an active mount to
 what Kubernetes accepts: an empty Secret name or mount path renders a
@@ -409,7 +448,11 @@ block a render. */ -}}
 {{- $mountGuarded := dict
       "PROFGATE_NATS_CREDS_FILE" "the credentials mount follows nats.credsFile, so set nats.credsFile and nats.existingSecret instead"
       "PROFGATE_TLS_CERT_FILE" "the certificate mount follows tls.enabled, so set tls.enabled and tls.existingSecret instead"
-      "PROFGATE_TLS_KEY_FILE" "the certificate mount follows tls.enabled, so set tls.enabled and tls.existingSecret instead" -}}
+      "PROFGATE_TLS_KEY_FILE" "the certificate mount follows tls.enabled, so set tls.enabled and tls.existingSecret instead"
+      "PROFGATE_AUTH_BASIC_USERS_FILE" "the users file mount follows auth.basic.usersFile and auth.secret.mountPath, so set those instead"
+      "PROFGATE_AUTH_OIDC_CA_FILE" "the CA certificate mount follows auth.oidc.caKey and auth.secret.mountPath, so set those instead"
+      "PROFGATE_AUTH_OIDC_CLIENT_SECRET_FILE" "the client secret mount follows auth.oidc.browser.clientSecretFile and auth.secret.mountPath, so set those instead"
+      "PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE" "the cookie key mount follows auth.secret.mountPath, so set that instead" -}}
 {{- range .Values.extraEnv -}}
 {{- if hasKey $guarded (.name | default "") -}}
 {{- fail (printf "extraEnv must not set %s: %s" .name (get $guarded .name)) -}}
@@ -417,6 +460,39 @@ block a render. */ -}}
 {{- if hasKey $mountGuarded (.name | default "") -}}
 {{- fail (printf "extraEnv must not set %s: %s" .name (get $mountGuarded .name)) -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Reject a values file that names a file the authentication Secret does not
+mount, or a browser login that a plaintext listener cannot carry.
+auth.basic.usersFile, auth.oidc.caKey, and auth.oidc.browser.clientSecretFile
+each name a Secret data key that only exists once auth.secret.enabled mounts
+the Secret; a value set without the Secret enabled would render a
+configuration naming a file nothing mounts, and the gateway would exit at
+startup over it. The cookie key file is unconditional whenever browser is
+set, so browser alone carries the same requirement.
+auth.oidc.browser also requires tls.enabled: the session cookie carries
+Secure and a __Host- prefix, which a plaintext listener cannot set, and
+config.Load rejects the combination anyway, so failing here catches it before
+a Pod ever starts.
+*/}}
+{{- define "profgate.validateAuthSecret" -}}
+{{- $mode := .Values.auth.mode -}}
+{{- $needsSecret := false -}}
+{{- if eq $mode "basic" -}}
+{{- if .Values.auth.basic.usersFile -}}{{- $needsSecret = true -}}{{- end -}}
+{{- else if eq $mode "oidc" -}}
+{{- if .Values.auth.oidc.caKey -}}{{- $needsSecret = true -}}{{- end -}}
+{{- if .Values.auth.oidc.browser -}}
+{{- $needsSecret = true -}}
+{{- if not (include "profgate.tlsEnabled" .) -}}
+{{- fail "tls.enabled must be true when auth.oidc.browser is set: the session cookie carries Secure and a __Host- prefix, which a plaintext listener cannot set" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and $needsSecret (not (include "profgate.authSecretEnabled" .)) -}}
+{{- fail (printf "auth.secret.enabled must be true: %s mode is configured with a file that the Secret at auth.secret.mountPath carries" $mode) -}}
 {{- end -}}
 {{- end -}}
 
@@ -508,8 +584,55 @@ server:
     minVersion: {{ .Values.tls.minVersion | quote }}
 {{- end }}
 auth:
-  mode: disabled
+  mode: {{ .Values.auth.mode | quote }}
+{{- if eq .Values.auth.mode "disabled" }}
   anonymousRealm: {{ .Values.auth.anonymousRealm | quote }}
+{{- else if eq .Values.auth.mode "basic" }}
+  basic:
+    {{- with .Values.auth.basic.users }}
+    users:
+{{ toYaml . | indent 6 }}
+    {{- end }}
+    {{- if .Values.auth.basic.usersFile }}
+    usersFile: {{ printf "%s/%s" .Values.auth.secret.mountPath .Values.auth.basic.usersFile | quote }}
+    {{- end }}
+    allowPlaintext: {{ .Values.auth.basic.allowPlaintext }}
+    maxConcurrent: {{ .Values.auth.basic.maxConcurrent }}
+{{- else if eq .Values.auth.mode "oidc" }}
+  oidc:
+    issuer: {{ .Values.auth.oidc.issuer | quote }}
+    audience: {{ .Values.auth.oidc.audience | quote }}
+    tokenType: {{ .Values.auth.oidc.tokenType | quote }}
+    usernameClaim: {{ .Values.auth.oidc.usernameClaim | quote }}
+    groupsClaim: {{ .Values.auth.oidc.groupsClaim | quote }}
+    {{- if .Values.auth.oidc.caKey }}
+    caFile: {{ printf "%s/%s" .Values.auth.secret.mountPath .Values.auth.oidc.caKey | quote }}
+    {{- end }}
+    {{- if .Values.auth.oidc.httpProxy }}
+    httpProxy: {{ .Values.auth.oidc.httpProxy | quote }}
+    {{- end }}
+    mapping:
+{{ toYaml .Values.auth.oidc.mapping | indent 6 }}
+    {{- if .Values.auth.oidc.browser }}
+    browser:
+      clientID: {{ .Values.auth.oidc.browser.clientID | quote }}
+      redirectURL: {{ .Values.auth.oidc.browser.redirectURL | quote }}
+      {{- if .Values.auth.oidc.browser.clientSecretFile }}
+      clientSecretFile: {{ printf "%s/%s" .Values.auth.secret.mountPath .Values.auth.oidc.browser.clientSecretFile | quote }}
+      {{- end }}
+      {{- with .Values.auth.oidc.browser.scopes }}
+      scopes:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      cookieKeyFile: {{ printf "%s/cookie.key" .Values.auth.secret.mountPath | quote }}
+      {{- with .Values.auth.oidc.browser.sessionTTL }}
+      sessionTTL: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.auth.oidc.browser.transactionTTL }}
+      transactionTTL: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+{{- end }}
 realms:
 {{ toYaml (required "realms must name at least one realm" .Values.realms) | indent 2 }}
 {{- if include "profgate.pgoEnabled" . }}

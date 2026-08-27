@@ -1,0 +1,14 @@
+# The subject carries no namespace on purpose: kustomize's namespace transform
+# only rewrites a ServiceAccount subject whose namespace matches the
+# ServiceAccount in the same kustomization, and that one has none either.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: profgate-basic
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: profgate
+subjects:
+  - kind: ServiceAccount
+    name: profgate-basic

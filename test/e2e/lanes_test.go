@@ -259,6 +259,21 @@ func TestScenariosRegistry(t *testing.T) {
 		t.Fatalf("%q declares a lane capability it does not use: %+v", all[k].Name, all[k])
 	}
 
+	// Both authentication scenarios pull a profile through their own gateway,
+	// which completes a proxy to a test-app Pod.
+	for _, name := range []string{"auth-oidc-browser", "auth-basic"} {
+		j := slices.IndexFunc(all, func(s Scenario) bool { return s.Name == name })
+		if j < 0 {
+			t.Fatalf("no scenario named %q", name)
+		}
+		if !all[j].NeedsPodReach {
+			t.Fatalf("%q pulls a profile through the gateway, so it must declare NeedsPodReach", name)
+		}
+		if all[j].NeedsNetworkPolicy {
+			t.Fatalf("%q declares NeedsNetworkPolicy; authentication needs none, so every lane must run it", name)
+		}
+	}
+
 	// Scenarios hands out a copy: mutating it must not reach the registry.
 	all[i].Name = "mutated"
 	if Scenarios()[i].Name != "convergence on ready" {
@@ -279,6 +294,7 @@ func TestScenarioSkips(t *testing.T) {
 				"ineligible pods", "convergence on ready", "profiles parse", "replicas agree", "api outage",
 				"port selection", "port selection refused",
 				"pgo-on-demand", "pgo-scheduled-slot", "pgo-cancel", "pgo-version-conflict", "pgo-reclaim",
+				"auth-oidc-browser", "auth-basic",
 			},
 		},
 		{

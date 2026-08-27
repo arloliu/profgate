@@ -27,7 +27,18 @@ const (
 	// EndpointCollectionCancel is the PGO Collection cancel endpoint route family.
 	// profile is fixed to "cpu" for this endpoint.
 	EndpointCollectionCancel Endpoint = "collection_cancel"
+	// EndpointAuth is the route family of the three /auth/ routes.
+	EndpointAuth Endpoint = "auth"
 )
+
+// CookieKey is one loaded cookie key as the info gauge reports it.
+// Fingerprint is the first 8 hex digits of SHA-256 over the key, which lets an
+// operator watch a key rotation reach every replica without reading key
+// material. Role is "current" or "previous".
+type CookieKey struct {
+	Fingerprint string
+	Role        string
+}
 
 // Recorder records the metrics the gateway's handlers produce.
 type Recorder interface {
@@ -63,6 +74,24 @@ type Recorder interface {
 	// TLSCertificateExpiry reports when the certificate the API listener is
 	// serving stops being valid.
 	TLSCertificateExpiry(notAfter time.Time)
+	// AuthFailure records one authentication failure answered 401, 429, or 503.
+	// A redirect into the browser flow is not a failure.
+	AuthFailure(mode, reason string)
+	// AuthSessionIssued records one browser session minted.
+	AuthSessionIssued()
+	// JWKSRefresh records one signing key fetch: "ok" or "failed".
+	JWKSRefresh(result string)
+	// JWKSKeys reports how many usable signing keys are held.
+	JWKSKeys(n int)
+	// JWKSFetched reports when the last successful key fetch happened.
+	// The age reported to a scrape is derived from it.
+	JWKSFetched(at time.Time)
+	// AuthFileReload records one poll of a re-read file:
+	// file is "users" or "cookie_key", result is "ok" or "failed".
+	AuthFileReload(file, result string)
+	// CookieKeys replaces the set of loaded cookie keys the info gauge reports,
+	// so a key dropped from the file stops being reported.
+	CookieKeys(keys []CookieKey)
 }
 
 // Noop implements Recorder with empty methods, for callers that need a
@@ -107,3 +136,24 @@ func (Noop) TLSReload(string) {}
 
 // TLSCertificateExpiry implements Recorder and does nothing.
 func (Noop) TLSCertificateExpiry(time.Time) {}
+
+// AuthFailure implements Recorder and does nothing.
+func (Noop) AuthFailure(string, string) {}
+
+// AuthSessionIssued implements Recorder and does nothing.
+func (Noop) AuthSessionIssued() {}
+
+// JWKSRefresh implements Recorder and does nothing.
+func (Noop) JWKSRefresh(string) {}
+
+// JWKSKeys implements Recorder and does nothing.
+func (Noop) JWKSKeys(int) {}
+
+// JWKSFetched implements Recorder and does nothing.
+func (Noop) JWKSFetched(time.Time) {}
+
+// AuthFileReload implements Recorder and does nothing.
+func (Noop) AuthFileReload(string, string) {}
+
+// CookieKeys implements Recorder and does nothing.
+func (Noop) CookieKeys([]CookieKey) {}

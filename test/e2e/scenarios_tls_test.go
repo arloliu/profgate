@@ -29,8 +29,6 @@ const (
 	// tlsGatewayName is the Deployment, ServiceAccount, ConfigMap, and
 	// ClusterRoleBinding of the tls-gateway overlay.
 	tlsGatewayName = "profgate-tls"
-	// tlsGatewaySelector selects the Pod of the TLS gateway.
-	tlsGatewaySelector = testAppLabel + "=" + tlsGatewayName
 	// tlsHost is the name the client asks for and the certificate is issued
 	// for, so the handshake verifies a name rather than skipping the check.
 	tlsHost = "gateway"
@@ -42,19 +40,23 @@ const (
 )
 
 // authority is a certificate authority minted inside the test, and a leaf it
-// signed for tlsHost. Two of them are what a rotation is: the gateway serves
-// the first, the Secret is replaced with the second, and a client that trusts
-// only one of them says which is being served.
+// signed for the names given. Two of them are what a rotation is: the gateway
+// serves the first, the Secret is replaced with the second, and a client that
+// trusts only one of them says which is being served.
 type authority struct {
 	pool    *x509.CertPool
+	ca      *x509.Certificate
+	caPEM   []byte
 	certPEM []byte
 	keyPEM  []byte
 }
 
-// newAuthority mints a CA and a leaf for tlsHost signed by it.
+// newAuthority mints a CA and a leaf signed by it that certifies hosts:
+// a host net.ParseIP accepts goes into the leaf's IP addresses, any other into
+// its DNS names.
 // The chain the gateway serves is leaf then CA, which is what an operator's
 // tls.crt holds and what lets a client verify against the CA alone.
-func newAuthority(t *testing.T) authority {
+func newAuthority(t *testing.T, hosts ...string) authority {
 	t.Helper()
 
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -85,12 +87,18 @@ func newAuthority(t *testing.T) authority {
 	}
 	leafTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: tlsHost},
+		Subject:      pkix.Name{CommonName: hosts[0]},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(12 * time.Hour),
-		DNSNames:     []string{tlsHost},
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	for _, host := range hosts {
+		if ip := net.ParseIP(host); ip != nil {
+			leafTmpl.IPAddresses = append(leafTmpl.IPAddresses, ip)
+		} else {
+			leafTmpl.DNSNames = append(leafTmpl.DNSNames, host)
+		}
 	}
 	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, ca, &leafKey.PublicKey, caKey)
 	if err != nil {
@@ -103,12 +111,13 @@ func newAuthority(t *testing.T) authority {
 
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
-	certPEM := append(
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})...)
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+	certPEM := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}), caPEM...)
 
 	return authority{
 		pool:    pool,
+		ca:      ca,
+		caPEM:   caPEM,
 		certPEM: certPEM,
 		keyPEM:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: leafKeyDER}),
 	}
@@ -160,7 +169,7 @@ func scenarioTLSRotation(t *testing.T, h *Harness) {
 	ns := h.Namespace(t)
 	deployTestApp(t, h, ns)
 
-	first := newAuthority(t)
+	first := newAuthority(t, tlsHost)
 	local, pod := deployTLSGateway(t, h, ns, first)
 
 	// The certificate on disk is served, and it verifies against the authority
@@ -189,7 +198,7 @@ func scenarioTLSRotation(t *testing.T, h *Harness) {
 	before := podState(t, h, ns, pod)
 
 	// The rotation: the same Secret, a certificate from a second authority.
-	second := newAuthority(t)
+	second := newAuthority(t, tlsHost)
 	start := time.Now()
 	if err := h.applyTLSSecret(t.Context(), ns, second.certPEM, second.keyPEM); err != nil {
 		t.Fatal(err)
@@ -251,32 +260,43 @@ func podState(t *testing.T, h *Harness, ns, name string) podIdentity {
 // deployTLSGateway creates the certificate Secret, applies the tls-gateway
 // overlay into ns, waits for its Pod, and returns the local address a
 // port-forward reaches its API listener at, with the Pod's name.
+func deployTLSGateway(t *testing.T, h *Harness, ns string, ca authority) (string, string) {
+	t.Helper()
+	cfg := gatewayConfig(gatewayConfigOptions{TLSMount: tlsMountPath})
+
+	return deployHTTPSGateway(t, h, ns, "tls-gateway", tlsGatewayName, ca, cfg)
+}
+
+// deployHTTPSGateway creates the certificate Secret, applies the named overlay
+// into ns with cfg as its configuration, waits for its Pod, and returns the
+// local address a port-forward reaches its API listener at, with the Pod's name.
+// name is the resource name every object in the overlay shares.
 // The Secret comes first on purpose: the overlay's volume is not optional, so a
 // Pod applied before it exists would wait at mount time until the rollout gave
 // up, which is a slower and less legible failure than a missing Secret.
-func deployTLSGateway(t *testing.T, h *Harness, ns string, ca authority) (string, string) {
+func deployHTTPSGateway(t *testing.T, h *Harness, ns, overlay, name string, ca authority, cfg string) (string, string) {
 	t.Helper()
 	ctx := t.Context()
+	selector := testAppLabel + "=" + name
 
 	if err := h.applyTLSSecret(ctx, ns, ca.certPEM, ca.keyPEM); err != nil {
 		t.Fatal(err)
 	}
-	cfg := gatewayConfig(gatewayConfigOptions{TLSMount: tlsMountPath})
-	h.Apply(t, ns, "tls-gateway", configPatch(tlsGatewayName, cfg))
+	h.Apply(t, ns, overlay, configPatch(name, cfg))
 	t.Cleanup(func() {
 		// The namespace deletion takes the rest; the ClusterRoleBinding is cluster-scoped.
-		err := h.Client.RbacV1().ClusterRoleBindings().Delete(context.Background(), tlsGatewayName, metav1.DeleteOptions{})
+		err := h.Client.RbacV1().ClusterRoleBindings().Delete(context.Background(), name, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
-			t.Errorf("delete clusterrolebinding %s: %v", tlsGatewayName, err)
+			t.Errorf("delete clusterrolebinding %s: %v", name, err)
 		}
 	})
-	if err := h.kubectl(ctx, "rollout", "status", "deployment/"+tlsGatewayName, "-n", ns,
+	if err := h.kubectl(ctx, "rollout", "status", "deployment/"+name, "-n", ns,
 		"--timeout="+rolloutTimeout.String()); err != nil {
-		_ = h.kubectl(ctx, "describe", "pods", "-n", ns, "-l", tlsGatewaySelector)
-		_ = h.kubectl(ctx, "logs", "-n", ns, "-l", tlsGatewaySelector, "--tail=50")
+		_ = h.kubectl(ctx, "describe", "pods", "-n", ns, "-l", selector)
+		_ = h.kubectl(ctx, "logs", "-n", ns, "-l", selector, "--tail=50")
 		t.Fatal(err)
 	}
-	pod, err := h.waitOnePod(ctx, ns, tlsGatewaySelector)
+	pod, err := h.waitOnePod(ctx, ns, selector)
 	if err != nil {
 		t.Fatal(err)
 	}

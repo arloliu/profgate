@@ -39,6 +39,8 @@ var scenarios = [...]Scenario{
 	{Name: "pgo-clusterrole"},
 	{Name: "pgo-preflight-negative"},
 	{Name: "tls-rotation"},
+	{Name: "auth-oidc-browser", NeedsPodReach: true},
+	{Name: "auth-basic", NeedsPodReach: true},
 }
 
 // Scenarios returns a copy of the complete, ordered scenario metadata.

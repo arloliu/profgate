@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/arloliu/profgate/internal/admit"
+	"github.com/arloliu/profgate/internal/auth"
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/httpapi"
 	"github.com/arloliu/profgate/internal/k8s"
@@ -95,6 +96,7 @@ type serveDeps struct {
 	pgoWorker     collectionWorker                       // production: nil, so serve builds a pgo.Worker
 	listen        listenFunc                             // production: nil, so serve uses net.ListenConfig
 	tlsRefresh    time.Duration                          // production: 0, so tlscert re-reads on its own interval
+	authPoll      time.Duration                          // production: 0, so the users file and cookie key file are polled every 30 seconds
 }
 
 // serve runs the gateway until stop is closed or a fatal event happens, and returns the exit code.
@@ -107,9 +109,43 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		return 2
 	}
 	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: cfg.Server.SlogLevel()}))
-	logger.Warn("authentication disabled; access is controlled only by network boundary and static realm policy")
 	var cfgPtr atomic.Pointer[config.Config]
 	cfgPtr.Store(cfg)
+
+	// The authenticator is built from the startup snapshot before anything
+	// binds: a users file or cookie key file that cannot be read ends startup
+	// here rather than answering every request 503.
+	// basic and oidc are the two modes with state of their own; each keeps its
+	// concrete handle so serve can start its pollers and, under oidc, drive
+	// discovery before the preflight.
+	var (
+		authenticator auth.Authenticator
+		basic         *auth.Basic
+		oidc          *auth.OIDC
+	)
+	switch cfg.Auth.Mode {
+	case config.ModeBasic:
+		basic, err = auth.NewBasic(cfg, auth.BasicOptions{Logger: logger, Recorder: deps.recorder, PollInterval: deps.authPoll})
+		if err != nil {
+			logger.Error("basic authentication", "error", err)
+
+			return 1
+		}
+		authenticator = basic
+		if cfg.Auth.Basic.AllowPlaintext && !cfg.Server.TLS.Enabled() {
+			logger.Warn("basic authentication over plaintext HTTP; passwords cross the network in the clear")
+		}
+	case config.ModeOIDC:
+		oidc, err = auth.NewOIDC(cfg, auth.OIDCOptions{Logger: logger, Recorder: deps.recorder, PollInterval: deps.authPoll})
+		if err != nil {
+			logger.Error("oidc authentication", "error", err)
+
+			return 1
+		}
+		authenticator = oidc
+	default:
+		logger.Warn("authentication disabled; access is controlled only by network boundary and static realm policy")
+	}
 
 	opts := k8s.Options{
 		VersionLabel:  cfg.Discovery.VersionLabel,
@@ -134,8 +170,19 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	// serves interactive requests and answers the PGO routes 503,
 	// which is correct behavior rather than a reason to leave the Service.
 	var natsReady atomic.Bool
+	// issuerReady is the oidc readiness gate: discovery and the first key
+	// fetch have succeeded. It starts true in the other modes, which have no
+	// issuer to wait for.
+	var issuerReady atomic.Bool
+	issuerReady.Store(oidc == nil)
 	ready := func() bool {
-		return !draining.Load() && cluster.HasSynced() && (!cfg.PGO.Enabled || natsReady.Load())
+		return !draining.Load() && issuerReady.Load() && cluster.HasSynced() && (!cfg.PGO.Enabled || natsReady.Load())
+	}
+	// The handlers gate on less than /readyz does: the drain delay exists to
+	// keep serving requests already routed here, and a replica whose NATS
+	// preflight is pending still serves interactive requests.
+	handlersReady := func() bool {
+		return issuerReady.Load() && cluster.HasSynced()
 	}
 	// The one admission gate, sized from the configuration loaded now:
 	// limits.maxConcurrentProfiles is a restart-only field.
@@ -147,15 +194,21 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	if cfg.PGO.Enabled {
 		pgoRuntime = pgo.NewRuntime()
 	}
-	api := httpapi.New(httpapi.Deps{
+	apiDeps := httpapi.Deps{
 		Discovery: cluster,
 		Upstream:  deps.upstream,
 		Config:    &cfgPtr,
 		Recorder:  deps.recorder,
 		Gate:      gate,
 		PGO:       pgoRuntime,
+		Auth:      authenticator,
+		Ready:     handlersReady,
 		Logger:    logger,
-	})
+	}
+	if oidc != nil {
+		apiDeps.AuthRoutes = oidc.Routes()
+	}
+	api := httpapi.New(apiDeps)
 	// inFlightRequests is how many API requests are being served right now,
 	// so a drain that runs out of time reports how many it cut.
 	var inFlightRequests atomic.Int64
@@ -246,8 +299,22 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	if certs != nil {
 		go certs.Run(runCtx)
 	}
+	if basic != nil {
+		go basic.Run(runCtx)
+	}
 	preflightCh := make(chan error, 1)
-	go func() { preflightCh <- preflight(runCtx, rt, logger) }()
+	startPreflight := func() { go func() { preflightCh <- preflight(runCtx, rt, logger) }() }
+	// Under oidc the Kubernetes preflight waits for discovery: a gateway that
+	// cannot reach its issuer cannot authenticate anyone, and exiting is
+	// better than serving 503 to every request while looking healthy.
+	// discoverCh stays nil in the other modes, so its case never fires.
+	var discoverCh chan error
+	if oidc != nil {
+		discoverCh = make(chan error, 1)
+		go func() { discoverCh <- discoverIssuer(runCtx, oidc, cfg.Auth.OIDC.DiscoveryTimeout, logger) }()
+	} else {
+		startPreflight()
+	}
 	syncedCh := make(chan struct{}, 1)
 
 	// natsCh carries the one result of the NATS preflight, and stays nil when
@@ -360,6 +427,17 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 
 	for {
 		select {
+		case err := <-discoverCh:
+			if err != nil {
+				logger.Error("issuer discovery failed", "error", err)
+				shutdown(drainAll)
+
+				return 1
+			}
+			issuerReady.Store(true)
+			logger.Info("issuer discovered; starting preflight")
+			go oidc.Run(runCtx)
+			startPreflight()
 		case err := <-preflightCh:
 			var fb k8s.ErrForbidden
 			if errors.As(err, &fb) {
@@ -457,6 +535,34 @@ func preflight(ctx context.Context, rt k8s.Runtime, logger *slog.Logger) error {
 		case <-time.After(backoff):
 		case <-ctx.Done():
 			return ctx.Err()
+		}
+		backoff = min(backoff*2, preflightBackoffCap)
+	}
+}
+
+// discoverIssuer retries o.Discover with the preflight backoff until it
+// succeeds or timeout passes; the returned error is nil, the last failure,
+// or ctx.Err() when the caller ended first.
+// Discovery has a bound where the Kubernetes preflight has none because the
+// issuer is outside the cluster: waiting forever would hide an issuer that
+// is down from a rollout that would otherwise stop.
+func discoverIssuer(ctx context.Context, o *auth.OIDC, timeout time.Duration, logger *slog.Logger) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	backoff := preflightBackoffFirst
+	for {
+		err := o.Discover(ctx)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w (giving up after %s)", err, timeout)
+		}
+		logger.Warn("issuer discovery attempt", "error", err, "retry_in", backoff.String())
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return fmt.Errorf("%w (giving up after %s)", err, timeout)
 		}
 		backoff = min(backoff*2, preflightBackoffCap)
 	}

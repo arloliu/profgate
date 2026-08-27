@@ -1,0 +1,4 @@
+users:
+  - name: bob
+    passwordHash: "$2y$12$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/"
+    realm: developer

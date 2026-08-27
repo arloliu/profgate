@@ -1,0 +1,19 @@
+server:
+  tls:
+    certFile: testdata/tls.crt
+    keyFile: testdata/tls.key
+auth:
+  mode: oidc
+  oidc:
+    issuer: https://issuer.example
+    audience: profgate
+    mapping:
+      defaultRealm: developer
+    browser:
+      clientID: profgate
+      redirectURL: https://profgate.example/auth/callback
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
