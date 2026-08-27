@@ -29,9 +29,9 @@ An item may be reordered only by editing this list, never by starting later work
 
 ### 1. Repair the route count and cut a release
 
-- [ ] `docs/api.md` states in three places that `/v1` has seven routes;
+- [x] `docs/api.md` states in three places that `/v1` has seven routes;
   eleven exist (`internal/httpapi/server.go`), and the `route_unknown` row of the error table repeats the wrong count.
-- [ ] Release the `Unreleased` section of `CHANGELOG.md` — authentication, the console, and client-selected ports —
+- [x] Release the `Unreleased` section of `CHANGELOG.md` — authentication, the console, and client-selected ports —
   as the next minor version after `v0.3.0`.
 
 Spec: none.
