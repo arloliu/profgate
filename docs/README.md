@@ -21,12 +21,14 @@ because what decides whether a document can still be trusted is its lifecycle, n
 | [`specs/`](specs/) | What the system is and why it is shaped that way | Living; a `Status:` field says whether it is settled, and a spec that reaches `Superseded` is deleted |
 | `plans/` | Executable work orders | Living while `Approved` or `In Progress`; deleted in the change after `Done` or `Abandoned` is recorded, with git history as the record |
 | `decisions/` | One decision that is expensive to revisit, per file | Immutable once accepted; superseded rather than edited |
+| `investigations/` | An investigation frozen as of the day it ran | Immutable; superseded by a newer investigation or by a spec |
 
 `plans/` holds [`plans/roadmap.md`](plans/roadmap.md), which orders the work that comes next.
 
-Review reports and working notes stay in `tmp/`, which is not tracked.
+Working notes stay in `tmp/`, which is not tracked.
 They are byproducts of producing the documents above,
-not documents in their own right.
+not documents in their own right;
+an investigation that a committed document cites lives under `investigations/` instead.
 
 ## The Status Field
 

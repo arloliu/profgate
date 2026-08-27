@@ -16,7 +16,8 @@ reach from a terminal under `oidc`, diagnose when a Service yields no target,
 and drive from automation without scraping human-readable text —
 and, once that holds, remove the mechanisms whose cost exceeds what they protect.
 
-**Sources:** the review under `tmp/` that produced this ordering is not tracked;
+**Sources:** the investigation that produced this ordering is
+[`2026-08-27-service-gaps-and-over-engineering.md`](../investigations/2026-08-27-service-gaps-and-over-engineering.md);
 every claim below is restated against the committed file it cites.
 
 ## Ordering Principle
@@ -184,6 +185,8 @@ and reads response bodies without a bound;
 four normative cases in the authentication spec's testing section fail against it.
 Replacing the transport would delete nothing, keep the hardening, and add glue and one module.
 The dependency argument in `docs/specs/auth.md` stands; nothing changes.
+The comparison, function by function, is
+[`2026-08-28-oidc-library.md`](../investigations/2026-08-28-oidc-library.md).
 
 ### 11. PGO as an optional deployment with presets
 
