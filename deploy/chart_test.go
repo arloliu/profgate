@@ -2666,6 +2666,247 @@ func TestChartAuth(t *testing.T) {
 	})
 }
 
+// parseRenderedConfig renders the chart's config.yaml with the given values
+// and decodes it into a plain mapping, for the assertions that are about the
+// shape of the file itself -- a key present or absent -- rather than what
+// config.Load makes of it, which fills defaults the file does not carry.
+func parseRenderedConfig(t *testing.T, values ...string) (map[string]any, string) {
+	t.Helper()
+
+	_, body := renderConfigFile(t, values...)
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("unmarshal the rendered config.yaml: %v\n%s", err, body)
+	}
+
+	return parsed, body
+}
+
+// mappingAt walks nested mappings by key and returns the mapping at the end
+// of the path, or nil when any step is absent or not a mapping.
+func mappingAt(m map[string]any, path ...string) map[string]any {
+	for _, key := range path {
+		next, ok := m[key].(map[string]any)
+		if !ok {
+			return nil
+		}
+		m = next
+	}
+
+	return m
+}
+
+// hasKeyAnywhere reports whether any mapping nested in v carries key.
+func hasKeyAnywhere(v any, key string) bool {
+	switch v := v.(type) {
+	case map[string]any:
+		if _, ok := v[key]; ok {
+			return true
+		}
+		for _, child := range v {
+			if hasKeyAnywhere(child, key) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if hasKeyAnywhere(child, key) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// authBrowserSecretValues is authBrowserValues with the browser block naming
+// a client secret that exists in the mount directory, because config.Load
+// opens the file auth.oidc.browser.clientSecretFile names.
+func authBrowserSecretValues(t *testing.T) []string {
+	t.Helper()
+
+	values, dir := authBrowserValues(t)
+	if err := os.WriteFile(filepath.Join(dir, "client-secret"), []byte("placeholder client secret\n"), 0o600); err != nil {
+		t.Fatalf("write a stand-in client secret: %v", err)
+	}
+
+	return append(values, "--set", "auth.oidc.browser.clientSecretFile=client-secret")
+}
+
+// TestChartAuthOIDCCLI covers the auth.oidc.cli block the chart renders by
+// default under oidc mode.
+// The block's presence is what makes GET /v1/auth report a device login,
+// so a fresh chart install serves one until the operator sets
+// auth.oidc.cli.enabled false; the binary's own default stays no block.
+// The empty form, cli: {}, is what reaches the gateway when none of
+// clientID, scopes, and pkce is set,
+// and it has to survive the fromYaml/mergeOverwrite/toYaml round trip
+// profgate.config runs the file through, which the first case is the proof of.
+func TestChartAuthOIDCCLI(t *testing.T) {
+	t.Run("rendered by default under oidc", func(t *testing.T) {
+		parsed, body := parseRenderedConfig(t, authOIDCValues(t)...)
+		oidc := mappingAt(parsed, "auth", "oidc")
+		if oidc == nil {
+			t.Fatalf("the rendered config.yaml has no auth.oidc mapping:\n%s", body)
+		}
+		cli, ok := oidc["cli"].(map[string]any)
+		if !ok {
+			t.Fatalf("auth.oidc.cli = %v, want an empty mapping to survive the round trip:\n%s", oidc["cli"], body)
+		}
+		if len(cli) != 0 {
+			t.Errorf("auth.oidc.cli = %v, want empty when no value beside enabled is set:\n%s", cli, body)
+		}
+
+		cfg := loadRenderedConfig(t, authOIDCValues(t)...)
+		if cfg.Auth.OIDC.CLI == nil {
+			t.Fatal("Auth.OIDC.CLI = nil, want the block configured")
+		}
+		if got, want := cfg.Auth.OIDC.CLI.ClientID, cfg.Auth.OIDC.Audience; got != want {
+			t.Errorf("auth.oidc.cli.clientID = %q, want the audience %q", got, want)
+		}
+	})
+
+	t.Run("enabled false renders no cli key", func(t *testing.T) {
+		values := append(authOIDCValues(t), "--set", "auth.oidc.cli.enabled=false")
+		parsed, body := parseRenderedConfig(t, values...)
+		if hasKeyAnywhere(parsed, "cli") {
+			t.Errorf("the rendered config.yaml carries a cli key with auth.oidc.cli.enabled false:\n%s", body)
+		}
+		if cfg := loadRenderedConfig(t, values...); cfg.Auth.OIDC.CLI != nil {
+			t.Errorf("Auth.OIDC.CLI = %+v, want nil", cfg.Auth.OIDC.CLI)
+		}
+	})
+
+	t.Run("every value set", func(t *testing.T) {
+		values := append(authOIDCValues(t),
+			"--set", "auth.oidc.cli.clientID=profgate",
+			"--set-json", `auth.oidc.cli.scopes=["openid","profile","offline_access"]`,
+			"--set", "auth.oidc.cli.pkce=true",
+		)
+		parsed, body := parseRenderedConfig(t, values...)
+		cli := mappingAt(parsed, "auth", "oidc", "cli")
+		if cli == nil {
+			t.Fatalf("the rendered config.yaml has no auth.oidc.cli mapping:\n%s", body)
+		}
+		if got := cli["clientID"]; got != "profgate" {
+			t.Errorf("auth.oidc.cli.clientID = %v, want profgate", got)
+		}
+		if got := cli["pkce"]; got != true {
+			t.Errorf("auth.oidc.cli.pkce = %v, want true", got)
+		}
+		if got, want := cli["scopes"], []any{"openid", "profile", "offline_access"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("auth.oidc.cli.scopes = %v, want %v in that order", got, want)
+		}
+
+		cfg := loadRenderedConfig(t, values...)
+		if cfg.Auth.OIDC.CLI == nil {
+			t.Fatal("Auth.OIDC.CLI = nil, want the block configured")
+		}
+		if got, want := cfg.Auth.OIDC.CLI.Scopes, []string{"openid", "profile", "offline_access"}; !slices.Equal(got, want) {
+			t.Errorf("Auth.OIDC.CLI.Scopes = %v, want %v", got, want)
+		}
+		if !cfg.Auth.OIDC.CLI.PKCE {
+			t.Error("Auth.OIDC.CLI.PKCE = false, want true")
+		}
+	})
+
+	t.Run("only pkce set", func(t *testing.T) {
+		values := append(authOIDCValues(t), "--set", "auth.oidc.cli.pkce=true")
+		parsed, body := parseRenderedConfig(t, values...)
+		cli := mappingAt(parsed, "auth", "oidc", "cli")
+		if cli == nil {
+			t.Fatalf("the rendered config.yaml has no auth.oidc.cli mapping:\n%s", body)
+		}
+		if got := cli["pkce"]; got != true {
+			t.Errorf("auth.oidc.cli.pkce = %v, want true", got)
+		}
+		for _, key := range []string{"clientID", "scopes"} {
+			if _, ok := cli[key]; ok {
+				t.Errorf("auth.oidc.cli.%s is rendered while unset: %v", key, cli[key])
+			}
+		}
+		if cfg := loadRenderedConfig(t, values...); cfg.Auth.OIDC.CLI == nil || !cfg.Auth.OIDC.CLI.PKCE {
+			t.Errorf("Auth.OIDC.CLI = %+v, want pkce true", cfg.Auth.OIDC.CLI)
+		}
+	})
+
+	t.Run("no oidc block outside oidc mode", func(t *testing.T) {
+		basic, _ := authBasicValues(t)
+		for name, values := range map[string][]string{
+			"basic":                       basic,
+			"basic with enabled false":    append(slices.Clone(basic), "--set", "auth.oidc.cli.enabled=false"),
+			"disabled":                    nil,
+			"disabled with enabled false": {"--set", "auth.oidc.cli.enabled=false"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				parsed, body := parseRenderedConfig(t, values...)
+				if auth := mappingAt(parsed, "auth"); auth == nil {
+					t.Fatalf("the rendered config.yaml has no auth mapping:\n%s", body)
+				} else if _, ok := auth["oidc"]; ok {
+					t.Errorf("the rendered config.yaml carries auth.oidc outside oidc mode:\n%s", body)
+				}
+				loadRenderedConfig(t, values...)
+			})
+		}
+	})
+
+	t.Run("omitted beside a confidential browser client", func(t *testing.T) {
+		values := authBrowserSecretValues(t)
+		parsed, body := parseRenderedConfig(t, values...)
+		if hasKeyAnywhere(parsed, "cli") {
+			t.Errorf("the rendered config.yaml carries a cli key beside a browser client secret under tokenType id, the pair the binary refuses:\n%s", body)
+		}
+		cfg := loadRenderedConfig(t, values...)
+		if cfg.Auth.OIDC.Browser == nil || cfg.Auth.OIDC.Browser.ClientSecretFile == "" {
+			t.Errorf("Auth.OIDC.Browser = %+v, want the client secret file kept", cfg.Auth.OIDC.Browser)
+		}
+
+		notes := renderNotes(t, values...)
+		for _, want := range []string{"auth.oidc.cli", "auth.oidc.browser.clientSecretFile", "auth.oidc.tokenType"} {
+			if !strings.Contains(notes, want) {
+				t.Errorf("NOTES does not name %q, so the omission is silent:\n%s", want, notes)
+			}
+		}
+	})
+
+	t.Run("rendered beside a public browser client", func(t *testing.T) {
+		values, _ := authBrowserValues(t)
+		cfg := loadRenderedConfig(t, values...)
+		if cfg.Auth.OIDC.Browser == nil {
+			t.Fatal("Auth.OIDC.Browser = nil, want the browser block")
+		}
+		if cfg.Auth.OIDC.CLI == nil {
+			t.Error("Auth.OIDC.CLI = nil, want the block rendered beside a browser block without a client secret")
+		}
+		if notes := renderNotes(t, values...); strings.Contains(notes, "auth.oidc.browser.clientSecretFile") {
+			t.Errorf("NOTES carries the omission notice while the block is rendered:\n%s", notes)
+		}
+	})
+
+	t.Run("a quoted enabled fails naming the key", func(t *testing.T) {
+		values := append(authOIDCValues(t), "--set-string", "auth.oidc.cli.enabled=false")
+		out := renderFailure(t, values...)
+		if want := "auth.oidc.cli.enabled false has type string, not bool"; !strings.Contains(out, want) {
+			t.Errorf("helm's error does not say %q:\n%s", want, out)
+		}
+	})
+
+	t.Run("the raw config block wins", func(t *testing.T) {
+		values := append(authOIDCValues(t), "--set", "config.auth.oidc.cli.pkce=true")
+		parsed, body := parseRenderedConfig(t, values...)
+		cli := mappingAt(parsed, "auth", "oidc", "cli")
+		if cli == nil {
+			t.Fatalf("the rendered config.yaml has no auth.oidc.cli mapping:\n%s", body)
+		}
+		if got := cli["pkce"]; got != true {
+			t.Errorf("auth.oidc.cli.pkce = %v, want the raw block's true merged over the empty mapping", got)
+		}
+		if cfg := loadRenderedConfig(t, values...); cfg.Auth.OIDC.CLI == nil || !cfg.Auth.OIDC.CLI.PKCE {
+			t.Errorf("Auth.OIDC.CLI = %+v, want pkce true", cfg.Auth.OIDC.CLI)
+		}
+	})
+}
+
 // TestChartNetworkPolicyEgress pins the chart's NetworkPolicy template to
 // carrying no Egress rule and no values key that renders one: once a policy
 // selects the gateway Pods for egress too, every destination it reaches

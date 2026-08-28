@@ -108,6 +108,38 @@ template reads it through this helper, which holds it to an actual boolean.
 {{- end -}}
 
 {{/*
+Whether the device-login block is rendered under oidc: "true", or "" when
+it is off.
+auth.oidc.cli.enabled decides the auth.oidc.cli block in the rendered
+configuration, so the template reads it through this helper, which holds it
+to an actual boolean.
+*/}}
+{{- define "profgate.cliEnabled" -}}
+{{- include "profgate.boolValue" (dict "key" "auth.oidc.cli.enabled" "value" .Values.auth.oidc.cli.enabled) -}}
+{{- end -}}
+
+{{/*
+Whether the auth.oidc.cli block is rendered: "true", or "" when it is off or
+omitted.
+The block is omitted, with auth.oidc.cli.enabled still true, when
+auth.oidc.browser.clientSecretFile is set and auth.oidc.tokenType is id: a
+registration holding a secret is confidential, which a device grant sent
+without a secret cannot use, so the binary refuses that pair and the chart
+leaves the block out rather than render a configuration that exits at
+startup. NOTES.txt reads the same helper to say so.
+Both halves of the condition are read from the values as written: the binary
+refuses a browser block under any tokenType but id, and the chart does not
+run that rule, so a values file that sets tokenType access beside a browser
+block renders the cli block and the binary's own refusal is what the
+operator sees.
+*/}}
+{{- define "profgate.cliRendered" -}}
+{{- if include "profgate.cliEnabled" . -}}
+{{- if not (and .Values.auth.oidc.browser.clientSecretFile (eq .Values.auth.oidc.tokenType "id")) -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Whether the authentication Secret is mounted: "true", or "" when it is off.
 auth.secret.enabled decides the Secret volume, its mount, and every derived
 file path in the rendered configuration -- auth.basic.usersFile,
@@ -661,6 +693,20 @@ auth:
       {{- with .Values.auth.oidc.browser.transactionTTL }}
       transactionTTL: {{ . | quote }}
       {{- end }}
+    {{- end }}
+    {{- /* The block's presence is what makes GET /v1/auth report a device
+    login, so it is rendered as the empty mapping when none of the three
+    values is set; an empty mapping survives the fromYaml, mergeOverwrite,
+    and toYaml round trip profgate.config runs the file through. */}}
+    {{- if include "profgate.cliRendered" . }}
+    {{- $cli := dict }}
+    {{- with .Values.auth.oidc.cli.clientID }}{{- $_ := set $cli "clientID" . }}{{- end }}
+    {{- with .Values.auth.oidc.cli.scopes }}{{- $_ := set $cli "scopes" . }}{{- end }}
+    {{- if not (kindIs "invalid" .Values.auth.oidc.cli.pkce) }}
+    {{- $_ := include "profgate.boolValue" (dict "key" "auth.oidc.cli.pkce" "value" .Values.auth.oidc.cli.pkce) }}
+    {{- $_ := set $cli "pkce" .Values.auth.oidc.cli.pkce }}
+    {{- end }}
+    cli: {{ toYaml $cli | nindent 6 }}
     {{- end }}
 {{- end }}
 realms:

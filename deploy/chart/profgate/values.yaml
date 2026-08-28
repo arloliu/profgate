@@ -353,6 +353,26 @@ auth:
     #     # Keycloak, Dex, and Okta.
     #     clientSecretFile: ""
     browser: {}
+    # The block that tells a command-line client this issuer admits a device
+    # login. Its presence in the rendered configuration is what makes
+    # GET /v1/auth report one; the gateway performs no device grant itself
+    # and holds no client secret for the command line. On by default, so a
+    # fresh install under oidc serves a device login; set enabled false to
+    # publish the mode alone, which is the binary's own default without the
+    # block. The block is left out, and NOTES.txt says so, when browser
+    # above names a clientSecretFile under tokenType id: that registration
+    # is confidential, and the binary refuses the pair.
+    # clientID, scopes, and pkce render only when set. Left unset, the
+    # gateway defaults clientID to auth.oidc.audience -- under tokenType id
+    # it must equal the audience -- and scopes to [openid, offline_access].
+    cli:
+      enabled: true
+      clientID: ""
+      scopes: []
+      # pkce is an operator's assertion that the issuer's device endpoint
+      # accepts a PKCE challenge; discovery does not answer that question.
+      # null renders no key and the gateway reads false.
+      pkce: null
   # The Secret the files named above -- the users file, the issuer CA, the
   # client secret, and the cookie key -- are read from. The chart never
   # creates it; see deploy/secret-auth-example.yaml.

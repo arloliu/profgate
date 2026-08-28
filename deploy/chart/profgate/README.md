@@ -517,6 +517,10 @@ and for any other rule set an operator would rather ship.
 | `auth.oidc.issuer`, `.audience`, `.tokenType`, `.usernameClaim`, `.groupsClaim`, `.caKey`, `.httpProxy` | empty, empty, `id`, `sub`, `groups`, `""`, `""` | oidc mode's issuer and how it reads a token; `caKey` names a Secret data key. |
 | `auth.oidc.mapping.users`, `.groups`, `.defaultRealm` | `[]`, `[]`, `""` | How a verified token maps to a realm. |
 | `auth.oidc.browser` | `{}` | The relying-party block that turns a login into a session cookie; empty renders no `auth.oidc.browser` block. See *Authentication*. |
+| `auth.oidc.cli.enabled` | `true` | Renders the `auth.oidc.cli` block, whose presence makes `GET /v1/auth` report a device login. Omitted, with a notice in the install notes, when `auth.oidc.browser.clientSecretFile` is set under `tokenType: id`, the pair the binary refuses. |
+| `auth.oidc.cli.clientID` | `""` | The client identifier a command-line client sends; rendered only when set. The gateway defaults it to `auth.oidc.audience`, which it must equal under `tokenType: id`. |
+| `auth.oidc.cli.scopes` | `[]` | The scopes the client requests; rendered only when set. The gateway defaults them to `openid, offline_access`. |
+| `auth.oidc.cli.pkce` | `null` | The operator's assertion that the issuer's device endpoint accepts a PKCE challenge, which discovery does not answer; rendered only when set, and read as `false` when it is not. |
 | `auth.secret.enabled`, `.existingSecret`, `.mountPath` | `false`, `profgate-auth`, `/etc/profgate/auth` | The Secret the files above are read from. |
 | `realms` | one wide-open realm | What each principal may reach. |
 | `ui.enabled` | `false` | The embedded operator console, served at `/ui/`. Restart-class; under `auth.mode: oidc` it requires `auth.oidc.browser`. |

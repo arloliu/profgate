@@ -34,6 +34,13 @@ Check these three things first.
 
      https://{{ (urlParse .Values.auth.oidc.browser.redirectURL).host }}/auth/login
 {{- end }}
+{{- if and (include "profgate.cliEnabled" .) (not (include "profgate.cliRendered" .)) }}
+   auth.oidc.cli is not rendered: auth.oidc.browser.clientSecretFile is set
+   and auth.oidc.tokenType is id, so the registration is confidential and a
+   device grant sent without a secret cannot use it. GET /v1/auth reports the
+   mode alone. Unset the client secret to serve a device login, or set
+   auth.oidc.cli.enabled false to silence this notice.
+{{- end }}
    This release maps a token to:
 {{- end }}
 
