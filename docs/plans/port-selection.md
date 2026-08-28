@@ -1,6 +1,7 @@
 # Client-Selected Port Becomes Default-Deny
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** commits 0793fd8 through afadd38 on feat/port-selections, with this documentation commit; e2e current lane passed.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task is written test-first and ends with its own validation block and one commit.
@@ -825,7 +826,7 @@ which is the same reason the table's own rows exist:
 `.agents/rules/500-validation-and-workflow.md` says the page's own JavaScript runs in no test,
 which stops being true when `portmodel.js` is evaluated by a Go test.
 
-- [ ] **Update the guides**
+- [x] **Update the guides**
 
 | File | Change |
 |---|---|
@@ -839,7 +840,7 @@ which stops being true when `portmodel.js` is evaluated by a Go test.
 | `.agents/rules/500-validation-and-workflow.md` | the console's port-control model runs in a Go test; the rest of the page still runs in none, so a change to `internal/ui/static/` outside `portmodel.js` still needs a check in a browser |
 | `CHANGELOG.md` | under `## [Unreleased]`, a `### Changed` entry marked as a breaking change: `discovery.pprof.allowedPorts` and `allowedPortNames` are removed together with `PROFGATE_PPROF_ALLOWED_PORTS` and `PROFGATE_PPROF_ALLOWED_PORT_NAMES`, replaced by `discovery.pprof.allowedSelections`; an empty list now admits only the configured default where an empty allowlist used to admit anything; the migration is the two wildcards; `/v1/limits` reports `allowedSelections` in place of the two arrays; `400 port_not_allowed` carries a `details` item. Leave the released `0.4.0` section as it is: it describes what that version shipped |
 
-- [ ] **Confirm the invariant wording matches everywhere**
+- [x] **Confirm the invariant wording matches everywhere**
 
 `AGENTS.md`, `README.md`, `.agents/rules/800-security-invariant.md`,
 and the spec's *Permission Boundary* already name `discovery.pprof.allowedSelections`;
@@ -850,7 +851,7 @@ Then search the guides and the manifests for the two removed key names:
 and a manual search over `docs/` and `README.md` should find them only in `docs/configuration.md`'s migration table,
 in `CHANGELOG.md`, and in the specs and plans that record the change.
 
-- [ ] **Finish the plan in the same commit**
+- [x] **Finish the plan in the same commit**
 
 Tick the remaining checkbox of the client-selected-port item in [`docs/plans/roadmap.md`](roadmap.md);
 set line 3 of this file to `**Status:** Done`;
@@ -859,7 +860,7 @@ insert `**Outcome:**` as line 4, naming the commit or tag that shipped the chang
 binds that flip to the change that lands the plan's remaining work,
 and the next commit that touches this file deletes it and rewrites every link that cited it.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/api.md docs/configuration.md docs/deployment.md docs/console.md \

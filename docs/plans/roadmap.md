@@ -71,7 +71,7 @@ The console lets a browser type any port under that default.
 - [x] Revise the permission invariant text in `AGENTS.md`, `README.md`, and `.agents/rules/800-security-invariant.md`,
   which today states that an empty allowlist admits any port a client names,
   to say the gateway connects to the configured pprof port and to any other the operator lists.
-- [ ] Write the implementation plan; migrate `docs/configuration.md`, the chart values, and the console's port control.
+- [x] Write the implementation plan; migrate `docs/configuration.md`, the chart values, and the console's port control.
 
 Spec: `docs/specs/gateway.md` (revision required).
 Why here: it narrows what a compromised client can probe and shrinks the configuration surface,

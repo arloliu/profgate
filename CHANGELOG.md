@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: client-selected ports are default-deny.**
+  `discovery.pprof.allowedPorts` and `discovery.pprof.allowedPortNames` are removed,
+  together with `PROFGATE_PPROF_ALLOWED_PORTS` and `PROFGATE_PPROF_ALLOWED_PORT_NAMES`,
+  and replaced by the one list `discovery.pprof.allowedSelections`
+  (`PROFGATE_PPROF_ALLOWED_SELECTIONS`, comma-separated `port:N`, `portName:name`, `port:*`, `portName:*`).
+  Each entry is `{port: N}` or `{portName: name}`;
+  an empty list now admits only the configured default,
+  where an empty allowlist used to admit any value of its parameter.
+  `{port: "*"}` admits any port number and `{portName: "*"}` admits any port name, each on its own.
+  A configuration that still sets a removed key or variable fails validation with a message naming the replacement.
+  Each old list converts on its own:
+
+  | Old value | New entry |
+  |---|---|
+  | `allowedPorts: []` | `- port: "*"` |
+  | `allowedPortNames: []` | `- portName: "*"` |
+  | `allowedPorts: [6061, 6062]` | `- port: 6061` and `- port: 6062` |
+  | `allowedPortNames: [pprof-alt]` | `- portName: pprof-alt` |
+
+  `/v1/limits` reports `pprof.allowedSelections`, an array of one-key objects, in place of the two arrays.
+  `400 port_not_allowed` carries a `details` array with one item,
+  `field` `port` or `portName` and `code` `not_admitted`, naming only the value the client sent.
+  The console's port control is a menu of the configured default and every listed entry,
+  with a free-form field only where the matching wildcard is configured.
+
 ### Added
 
 - **Optional chart templates for the pieces every install needed to write by hand.**

@@ -63,9 +63,10 @@ The shipped defaults run, but three settings decide whether the gateway is usefu
 - **`auth.anonymousRealm`** — the realm every request gets while authentication is disabled.
   It must name one of the configured realms.
 - **The pprof port** — `discovery.pprof.port` (default 6060) or `discovery.pprof.portName`,
-  which is how discovery finds the profiling port on application Pods,
-  bounded by `discovery.pprof.allowedPorts` and `allowedPortNames` for what a client may name instead;
-  the shipped manifests leave both lists empty.
+  which is how discovery finds the profiling port on application Pods.
+  What a client may name instead is bounded by `discovery.pprof.allowedSelections`,
+  and the shipped manifests leave that list empty,
+  so a client may name only the configured default until the operator lists more.
 
 With the chart, realms and `auth.anonymousRealm` are structured values,
 and the pprof port goes in the raw `config` block:
@@ -133,11 +134,15 @@ The chart and the base both create a ClusterRole with fixed, read-only rules:
 | `endpointslices` (`discovery.k8s.io`) | list, watch |
 
 That is the permission invariant:
-profgate requires no Kubernetes write permissions,
-observes Services, Pods, and EndpointSlices,
-connects to application ports the operator permits —
-when an allowlist is empty, any port or port name a client names —
-and touches only its own `PROFGATE_*` NATS stores.
+
+> Profgate requires no Kubernetes write permissions.
+> It observes Services, Pods, and EndpointSlices cluster-wide,
+> and serves each caller only the namespaces, Services, and profiles that caller's realm admits.
+> It connects to the configured pprof port of a Pod,
+> and to any port or port name `discovery.pprof.allowedSelections` admits,
+> by an exact entry or by a wildcard, wherever NetworkPolicy permits the connection.
+> It manipulates only its dedicated `PROFGATE_*` NATS stores.
+
 The chart offers no value that widens the rules,
 and a golden test pins them:
 `deploy/deploy_test.go` checks the base's ClusterRole,
@@ -529,8 +534,9 @@ The application side needs a matching policy admitting the gateway to its pprof 
 which belongs in the application's namespace rather than in this release.
 A client may name the port it wants
 ([`port` and `portName` on the profile and targets routes](api.md#query-parameters));
-each empty allowlist accepts every port or port name a client names,
-and with both lists empty this NetworkPolicy is the only bound on which Pod ports the gateway can reach.
+a client may name the configured default and any selection `discovery.pprof.allowedSelections` admits,
+exactly or by wildcard,
+and only under a wildcard is this NetworkPolicy the bound on which Pod ports the gateway reaches.
 
 A PodDisruptionBudget is on by default with `minAvailable: 1`.
 To express the budget the other way around, clear one bound and set the other:
