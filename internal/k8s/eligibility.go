@@ -116,7 +116,6 @@ type endpointFacts struct {
 	addressMismatch bool   // an endpoint has no address, or one the Pod's status.podIPs does not list
 	address         string // the address of the first endpoint whose address the Pod holds
 	conflict        bool   // a later such endpoint named a different address the Pod holds
-	portless        bool   // an endpoint reached the port rule and no pprof port resolved
 	pod             string // the Pod's name, for the operator warning
 	target          Target
 	hasTarget       bool
@@ -200,8 +199,6 @@ func (c *Cluster) resolve(svc *corev1.Service, selector labels.Selector,
 			}
 			port, ok := c.pprofPort(pod, sel)
 			if !ok {
-				facts.portless = true
-
 				continue
 			}
 			if facts.hasTarget {
@@ -307,6 +304,11 @@ func hasPodIP(pod *corev1.Pod, address string) bool {
 // A number is used for every Pod without checking its declarations;
 // a name is the container port carrying it over TCP,
 // and a Pod with no such port has no pprof port at all.
+// The port resolves per Pod, never per endpoint,
+// so all of a Pod's endpoints pass or fail the port rule together;
+// attribute relies on that equivalence:
+// a Pod whose endpoints passed the address checks without yielding a target has no pprof port,
+// so no flag records the port rule.
 func (c *Cluster) pprofPort(pod *corev1.Pod, sel PortSelection) (int32, bool) {
 	switch {
 	case sel.Port != 0:

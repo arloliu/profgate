@@ -565,7 +565,9 @@ because a terminating or unready Pod explains its own endpoint,
 while the endpoint explains nothing about the Pod.
 `endpoint_address_conflict` has a population of its own and needs no tie broken:
 an eligible endpoint requires a running, ready, not-terminating Pod,
-so a conflicted Pod satisfies none of the three Pod-state reasons.
+so a conflicted Pod satisfies none of the three Pod-state reasons,
+and a conflicted Pod with an eligible endpoint is reported as the conflict
+even when another of its endpoints is unready or mismatched.
 
 `endpoint_missing` covers a Pod no slice names,
 a Pod named by a stale UID (rule 3),

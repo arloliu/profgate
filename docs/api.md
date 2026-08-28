@@ -234,7 +234,9 @@ every selected Pod is either a target or counted under exactly one reason.
 | `version_mismatch` | the request carried `version=` and the Pod's version label holds another value |
 | `pod_name_mismatch` | the request carried `pod=` and the Pod has another name |
 
-A Pod matching more than one row is counted under the first one that holds, in the order above.
+A Pod with at least one trusted endpoint that passes every check is excluded only by the address conflict,
+and is counted under `endpoint_address_conflict` even when another of its endpoints is unready or mismatched.
+Every other Pod matching more than one row is counted under the first one that holds, in the order above.
 The last two rows appear only for a request that sent the matching filter:
 a query with neither `version` nor `pod` can never produce them.
 `explain` changes no status code and no eligibility decision —
