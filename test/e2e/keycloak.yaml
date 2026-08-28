@@ -1,0 +1,96 @@
+# The second OpenID Connect issuer, the one docs/keycloak-realm.json was
+# verified against. It carries no namespace: the harness applies it into the
+# scenario's namespace beside the gateway that trusts it.
+#
+# keycloak-config holds the realm the server imports at start, under the
+# realm.json key, and the hostname key names the issuer's origin; keycloak-tls
+# holds the certificate the HTTPS listener serves. The harness writes both
+# before this manifest is applied. The management listener on 9000 serves the
+# readiness check over the same certificate.
+#
+# The Service is a NodePort at a fixed port: the issuer Keycloak publishes is
+# https://<node IP>:30443/realms/profgate, one address the gateway inside the
+# cluster and the profgate client on the host both reach.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.7.2
+          args:
+            - start-dev
+            - --import-realm
+          env:
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_HOSTNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: keycloak-config
+                  key: hostname
+            - name: KC_HTTPS_CERTIFICATE_FILE
+              value: /etc/keycloak/tls/tls.crt
+            - name: KC_HTTPS_CERTIFICATE_KEY_FILE
+              value: /etc/keycloak/tls/tls.key
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+            - name: management
+              containerPort: 9000
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+              scheme: HTTPS
+            periodSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+            - name: tls
+              mountPath: /etc/keycloak/tls
+              readOnly: true
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-config
+            items:
+              - key: realm.json
+                path: realm.json
+        - name: tls
+          secret:
+            secretName: keycloak-tls
+            defaultMode: 0444
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: keycloak
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+      nodePort: 30443
+      protocol: TCP

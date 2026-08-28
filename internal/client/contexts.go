@@ -375,7 +375,10 @@ func Resolve(f *File, o Overrides, getenv func(string) (string, bool)) (Settings
 		if f != nil {
 			s.Context, ok = f.Contexts[s.ContextName]
 		}
-		if !ok {
+		// A name with no entry is admitted only with a server from the flag
+		// or the environment: profgate login --context <name> --server <url>
+		// is the first-run shape, and RecordLogin creates the entry.
+		if !ok && o.Server == "" && lookup("PROFGATE_SERVER") == "" {
 			return Settings{}, fmt.Errorf("context %q is not in the contexts file", s.ContextName)
 		}
 	}

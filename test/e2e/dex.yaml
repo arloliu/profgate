@@ -6,6 +6,10 @@
 # HTTPS listener serves; the harness writes both before this manifest is
 # applied. Storage is in memory, so every start mints a new signing key, which
 # is how a scenario rotates the key: it restarts the Deployment.
+#
+# The Service is a NodePort at a fixed port: the issuer Dex publishes is
+# https://<node IP>:30556, one address the gateway inside the cluster and the
+# profgate client on the host both reach, so neither side resolves a name.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -63,11 +67,12 @@ metadata:
   labels:
     app.kubernetes.io/name: dex
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app.kubernetes.io/name: dex
   ports:
     - name: https
       port: 5556
       targetPort: https
+      nodePort: 30556
       protocol: TCP

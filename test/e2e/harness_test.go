@@ -84,6 +84,9 @@ const (
 	// dexImage is the OpenID Connect issuer the auth scenarios log in
 	// through; TestMain loads it the way it loads the NATS server.
 	dexImage = "ghcr.io/dexidp/dex:v2.45.1"
+	// keycloakImage is the second issuer, the one docs/keycloak-realm.json
+	// was verified against; the Keycloak scenario imports that realm.
+	keycloakImage = "quay.io/keycloak/keycloak:26.7.2"
 
 	// authSecret is the Secret deploy/base mounts for authentication, and
 	// authMountPath is where its keys appear in the container.
@@ -168,6 +171,7 @@ func runners() map[string]func(t *testing.T, h *Harness) {
 		"tls-rotation":                   scenarioTLSRotation,
 		"auth-oidc-browser":              scenarioAuthOIDCBrowser,
 		"auth-basic":                     scenarioAuthBasic,
+		"auth-oidc-keycloak":             scenarioAuthOIDCKeycloak,
 	}
 }
 
@@ -222,6 +226,9 @@ func TestMain(m *testing.M) {
 	}
 	if err := h.loadImage(ctx, dexImage); err != nil {
 		fail("load dex image", err)
+	}
+	if err := h.loadImage(ctx, keycloakImage); err != nil {
+		fail("load keycloak image", err)
 	}
 
 	kubeconfigDir, err := os.MkdirTemp("", "profgate-e2e-")

@@ -259,9 +259,9 @@ func TestScenariosRegistry(t *testing.T) {
 		t.Fatalf("%q declares a lane capability it does not use: %+v", all[k].Name, all[k])
 	}
 
-	// Both authentication scenarios pull a profile through their own gateway,
+	// Every authentication scenario pulls a profile through its own gateway,
 	// which completes a proxy to a test-app Pod.
-	for _, name := range []string{"auth-oidc-browser", "auth-basic"} {
+	for _, name := range []string{"auth-oidc-browser", "auth-basic", "auth-oidc-keycloak"} {
 		j := slices.IndexFunc(all, func(s Scenario) bool { return s.Name == name })
 		if j < 0 {
 			t.Fatalf("no scenario named %q", name)
@@ -294,7 +294,7 @@ func TestScenarioSkips(t *testing.T) {
 				"ineligible pods", "convergence on ready", "profiles parse", "replicas agree", "api outage",
 				"port selection", "port selection refused",
 				"pgo-on-demand", "pgo-scheduled-slot", "pgo-cancel", "pgo-version-conflict", "pgo-reclaim",
-				"auth-oidc-browser", "auth-basic",
+				"auth-oidc-browser", "auth-basic", "auth-oidc-keycloak",
 			},
 		},
 		{

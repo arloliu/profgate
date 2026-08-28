@@ -359,6 +359,24 @@ func TestResolveSelection(t *testing.T) {
 			t.Fatalf("error = %v, want one naming absent", err)
 		}
 	})
+	t.Run("a context the file does not hold, with --server, is the first-run shape", func(t *testing.T) {
+		s, err := Resolve(f, Overrides{Context: "absent", Server: "https://a.example"}, env(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.ContextName != "absent" || s.CacheName != "absent" || s.Origin != "https://a.example:443" || s.Context.Server != "" {
+			t.Fatalf("settings = %+v, want the name selected over an empty context and the flag's server", s)
+		}
+	})
+	t.Run("a context the file does not hold, with PROFGATE_SERVER", func(t *testing.T) {
+		s, err := Resolve(nil, Overrides{Context: "absent"}, env(map[string]string{"PROFGATE_SERVER": "https://a.example"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.ContextName != "absent" || s.Origin != "https://a.example:443" {
+			t.Fatalf("settings = %+v", s)
+		}
+	})
 	t.Run("no context and no --server", func(t *testing.T) {
 		_, err := Resolve(nil, Overrides{}, env(nil))
 		if err == nil || !strings.Contains(err.Error(), "--server") || !strings.Contains(err.Error(), "profgate context use") {
