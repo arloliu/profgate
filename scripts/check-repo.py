@@ -14,6 +14,8 @@
 - Only internal/natskv imports github.com/nats-io/nats.go outside tests and test/.
 - Only internal/auth imports github.com/go-jose/go-jose and golang.org/x/crypto outside tests and test/.
 - Only cmd/profgate imports golang.org/x/term, which reads a password without echo.
+- internal/client imports no Kubernetes package, no NATS package, and none of
+  internal/k8s, internal/natskv, or internal/auth; only cmd/profgate imports it.
 - The removed discovery.pprof.allowedPorts and allowedPortNames keys, their Go
   fields, and their environment variables appear in no code or manifest;
   internal/config refuses them by name and keeps the fixtures that prove it.
@@ -174,6 +176,37 @@ def check_term_importers(root):
     return bad
 
 
+CLIENT_FORBIDDEN_IMPORTS = (
+    '"k8s.io/',
+    '"github.com/nats-io/nats.go',
+    '"github.com/arloliu/profgate/internal/k8s',
+    '"github.com/arloliu/profgate/internal/natskv',
+    '"github.com/arloliu/profgate/internal/auth',
+)
+
+
+def check_client_imports(root):
+    """Keep internal/client's dependency set an argument about one package.
+
+    The command-line client reaches neither cluster dependency and verifies no
+    signature, so it imports no Kubernetes package, no NATS package, and none
+    of internal/k8s, internal/natskv, or internal/auth; and only cmd/profgate
+    imports it, so the gateway's binary size and dependency set stay an
+    argument about internal/client rather than about the whole tree.
+    """
+    bad = []
+    for path in root.rglob("*.go"):
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text()
+        if rel.startswith("internal/client/"):
+            for mod in CLIENT_FORBIDDEN_IMPORTS:
+                if mod in text:
+                    bad.append(f"{rel}: imports {mod[1:]} inside internal/client")
+        elif not rel.startswith("cmd/profgate/") and '"github.com/arloliu/profgate/internal/client' in text:
+            bad.append(f"{rel}: imports internal/client outside cmd/profgate")
+    return bad
+
+
 REMOVED_PORT_KEYS = (
     "AllowedPorts",
     "AllowedPortNames",
@@ -217,6 +250,7 @@ def main():
     errors.extend(check_nats_importers(root))
     errors.extend(check_auth_importers(root))
     errors.extend(check_term_importers(root))
+    errors.extend(check_client_imports(root))
     errors.extend(check_removed_port_keys(root))
     if errors:
         for error in errors:
