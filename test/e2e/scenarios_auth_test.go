@@ -3,12 +3,14 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -1030,6 +1032,175 @@ func scenarioAuthBasic(t *testing.T, h *Harness) {
 		!slices.Equal(selections, wantSelections) || limits.PGO.Enabled {
 		t.Fatalf("limits: %s, want cpuSeconds 60, traceSeconds 60, pprof.default {\"port\":6060}, allowedSelections %v in that order, and pgo.enabled false", body, wantSelections)
 	}
+
+	clientBasicSteps(t, h, ns, pods, local, caFile, password)
+}
+
+// clientBasicSteps runs the profgate client against the basic gateway's
+// port-forward: the reading verbs and a profile fetch as alice, a login that
+// verifies the pair and stores nothing, and the three refusals that prove the
+// variables are required, the certificate is verified, and no password
+// travels over plaintext.
+func clientBasicSteps(t *testing.T, h *Harness, ns string, pods []corev1.Pod, local, caFile, password string) {
+	t.Helper()
+	bin := buildClient(t, h)
+	home := t.TempDir()
+	env := clientEnv(home, "PROFGATE_USER=alice", "PROFGATE_PASSWORD="+password)
+	// The forward is dialed by address and the certificate is verified for
+	// the name it was issued to.
+	server := []string{"--server", "https://" + local, "--server-name", tlsHost, "--ca-file", caFile}
+	client := func(what string, env []string, args ...string) (stdout, stderr string) {
+		t.Helper()
+		stdout, stderr, code := runClient(t, bin, env, append(args, server...)...)
+		if code != 0 {
+			t.Fatalf("%s: exit %d\nstdout:\n%s\nstderr:\n%s", what, code, stdout, stderr)
+		}
+
+		return stdout, stderr
+	}
+	expectRow := func(what, out, key, value string) {
+		t.Helper()
+		if !slices.Contains(strings.Split(out, "\n"), key+"\t"+value) {
+			t.Fatalf("%s: no row %q %q in:\n%s", what, key, value, out)
+		}
+	}
+	expectLine := func(what, out, line string) {
+		t.Helper()
+		if !slices.Contains(strings.Split(out, "\n"), line) {
+			t.Fatalf("%s: no line %q in:\n%s", what, line, out)
+		}
+	}
+
+	out, _ := client("whoami", env, "whoami")
+	expectRow("whoami", out, "principal", "alice")
+	expectRow("whoami", out, "realm", "developer")
+
+	out, _ = client("namespaces", env, "namespaces")
+	expectLine("namespaces", out, ns)
+	out, _ = client("services", env, "services", ns)
+	expectLine("services", out, testAppName)
+
+	out, _ = client("targets", env, "targets", ns+"/"+testAppName)
+	for _, p := range pods {
+		if !strings.Contains(out, p.Name+"\t") {
+			t.Fatalf("targets: no row for %s in:\n%s", p.Name, out)
+		}
+	}
+
+	profileOut := filepath.Join(home, "client-heap.pprof")
+	client("profile", env, "profile", ns+"/"+testAppName, "heap", "-o", profileOut)
+	fetched, err := os.ReadFile(profileOut) //nolint:gosec // the path is in the test's temporary directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := profile.ParseData(fetched); err != nil {
+		t.Fatalf("the profile the client wrote does not parse: %v", err)
+	}
+
+	// login verifies the pair, prints the principal and realm as key: value
+	// lines, names the two variables, and stores nothing.
+	out, errOut := client("login", env, "login")
+	expectLine("login", out, "principal: alice")
+	expectLine("login", out, "realm: developer")
+	if !strings.Contains(errOut, "PROFGATE_USER") || !strings.Contains(errOut, "PROFGATE_PASSWORD") {
+		t.Fatalf("login: stderr does not name the two variables:\n%s", errOut)
+	}
+	if _, err := os.Stat(filepath.Join(home, "state", "profgate")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("login under basic left state under %s (stat error %v); a basic pair is never cached", home, err)
+	}
+
+	// Without the two variables there is no pair, and stdin is not a
+	// terminal to prompt on.
+	_, errOut, code := runClient(t, bin, clientEnv(home), append([]string{"login"}, server...)...)
+	if code != exitUsage {
+		t.Fatalf("login without the variables: exit %d, want %d:\n%s", code, exitUsage, errOut)
+	}
+
+	// A certificate authority that did not issue the gateway's leaf is a TLS
+	// failure, which is what proves the client verifies the certificate.
+	other := newAuthority(t, tlsHost)
+	otherCA := filepath.Join(home, "other-ca.pem")
+	if err := os.WriteFile(otherCA, other.caPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, errOut, code = runClient(t, bin, env, "login", "--server", "https://"+local, "--server-name", tlsHost, "--ca-file", otherCA)
+	if code != exitRefused || !strings.Contains(errOut, "certificate") {
+		t.Fatalf("login with another authority: exit %d, want %d on a certificate failure:\n%s", code, exitRefused, errOut)
+	}
+
+	// The password travels only over https://: the client refuses the
+	// plaintext address before it builds the request, so the name is never
+	// dialed and nothing is written.
+	_, port, err := net.SplitHostPort(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintextOut := filepath.Join(home, "plaintext.pprof")
+	_, errOut, code = runClient(t, bin, env, "profile", ns+"/"+testAppName, "heap", "-o", plaintextOut,
+		"--server", "http://"+net.JoinHostPort(tlsHost, port))
+	if code != exitUsage || !strings.Contains(errOut, "refusing to send a credential") {
+		t.Fatalf("profile over http://: exit %d, want %d refusing the credential:\n%s", code, exitUsage, errOut)
+	}
+	if _, err := os.Stat(plaintextOut); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("profile over http:// left %s (stat error %v)", plaintextOut, err)
+	}
+}
+
+const (
+	// exitRefused and exitUsage are the client's exit codes for a refusal
+	// or transport failure and for a usage error.
+	exitRefused = 1
+	exitUsage   = 2
+)
+
+// buildClient builds the profgate binary under the e2e build tag, the tag
+// the gateway image is built under, into the test's temporary directory
+// and returns its path.
+func buildClient(t *testing.T, h *Harness) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "profgate")
+	if err := h.run(t.Context(), nil, "go", "build", "-tags", "e2e", "-o", bin, "./cmd/profgate"); err != nil {
+		t.Fatalf("build the client: %v", err)
+	}
+
+	return bin
+}
+
+// clientEnv is the environment one client invocation runs with: a PATH, a
+// home and the two XDG directories under home, so no invocation reads the
+// developer's contexts file or token cache, and extra on top.
+func clientEnv(home string, extra ...string) []string {
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, "config"),
+		"XDG_STATE_HOME=" + filepath.Join(home, "state"),
+	}
+
+	return append(env, extra...)
+}
+
+// runClient runs the client binary with exactly env, stdin closed, and
+// returns its stdout, stderr, and exit code.
+func runClient(t *testing.T, bin string, env []string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), bin, args...) //nolint:gosec // the test built the binary and composes its arguments
+	cmd.Env = env
+	var out, errOut bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	switch {
+	case err == nil:
+	case errors.As(err, &exitErr):
+		code = exitErr.ExitCode()
+	default:
+		t.Fatalf("run %s %v: %v", bin, args, err)
+	}
+	t.Logf("profgate %s: exit %d", strings.Join(args, " "), code)
+
+	return out.String(), errOut.String(), code
 }
 
 const (
