@@ -1,6 +1,7 @@
 # Target Exclusion Diagnostics
 
-**Status:** In Progress
+**Status:** Done
+**Outcome:** `9e40fcd`..`5ed3dcf` and this commit.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -244,7 +245,7 @@ Three gaps in accepted text stand between this plan and its first line of Go.
 None is a design change: each writes down what the accepted design already decided elsewhere.
 This task is first because two of the three are the source the next tasks implement from.
 
-- [ ] **Amend the conflict sentence**
+- [x] **Amend the conflict sentence**
 
 `docs/specs/gateway.md:525` and `:529-531` describe the conflict among **eligible** trusted endpoints,
 where eligible includes the port rule;
@@ -260,7 +261,7 @@ and that it decides which reason a Pod satisfying both carries.
 
 Leave `:497-499`, `:544`, and the attribution order as they are; they already say this.
 
-- [ ] **Write `--explain` into the command-line spec**
+- [x] **Write `--explain` into the command-line spec**
 
 *Reading* gives `targets` its `--port` and `--port-name` flags at `docs/specs/cli.md:696-697`.
 Add `--explain`: it sends `explain=true` and prints the `excluded` rows beside the list,
@@ -268,14 +269,14 @@ the example at `:677-680` gains those rows,
 and `--output json` copies the body through as it does for every other reading verb.
 The flag is the whole addition; the verb's request count and its positional grammar do not change.
 
-- [ ] **Repair the two amendment rows**
+- [x] **Repair the two amendment rows**
 
 | Row | Change |
 |---|---|
 | the row naming `docs/specs/cli.md` *`targets`* under "Reads this endpoint and is revised on its own" | moves into the table of edits made now, because the revision is in this commit; the clause calling that document a draft goes with it |
 | the row naming `docs/specs/gateway.md` *Eligibility* | gains the conflict sentence's repair, so the amendment block records what this commit did to the section it names |
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 Both files keep their `Accepted` status and gain no `Outcome:` line;
 `check_status` in `scripts/check-repo.py:77` verifies line 3 of each.
@@ -391,7 +392,7 @@ a Pod attributed `endpoint_address_conflict` logs it once, portless or not.
 It is the operator log and names the namespace, Service, and Pod, as it does today;
 nothing a caller reads gains a name from it.
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 Declare `Exclusion`, `Explanation`, and `ExclusionReasons` in `internal/k8s/discovery.go`,
 add `Explain` to the `Discovery` interface there with the doc comment *The seam* gives,
@@ -407,7 +408,7 @@ Every assertion the next step writes then fails on content rather than on a miss
 which is what [`900-design-and-review-loops.md`](../../.agents/rules/900-design-and-review-loops.md)
 *Test plans compile against current source* asks for.
 
-- [ ] **Write the seam tests**
+- [x] **Write the seam tests**
 
 `eligibility_test.go` restates *Eligibility* and the target-exclusion bullet of *Layers*,
 one subtest per row against a fresh fixture from `startFixture` in `internal/k8s/export_test.go:24`:
@@ -476,11 +477,11 @@ The warning and the seam's own contract, over a logger the fixture captures:
 | a Pod lister whose namespace-wide read fails | `Targets` answers as it always did, because it never makes that read |
 | every case above | the recording transport sees no request while any of it runs |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the endpoint pass and `Explain`**
+- [x] **Implement the endpoint pass and `Explain`**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/k8s/ ./internal/pgo/ ./internal/httpapi/
@@ -626,7 +627,7 @@ so a targets request writes it empty however its query filtered,
 and `version` becomes a field of no record (*Logging*).
 `labels()` at `server.go:283-320` is untouched: `explain` is not a metrics label (*Metrics*).
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 `fakeDiscovery` at `internal/httpapi/fixtures_test.go:92-195` gains a settable `k8s.Explanation`,
 an error, a record of the port selection of every `Explain` call beside the one `Targets` keeps at line 110,
@@ -634,7 +635,7 @@ and a count of `Explain` calls, so a test can assert the method was not reached.
 Declare `targetsParams`, `exclusionView`, `explainBody`, `targetViews`, and `discoveryError`,
 and give `serveTargets` its new argument, before the assertions are written.
 
-- [ ] **Write the endpoint tests**
+- [x] **Write the endpoint tests**
 
 `targets_test.go` keeps `TestWriteTargets` and restates *List targets*
 and the HTTP half of the target-exclusion bullet of *Layers*.
@@ -722,11 +723,11 @@ The step order and the record:
 | any targets request | the audit line carries no `version` field |
 | any targets request | one metrics row on the `targets` endpoint, with no label the parameter added |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the parser, the handler, and the bodies**
+- [x] **Implement the parser, the handler, and the bodies**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/
@@ -744,7 +745,7 @@ git commit -m "feat(httpapi): serve targets?explain=true"
 
 Two passages become false with the endpoint's new grammar, and both move with it.
 
-- [ ] **Update the request algorithm**
+- [x] **Update the request algorithm**
 
 `docs/api.md:96-98` says a targets request runs steps 1 through 9 and answers from what discovery found,
 never reaching single-target selection.
@@ -758,7 +759,7 @@ say there that those two codes belong to the profile endpoint,
 and that on the targets endpoint the same filters narrow a list and an empty result is `200` with an empty array.
 The accepted algorithm this tracks is *Request algorithm*, whose filter step names both endpoints.
 
-- [ ] **Update the targets section**
+- [x] **Update the targets section**
 
 `docs/api.md:146-147` says the endpoint takes the port selection "and no other" parameter.
 *Listing targets* gains the parameter table — `port`, `portName`, `version`, `pod`, and `explain` —
@@ -773,7 +774,7 @@ and that a `pod` no target carries is `200` with an empty array rather than `404
 
 The error table's `no_targets` row at `docs/api.md:838` is the profile endpoint's and stays as it is.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/api.md
@@ -825,7 +826,7 @@ The wording table of [`docs/specs/ui.md`](../specs/ui.md) *Controls* is a plain 
 its ten keys the gateway's vocabulary and its values that section's sentences, copied exactly.
 The wording is plural whatever the count is, so the module carries no grammar rule.
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 `cutExport` at `internal/ui/portmodel_test.go:29`, and `loadPortModel` at `:46`,
 name `portmodel.js` through the `portModelName` constant at `:14`.
@@ -836,7 +837,7 @@ and leave `loadPortModel` as a one-line call so the port-control cases are untou
 Create `targetmodel.js` with the three functions returning empty values,
 so the loader finds them and every assertion fails on content.
 
-- [ ] **Write the model tests**
+- [x] **Write the model tests**
 
 `targetmodel_test.go` drives all three functions in one interpreter, table-driven, restating *Unit*.
 
@@ -897,16 +898,16 @@ A reason added to the gateway without console wording turns the suite red,
 which is what writing the ten names out in Go buys.
 The test that holds `app.js` to the module lands with the page, in the next task.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Write the module**
+- [x] **Write the module**
 
 `collectionmodel.js` is not created, and `consoleSources()` does not name it:
 it belongs to a later item of [`docs/plans/roadmap.md`](roadmap.md).
 [`docs/specs/ui.md`](../specs/ui.md) *Layout and embedding* draws a static tree holding it,
 and that tree is the later item's end state rather than this one's.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/ui/
@@ -999,7 +1000,7 @@ which the HTML-interface scan over `app.js` in `scan_test.go` already enforces.
 `app.js` sends no `version=` and no `pod=` on a targets fetch:
 those two controls are filled from this response, and sending them back would narrow the choices it offers.
 
-- [ ] **Write what a Go test can hold**
+- [x] **Write what a Go test can hold**
 
 **This task is not behaviorally test-first, and says so rather than implying otherwise.**
 No test executes `app.js`
@@ -1020,11 +1021,11 @@ that the retry keeps the port selection,
 that `targets` and `targetSummary` are reset together everywhere,
 and that the two `<select>` controls disappear when the empty state appears.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Wire the page**
+- [x] **Wire the page**
 
-- [ ] **Check it in a browser**
+- [x] **Check it in a browser**
 
 Against a running gateway, with a Service whose Pods are all ineligible,
 a Service whose selector matches nothing, and a Service with targets:
@@ -1039,7 +1040,7 @@ a Service whose selector matches nothing, and a Service with targets:
   and the page renders the plain listing with no error;
 - switching namespace and Service clears the rows rather than carrying them to the next selection.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/ui/
@@ -1086,7 +1087,7 @@ An empty `excluded` prints its header and nothing else, like every other empty l
 The client decodes the reason as text and interprets none of it:
 a reason a newer gateway added is printed as it arrived, never dropped.
 
-- [ ] **Write the verb tests**
+- [x] **Write the verb tests**
 
 `read_test.go` restates the `targets` rows of [`docs/specs/cli.md`](../specs/cli.md) *Reading*,
 against an `httptest` gateway as the file's other verb cases already are:
@@ -1107,11 +1108,11 @@ The last row is the deliberate difference from the console:
 the client is a person's tool at a terminal, its `--explain` is an explicit request,
 and silently answering a different question than the one asked is worse than a message.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the flag and the rows**
+- [x] **Implement the flag and the rows**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/client/ ./cmd/profgate/
@@ -1141,7 +1142,7 @@ The helper therefore takes the names and addresses the caller expects to be abse
 fails when any of them occurs in the response bytes,
 and only then decodes and returns the counts.
 
-- [ ] **Extend the three scenarios**
+- [x] **Extend the three scenarios**
 
 | Scenario | Assertion |
 |---|---|
@@ -1159,13 +1160,13 @@ A single read of one replica would be flaky for a reason that looks like a bug i
 which is the gateway that owns the realm those assertions rely on;
 read that line rather than assuming which client each assertion takes.
 
-- [ ] **Run the suite on the current lane**
+- [x] **Run the suite on the current lane**
 
 ```bash
 mise run test:e2e
 ```
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise run lint && mise run test && mise run check
@@ -1180,7 +1181,7 @@ git commit -m "test(e2e): assert the exclusion counts"
 **Files:**
 - Modify: `docs/cli.md`, `docs/console.md`, `CHANGELOG.md`, `docs/plans/targets-explain.md`
 
-- [ ] **Update the guides**
+- [x] **Update the guides**
 
 | File | Change |
 |---|---|
@@ -1198,7 +1199,7 @@ and `profgate targets --explain`.
 It says plainly that no Kubernetes permission changed and no Go module was added.
 Leave the released sections as they are: they describe what those versions shipped.
 
-- [ ] **Confirm the invariant wording**
+- [x] **Confirm the invariant wording**
 
 Read `AGENTS.md`, `README.md`, and
 [`.agents/rules/800-security-invariant.md`](../../.agents/rules/800-security-invariant.md) beside each other:
@@ -1210,7 +1211,7 @@ and confirm `internal/k8s` is still the only non-test importer of client-go.
 Confirm [`.agents/rules/100-project-map.md`](../../.agents/rules/100-project-map.md)
 still describes the seam correctly with five methods on it, and revise the sentence if it counts them.
 
-- [ ] **Finish the plan in the same commit**
+- [x] **Finish the plan in the same commit**
 
 Set line 3 of this file to `**Status:** Done`;
 insert `**Outcome:**` as line 4, naming the commits or the tag that shipped the change.
@@ -1226,7 +1227,7 @@ The third bullet is the one exception the reader should know about:
 it was ticked for a command-line behavior no accepted spec described until this plan's first task,
 and that task is what makes the tick true.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/cli.md docs/console.md CHANGELOG.md docs/plans/targets-explain.md

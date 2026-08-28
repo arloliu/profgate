@@ -204,6 +204,7 @@ profgate limits                        # the duration limits, the profiles, the 
 profgate namespaces                    # NAMESPACE
 profgate services payments             # SERVICE
 profgate targets payments/checkout     # POD  NODE  VERSION
+profgate targets payments/checkout --explain  # the same, plus REASON  COUNT
 ```
 
 ```text
@@ -219,6 +220,21 @@ pgo         read
 `targets` takes `--port <n>` or `--port-name <name>`,
 which the gateway needs in order to decide which Pods are eligible under that port;
 both together is a usage error before any request.
+`--explain` sends `explain=true` and prints a second table below the target list,
+`REASON  COUNT`, one row per reason the gateway counted, in the order it sent them:
+
+```text
+$ profgate targets payments/checkout --explain
+POD                       NODE      VERSION
+checkout-5f7c9d8b6-abcde  worker-1  1.42.0
+
+REASON            COUNT
+pod_not_ready     1
+endpoint_missing  1
+```
+
+An empty `excluded` prints the `REASON  COUNT` header and no rows, like every other empty list;
+`--output json` copies the response body unchanged, so the two extra fields ride along in it as sent.
 
 ### `profile`
 

@@ -48,6 +48,12 @@ and, on the way, a namespace and a Service picker.
   Typing in one field clears the other, and a non-empty field wins over the menu.
   Building this fills in a read-only Profile URL field with a **Download** link
   and, where the browser allows it, a **Copy URL** button.
+  The page always asks the targets endpoint for `explain=true`, the diagnostic behind this control.
+  When a Service has no target, the Pod and version controls are replaced by the reasons the gateway counted,
+  in its order, each in its own wording rather than the raw reason name.
+  A Service whose selector matches no Pod reads as its own sentence instead of a reason list.
+  A fetch a mid-rollout replica refuses for `explain=true` is retried once without it,
+  keeping the port selection, and the retry's answer is the plain listing with no reasons.
 - **Collections.** Shown only when PGO collection is enabled and your realm may read it;
   see [Collections, read-only](#collections-read-only).
 
