@@ -762,6 +762,9 @@ type gatewayConfigOptions struct {
 
 // gatewayConfig renders the configuration one gateway runs with:
 // the shipped base's, with the realm wide open, plus what PGO needs.
+// allowedSelections admits the test app's second port by number and by name,
+// so the default gateway proves the accepted outcome; the ports-gateway
+// overlay keeps an empty list and proves the refused one.
 // minEvery is a minute so a scheduled slot fires inside a test rather than a
 // quarter of an hour later, leaseTTL the lowest the ceiling admits so a reclaim
 // waits thirty seconds rather than a minute, the default jitter is the smallest
@@ -784,6 +787,9 @@ func gatewayConfig(o gatewayConfigOptions) string {
   versionLabel: app.kubernetes.io/version
   pprof:
     port: 6060
+    allowedSelections:
+      - port: 6061
+      - portName: pprof-alt
 limits:
   cpuSeconds: 60
   traceSeconds: 60

@@ -770,7 +770,7 @@ The default gateway's configuration is composed in Go by `gatewayConfig` in `tes
 and applied as a ConfigMap patch over the `default` overlay,
 so the two entries are written there rather than in a kustomize file.
 
-- [ ] **Give the default gateway its list**
+- [x] **Give the default gateway its list**
 
 `gatewayConfig` writes, under `discovery.pprof`, the two entries beside `port: 6060`.
 Every gateway that configuration builds gains them,
@@ -779,7 +779,7 @@ The `/v1/limits` assertion in `scenarios_auth_test.go` changes with them:
 `allowedSelections` holds exactly those two one-key objects, in the configured order,
 and `default` stays `{"port":6060}`.
 
-- [ ] **Rewrite the two scenarios**
+- [x] **Rewrite the two scenarios**
 
 | Scenario | Gateway | Proves |
 |---|---|---|
@@ -792,13 +792,13 @@ Their comments say what the gateway's list holds;
 the present wording — that the default gateway's allowlists are empty —
 described the model where an empty list admitted everything and is now false.
 
-- [ ] **Run the suite on the current lane**
+- [x] **Run the suite on the current lane**
 
 ```bash
 PROFGATE_E2E_LANE=current mise run test:e2e
 ```
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go vet -tags e2e ./test/e2e/...
