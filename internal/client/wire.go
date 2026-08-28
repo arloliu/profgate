@@ -74,6 +74,79 @@ type Target struct {
 	Version string `json:"version"`
 }
 
+// CollectionsResponse is GET .../collections: the Service's records, newest
+// first.
+type CollectionsResponse struct {
+	Collections []CollectionSummary `json:"collections"`
+}
+
+// CollectionSummary is one listing entry; createdAt is kept as the string
+// the gateway sent, so the table prints it unchanged.
+type CollectionSummary struct {
+	ID        string `json:"id"`
+	State     string `json:"state"`
+	Origin    string `json:"origin"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// CollectionRecord is GET /v1/collections/{id}: the fields the table prints
+// of the full stored record.
+type CollectionRecord struct {
+	ID       string             `json:"id"`
+	State    string             `json:"state"`
+	Origin   string             `json:"origin"`
+	Reason   string             `json:"reason"`
+	Progress CollectionProgress `json:"progress"`
+}
+
+// CollectionProgress is the owner's last checkpoint; all zero until the
+// first round has been claimed.
+type CollectionProgress struct {
+	Round         int `json:"round"`
+	Rounds        int `json:"rounds"`
+	SamplesOK     int `json:"samplesOK"`
+	SamplesFailed int `json:"samplesFailed"`
+}
+
+// PolicyResponse is the body of the policy route, on a read and on a write:
+// the source, the effective policy, the violations, and the two update
+// fields a stored override carries.
+// Durations stay the strings the gateway sent and replicas is "all" or a
+// count, so the table prints each unchanged.
+type PolicyResponse struct {
+	Source    string `json:"source"`
+	Effective struct {
+		Enabled  bool `json:"enabled"`
+		Schedule struct {
+			Every  string `json:"every"`
+			Jitter string `json:"jitter"`
+		} `json:"schedule"`
+		Sampling struct {
+			Duration      string `json:"duration"`
+			Rounds        int    `json:"rounds"`
+			RoundInterval string `json:"roundInterval"`
+			Replicas      any    `json:"replicas"`
+			MaxParallel   int    `json:"maxParallel"`
+		} `json:"sampling"`
+		Target struct {
+			VersionPolicy string `json:"versionPolicy"`
+			Version       string `json:"version"`
+		} `json:"target"`
+		Artifact struct {
+			Retention string `json:"retention"`
+		} `json:"artifact"`
+	} `json:"effective"`
+	Violations []PolicyViolation `json:"violations"`
+	UpdatedBy  string            `json:"updatedBy"`
+	UpdatedAt  string            `json:"updatedAt"`
+}
+
+// PolicyViolation is one effective field a current ceiling would refuse.
+type PolicyViolation struct {
+	Field  string `json:"field"`
+	Detail string `json:"detail"`
+}
+
 // Decode decodes one response body into T: exactly one JSON document, and
 // a mismatch between the document and the shape is an error.
 func Decode[T any](body []byte) (T, error) {

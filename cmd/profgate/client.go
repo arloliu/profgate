@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"io"
@@ -19,6 +20,8 @@ import (
 
 // verb is one client verb: its name, its subverbs, how many positionals it
 // takes, its own flags, and what it does with them.
+// A subverb is one or more words, so pgo declares "policy get" and its two
+// siblings and the dispatcher matches all of them.
 // The dispatcher removes exactly the declared positionals from the front of
 // the arguments, parses everything after them over the global flags and the
 // verb's own, and hands run the result.
@@ -43,15 +46,19 @@ type invocation struct {
 }
 
 // cmdEnv is what every verb runs against: the three standard streams, the
-// environment seam, the clock, whether stdout is a terminal, the password
-// prompt, the two transports a test replaces, and the path lookup and
-// command runner that --open resolves and starts the viewer through.
+// environment seam, the clock and the sleeper a wait paces itself on, the
+// random source the idempotency key is drawn from, whether stdout is a
+// terminal, the password prompt, the two transports a test replaces, and the
+// path lookup and command runner that --open resolves and starts the viewer
+// through.
 type cmdEnv struct {
 	stdin           io.Reader
 	stdout          io.Writer
 	stderr          io.Writer
 	getenv          func(string) (string, bool)
 	now             func() time.Time
+	sleep           func(context.Context, time.Duration) error // nil is the real one
+	random          io.Reader
 	terminal        bool // stdout is a terminal
 	prompt          func(user string) (password string, err error)
 	transport       http.RoundTripper // nil builds one from the resolved settings
@@ -68,6 +75,7 @@ func newEnv(stdin io.Reader, stdout, stderr io.Writer) *cmdEnv {
 		stderr:   stderr,
 		getenv:   os.LookupEnv,
 		now:      time.Now,
+		random:   rand.Reader,
 		terminal: isTerminal(stdout),
 		lookPath: exec.LookPath,
 	}
@@ -159,6 +167,11 @@ func clientVerbs() []verb {
 		servicesVerb(),
 		targetsVerb(),
 		profileVerb(),
+		collectVerb(),
+		collectionsVerb(),
+		collectionVerb(),
+		downloadVerb(),
+		pgoVerb(),
 		contextVerb(),
 	}
 }
@@ -248,11 +261,19 @@ func usageError(env *cmdEnv, verbs []verb, err error) int {
 func (v verb) parse(g *globals, args []string) (*invocation, error) {
 	in := &invocation{positionals: []string{}}
 	if len(v.subverbs) > 0 {
-		if len(args) == 0 || !slices.Contains(v.subverbs, args[0]) {
+		words := 0
+		for _, sub := range v.subverbs {
+			// A subverb may be more than one word: pgo policy get.
+			n := len(strings.Fields(sub))
+			if len(args) >= n && strings.Join(args[:n], " ") == sub {
+				in.subverb, words = sub, n
+				break
+			}
+		}
+		if words == 0 {
 			return nil, fmt.Errorf("%s takes one of %s", v.name, strings.Join(v.subverbs, ", "))
 		}
-		in.subverb = args[0]
-		args = args[1:]
+		args = args[words:]
 	}
 	for i := range v.positionals {
 		if len(args) == 0 {
@@ -417,6 +438,7 @@ func (env *cmdEnv) gateway(_ context.Context, g *globals) (*client.Client, clien
 		Credential: cred,
 		Transport:  env.transport,
 		Now:        env.now,
+		Sleep:      env.sleep,
 		Verbose:    env.verboseWriter(g),
 		Warn:       env.stderr,
 	})

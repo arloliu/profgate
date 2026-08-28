@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"io"
@@ -61,6 +62,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			return v, ok
 		},
 		now:             func() time.Time { return time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC) },
+		random:          rand.Reader,
 		transport:       refusingTransport(t),
 		issuerTransport: refusingTransport(t),
 		lookPath:        func(name string) (string, error) { return "", errors.New(name + " is not on the test path") },
@@ -203,7 +205,7 @@ func TestDispatchEveryVerbParses(t *testing.T) {
 			te := newTestEnv(t)
 			args := []string{v.name}
 			if len(v.subverbs) > 0 {
-				args = append(args, v.subverbs[0])
+				args = append(args, strings.Fields(v.subverbs[0])...)
 			}
 			for i := range v.positionals {
 				args = append(args, "positional"+string(rune('a'+i)))

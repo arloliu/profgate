@@ -113,7 +113,8 @@ func (env *cmdEnv) profile(ctx context.Context, in *invocation, f profileFlags) 
 	if err != nil {
 		return err
 	}
-	dest, err := env.openDestination(ns, svc, name, f)
+	derived := fmt.Sprintf("%s-%s-%s-%s.pprof", ns, svc, name, env.now().UTC().Format("20060102T150405Z"))
+	dest, err := env.openDestination(f.output, derived, f.open)
 	if err != nil {
 		return err
 	}
@@ -171,14 +172,15 @@ type destination struct {
 
 // openDestination opens the destination before the request is sent, so a
 // path that cannot be written is refused before a profile is collected.
-func (env *cmdEnv) openDestination(ns, svc, name string, f profileFlags) (*destination, error) {
-	if f.output == "-" {
+// output is the -o flag: - is stdout, empty is derived in the working
+// directory, or in a temporary directory when temp is set.
+func (env *cmdEnv) openDestination(output, derived string, temp bool) (*destination, error) {
+	if output == "-" {
 		return &destination{w: env.stdout}, nil
 	}
-	d := &destination{path: f.output}
+	d := &destination{path: output}
 	if d.path == "" {
-		derived := fmt.Sprintf("%s-%s-%s-%s.pprof", ns, svc, name, env.now().UTC().Format("20060102T150405Z"))
-		if f.open {
+		if temp {
 			dir, err := os.MkdirTemp("", "profgate-")
 			if err != nil {
 				return nil, fmt.Errorf("%w: %w", client.ErrUsage, err)

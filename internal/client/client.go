@@ -35,6 +35,7 @@ type Client struct {
 	credential Credential
 	http       *http.Client
 	now        func() time.Time
+	sleep      func(context.Context, time.Duration) error
 	verbose    io.Writer
 	warn       io.Writer
 }
@@ -46,8 +47,9 @@ type Options struct {
 	Credential Credential
 	Transport  http.RoundTripper // nil means one built from Settings
 	Now        func() time.Time
-	Verbose    io.Writer // nil prints no request lines
-	Warn       io.Writer // the loopback warning
+	Sleep      func(context.Context, time.Duration) error // nil is the real one; the wait and the cancel retry pace themselves on it
+	Verbose    io.Writer                                  // nil prints no request lines
+	Warn       io.Writer                                  // the loopback warning
 }
 
 // Request is one call: a method, a /v1 path, a query, and an optional JSON body.
@@ -76,6 +78,10 @@ func New(o Options) (*Client, error) {
 	if now == nil {
 		now = time.Now
 	}
+	sleep := o.Sleep
+	if sleep == nil {
+		sleep = realSleep
+	}
 	warn := o.Warn
 	if warn == nil {
 		warn = io.Discard
@@ -89,6 +95,7 @@ func New(o Options) (*Client, error) {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		now:     now,
+		sleep:   sleep,
 		verbose: o.Verbose,
 		warn:    warn,
 	}, nil
