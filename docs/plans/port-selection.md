@@ -281,7 +281,7 @@ It counts the keys it is handed rather than assigning them,
 so a mapping that repeats one key — `{port: 6061, port: 6062}` — is refused as two keys,
 not collapsed into whichever value came last.
 
-- [ ] **Write the configuration tests**
+- [x] **Write the configuration tests**
 
 `config_test.go` gains three tables and rewrites `TestPprofAllows`,
 whose present rows assert the fail-open reading that this change inverts.
@@ -370,7 +370,7 @@ The refusal messages are asserted on their text,
 so an operator carrying an older deployment forward reads what to write (*Configuration*).
 `t.Setenv` with an empty value is what sets a variable to the empty string in a Go test.
 
-- [ ] **Write the refusal table**
+- [x] **Write the refusal table**
 
 `allowPort` in `internal/httpapi/server.go` already asks the configuration snapshot the two questions
 and answers `400 port_not_allowed` with the value as sent,
@@ -443,7 +443,7 @@ Non-disclosure, from *Non-disclosure*:
 no response body, header, or audit line in any row above carries the number a `portName` selection resolved to,
 and a `400 port_not_allowed` body names the client's value and nothing else.
 
-- [ ] **Write the shipped-manifest tests**
+- [x] **Write the shipped-manifest tests**
 
 `TestConfigMap` in `deploy/deploy_test.go` asserts the base ConfigMap renders `allowedSelections: []`
 and loads with an empty `AllowedSelections`.
@@ -460,7 +460,7 @@ and loads with an empty `AllowedSelections`.
 
 `TestChartPortAllowlists` is renamed to say what it now covers, `TestChartAllowedSelections`.
 
-- [ ] **Write the removed-name scan**
+- [x] **Write the removed-name scan**
 
 `scripts/check-repo.py` gains `check_removed_port_keys`,
 beside the import checks it already runs over `*.go` files and in the same style.
@@ -474,16 +474,16 @@ where the released entry and the migration table name the old keys on purpose.
 `mise run check` runs it in every validation block from here on,
 and the check's docstring gains one line saying what it guards.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the configuration**
+- [x] **Implement the configuration**
 
 Add the type, the field, the four methods, the `Load` steps, and the `validate` rules as written above.
 Delete `AllowedPorts`, `AllowedPortNames`, and the `firstDuplicate` calls they fed
 if nothing else uses that helper.
 Error text follows the existing style: the key path, then the rule.
 
-- [ ] **Carry the rename through the tree**
+- [x] **Carry the rename through the tree**
 
 | File | Change |
 |---|---|
@@ -499,7 +499,7 @@ Error text follows the existing style: the key path, then the rule.
 | `test/e2e/overlays/ports-gateway/configmap.yaml` | `allowedSelections: []`, which is what its scenario proves; the realm's `namespaces: ["placeholder"]` line stays exactly as written, because `deployScopedGateway` patches that literal and fails the scenario when it finds nothing to replace |
 | `test/e2e/scenarios_auth_test.go` | the `/v1/limits` struct reads `allowedSelections`; the assertion is adjusted again when the default gateway's list grows |
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/... ./deploy/

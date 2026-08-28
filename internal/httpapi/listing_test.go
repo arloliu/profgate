@@ -485,7 +485,11 @@ func TestListingLimits(t *testing.T) {
 	t.Run("numeric default", func(t *testing.T) {
 		h := listingHarness()
 		h.configure(func(cfg *config.Config) {
-			cfg.Discovery.Pprof = config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060, 6061}, AllowedPortNames: []string{"pprof", "pprof-alt"}}
+			cfg.Discovery.Pprof = config.PprofConfig{Port: 6060, AllowedSelections: []config.Selection{
+				{Kind: config.SelectionPort, Value: "6061"},
+				{Kind: config.SelectionPortName, Value: "pprof-alt"},
+				{Kind: config.SelectionPortName, Value: "*"},
+			}}
 			cfg.Limits.CPUSeconds = 60
 			cfg.Limits.TraceSeconds = 30
 			cfg.PGO.Enabled = true
@@ -493,7 +497,7 @@ func TestListingLimits(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, limitsPath, nil))
 		expectJSON(t, rec, `{"cpuSeconds":60,"traceSeconds":30,"profiles":`+string(profiles)+
-			`,"pprof":{"default":{"port":6060},"allowedPorts":[6060,6061],"allowedPortNames":["pprof","pprof-alt"]},`+
+			`,"pprof":{"default":{"port":6060},"allowedSelections":[{"port":6061},{"portName":"pprof-alt"},{"portName":"*"}]},`+
 			`"pgo":{"enabled":true}}`)
 	})
 
@@ -506,11 +510,11 @@ func TestListingLimits(t *testing.T) {
 		}
 	})
 
-	t.Run("empty allowlists", func(t *testing.T) {
+	t.Run("empty list", func(t *testing.T) {
 		h := listingHarness()
 		rec := h.do(t, http.MethodGet, limitsPath)
 		body := rec.Body.String()
-		if !strings.Contains(body, `"allowedPorts":[]`) || !strings.Contains(body, `"allowedPortNames":[]`) || strings.Contains(body, "null") {
+		if !strings.Contains(body, `"allowedSelections":[]`) || strings.Contains(body, "null") {
 			t.Errorf("body = %q", body)
 		}
 	})

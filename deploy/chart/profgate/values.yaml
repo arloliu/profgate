@@ -507,14 +507,15 @@ pgo:
 # overriding them here moves the listener without moving the probe or the
 # Service.
 #
-# discovery.pprof.allowedPorts and allowedPortNames default to empty lists
-# below, which accept any port and any port name a request names; the
-# configured discovery.pprof.port or portName, once one is set, always
-# passes too. discovery.pprof.port is left out of the default on purpose:
+# discovery.pprof.allowedSelections defaults to the empty list below, which
+# accepts only the configured default a request may name; the configured
+# discovery.pprof.port or portName, once one is set, always passes. Entries
+# are {port: N} or {portName: name}; {port: "*"} and {portName: "*"} open
+# every port number or every port name. A user's list replaces this one.
+# discovery.pprof.port is left out of the default on purpose:
 # config.Load refuses a file naming both port and portName, so a default
 # port here would collide with a user who sets only portName.
 config:
   discovery:
     pprof:
-      allowedPorts: []
-      allowedPortNames: []
+      allowedSelections: []

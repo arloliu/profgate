@@ -63,11 +63,10 @@ type limitsBody struct {
 	PGO          pgoView   `json:"pgo"`
 }
 
-// pprofView is the port default and the two allowlists, each [] when empty.
+// pprofView is the port default and the allowedSelections list, [] when empty.
 type pprofView struct {
-	Default          portDefault `json:"default"`
-	AllowedPorts     []int32     `json:"allowedPorts"`
-	AllowedPortNames []string    `json:"allowedPortNames"`
+	Default           portDefault        `json:"default"`
+	AllowedSelections []config.Selection `json:"allowedSelections"`
 }
 
 // portDefault carries whichever of the port number and the port name is configured.
@@ -156,7 +155,7 @@ func whoamiView(cfg *config.Config, p auth.Principal, realm config.Realm) whoami
 	return view
 }
 
-// limitsView is the configured limits, profile names, port default, allowlists, and pgo.enabled.
+// limitsView is the configured limits, profile names, port default, allowed selections, and pgo.enabled.
 func limitsView(cfg *config.Config) limitsBody {
 	pprof := cfg.Discovery.Pprof
 	view := limitsBody{
@@ -164,8 +163,7 @@ func limitsView(cfg *config.Config) limitsBody {
 		TraceSeconds: cfg.Limits.TraceSeconds,
 		Profiles:     config.Profiles(),
 		Pprof: pprofView{
-			AllowedPorts:     append(make([]int32, 0, len(pprof.AllowedPorts)), pprof.AllowedPorts...),
-			AllowedPortNames: cloneList(pprof.AllowedPortNames),
+			AllowedSelections: append(make([]config.Selection, 0, len(pprof.AllowedSelections)), pprof.AllowedSelections...),
 		},
 		PGO: pgoView{Enabled: cfg.PGO.Enabled},
 	}

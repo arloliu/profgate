@@ -17,10 +17,11 @@ data:
       versionLabel: app.kubernetes.io/version
       pprof:
         port: 6060
-        # Empty accepts any port a request names; the configured port always passes too.
-        allowedPorts: []
-        # Empty accepts any port name a request names; the configured port name, if set, always passes too.
-        allowedPortNames: []
+        # What a request may name instead of the port above; the configured
+        # default always passes. Empty accepts only that default. Entries are
+        # {port: N} or {portName: name}; {port: "*"} and {portName: "*"} open
+        # every port number or every port name.
+        allowedSelections: []
     limits:
       cpuSeconds: 60
       traceSeconds: 60

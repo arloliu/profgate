@@ -708,8 +708,13 @@ class App extends Component {
   renderPortControl() {
     const limits = this.state.limits;
     const pprof = (limits && limits.pprof) || {};
-    const ports = asList(pprof.allowedPorts);
-    const names = asList(pprof.allowedPortNames);
+    // One option per allowedSelections entry; a wildcard entry opens a free
+    // field for its kind instead. An empty list offers the default alone.
+    const selections = asList(pprof.allowedSelections);
+    const ports = selections.filter((s) => s.port !== undefined && s.port !== "*").map((s) => s.port);
+    const names = selections.filter((s) => s.portName !== undefined && s.portName !== "*").map((s) => s.portName);
+    const anyPort = selections.some((s) => s.port === "*");
+    const anyName = selections.some((s) => s.portName === "*");
     const def = pprof.default || {};
     const defLabel = def.portName ? `default (${def.portName})` : def.port ? `default (${def.port})` : "default";
     return html`
@@ -720,9 +725,8 @@ class App extends Component {
           ${ports.map((p) => html`<option key=${`port:${p}`} value=${`port:${p}`}>${p}</option>`)}
           ${names.map((n) => html`<option key=${`name:${n}`} value=${`name:${n}`}>${n}</option>`)}
         </select>
-        ${ports.length
-          ? null
-          : html`
+        ${anyPort
+          ? html`
               <label>
                 Port number
                 <input
@@ -736,10 +740,10 @@ class App extends Component {
                   onChange=${this.refetchTargets}
                 />
               </label>
-            `}
-        ${names.length
-          ? null
-          : html`
+            `
+          : null}
+        ${anyName
+          ? html`
               <label>
                 Port name
                 <input
@@ -750,7 +754,8 @@ class App extends Component {
                   onChange=${this.refetchTargets}
                 />
               </label>
-            `}
+            `
+          : null}
       </fieldset>
     `;
   }

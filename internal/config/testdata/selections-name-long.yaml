@@ -1,8 +1,8 @@
 discovery:
   pprof:
     port: 6060
-    allowedPorts: [6060, 6061]
-    allowedPortNames: [pprof, pprof-alt]
+    allowedSelections:
+      - portName: abcdefghijklmnop
 auth:
   anonymousRealm: developer
 realms:

@@ -505,17 +505,12 @@ func TestConfigMap(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(body, "allowedPorts: []") {
-		t.Errorf("config.yaml does not contain \"allowedPorts: []\":\n%s", body)
+	// The shipped list is empty, which admits only the configured default.
+	if !strings.Contains(body, "allowedSelections: []") {
+		t.Errorf("config.yaml does not contain \"allowedSelections: []\":\n%s", body)
 	}
-	if !strings.Contains(body, "allowedPortNames: []") {
-		t.Errorf("config.yaml does not contain \"allowedPortNames: []\":\n%s", body)
-	}
-	if len(cfg.Discovery.Pprof.AllowedPorts) != 0 {
-		t.Errorf("discovery.pprof.allowedPorts = %v, want empty", cfg.Discovery.Pprof.AllowedPorts)
-	}
-	if len(cfg.Discovery.Pprof.AllowedPortNames) != 0 {
-		t.Errorf("discovery.pprof.allowedPortNames = %v, want empty", cfg.Discovery.Pprof.AllowedPortNames)
+	if len(cfg.Discovery.Pprof.AllowedSelections) != 0 {
+		t.Errorf("discovery.pprof.allowedSelections = %v, want empty", cfg.Discovery.Pprof.AllowedSelections)
 	}
 
 	if cfg.UI.Enabled {

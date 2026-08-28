@@ -1,0 +1,12 @@
+discovery:
+  pprof:
+    port: 6060
+    allowedSelections:
+      - portName: "*"
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

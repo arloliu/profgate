@@ -173,8 +173,7 @@ config:
   discovery:
     pprof:
       port: 6060
-      allowedPorts: []
-      allowedPortNames: []
+      allowedSelections: []
   limits:
     cpuSeconds: 60
     maxConcurrentProfiles: 16
@@ -524,7 +523,7 @@ and for any other rule set an operator would rather ship.
 | `tls.enabled`, `.existingSecret`, `.certKey`, `.keyKey`, `.mountPath`, `.minVersion` | `false`, `profgate-tls`, `tls.crt`, `tls.key`, `/etc/profgate/tls`, `1.2` | HTTPS on the API port, from a Secret the operator creates. |
 | `nats.url`, `.credsFile`, `.existingSecret`, `.secretKey`, `.mountPath` | empty, `/etc/profgate/nats/nats.creds`, `profgate-nats-creds`, `nats.creds`, `/etc/profgate/nats` | NATS, used only with `pgo.enabled`. |
 | `pgo.enabled`, `.configAPI`, `.limits` | `false`, `enabled`, shipped ceilings | PGO collection and the ceilings the memory limit is derived from. |
-| `config` | `discovery.pprof` holding `allowedPorts: []` and `allowedPortNames: []` | Raw configuration merged over everything above. `allowedPorts` and `allowedPortNames` merge with a user's `config` values key by key, so setting one leaves the other at its default; an empty list accepts any value of its parameter. |
+| `config` | `discovery.pprof` holding `allowedSelections: []` | Raw configuration merged over everything above. `allowedSelections` is default-deny: the empty list admits only the configured `port` or `portName`, and a user's list replaces it entry for entry, `{port: N}`, `{portName: name}`, or a `"*"` wildcard of either kind. |
 
 The NetworkPolicy is off by default because the namespaces that reach the two ports differ per cluster.
 [`../../networkpolicy-app-example.yaml`](../../networkpolicy-app-example.yaml)

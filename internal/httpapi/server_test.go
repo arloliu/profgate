@@ -1006,6 +1006,11 @@ func TestPortAllowlist(t *testing.T) {
 	pprof := func(p config.PprofConfig) func(*config.Config) {
 		return func(cfg *config.Config) { cfg.Discovery.Pprof = p }
 	}
+	port := func(value string) config.Selection { return config.Selection{Kind: config.SelectionPort, Value: value} }
+	name := func(value string) config.Selection {
+		return config.Selection{Kind: config.SelectionPortName, Value: value}
+	}
+	list := func(entries ...config.Selection) []config.Selection { return entries }
 	expectSelections := func(t *testing.T, h *harness, want ...k8s.PortSelection) {
 		t.Helper()
 		if got := h.disc.selectionsSeen(); !slices.Equal(got, want) {
@@ -1018,30 +1023,105 @@ func TestPortAllowlist(t *testing.T) {
 			t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
 		}
 	}
+	expectRefused := func(t *testing.T, h *harness, rec *httptest.ResponseRecorder, sent string) {
+		t.Helper()
+		h.expectError(t, rec, http.StatusBadRequest, "port_not_allowed")
+		h.expectCounts(t, 0, 0)
+		if _, message := errorBodyOf(t, rec); !strings.Contains(message, sent) {
+			t.Errorf("message %q does not name the value sent", message)
+		}
+	}
+	endpoints := []struct{ name, path string }{
+		{"profile", profilePath + "heap?"},
+		{"targets", targetsPath + "?"},
+	}
 
-	t.Run("portName abc is valid", func(t *testing.T) {
-		h := newHarness(baseTarget())
-		expectOK(t, h.do(t, http.MethodGet, targetsPath+"?portName=abc"))
-		expectSelections(t, h, k8s.PortSelection{PortName: "abc"})
+	// The list is default-deny: an empty list admits the configured default
+	// and nothing else, a listed entry admits its value, and each wildcard
+	// covers its own kind. Every refusal reaches no Discovery call.
+	t.Run("the list", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			pprof    config.PprofConfig
+			query    string
+			sent     string
+			admitted bool
+			sel      k8s.PortSelection
+		}{
+			{"empty list, the default by number", config.PprofConfig{Port: 6060}, "port=6060", "6060", true, k8s.PortSelection{Port: 6060}},
+			{"empty list, a number beyond it", config.PprofConfig{Port: 6060}, "port=6061", "6061", false, k8s.PortSelection{}},
+			{"empty list, the other kind", config.PprofConfig{Port: 6060}, "portName=pprof", "pprof", false, k8s.PortSelection{}},
+			{"empty list, the default by name", config.PprofConfig{PortName: "pprof"}, "portName=pprof", "pprof", true, k8s.PortSelection{PortName: "pprof"}},
+			{"empty list, a number under a named default", config.PprofConfig{PortName: "pprof"}, "port=6060", "6060", false, k8s.PortSelection{}},
+			{"a listed entry", config.PprofConfig{Port: 6060, AllowedSelections: list(port("6061"))}, "port=6061", "6061", true, k8s.PortSelection{Port: 6061}},
+			{"an unlisted value of the listed kind", config.PprofConfig{Port: 6060, AllowedSelections: list(port("6061"))}, "port=6062", "6062", false, k8s.PortSelection{}},
+			{"an unlisted kind", config.PprofConfig{Port: 6060, AllowedSelections: list(port("6061"))}, "portName=pprof-alt", "pprof-alt", false, k8s.PortSelection{}},
+			{"the default is listed too", config.PprofConfig{Port: 6060, AllowedSelections: list(port("6060"))}, "port=6060", "6060", true, k8s.PortSelection{Port: 6060}},
+			{"the port wildcard", config.PprofConfig{Port: 6060, AllowedSelections: list(port("*"))}, "port=65535", "65535", true, k8s.PortSelection{Port: 65535}},
+			{"the port wildcard, other kind", config.PprofConfig{Port: 6060, AllowedSelections: list(port("*"))}, "portName=pprof-alt", "pprof-alt", false, k8s.PortSelection{}},
+			{"the name wildcard", config.PprofConfig{Port: 6060, AllowedSelections: list(name("*"))}, "portName=whatever", "whatever", true, k8s.PortSelection{PortName: "whatever"}},
+			{"the name wildcard, other kind", config.PprofConfig{Port: 6060, AllowedSelections: list(name("*"))}, "port=6061", "6061", false, k8s.PortSelection{}},
+			{"a named default beside numeric entries, the name", config.PprofConfig{PortName: "pprof", AllowedSelections: list(port("6061"))}, "portName=pprof", "pprof", true, k8s.PortSelection{PortName: "pprof"}},
+			{"a named default beside numeric entries, the number", config.PprofConfig{PortName: "pprof", AllowedSelections: list(port("6061"))}, "port=6061", "6061", true, k8s.PortSelection{Port: 6061}},
+			{"a named default beside numeric entries, another name", config.PprofConfig{PortName: "pprof", AllowedSelections: list(port("6061"))}, "portName=metrics", "metrics", false, k8s.PortSelection{}},
+			{"a named default beside numeric entries, another number", config.PprofConfig{PortName: "pprof", AllowedSelections: list(port("6061"))}, "port=6060", "6060", false, k8s.PortSelection{}},
+			{"a numeric default beside named entries, the number", config.PprofConfig{Port: 6060, AllowedSelections: list(name("pprof-alt"))}, "port=6060", "6060", true, k8s.PortSelection{Port: 6060}},
+			{"a numeric default beside named entries, the name", config.PprofConfig{Port: 6060, AllowedSelections: list(name("pprof-alt"))}, "portName=pprof-alt", "pprof-alt", true, k8s.PortSelection{PortName: "pprof-alt"}},
+			{"a numeric default beside named entries, another number", config.PprofConfig{Port: 6060, AllowedSelections: list(name("pprof-alt"))}, "port=6061", "6061", false, k8s.PortSelection{}},
+			{"a numeric default beside named entries, another name", config.PprofConfig{Port: 6060, AllowedSelections: list(name("pprof-alt"))}, "portName=other", "other", false, k8s.PortSelection{}},
+			{"both wildcards, a number", config.PprofConfig{Port: 6060, AllowedSelections: list(port("*"), name("*"))}, "port=9999", "9999", true, k8s.PortSelection{Port: 9999}},
+			{"both wildcards, a name", config.PprofConfig{Port: 6060, AllowedSelections: list(port("*"), name("*"))}, "portName=abc", "abc", true, k8s.PortSelection{PortName: "abc"}},
+		} {
+			for _, ep := range endpoints {
+				t.Run(ep.name+" "+tc.name, func(t *testing.T) {
+					h := newHarness(baseTarget())
+					h.configure(pprof(tc.pprof))
+					rec := h.do(t, http.MethodGet, ep.path+tc.query)
+					if !tc.admitted {
+						expectRefused(t, h, rec, tc.sent)
+						expectSelections(t, h)
+
+						return
+					}
+					expectOK(t, rec)
+					expectSelections(t, h, tc.sel)
+				})
+			}
+		}
 	})
 
-	t.Run("empty lists accept any port", func(t *testing.T) {
+	t.Run("an empty list refuses a number beyond the default", func(t *testing.T) {
 		h := newHarness(baseTarget())
+		rec := h.do(t, http.MethodGet, profilePath+"heap?port=9999")
+		expectRefused(t, h, rec, "9999")
+	})
+
+	t.Run("the port wildcard admits a number beyond the default", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedSelections: list(port("*"))}))
 		expectOK(t, h.do(t, http.MethodGet, profilePath+"heap?port=9999"))
 		expectSelections(t, h, k8s.PortSelection{Port: 9999})
 		h.expectCounts(t, 1, 1)
 	})
 
+	t.Run("portName abc is valid", func(t *testing.T) {
+		t.Run("under the name wildcard", func(t *testing.T) {
+			h := newHarness(baseTarget())
+			h.configure(pprof(config.PprofConfig{Port: 6060, AllowedSelections: list(name("*"))}))
+			expectOK(t, h.do(t, http.MethodGet, targetsPath+"?portName=abc"))
+			expectSelections(t, h, k8s.PortSelection{PortName: "abc"})
+		})
+		t.Run("under the empty list", func(t *testing.T) {
+			h := newHarness(baseTarget())
+			rec := h.do(t, http.MethodGet, targetsPath+"?portName=abc")
+			expectRefused(t, h, rec, "abc")
+		})
+	})
+
 	t.Run("disallowed port", func(t *testing.T) {
 		h := newHarness(baseTarget())
-		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}))
 		rec := h.do(t, http.MethodGet, profilePath+"heap?port=6061")
-		h.expectError(t, rec, http.StatusBadRequest, "port_not_allowed")
-		h.expectCounts(t, 0, 0)
-		_, message := errorBodyOf(t, rec)
-		if !strings.Contains(message, "6061") {
-			t.Errorf("message %q does not name the value sent", message)
-		}
+		expectRefused(t, h, rec, "6061")
 		for _, other := range []string{"6060", "8080", "9999"} {
 			if strings.Contains(rec.Body.String(), other) {
 				t.Errorf("body %q names a number the client did not send", rec.Body.String())
@@ -1051,50 +1131,54 @@ func TestPortAllowlist(t *testing.T) {
 
 	t.Run("disallowed name", func(t *testing.T) {
 		h := newHarness(baseTarget())
-		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPortNames: []string{"pprof"}}))
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedSelections: list(name("pprof"))}))
 		rec := h.do(t, http.MethodGet, targetsPath+"?portName=pprof-alt")
-		h.expectError(t, rec, http.StatusBadRequest, "port_not_allowed")
-		h.expectCounts(t, 0, 0)
-		if _, message := errorBodyOf(t, rec); !strings.Contains(message, "pprof-alt") {
-			t.Errorf("message %q does not name the value sent", message)
-		}
+		expectRefused(t, h, rec, "pprof-alt")
 	})
 
-	t.Run("lists are independent", func(t *testing.T) {
-		t.Run("ports bound, any name", func(t *testing.T) {
-			h := newHarness(baseTarget())
-			h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}))
-			expectOK(t, h.do(t, http.MethodGet, targetsPath+"?portName=anything"))
-		})
-		t.Run("names bound, any port", func(t *testing.T) {
-			h := newHarness(baseTarget())
-			h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPortNames: []string{"pprof"}}))
-			expectOK(t, h.do(t, http.MethodGet, profilePath+"heap?port=9999"))
-		})
+	t.Run("each kind is bounded on its own", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			pprof config.PprofConfig
+			query string
+			sent  string
+		}{
+			{"a number listed, a name sent", config.PprofConfig{Port: 6060, AllowedSelections: list(port("6061"))}, targetsPath + "?portName=anything", "anything"},
+			{"a name listed, a number sent", config.PprofConfig{Port: 6060, AllowedSelections: list(name("pprof-alt"))}, profilePath + "heap?port=9999", "9999"},
+			{"the port wildcard, a name sent", config.PprofConfig{Port: 6060, AllowedSelections: list(port("*"))}, targetsPath + "?portName=anything", "anything"},
+			{"the name wildcard, a number sent", config.PprofConfig{Port: 6060, AllowedSelections: list(name("*"))}, profilePath + "heap?port=9999", "9999"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				h := newHarness(baseTarget())
+				h.configure(pprof(tc.pprof))
+				rec := h.do(t, http.MethodGet, tc.query)
+				expectRefused(t, h, rec, tc.sent)
+			})
+		}
 	})
 
 	t.Run("default number always passes", func(t *testing.T) {
 		h := newHarness(baseTarget())
-		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{7070}}))
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedSelections: list(port("7070"))}))
 		expectOK(t, h.do(t, http.MethodGet, targetsPath+"?port=6060"))
 	})
 
 	t.Run("default name always passes", func(t *testing.T) {
 		h := newHarness(baseTarget())
-		h.configure(pprof(config.PprofConfig{PortName: "pprof", AllowedPortNames: []string{"metrics"}}))
+		h.configure(pprof(config.PprofConfig{PortName: "pprof", AllowedSelections: list(name("metrics"))}))
 		expectOK(t, h.do(t, http.MethodGet, targetsPath+"?portName=pprof"))
 	})
 
-	narrowed := pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{7070}, AllowedPortNames: []string{"metrics"}})
+	narrowed := pprof(config.PprofConfig{Port: 6060, AllowedSelections: list(port("7070"), name("metrics"))})
 
-	t.Run("no selection under narrowed lists, targets", func(t *testing.T) {
+	t.Run("no selection under a narrowed list, targets", func(t *testing.T) {
 		h := newHarness(baseTarget())
 		h.configure(narrowed)
 		expectOK(t, h.do(t, http.MethodGet, targetsPath))
 		expectSelections(t, h, k8s.PortSelection{})
 	})
 
-	t.Run("no selection under narrowed lists, profile", func(t *testing.T) {
+	t.Run("no selection under a narrowed list, profile", func(t *testing.T) {
 		h := newHarness(baseTarget())
 		h.configure(narrowed)
 		expectOK(t, h.do(t, http.MethodGet, profilePath+"heap"))
@@ -1103,10 +1187,10 @@ func TestPortAllowlist(t *testing.T) {
 
 	t.Run("allowlist reads the request's snapshot", func(t *testing.T) {
 		h := newHarness(baseTarget())
-		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060, 7070}}))
+		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedSelections: list(port("7070"))}))
 		h.beforeAllowlist = func() {
 			cfg := testConfig()
-			cfg.Discovery.Pprof = config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}
+			cfg.Discovery.Pprof = config.PprofConfig{Port: 6060}
 			h.cfg.Store(cfg)
 		}
 		rec := h.do(t, http.MethodGet, profilePath+"heap?port=7070")
@@ -1120,32 +1204,35 @@ func TestPortAllowlist(t *testing.T) {
 		h := newHarness(baseTarget())
 		h.configure(func(cfg *config.Config) {
 			cfg.Realms["developer"] = config.Realm{Namespaces: []string{"other"}, Services: []string{"*"}, Profiles: []string{"*"}}
-			cfg.Discovery.Pprof = config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}
 		})
 		rec := h.do(t, http.MethodGet, profilePath+"heap?port=6061")
 		h.expectError(t, rec, http.StatusForbidden, "realm_denied")
 		h.expectCounts(t, 0, 0)
+		if strings.Contains(rec.Body.String(), "6061") {
+			t.Errorf("body %q mentions the port a denied caller sent", rec.Body.String())
+		}
 	})
 
 	t.Run("grammar before allowlist", func(t *testing.T) {
-		h := newHarness(baseTarget())
-		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}))
-		rec := h.do(t, http.MethodGet, targetsPath+"?port=abc")
-		h.expectError(t, rec, http.StatusBadRequest, "invalid_parameter")
+		for _, query := range []string{"port=0", "port=65536", "port=abc", "port=", "port=6061&port=6062", "port=6061&portName=pprof-alt"} {
+			t.Run(query, func(t *testing.T) {
+				h := newHarness(baseTarget())
+				rec := h.do(t, http.MethodGet, targetsPath+"?"+query)
+				h.expectError(t, rec, http.StatusBadRequest, "invalid_parameter")
+				h.expectCounts(t, 0, 0)
+			})
+		}
 	})
 
 	t.Run("allowlist before discovery error", func(t *testing.T) {
 		h := newHarness()
-		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}))
 		h.disc.err = k8s.ErrServiceNotFound
 		rec := h.do(t, http.MethodGet, targetsPath+"?port=6061")
-		h.expectError(t, rec, http.StatusBadRequest, "port_not_allowed")
-		h.expectCounts(t, 0, 0)
+		expectRefused(t, h, rec, "6061")
 	})
 
 	t.Run("parameters before allowlist", func(t *testing.T) {
 		h := newHarness(baseTarget())
-		h.configure(pprof(config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}))
 		rec := h.do(t, http.MethodGet, profilePath+"cpu?port=6061&seconds=61")
 		h.expectError(t, rec, http.StatusBadRequest, "seconds_exceeds_limit")
 		h.expectCounts(t, 0, 0)
@@ -1168,8 +1255,20 @@ func TestPortResolution(t *testing.T) {
 	altHarness := func() *harness {
 		h := newHarness(namedTarget("pod-1", fixtureVersion), namedTarget("pod-2", fixtureVersion))
 		h.disc.byName = map[string][]k8s.Target{"pprof-alt": {altTarget("pod-1")}}
+		h.configure(func(cfg *config.Config) {
+			cfg.Discovery.Pprof.AllowedSelections = []config.Selection{
+				{Kind: config.SelectionPortName, Value: "pprof-alt"},
+				{Kind: config.SelectionPortName, Value: "nowhere"},
+			}
+		})
 
 		return h
+	}
+	// admitPort lists one number, so a row that names it runs under an admitted value.
+	admitPort := func(h *harness, value string) {
+		h.configure(func(cfg *config.Config) {
+			cfg.Discovery.Pprof.AllowedSelections = []config.Selection{{Kind: config.SelectionPort, Value: value}}
+		})
 	}
 	auditPort := func(t *testing.T, h *harness, status int, code, want string) {
 		t.Helper()
@@ -1229,6 +1328,7 @@ func TestPortResolution(t *testing.T) {
 
 	t.Run("audit numeric", func(t *testing.T) {
 		h := newHarness(baseTarget())
+		admitPort(h, "6061")
 		h.do(t, http.MethodGet, profilePath+"heap?port=6061")
 		auditPort(t, h, http.StatusOK, codeOK, "6061")
 	})
@@ -1254,15 +1354,19 @@ func TestPortResolution(t *testing.T) {
 
 	t.Run("audit disallowed", func(t *testing.T) {
 		h := newHarness(baseTarget())
-		h.configure(func(cfg *config.Config) {
-			cfg.Discovery.Pprof = config.PprofConfig{Port: 6060, AllowedPorts: []int32{6060}}
-		})
 		h.do(t, http.MethodGet, profilePath+"heap?port=6061")
 		auditPort(t, h, http.StatusBadRequest, "port_not_allowed", "6061")
 	})
 
+	t.Run("audit disallowed name", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		h.do(t, http.MethodGet, profilePath+"heap?portName=pprof-alt")
+		auditPort(t, h, http.StatusBadRequest, "port_not_allowed", "pprof-alt")
+	})
+
 	t.Run("no metric label", func(t *testing.T) {
 		h := newHarness(baseTarget())
+		admitPort(h, "6061")
 		h.do(t, http.MethodGet, profilePath+"heap?port=6061")
 		h.expectMetric(t, metrics.EndpointProfile, "heap")
 	})
@@ -1321,6 +1425,7 @@ func TestPortResolution(t *testing.T) {
 
 	t.Run("non-pprof listener passes through", func(t *testing.T) {
 		h := newHarness(baseTarget())
+		admitPort(h, "8080")
 		h.up.outcome = proxy.Outcome{Code: "upstream_404", Status: http.StatusNotFound, Committed: true}
 		rec := h.do(t, http.MethodGet, profilePath+"heap?port=8080")
 		if rec.Code != http.StatusNotFound {

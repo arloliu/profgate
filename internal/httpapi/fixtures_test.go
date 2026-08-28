@@ -33,10 +33,14 @@ const (
 	fixtureService   = "payment-api"
 	fixturePod       = "payment-api-1"
 	fixtureIP        = "10.0.0.5"
-	fixturePort      = 6060
-	fixtureNode      = "worker-1"
-	fixtureVersion   = "1.0"
-	fixtureUID       = "u1"
+	// fixturePort is the number the fixture Pod exposes, which no response may
+	// carry. It differs from the configured default in testConfig, which
+	// /v1/limits reports and a refusal may echo, so assertNoLeak catches only
+	// the resolved number.
+	fixturePort    = 6070
+	fixtureNode    = "worker-1"
+	fixtureVersion = "1.0"
+	fixtureUID     = "u1"
 
 	targetsPath = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/targets"
 	profilePath = "/v1/namespaces/" + fixtureNamespace + "/services/" + fixtureService + "/profiles/"
@@ -63,8 +67,11 @@ func namedTarget(pod, version string) k8s.Target {
 // testConfig is a valid wide-open configuration with the spec's default limits.
 func testConfig() *config.Config {
 	return &config.Config{
-		Limits: config.LimitsConfig{CPUSeconds: 60, TraceSeconds: 60, MaxConcurrentProfiles: 16},
-		Auth:   config.AuthConfig{Mode: "disabled", AnonymousRealm: "developer"},
+		// A numeric default and no allowedSelections entry: every harness
+		// starts default-deny and states the entries it needs.
+		Discovery: config.DiscoveryConfig{Pprof: config.PprofConfig{Port: 6060}},
+		Limits:    config.LimitsConfig{CPUSeconds: 60, TraceSeconds: 60, MaxConcurrentProfiles: 16},
+		Auth:      config.AuthConfig{Mode: "disabled", AnonymousRealm: "developer"},
 		Realms: map[string]config.Realm{
 			"developer": {Namespaces: []string{"*"}, Services: []string{"*"}, Profiles: []string{"*"}},
 		},

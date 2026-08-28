@@ -1012,9 +1012,8 @@ func scenarioAuthBasic(t *testing.T, h *Harness) {
 		CPUSeconds   int `json:"cpuSeconds"`
 		TraceSeconds int `json:"traceSeconds"`
 		Pprof        struct {
-			Default          json.RawMessage `json:"default"`
-			AllowedPorts     []int32         `json:"allowedPorts"`
-			AllowedPortNames []string        `json:"allowedPortNames"`
+			Default           json.RawMessage   `json:"default"`
+			AllowedSelections []json.RawMessage `json:"allowedSelections"`
 		} `json:"pprof"`
 		PGO struct {
 			Enabled bool `json:"enabled"`
@@ -1023,9 +1022,8 @@ func scenarioAuthBasic(t *testing.T, h *Harness) {
 	body := asAlice("/v1/limits")
 	decode(t, "/v1/limits", body, &limits)
 	if limits.CPUSeconds != 60 || limits.TraceSeconds != 60 || string(limits.Pprof.Default) != `{"port":6060}` ||
-		len(limits.Pprof.AllowedPorts) != 0 || limits.Pprof.AllowedPorts == nil ||
-		len(limits.Pprof.AllowedPortNames) != 0 || limits.Pprof.AllowedPortNames == nil || limits.PGO.Enabled {
-		t.Fatalf("limits: %s, want cpuSeconds 60, traceSeconds 60, pprof.default {\"port\":6060}, empty allowlists, and pgo.enabled false", body)
+		len(limits.Pprof.AllowedSelections) != 0 || limits.Pprof.AllowedSelections == nil || limits.PGO.Enabled {
+		t.Fatalf("limits: %s, want cpuSeconds 60, traceSeconds 60, pprof.default {\"port\":6060}, an empty allowedSelections, and pgo.enabled false", body)
 	}
 }
 

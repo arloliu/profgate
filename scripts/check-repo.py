@@ -14,6 +14,9 @@
 - Only internal/natskv imports github.com/nats-io/nats.go outside tests and test/.
 - Only internal/auth imports github.com/go-jose/go-jose and golang.org/x/crypto outside tests and test/.
 - Only cmd/profgate imports golang.org/x/term, which reads a password without echo.
+- The removed discovery.pprof.allowedPorts and allowedPortNames keys, their Go
+  fields, and their environment variables appear in no code or manifest;
+  internal/config refuses them by name and keeps the fixtures that prove it.
 
 Checks whose subject does not exist yet stay silent rather than failing.
 The golden ClusterRole test (.agents/rules/800-security-invariant.md) lives in
@@ -171,6 +174,38 @@ def check_term_importers(root):
     return bad
 
 
+REMOVED_PORT_KEYS = (
+    "AllowedPorts",
+    "AllowedPortNames",
+    "allowedPorts",
+    "allowedPortNames",
+    "PROFGATE_PPROF_ALLOWED_PORTS",
+    "PROFGATE_PPROF_ALLOWED_PORT_NAMES",
+)
+
+
+def check_removed_port_keys(root):
+    """Fail on any code or manifest line naming the two removed port allowlists.
+
+    discovery.pprof.allowedSelections replaced them, and a manifest still
+    carrying one would stop the gateway at startup rather than fail a build.
+    internal/config holds the refusal and its fixtures; CHANGELOG.md and
+    docs/configuration.md name the old keys on purpose and are never read.
+    """
+    bad = []
+    paths = [p for pattern in ("*.go", "*.yaml", "*.yml", "*.tpl") for p in root.rglob(pattern)]
+    paths.append(root / "deploy/chart/profgate/README.md")
+    for path in sorted(paths):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith("internal/config/") or not path.is_file():
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            hit = next((key for key in REMOVED_PORT_KEYS if key in line), None)
+            if hit:
+                bad.append(f"{rel}:{number}: names the removed {hit}; use discovery.pprof.allowedSelections")
+    return bad
+
+
 def main():
     errors = []
     check_links(errors)
@@ -182,6 +217,7 @@ def main():
     errors.extend(check_nats_importers(root))
     errors.extend(check_auth_importers(root))
     errors.extend(check_term_importers(root))
+    errors.extend(check_removed_port_keys(root))
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

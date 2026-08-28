@@ -247,6 +247,20 @@ func mountNamed(spec corev1.PodSpec, name string) *corev1.VolumeMount {
 func loadRenderedConfig(t *testing.T, values ...string) *config.Config {
 	t.Helper()
 
+	path, body := renderConfigFile(t, values...)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load(rendered config.yaml) error = %v\n%s", err, body)
+	}
+
+	return cfg
+}
+
+// renderConfigFile renders the chart's ConfigMap with the given values and
+// writes its config.yaml to a temporary file, returning the path and the body.
+func renderConfigFile(t *testing.T, values ...string) (string, string) {
+	t.Helper()
+
 	cm := render[corev1.ConfigMap](t, "configmap.yaml", values...)
 	body, ok := cm.Data["config.yaml"]
 	if !ok {
@@ -257,12 +271,8 @@ func loadRenderedConfig(t *testing.T, values ...string) *config.Config {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write the rendered config.yaml: %v", err)
 	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("config.Load(rendered config.yaml) error = %v\n%s", err, body)
-	}
 
-	return cfg
+	return path, body
 }
 
 // containerMemoryLimit returns the one container's memory limit.
@@ -1554,11 +1564,8 @@ func TestChartConfigIsMergedAndParses(t *testing.T) {
 		if cfg.Discovery.Pprof.Port != 7070 {
 			t.Errorf("discovery.pprof.port = %d, want the raw block's 7070", cfg.Discovery.Pprof.Port)
 		}
-		if len(cfg.Discovery.Pprof.AllowedPorts) != 0 {
-			t.Errorf("discovery.pprof.allowedPorts = %v, want empty", cfg.Discovery.Pprof.AllowedPorts)
-		}
-		if len(cfg.Discovery.Pprof.AllowedPortNames) != 0 {
-			t.Errorf("discovery.pprof.allowedPortNames = %v, want empty", cfg.Discovery.Pprof.AllowedPortNames)
+		if len(cfg.Discovery.Pprof.AllowedSelections) != 0 {
+			t.Errorf("discovery.pprof.allowedSelections = %v, want empty", cfg.Discovery.Pprof.AllowedSelections)
 		}
 	})
 
@@ -1602,26 +1609,21 @@ func TestChartConfigIsMergedAndParses(t *testing.T) {
 	})
 }
 
-// TestChartPortAllowlists covers the chart's default pprof port allowlists:
-// both ship empty, which accepts any port and any port name a request names,
-// and a user narrows either one independently of the other.
-func TestChartPortAllowlists(t *testing.T) {
-	t.Run("defaults render both lists empty", func(t *testing.T) {
+// TestChartAllowedSelections covers the chart's default pprof port list:
+// it ships empty, which admits only the configured default, a user's list
+// reaches the gateway in the order and with the kinds it was written, and
+// the chart cannot hand config.Load a list validation refuses.
+func TestChartAllowedSelections(t *testing.T) {
+	t.Run("defaults render the list empty", func(t *testing.T) {
 		cm := render[corev1.ConfigMap](t, "configmap.yaml")
 		body := cm.Data["config.yaml"]
-		if !strings.Contains(body, "allowedPorts: []") {
-			t.Errorf("rendered config.yaml does not contain \"allowedPorts: []\":\n%s", body)
-		}
-		if !strings.Contains(body, "allowedPortNames: []") {
-			t.Errorf("rendered config.yaml does not contain \"allowedPortNames: []\":\n%s", body)
+		if !strings.Contains(body, "allowedSelections: []") {
+			t.Errorf("rendered config.yaml does not contain \"allowedSelections: []\":\n%s", body)
 		}
 
 		cfg := loadRenderedConfig(t)
-		if len(cfg.Discovery.Pprof.AllowedPorts) != 0 {
-			t.Errorf("discovery.pprof.allowedPorts = %v, want empty", cfg.Discovery.Pprof.AllowedPorts)
-		}
-		if len(cfg.Discovery.Pprof.AllowedPortNames) != 0 {
-			t.Errorf("discovery.pprof.allowedPortNames = %v, want empty", cfg.Discovery.Pprof.AllowedPortNames)
+		if len(cfg.Discovery.Pprof.AllowedSelections) != 0 {
+			t.Errorf("discovery.pprof.allowedSelections = %v, want empty", cfg.Discovery.Pprof.AllowedSelections)
 		}
 	})
 
@@ -1634,25 +1636,50 @@ func TestChartPortAllowlists(t *testing.T) {
 		if cfg.Discovery.Pprof.PortName != "pprof" {
 			t.Errorf("discovery.pprof.portName = %q, want pprof", cfg.Discovery.Pprof.PortName)
 		}
-		if len(cfg.Discovery.Pprof.AllowedPorts) != 0 {
-			t.Errorf("discovery.pprof.allowedPorts = %v, want empty", cfg.Discovery.Pprof.AllowedPorts)
-		}
-		if len(cfg.Discovery.Pprof.AllowedPortNames) != 0 {
-			t.Errorf("discovery.pprof.allowedPortNames = %v, want empty", cfg.Discovery.Pprof.AllowedPortNames)
+		if len(cfg.Discovery.Pprof.AllowedSelections) != 0 {
+			t.Errorf("discovery.pprof.allowedSelections = %v, want empty", cfg.Discovery.Pprof.AllowedSelections)
 		}
 	})
 
-	t.Run("narrows the lists", func(t *testing.T) {
-		cfg := loadRenderedConfig(t,
-			"--set-json", "config.discovery.pprof.allowedPorts=[6060]",
-			"--set-json", `config.discovery.pprof.allowedPortNames=["pprof"]`,
-		)
-
-		if got, want := cfg.Discovery.Pprof.AllowedPorts, []int32{6060}; !slices.Equal(got, want) {
-			t.Errorf("discovery.pprof.allowedPorts = %v, want %v", got, want)
+	// A named entry before a numeric one, and the port wildcard before a
+	// named entry: the chart's merge neither sorts nor re-types them. The two
+	// lists are what validation admits, since a wildcard cannot sit beside a
+	// concrete entry of its own kind.
+	t.Run("a mixed list keeps its order", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, list string
+			want       []config.Selection
+		}{
+			{"a name then a number", `[{"portName":"pprof-alt"},{"port":6061}]`, []config.Selection{
+				{Kind: config.SelectionPortName, Value: "pprof-alt"},
+				{Kind: config.SelectionPort, Value: "6061"},
+			}},
+			{"the port wildcard then a name", `[{"port":"*"},{"portName":"pprof-alt"}]`, []config.Selection{
+				{Kind: config.SelectionPort, Value: config.AnySelection},
+				{Kind: config.SelectionPortName, Value: "pprof-alt"},
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				cfg := loadRenderedConfig(t, "--set-json", "config.discovery.pprof.allowedSelections="+tc.list)
+				if got := cfg.Discovery.Pprof.AllowedSelections; !slices.Equal(got, tc.want) {
+					t.Errorf("discovery.pprof.allowedSelections = %v, want %v", got, tc.want)
+				}
+			})
 		}
-		if got, want := cfg.Discovery.Pprof.AllowedPortNames, []string{"pprof"}; !slices.Equal(got, want) {
-			t.Errorf("discovery.pprof.allowedPortNames = %v, want %v", got, want)
+	})
+
+	t.Run("the chart cannot bypass validation", func(t *testing.T) {
+		for _, tc := range []struct{ name, list, want string }{
+			{"port wildcard beside a port", `[{"port":"*"},{"port":6061}]`, "port:* beside port:6061"},
+			{"name wildcard beside a name", `[{"portName":"*"},{"portName":"pprof-alt"}]`, "portName:* beside portName:pprof-alt"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				path, body := renderConfigFile(t, "--set-json", "config.discovery.pprof.allowedSelections="+tc.list)
+				_, err := config.Load(path)
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("config.Load(rendered config.yaml) error = %v, want one containing %q\n%s", err, tc.want, body)
+				}
+			})
 		}
 	})
 }
