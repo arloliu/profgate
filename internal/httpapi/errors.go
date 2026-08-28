@@ -16,12 +16,23 @@ type requestError struct {
 	// their own — cas_contended, artifact_stream_failed, client_gone — so the
 	// operator sees what happened while the client sees a status it can act on.
 	auditCode string
+	// details names the inputs the caller has to change; only port_not_allowed fills it.
+	details []errorDetail
+}
+
+// errorDetail is one input the caller has to change.
+type errorDetail struct {
+	Field   string `json:"field"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // errorBody is the envelope every gateway-generated error is written as.
+// Details is omitted when nil: an error without details carries no key, never null or [].
 type errorBody struct {
-	Error string `json:"error"`
-	Code  string `json:"code"`
+	Error   string        `json:"error"`
+	Code    string        `json:"code"`
+	Details []errorDetail `json:"details,omitempty"`
 }
 
 // ErrorEnvelope is the serialized JSON error envelope, newline-terminated;
@@ -38,9 +49,21 @@ func ErrorEnvelope(code, message string) []byte {
 // It sets only gateway-owned headers and never a target header:
 // target headers belong to forwarded upstream responses alone.
 func WriteError(w http.ResponseWriter, status int, code, message string) {
+	writeErrorBody(w, status, ErrorEnvelope(code, message))
+}
+
+// writeError writes a requestError as the envelope, with the details it carries.
+func writeError(w http.ResponseWriter, e *requestError) {
+	// json.Marshal of strings and a slice of string structs cannot fail.
+	body, _ := json.Marshal(errorBody{Error: e.message, Code: e.code, Details: e.details})
+	writeErrorBody(w, e.status, append(body, '\n'))
+}
+
+// writeErrorBody sets the gateway-owned headers and writes an encoded envelope.
+func writeErrorBody(w http.ResponseWriter, status int, body []byte) {
 	header := w.Header()
 	header.Set("Content-Type", "application/json")
 	header.Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_, _ = w.Write(ErrorEnvelope(code, message)) //nolint:gosec // G705: a JSON-encoded envelope of gateway-chosen strings, never request input
+	_, _ = w.Write(body) //nolint:gosec // G705: a JSON-encoded envelope; the one client value it can carry, a port selection, was bounded to a port number or an IANA name before it got here, and the encoder escapes it
 }

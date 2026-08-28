@@ -6,6 +6,7 @@ package config
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -81,31 +82,147 @@ type DiscoveryConfig struct {
 // PprofConfig names the default pprof port by number or by container-port name
 // and bounds what a request may name instead.
 // Port 0 means unset; normalization sets it to 6060 when PortName is also empty.
-// Each list bounds one request parameter and an empty list permits any value of it.
+// AllowedSelections is default-deny: an empty list admits only the configured default.
 type PprofConfig struct {
-	Port             int32    `yaml:"port"             env:"PPROF_PORT"               validate:"min=0,max=65535"`
-	PortName         string   `yaml:"portName"         env:"PPROF_PORT_NAME"`
-	AllowedPorts     []int32  `yaml:"allowedPorts"     env:"PPROF_ALLOWED_PORTS"      validate:"dive,min=1,max=65535"`
-	AllowedPortNames []string `yaml:"allowedPortNames" env:"PPROF_ALLOWED_PORT_NAMES"`
+	Port     int32  `yaml:"port"     env:"PPROF_PORT" validate:"min=0,max=65535"`
+	PortName string `yaml:"portName" env:"PPROF_PORT_NAME"`
+	// AllowedSelections carries no env tag on purpose. fuda applies an env tag
+	// whenever the variable is set, the empty value included, and reads a
+	// slice from one CSV record, which cannot express the empty list an empty
+	// PROFGATE_PPROF_ALLOWED_SELECTIONS must produce; Load reads the variable itself.
+	AllowedSelections []Selection `yaml:"allowedSelections"`
 }
 
-// AllowsPort reports whether a request may name port n:
-// the configured default always, any number when AllowedPorts is empty,
-// otherwise a listed one.
+// SelectionKind is the request parameter one allowedSelections entry bounds.
+type SelectionKind string
+
+// The two request parameters an entry may bound.
+const (
+	SelectionPort     SelectionKind = "port"
+	SelectionPortName SelectionKind = "portName"
+)
+
+// AnySelection is the wildcard an entry carries in place of a concrete value.
+const AnySelection = "*"
+
+// Selection is one entry of discovery.pprof.allowedSelections:
+// the parameter it bounds and the value it admits, which is a decimal port
+// number, a container-port name, or AnySelection.
+type Selection struct {
+	Kind  SelectionKind
+	Value string
+}
+
+// UnmarshalYAML reads one entry: a mapping carrying exactly one of port and
+// portName, whose scalar is a number, a name, or "*".
+// A custom decoder is outside the strict unknown-key pass, so the entry
+// refuses every other shape itself. It counts the keys it is handed rather
+// than assigning them, so a mapping that repeats one key is two keys.
+func (s *Selection) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode || len(node.Content) != 2 {
+		return errors.New("discovery.pprof.allowedSelections: an entry names exactly one of port and portName")
+	}
+	key, value := node.Content[0], node.Content[1]
+	kind := SelectionKind(key.Value)
+	if (kind != SelectionPort && kind != SelectionPortName) || value.Kind != yaml.ScalarNode {
+		return errors.New("discovery.pprof.allowedSelections: an entry names exactly one of port and portName")
+	}
+	sel, err := newSelection(kind, value.Value)
+	if err != nil {
+		return fmt.Errorf("discovery.pprof.allowedSelections: %w", err)
+	}
+	*s = sel
+
+	return nil
+}
+
+// MarshalJSON writes the one-key object /v1/limits reports:
+// {"port":6061}, {"port":"*"}, {"portName":"pprof-alt"}, {"portName":"*"}.
+func (s Selection) MarshalJSON() ([]byte, error) {
+	var value any = s.Value
+	if s.Kind == SelectionPort && s.Value != AnySelection {
+		n, err := strconv.ParseInt(s.Value, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("selection %s: %w", s, err)
+		}
+		value = n
+	}
+
+	return json.Marshal(map[string]any{string(s.Kind): value})
+}
+
+// String is the environment token form: "port:6061", "portName:*".
+func (s Selection) String() string {
+	return string(s.Kind) + ":" + s.Value
+}
+
+// ParseSelection reads one environment token:
+// port:<number>, portName:<name>, port:*, or portName:*.
+func ParseSelection(token string) (Selection, error) {
+	kind, value, ok := strings.Cut(token, ":")
+	if !ok || (kind != string(SelectionPort) && kind != string(SelectionPortName)) {
+		return Selection{}, fmt.Errorf("token %q: want port:<number>, portName:<name>, port:*, or portName:*", token)
+	}
+
+	return newSelection(SelectionKind(kind), value)
+}
+
+// newSelection checks the value's grammar for its kind:
+// the wildcard, a port in 1-65535, or a container-port name.
+func newSelection(kind SelectionKind, value string) (Selection, error) {
+	if value == AnySelection {
+		return Selection{Kind: kind, Value: value}, nil
+	}
+	switch kind {
+	case SelectionPort:
+		n, err := strconv.ParseInt(value, 10, 32)
+		if err != nil || n < 1 || n > 65535 {
+			return Selection{}, fmt.Errorf("port %q: must be 1-65535 or %q", value, AnySelection)
+		}
+		value = strconv.FormatInt(n, 10)
+	case SelectionPortName:
+		if msgs := validation.IsValidPortName(value); len(msgs) > 0 {
+			return Selection{}, fmt.Errorf("portName %q: %s", value, strings.Join(msgs, "; "))
+		}
+	}
+
+	return Selection{Kind: kind, Value: value}, nil
+}
+
+// AllowsPort reports whether a request may name port n: the configured
+// default always, an entry holding that number, or the port wildcard.
 // A gateway whose default is a name has no default number,
 // which is why the zero Port is not a default anything matches.
 func (p PprofConfig) AllowsPort(n int32) bool {
-	return (p.Port != 0 && n == p.Port) || len(p.AllowedPorts) == 0 || slices.Contains(p.AllowedPorts, n)
+	if p.Port != 0 && n == p.Port {
+		return true
+	}
+	value := strconv.FormatInt(int64(n), 10)
+	for _, sel := range p.AllowedSelections {
+		if sel.Kind == SelectionPort && (sel.Value == AnySelection || sel.Value == value) {
+			return true
+		}
+	}
+
+	return false
 }
 
-// AllowsPortName reports whether a request may name the container port name:
-// the configured default always, any name when AllowedPortNames is empty,
-// otherwise a listed one.
+// AllowsPortName reports whether a request may name that container port:
+// the configured default always, an entry holding that name, or the name
+// wildcard.
 // A gateway whose default is numeric has no default name,
-// so AllowedPortNames alone decides which names a request may send.
+// which is why the empty name is not a default anything matches.
 func (p PprofConfig) AllowsPortName(name string) bool {
-	return (p.PortName != "" && name == p.PortName) ||
-		len(p.AllowedPortNames) == 0 || slices.Contains(p.AllowedPortNames, name)
+	if p.PortName != "" && name == p.PortName {
+		return true
+	}
+	for _, sel := range p.AllowedSelections {
+		if sel.Kind == SelectionPortName && (sel.Value == AnySelection || sel.Value == name) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // LimitsConfig caps profile durations and concurrency.
@@ -449,6 +566,19 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
+	// The removed names are refused first, by name, so an operator carrying an
+	// older deployment forward reads what to write instead of "unknown key".
+	// A variable no field claims is invisible to fuda, so the two variables
+	// are looked up here; presence is what is refused, the empty value included.
+	for _, name := range []string{"PROFGATE_PPROF_ALLOWED_PORTS", "PROFGATE_PPROF_ALLOWED_PORT_NAMES"} {
+		if _, ok := os.LookupEnv(name); ok {
+			return nil, fmt.Errorf("config: %s has been removed; set PROFGATE_PPROF_ALLOWED_SELECTIONS (discovery.pprof.allowedSelections) instead", name)
+		}
+	}
+	if err := refuseRemovedPprofKeys(b); err != nil {
+		return nil, fmt.Errorf("config: %s: %w", path, err)
+	}
+
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	var probe Config
@@ -469,12 +599,91 @@ func Load(path string) (*Config, error) {
 	if err := loader.Load(&cfg); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
+	if value, ok := os.LookupEnv("PROFGATE_PPROF_ALLOWED_SELECTIONS"); ok {
+		selections, err := parseSelections(value)
+		if err != nil {
+			return nil, fmt.Errorf("config: PROFGATE_PPROF_ALLOWED_SELECTIONS: %w", err)
+		}
+		cfg.Discovery.Pprof.AllowedSelections = selections
+	}
 
 	normalize(&cfg)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// refuseRemovedPprofKeys fails when the file still sets discovery.pprof.allowedPorts
+// or discovery.pprof.allowedPortNames, whatever their value: null and [] are set keys too.
+// Each mapping on the way down is decoded into a map, which is what lets a
+// merge key count: yaml.v3 resolves << while decoding a mapping into a map,
+// so a removed key carried in by an anchored mapping, or by a sequence of
+// them, is present, where a walk over the mapping's own key nodes would see
+// only <<. A missing discovery or pprof mapping means neither key is set,
+// and a value that is not a mapping is left to the strict decode to refuse.
+func refuseRemovedPprofKeys(b []byte) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return nil //nolint:nilerr // the strict decode reports the syntax error with its own message
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil
+	}
+	node := *doc.Content[0]
+	for _, key := range []string{"discovery", "pprof"} {
+		child, ok := mappingKeys(node)[key]
+		if !ok {
+			return nil
+		}
+		node = child
+	}
+	for _, key := range []string{"allowedPorts", "allowedPortNames"} {
+		if _, ok := mappingKeys(node)[key]; ok {
+			return fmt.Errorf("discovery.pprof.%s has been removed; list what a client may name under discovery.pprof.allowedSelections or PROFGATE_PPROF_ALLOWED_SELECTIONS instead", key)
+		}
+	}
+
+	return nil
+}
+
+// mappingKeys returns the keys a mapping node carries, merge keys resolved,
+// each with its value node; nil for anything that is not a mapping.
+// Values stay nodes, so nothing below the mapping is decoded here.
+func mappingKeys(node yaml.Node) map[string]yaml.Node {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	var keys map[string]yaml.Node
+	if err := node.Decode(&keys); err != nil {
+		return nil
+	}
+
+	return keys
+}
+
+// parseSelections reads the comma-separated tokens of PROFGATE_PPROF_ALLOWED_SELECTIONS.
+// The empty value is the empty list; inside a non-empty value an empty
+// token is an error rather than a dropped entry.
+func parseSelections(value string) ([]Selection, error) {
+	if value == "" {
+		return []Selection{}, nil
+	}
+	tokens := strings.Split(value, ",")
+	selections := make([]Selection, 0, len(tokens))
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return nil, errors.New("empty token; a leading, trailing, or doubled comma")
+		}
+		sel, err := ParseSelection(token)
+		if err != nil {
+			return nil, err
+		}
+		selections = append(selections, sel)
+	}
+
+	return selections, nil
 }
 
 // normalize fills the pprof port,
@@ -501,16 +710,8 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("discovery.pprof.portName %q: %s", pprof.PortName, strings.Join(msgs, "; "))
 		}
 	}
-	for _, name := range pprof.AllowedPortNames {
-		if msgs := validation.IsValidPortName(name); len(msgs) > 0 {
-			return fmt.Errorf("discovery.pprof.allowedPortNames %q: %s", name, strings.Join(msgs, "; "))
-		}
-	}
-	if port, ok := firstDuplicate(pprof.AllowedPorts); ok {
-		return fmt.Errorf("discovery.pprof.allowedPorts: duplicate entry %d", port)
-	}
-	if name, ok := firstDuplicate(pprof.AllowedPortNames); ok {
-		return fmt.Errorf("discovery.pprof.allowedPortNames: duplicate entry %q", name)
+	if err := validateSelections(pprof.AllowedSelections); err != nil {
+		return err
 	}
 	if msgs := validation.IsQualifiedName(cfg.Discovery.VersionLabel); len(msgs) > 0 {
 		return fmt.Errorf("discovery.versionLabel %q: %s", cfg.Discovery.VersionLabel, strings.Join(msgs, "; "))
@@ -973,6 +1174,33 @@ func validatePGODefaults(defaults *PGODefaults, limits PGOLimits) error {
 		return fmt.Errorf("pgo.defaults.artifact.retention %v must be at most pgo.limits.maxRetention %v",
 			defaults.Artifact.Retention, limits.MaxRetention)
 	}
+	return nil
+}
+
+// validateSelections holds the list rules, which judge the list the environment
+// may have replaced: no duplicate entry, and no wildcard beside a concrete
+// entry of its own kind, which the wildcard has already decided.
+func validateSelections(list []Selection) error {
+	if sel, ok := firstDuplicate(list); ok {
+		return fmt.Errorf("discovery.pprof.allowedSelections: duplicate entry %s", sel)
+	}
+	for _, kind := range []SelectionKind{SelectionPort, SelectionPortName} {
+		var wildcard, concrete *Selection
+		for i := range list {
+			sel := &list[i]
+			switch {
+			case sel.Kind != kind:
+			case sel.Value == AnySelection:
+				wildcard = sel
+			case concrete == nil:
+				concrete = sel
+			}
+		}
+		if wildcard != nil && concrete != nil {
+			return fmt.Errorf("discovery.pprof.allowedSelections: %s beside %s; the wildcard already admits every %s", wildcard, concrete, kind)
+		}
+	}
+
 	return nil
 }
 

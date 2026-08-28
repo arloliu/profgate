@@ -127,8 +127,18 @@ The formula reads `pgo.limits` and never `pgo.enabled`,
 so applying it with collection off would ask for the memory a merge needs on a gateway that never merges.
 With `pgo.enabled: false` the limit is the static `memoryLimitWithoutPGO`, 512Mi,
 which covers the runtime, the informer caches, and the transfer buffers of the interactive path.
-`resources` overrides both paths and is rendered verbatim,
-for a cluster whose quota or LimitRange demands requests or a CPU limit.
+`resources.limits` overrides both paths and is rendered verbatim,
+for a cluster that needs a CPU limit or a memory limit the derivation does not produce.
+`resources.requests` is a separate half, rendered as written,
+and ships a CPU request of `100m`:
+a container with no CPU request is refused outright by a namespace whose `ResourceQuota` counts `requests.cpu`.
+There is deliberately no memory request.
+Kubernetes copies an unset memory request from the limit, so the Pod already reserves the derived figure,
+and a smaller number would let the scheduler place a gateway where the merge that limit is sized for has no room.
+Setting `resources.requests.cpu` to `null` removes the request,
+the way `podSecurityContext.fsGroup: null` removes that key.
+The kustomize base declares no CPU request at all:
+no chart value patches it, so a repository installing from the base adds one where its namespace needs it.
 
 **`fsGroup` can be omitted entirely.**
 `podSecurityContext.fsGroup` defaults to 65532, the uid and gid the distroless image runs as,
@@ -163,8 +173,7 @@ config:
   discovery:
     pprof:
       port: 6060
-      allowedPorts: []
-      allowedPortNames: []
+      allowedSelections: []
   limits:
     cpuSeconds: 60
     maxConcurrentProfiles: 16
@@ -217,6 +226,24 @@ Under `auth.mode: oidc` it needs `auth.oidc.browser`, because a console that can
 `config.Load` refuses the combination without it.
 An Ingress that routes only `/v1` has to add `/ui/`, `/auth/`, and `/` once the console is on,
 or the console and the sign-in it needs stay unreachable through it.
+
+`ingress.enabled` renders that Ingress rather than leaving it to be written by hand.
+It is off by default, because the host, the class, and the annotations differ per cluster,
+and turning it on with an empty `ingress.hosts` fails rendering rather than producing an Ingress that routes nothing.
+A host that names no `paths` gets all four prefixes the gateway serves —
+`/` and `/ui/` for the console, `/auth/` for the browser login it needs, and `/v1/` for the API —
+each with `pathType: Prefix` and the Service's `api` port as its backend.
+`/` alone would cover the other three; they are listed so that narrowing the set is a visible choice.
+The ops port is not in the Service and is never routed here.
+`ingress.tls` takes `networking.k8s.io/v1` `IngressTLS` entries as written,
+and the chart no more creates their Secret than it creates the one `tls.enabled` mounts.
+
+`ingress.tls` is TLS in front of the Ingress.
+With `tls.enabled` the API port serves HTTPS as well,
+and a controller reaches it over plain HTTP until it is told otherwise:
+ingress-nginx reads `nginx.ingress.kubernetes.io/backend-protocol: HTTPS` from `ingress.annotations`,
+and other controllers have their own setting.
+Without it the controller speaks HTTP to an HTTPS listener and every request through the Ingress fails.
 
 ## Readiness and shutdown
 
@@ -424,6 +451,38 @@ authentication, if any, rides in the URL.
 [`../../nats/README.md`](../../nats/README.md) holds the commands
 that provision the buckets, the account, and the Secret.
 
+## Scraping
+
+`podMonitor.enabled` renders a prometheus-operator `PodMonitor` for the ops port, which carries `/metrics`.
+It is off by default:
+it needs the `monitoring.coreos.com` custom resource definitions installed
+and a Prometheus whose `podMonitorSelector` matches it,
+and in a cluster without them it is an object nothing reads.
+`podMonitor.labels` is how that selector finds it —
+`release: kube-prometheus-stack` is what the kube-prometheus-stack chart looks for.
+
+It selects Pods rather than a Service because the ops port is deliberately absent from the Service:
+nothing routes to it, and the kubelet and the scraper reach it by Pod address.
+The endpoint therefore names the container port the Deployment declares rather than a Service port.
+With `networkPolicy.enabled`, `networkPolicy.opsFromNamespaces` has to name the namespace the scraper runs in,
+or the scrape is refused before it reaches the port.
+
+`prometheusRule.enabled` renders a `PrometheusRule` with three alerts over metrics the gateway already exports:
+
+| Alert | Expression | Fires when |
+|---|---|---|
+| `ProfgateNotReady` | `profgate_discovery_synced == 0` | A replica's discovery cache has been unsynced for ten minutes, so `/readyz` answers 503 |
+| `ProfgateAdmissionSaturated` | `sum(rate(profgate_requests_total{code="too_many_profiles"}[5m])) > 0` | The admission gate is at `limits.maxConcurrentProfiles` and answering 429 |
+| `ProfgateOIDCKeysStale` | `profgate_oidc_jwks_age_seconds > 43200` | Signing keys have not been fetched for 12 hours |
+
+All three read the ops port, so they need something scraping it — `podMonitor.enabled`, or a scrape configured by hand.
+The stale-keys threshold is half of the binary's own `auth.oidc.jwksMaxStale` default of 24 hours,
+which is when verification starts failing as `keys_stale`,
+so the alert arrives while tokens still verify.
+The chart does not render that key and cannot follow a deployment that lowers it;
+`prometheusRule.rules` replaces the shipped set outright for that case,
+and for any other rule set an operator would rather ship.
+
 ## Values
 
 | Key | Default | What it does |
@@ -435,11 +494,12 @@ that provision the buckets, the account, and the Secret.
 | `serviceAccount.create`, `.name`, `.annotations` | `true`, generated, `{}` | The ServiceAccount. |
 | `rbac.create` | `true` | The ClusterRole and ClusterRoleBinding. |
 | `service.type`, `.port`, `.annotations` | `ClusterIP`, `8080`, `{}` | The Service. The ops port stays out of it. |
+| `ingress.enabled`, `.className`, `.annotations`, `.hosts`, `.tls` | `false`, `""`, `{}`, `[]`, `[]` | An Ingress for the API port. A host that names no `paths` gets `/`, `/ui/`, `/auth/`, and `/v1/`, each `pathType: Prefix`. Enabling it with no hosts fails rendering. |
 | `podDisruptionBudget.enabled`, `.minAvailable`, `.maxUnavailable` | `true`, `1`, unset | Voluntary disruption budget. Set exactly one of the two bounds and clear the other (`""` and `null` both mean unset); zero is a real bound (`maxUnavailable: 0` forbids voluntary disruption). Setting both fails rendering, as does enabling the budget with neither set. |
 | `configChecksumAnnotation` | `true` | The `checksum/config` annotation. |
 | `podSecurityContext` | `{fsGroup: 65532}` | Pod security context; `fsGroup: null` renders no key. |
 | `securityContext` | hardened | Container security context. |
-| `resources` | `{}` | Explicit resources, replacing the derived limit. |
+| `resources.limits`, `.requests` | unset, `{cpu: 100m}` | `limits` replaces the derived memory limit; `requests` is rendered as written. No memory request, so it keeps tracking the limit. |
 | `memoryLimitWithoutPGO` | `512Mi` | The memory limit while `pgo.enabled` is false. |
 | `terminationGracePeriodSeconds` | `125` | Drain time before SIGKILL. |
 | `readinessProbe` | 10s period | Probe timings. There is no liveness probe. |
@@ -447,6 +507,8 @@ that provision the buckets, the account, and the Secret.
 | `podAnnotations`, `podLabels` | `{}` | Extra pod metadata. |
 | `nodeSelector`, `tolerations`, `affinity`, `topologySpreadConstraints` | empty | Scheduling. |
 | `networkPolicy.enabled`, `.apiFromNamespaces`, `.opsFromNamespaces` | `false`, `[ingress-nginx]`, `[monitoring]` | Ingress policy for the gateway Pods. |
+| `podMonitor.enabled`, `.interval`, `.labels` | `false`, `30s`, `{}` | A prometheus-operator PodMonitor for the ops port. |
+| `prometheusRule.enabled`, `.labels`, `.rules` | `false`, `{}`, `[]` | A prometheus-operator PrometheusRule. Empty `rules` keeps the shipped three alerts; a non-empty list replaces them. |
 | `server.logLevel` | `info` | `debug`, `info`, `warn`, or `error`. |
 | `server.drainDelay` | `5s` | The wait between `/readyz` turning 503 and the API listener closing. |
 | `auth.mode` | `disabled` | `disabled`, `basic`, or `oidc`. |
@@ -461,7 +523,7 @@ that provision the buckets, the account, and the Secret.
 | `tls.enabled`, `.existingSecret`, `.certKey`, `.keyKey`, `.mountPath`, `.minVersion` | `false`, `profgate-tls`, `tls.crt`, `tls.key`, `/etc/profgate/tls`, `1.2` | HTTPS on the API port, from a Secret the operator creates. |
 | `nats.url`, `.credsFile`, `.existingSecret`, `.secretKey`, `.mountPath` | empty, `/etc/profgate/nats/nats.creds`, `profgate-nats-creds`, `nats.creds`, `/etc/profgate/nats` | NATS, used only with `pgo.enabled`. |
 | `pgo.enabled`, `.configAPI`, `.limits` | `false`, `enabled`, shipped ceilings | PGO collection and the ceilings the memory limit is derived from. |
-| `config` | `discovery.pprof` holding `allowedPorts: []` and `allowedPortNames: []` | Raw configuration merged over everything above. `allowedPorts` and `allowedPortNames` merge with a user's `config` values key by key, so setting one leaves the other at its default; an empty list accepts any value of its parameter. |
+| `config` | `discovery.pprof` holding `allowedSelections: []` | Raw configuration merged over everything above. `allowedSelections` is default-deny: the empty list admits only the configured `port` or `portName`, and a user's list replaces it entry for entry, `{port: N}`, `{portName: name}`, or a `"*"` wildcard of either kind. |
 
 The NetworkPolicy is off by default because the namespaces that reach the two ports differ per cluster.
 [`../../networkpolicy-app-example.yaml`](../../networkpolicy-app-example.yaml)

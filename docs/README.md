@@ -18,15 +18,17 @@ because what decides whether a document can still be trusted is its lifecycle, n
 
 | Path | Holds | How it ages |
 |---|---|---|
-| [`specs/`](specs/) | What the system is and why it is shaped that way | Living; a `Status:` field says whether it is settled |
-| `plans/` | Executable work orders | Living while `Approved` or `In Progress`; frozen history once `Done` |
+| [`specs/`](specs/) | What the system is and why it is shaped that way | Living; a `Status:` field says whether it is settled, and a spec that reaches `Superseded` is deleted |
+| `plans/` | Executable work orders | Living while `Approved` or `In Progress`; deleted in the change after `Done` or `Abandoned` is recorded, with git history as the record |
 | `decisions/` | One decision that is expensive to revisit, per file | Immutable once accepted; superseded rather than edited |
+| `investigations/` | An investigation frozen as of the day it ran | Immutable; superseded by a newer investigation or by a spec |
 
-`plans/` holds the gateway, PGO, client-selected pprof port, authentication, and console implementation plans.
+`plans/` holds [`plans/roadmap.md`](plans/roadmap.md), which orders the work that comes next.
 
-Review reports and working notes stay in `tmp/`, which is not tracked.
+Working notes stay in `tmp/`, which is not tracked.
 They are byproducts of producing the documents above,
-not documents in their own right.
+not documents in their own right;
+an investigation that a committed document cites lives under `investigations/` instead.
 
 ## The Status Field
 
@@ -40,7 +42,10 @@ A spec is the design of record only at `Accepted`.
 A plan may be executed only at `Approved` or `In Progress`.
 
 The change that lands a plan's final task also flips its `Status:` to `Done`
-and records an `Outcome:` line naming what shipped.
+and records an `Outcome:` line naming what shipped;
+the next change that touches the plan deletes it —
+[`decisions/finished-documents-leave-the-tree.md`](decisions/finished-documents-leave-the-tree.md)
+gives the reasons and says how to read a deleted document back out of git.
 `mise run check` verifies both fields and every relative link here — see
 [`.agents/rules/900-design-and-review-loops.md`](../.agents/rules/900-design-and-review-loops.md).
 
@@ -50,8 +55,8 @@ and records an `Outcome:` line naming what shipped.
   the accepted gateway design.
   [`specs/pgo.md`](specs/pgo.md) is the accepted PGO collection design layered on it,
   [`specs/auth.md`](specs/auth.md) the accepted authentication design,
-  and [`specs/ui.md`](specs/ui.md) the accepted console design;
-  [`specs/profgate-design.md`](specs/profgate-design.md) is the superseded combined original, kept for history.
+  [`specs/ui.md`](specs/ui.md) the accepted console design,
+  and [`specs/cli.md`](specs/cli.md) the accepted command-line client design.
 - **Why a choice was made:** [`decisions/`](decisions/), one file per topic.
 - **Changing anything:** [`.agents/rules/`](../.agents/rules/) holds the rules in force,
   indexed by [`.agents/rules/AGENTS.md`](../.agents/rules/AGENTS.md).

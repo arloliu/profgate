@@ -28,6 +28,8 @@ The browser login round trip, the users file and cookie key read from a mounted 
 and a signing-key rotation at the issuer meet a real issuer only in the authentication scenarios;
 their unit tests drive fakes.
 The console's shell, hashed assets, headers, and login return meet a real gateway and issuer only in those same scenarios;
-the page's own JavaScript runs in no test, so a change to `internal/ui/static/` also needs a check in a browser against a running gateway.
+the port-control model in `internal/ui/static/portmodel.js` runs under the goja interpreter in a Go test,
+and the rest of the page's JavaScript runs in none,
+so a change to `internal/ui/static/` outside `portmodel.js` also needs a check in a browser against a running gateway.
 
 Report what ran and what was skipped in the PR description ([600](600-git-conventions.md)).

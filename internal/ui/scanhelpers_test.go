@@ -35,6 +35,20 @@ func nonRelativeImports(content string) []string {
 	return found
 }
 
+// anyImports returns every import specifier in content, static or dynamic,
+// relative or not.
+func anyImports(content string) []string {
+	var found []string
+	for _, m := range staticImportRe.FindAllStringSubmatch(content, -1) {
+		found = append(found, m[1])
+	}
+	for _, m := range dynamicImportRe.FindAllStringSubmatch(content, -1) {
+		found = append(found, m[1])
+	}
+
+	return found
+}
+
 var (
 	scriptTagRe   = regexp.MustCompile(`<script`)
 	styleTagRe    = regexp.MustCompile(`<style`)

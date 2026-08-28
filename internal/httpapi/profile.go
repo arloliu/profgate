@@ -227,13 +227,14 @@ func parsePort(s string) (int32, bool) {
 	return int32(n), true //nolint:gosec // bounded by maxPort above
 }
 
-// portNotAllowed builds the 400 port_not_allowed error;
-// its message names only the value the client sent.
-func portNotAllowed(sent string) *requestError {
+// portNotAllowed builds the 400 port_not_allowed error for the parameter that fired,
+// port or portName; its message and its one details item name only the value the client sent.
+func portNotAllowed(field, sent string) *requestError {
 	return &requestError{
 		status:  http.StatusBadRequest,
 		code:    "port_not_allowed",
 		message: fmt.Sprintf("port %q is not allowed by this gateway", sent),
+		details: []errorDetail{{Field: field, Code: "not_admitted", Message: sent + " is not an admitted selection"}},
 	}
 }
 

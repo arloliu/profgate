@@ -1,0 +1,42 @@
+{{- if include "profgate.boolValue" (dict "key" "ingress.enabled" "value" .Values.ingress.enabled) }}
+{{- if not .Values.ingress.hosts }}
+{{- fail "ingress.enabled is true with no ingress.hosts, so name at least one host ([{host: profgate.example.com}]) or turn it off (ingress.enabled: false)" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "profgate.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "profgate.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  # The backend is the Service's api port by name, so moving service.port
+  # moves the route with it. The ops port is not in the Service and is never
+  # routed here: metrics and health are scraped from the Pod.
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range (default (list "/" "/ui/" "/auth/" "/v1/") .paths) }}
+          - path: {{ . | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "profgate.fullname" $ }}
+                port:
+                  name: api
+          {{- end }}
+    {{- end }}
+{{- end }}

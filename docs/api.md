@@ -49,7 +49,8 @@ The examples in the rest of this guide stay HTTP,
 except where authentication requires TLS;
 on an HTTPS listener this same shape applies to every one of them.
 
-There is no index route and no OpenAPI document; the seven routes under `/v1` are:
+There is no index route and no OpenAPI document.
+Eleven routes live under `/v1`; the seven that take path parameters are:
 
 | Route | Methods |
 |---|---|
@@ -83,7 +84,7 @@ A listing request ([Listing endpoints](#listing-endpoints)) runs the same steps 
 answering from the configuration snapshot or the Service cache with no discovery, selection, admission,
 confirmation, or proxy step.
 
-1. **Route** — the path must match one of the seven routes (`404 route_unknown`),
+1. **Route** — the path must match one of the eleven `/v1` routes (`404 route_unknown`),
    and a profile route must name a known profile (`404 profile_unknown`).
 2. **Method** — `405 method_not_allowed` plus `Allow` otherwise.
 3. **Readiness** — until discovery has synced its caches, everything answers `503 not_ready`;
@@ -102,7 +103,7 @@ confirmation, or proxy step.
    (`400 invalid_parameter` and friends).
    `port` and `portName` (never both) are checked here too:
    malformed or repeated is `400 invalid_parameter`,
-   and a well-formed value a non-empty allowlist excludes is `400 port_not_allowed` —
+   and a well-formed value `discovery.pprof.allowedSelections` does not admit is `400 port_not_allowed` —
    both answered before discovery runs.
 9. **Discovery** — the Service is resolved to its Ready Pods
    (`404 service_not_found`, `422 service_selectorless`, `503 discovery_unavailable`).
@@ -220,22 +221,23 @@ curl http://localhost:8080/v1/limits
   "profiles": ["cpu", "trace", "heap", "allocs", "goroutine", "mutex", "block", "threadcreate"],
   "pprof": {
     "default": {"port": 6060},
-    "allowedPorts": [6060, 6061],
-    "allowedPortNames": ["pprof", "pprof-alt"]
+    "allowedSelections": [{"port": 6061}, {"portName": "pprof-alt"}]
   },
   "pgo": {"enabled": true}
 }
 ```
 
 `pprof.default` is `{"port": N}` or `{"portName": "name"}`, whichever `discovery.pprof` is configured with,
-and `allowedPorts` and `allowedPortNames` are each `[]` when the matching allowlist is empty.
+and `allowedSelections` is `discovery.pprof.allowedSelections` as configured:
+an array of one-key objects, each `{"port": N}`, `{"portName": "name"}`, `{"port": "*"}`, or `{"portName": "*"}`,
+and `[]` when the list is empty.
 `pgo.enabled` is `pgo.enabled`, and is how a caller learns whether PGO collection is on at all.
 
-**`/v1/limits` deliberately discloses both allowlists and the configured default to any authenticated caller.**
+**`/v1/limits` deliberately discloses `allowedSelections` and the configured default to any authenticated caller.**
 That is a decision, not an oversight:
 the values are global operator configuration, not cluster state,
 and every profile request the values let a caller build is one the caller could already build without them,
-bounded by the same realm, the same allowlists, and the same NetworkPolicy.
+bounded by the same realm, the same list, and the same NetworkPolicy.
 An unauthenticated probe still learns nothing but `401`.
 
 ## Fetching a profile
@@ -270,12 +272,16 @@ Each parameter may appear at most once, with a value; anything unknown is `400 i
 | `pod` | Pin the exact Pod to profile. A Pod that is not currently an eligible target answers `404 pod_not_found`. |
 | `version` | Keep only Pods whose version label equals this value, then select among them. The filter runs before the `pod` pin. |
 | `strategy` | Selection strategy; `random` is the only value and the default. |
-| `port` | A decimal integer from 1 to 65535: the pprof port for every Pod, replacing `discovery.pprof.port` or `portName` for this request. Must pass `discovery.pprof.allowedPorts` (`400 port_not_allowed` otherwise); excludes `portName`. |
-| `portName` | A container-port name (the Kubernetes rule for `containerPort` names): the named TCP container port, replacing the configured default for this request. Must pass `discovery.pprof.allowedPortNames` (`400 port_not_allowed` otherwise); excludes `port`. |
+| `port` | A decimal integer from 1 to 65535: the pprof port for every Pod, replacing `discovery.pprof.port` or `portName` for this request. Must be admitted by `discovery.pprof.allowedSelections` (`400 port_not_allowed` otherwise); excludes `portName`. |
+| `portName` | A container-port name (the Kubernetes rule for `containerPort` names): the named TCP container port, replacing the configured default for this request. Must be admitted by `discovery.pprof.allowedSelections` (`400 port_not_allowed` otherwise); excludes `port`. |
 
 `port` and `portName` exclude each other; sending both is `400 invalid_parameter`.
-The configured default `discovery.pprof.port` or `discovery.pprof.portName` always passes its allowlist,
-whatever the allowlist holds.
+`discovery.pprof.allowedSelections` is default-deny:
+an empty list admits only the configured default `discovery.pprof.port` or `discovery.pprof.portName`,
+a `{port: N}` or `{portName: name}` entry admits that one value,
+and `{port: "*"}` or `{portName: "*"}` admits every value of its own kind.
+The configured default is always admitted, whether or not the list names it
+([`configuration.md`](configuration.md#discovery)).
 
 ### Response
 
@@ -318,8 +324,8 @@ Choosing ports lets an authorized client observe three things that this design d
   so an authorized caller can combine `pod=` with different numbers,
   and the outcome then tells an open pprof port from a refused, silent, redirecting, or non-pprof HTTP port —
   a port-scanning capability over admitted Pods,
-  bounded by the realm, `allowedPorts`, and NetworkPolicy, and nothing else.
-- `400 port_not_allowed` reveals that a value is outside the allowlist.
+  bounded by the realm, `discovery.pprof.allowedSelections`, and NetworkPolicy, and nothing else.
+- `400 port_not_allowed` reveals that `discovery.pprof.allowedSelections` does not admit a value.
   It reveals nothing about Pods: the realm is evaluated before it and discovery never runs.
 
 ### Examples
@@ -675,6 +681,20 @@ Every gateway-generated failure is a JSON envelope with a stable machine-readabl
 `error` is human-readable and may change; `code` is stable and is what clients should switch on.
 The message names at most a namespace, a Service, a Pod, or the `port`/`portName` value the client sent —
 never a Pod address, and never the port number a `portName` selection resolved to.
+
+`400 port_not_allowed` also carries a `details` array with exactly one item,
+naming the query parameter the client sent and the value it sent, and nothing else:
+
+```json
+{
+  "error": "port \"6062\" is not allowed by this gateway",
+  "code": "port_not_allowed",
+  "details": [{"field": "port", "code": "not_admitted", "message": "6062 is not an admitted selection"}]
+}
+```
+
+`field` is `port` or `portName`, whichever the request carried, and `code` is always `not_admitted`.
+Every other error omits the `details` key entirely — never `null`, never `[]`.
 When the target Pod itself answers an HTTP error,
 the gateway forwards that status and body verbatim instead of wrapping it.
 
@@ -682,12 +702,12 @@ the gateway forwards that status and body verbatim instead of wrapping it.
 |---|---|---|
 | 400 | `invalid_parameter` | A query parameter, request body, or precondition header is malformed or not accepted here — including `access_token` as a query parameter, refused in every authentication mode before any credential is read. |
 | 400 | `seconds_exceeds_limit` | The effective duration exceeds `limits.cpuSeconds` or `limits.traceSeconds`. |
-| 400 | `port_not_allowed` | The `port` or `portName` value is outside its configured allowlist; names only the value sent. |
+| 400 | `port_not_allowed` | `discovery.pprof.allowedSelections` does not admit the `port` or `portName` value; names only the value sent, in the message and in its one `details` item. |
 | 400 | `limit_exceeded` | The effective PGO policy exceeds a `pgo.limits` ceiling; the message names the fields. |
 | 401 | `unauthenticated` | No credential, a wrong or expired one, or one that maps to no realm; see [Authentication](#authentication). `WWW-Authenticate` names the scheme. |
 | 403 | `realm_denied` | The realm does not allow this namespace, Service, profile, or PGO action. |
 | 403 | `config_api_disabled` | `pgo.configAPI` is `disabled`; policy reads still work. |
-| 404 | `route_unknown` | The path is not one of the seven `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
+| 404 | `route_unknown` | The path is not one of the eleven `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
 | 404 | `profile_unknown` | The profile name is not in the profile table. |
 | 404 | `service_not_found` | The Service does not exist in that namespace. |
 | 404 | `pod_not_found` | The pinned Pod is not currently an eligible target. |

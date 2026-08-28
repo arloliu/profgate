@@ -1,0 +1,14 @@
+old: &old
+  allowedPorts: [6061]
+discovery:
+  pprof:
+    port: 6060
+    <<: *old
+    allowedSelections: [{port: 6061}]
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

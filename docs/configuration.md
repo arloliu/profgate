@@ -72,8 +72,7 @@ The ops listener has no TLS block and is always plaintext.
 | `versionLabel` | `PROFGATE_VERSION_LABEL` | `app.kubernetes.io/version` | a valid Kubernetes label key |
 | `pprof.port` | `PROFGATE_PPROF_PORT` | see below | `1` to `65535` |
 | `pprof.portName` | `PROFGATE_PPROF_PORT_NAME` | unset | a valid container-port name |
-| `pprof.allowedPorts` | `PROFGATE_PPROF_ALLOWED_PORTS` | empty | comma-separated; each `1` to `65535` |
-| `pprof.allowedPortNames` | `PROFGATE_PPROF_ALLOWED_PORT_NAMES` | empty | comma-separated; each a valid container-port name |
+| `pprof.allowedSelections` | `PROFGATE_PPROF_ALLOWED_SELECTIONS` | empty | a list; each entry exactly one of `port` (`1` to `65535`, or `"*"`) and `portName` (a valid container-port name, or `"*"`); no duplicate entry; no wildcard beside a concrete entry of its own kind |
 
 Exactly one of `pprof.port` and `pprof.portName` may be set;
 naming both is a validation error.
@@ -87,14 +86,66 @@ a Pod whose spec does not carry the named port is silently ineligible rather tha
 
 A request may name a port for itself with the `port` or `portName` query parameter
 ([`api.md`](api.md#fetching-a-profile)), replacing this configured default for that request.
-`pprof.allowedPorts` and `pprof.allowedPortNames` bound what a request may name;
-the two lists are independent, each bounding only its own parameter.
-An empty list permits any value of its parameter,
-so both lists default empty and a bare configuration accepts any port and any name a request sends.
-The configured default `pprof.port` or `pprof.portName` always passes, whatever the lists hold.
-There is no setting that forbids `portName` outright:
-an operator who wants no names accepted lists only the configured default name
-when the default is a name, or one well-formed name no Pod declares when the default is a number.
+`pprof.allowedSelections` is the one list that bounds what a request may name,
+and it is default-deny.
+Each entry is `{port: N}` or `{portName: name}` and admits that one value;
+a value the list does not admit is refused with `400 port_not_allowed` before discovery runs.
+The list defaults empty, and an empty list admits only the configured default:
+a request may then name `pprof.port` or `pprof.portName`, whichever is set,
+and every other value — including every value of the other kind — is refused.
+Naming a port is a capability the operator grants, never one a fresh install already carries.
+
+`{port: "*"}` admits any port number and `{portName: "*"}` admits any container-port name.
+Each wildcard covers its own kind and no more,
+and a wildcard beside a concrete entry of the same kind is a validation error,
+because the concrete entry then decides nothing the wildcard has not already decided.
+The configured default `pprof.port` or `pprof.portName` is always admitted;
+listing it is allowed and changes nothing.
+
+```yaml
+discovery:
+  pprof:
+    port: 6060
+    allowedSelections:
+      - port: 6061
+      - portName: "*"
+```
+
+`PROFGATE_PPROF_ALLOWED_SELECTIONS` holds comma-separated tokens,
+each `port:<number>`, `portName:<name>`, `port:*`, or `portName:*`,
+and replaces the file's list rather than adding to it:
+
+- **Absent** — the file's list stands, whatever it holds.
+- **Present and empty** — the list becomes `[]`, and only the configured default is admitted;
+  this is how a deployment narrows an inherited wildcard without editing the file it inherited.
+- **Present and non-empty** — the tokens are parsed in order into the list
+  and validated by the same rules as the file's list.
+
+An empty token inside a non-empty value — a leading, a trailing, or a doubled comma —
+is a validation error rather than a silently dropped entry.
+
+**`discovery.pprof.allowedPorts` and `discovery.pprof.allowedPortNames` no longer exist,
+and neither do `PROFGATE_PPROF_ALLOWED_PORTS` and `PROFGATE_PPROF_ALLOWED_PORT_NAMES`.**
+They were two independent lists where an empty list admitted any value of its parameter.
+Setting either key, whatever its value, fails validation with
+`discovery.pprof.<key> has been removed; list what a client may name under discovery.pprof.allowedSelections or PROFGATE_PPROF_ALLOWED_SELECTIONS instead`,
+and setting either variable fails with
+`<name> has been removed; set PROFGATE_PPROF_ALLOWED_SELECTIONS (discovery.pprof.allowedSelections) instead`,
+so an older configuration carried forward reads what to write instead of having a key ignored into a default-deny gateway.
+Each old list converts on its own, and the two conversions do not interact:
+
+| Old value | New entry |
+|---|---|
+| `allowedPorts: []` | `- port: "*"` |
+| `allowedPortNames: []` | `- portName: "*"` |
+| `allowedPorts: [6061, 6062]` | `- port: 6061` and `- port: 6062` |
+| `allowedPortNames: [pprof-alt]` | `- portName: pprof-alt` |
+
+A file that set both lists empty converts to both wildcards,
+which keeps the old behavior exactly.
+Adopting default-deny instead is a separate decision:
+write no entry to admit nothing beyond the configured default,
+or write a fixed set as one-key entries.
 
 ## `limits`
 
@@ -426,8 +477,13 @@ Always, whatever `pgo.enabled` says:
 - `server.tls.certFile` and `server.tls.keyFile` are set together or not at all,
   and both files must be readable.
 - Exactly one of `discovery.pprof.port` and `discovery.pprof.portName` is set.
-- Every `discovery.pprof.allowedPortNames` entry is a valid container-port name.
-- `discovery.pprof.allowedPorts` and `discovery.pprof.allowedPortNames` each hold no duplicate entry.
+- Every `discovery.pprof.allowedSelections` entry names exactly one of `port` and `portName`;
+  a `port` is `1` to `65535` or `"*"`, and a `portName` is a valid container-port name or `"*"`.
+- `discovery.pprof.allowedSelections` holds no duplicate entry
+  and no wildcard beside a concrete entry of its own kind.
+- `discovery.pprof.allowedPorts`, `discovery.pprof.allowedPortNames`,
+  `PROFGATE_PPROF_ALLOWED_PORTS`, and `PROFGATE_PPROF_ALLOWED_PORT_NAMES` are refused by name,
+  with a message naming `allowedSelections` and `PROFGATE_PPROF_ALLOWED_SELECTIONS`.
 - `auth.anonymousRealm` must name a key under `realms`, is required when `auth.mode` is `disabled`,
   and must not be set otherwise.
 - `auth.basic` is a validation error unless `auth.mode` is `basic`, and `auth.oidc` unless it is `oidc`,
@@ -530,8 +586,7 @@ discovery:
   versionLabel: app.kubernetes.io/version
   pprof:
     port: 6060
-    allowedPorts: []
-    allowedPortNames: []
+    allowedSelections: []
 limits:
   cpuSeconds: 60
   traceSeconds: 60

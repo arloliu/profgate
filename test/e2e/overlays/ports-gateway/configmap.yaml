@@ -13,8 +13,7 @@ data:
       versionLabel: app.kubernetes.io/version
       pprof:
         port: 6060
-        allowedPorts: [6060]
-        allowedPortNames: [pprof]
+        allowedSelections: []
     limits:
       cpuSeconds: 60
       traceSeconds: 60

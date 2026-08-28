@@ -1,6 +1,9 @@
+old: &old
+  allowedPorts: [6061]
 discovery:
   pprof:
-    allowedPort: 6060
+    port: 6060
+    <<: *old
 auth:
   anonymousRealm: developer
 realms:

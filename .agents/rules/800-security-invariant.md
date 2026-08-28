@@ -5,14 +5,19 @@ manifests, authentication, authorization, or the container security context.
 
 ## The Boundary
 
-This file holds the authoritative wording of the boundary; the copy in the
-root [`AGENTS.md`](../../AGENTS.md) tracks it.
+This file holds the authoritative wording of the boundary.
+The copies in the root [`AGENTS.md`](../../AGENTS.md),
+in [`README.md`](../../README.md),
+and in [`docs/specs/gateway.md`](../../docs/specs/gateway.md) track it.
+No check compares them; keeping them equal is part of editing this one.
 
 > Profgate requires no Kubernetes write permissions.
-> It observes Services, Pods, and EndpointSlices in authorized namespaces,
-> connects to application ports the operator permits —
-> when an allowlist is empty, any port or port name a client names —
-> and manipulates only its dedicated `PROFGATE_*` NATS stores.
+> It observes Services, Pods, and EndpointSlices cluster-wide,
+> and serves each caller only the namespaces, Services, and profiles that caller's realm admits.
+> It connects to the configured pprof port of a Pod,
+> and to any port or port name `discovery.pprof.allowedSelections` admits,
+> by an exact entry or by a wildcard, wherever NetworkPolicy permits the connection.
+> It manipulates only its dedicated `PROFGATE_*` NATS stores.
 
 A compromised gateway reaches exactly this far, and no further.
 The boundary is the reason Profgate is deployable in a production cluster at

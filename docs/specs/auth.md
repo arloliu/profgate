@@ -83,7 +83,8 @@ Nothing after realm resolution changes.
   so a `curl` user re-authenticates often;
   the fix is a `profgate` command-line client that performs a device-code flow,
   keeps the refresh token on the user's own machine, and wraps `go tool pprof`.
-  That is a separate design with its own document; the gateway needs nothing from it.
+  That client is designed in [`cli.md`](cli.md),
+  which adds `/v1/auth` and the `auth.oidc.cli` keys and changes nothing this document decides.
 - Introspection of opaque access tokens (RFC 7662).
   It puts the issuer on every request's path;
   installations whose access tokens are opaque send the ID token instead.
@@ -106,28 +107,44 @@ Nothing after realm resolution changes.
 ## 2. Request algorithm
 
 The gateway *Request algorithm* has an **Authentication** step between readiness and realm evaluation,
-and [`pgo.md`](pgo.md) *HTTP API* inserts `501 pgo_disabled` and `503 pgo_unavailable` in the same gap.
-The composed order for every route under `/v1` is:
+and [`pgo.md`](pgo.md) *HTTP API* inserts a media type step after the method step
+and `501 pgo_disabled` and `503 pgo_unavailable` between readiness and credential placement.
+The composed order for every route under `/v1` except `/v1/auth` is:
 
 1. Route → `404 route_unknown`, `404 profile_unknown`.
 2. Method → `405 method_not_allowed`.
-3. Readiness → `503 not_ready`.
-4. PGO routes only: `501 pgo_disabled`, `503 pgo_unavailable`.
-5. **Credential placement.**
+3. **JSON media type.**
+   PGO write routes only: a `POST` that declares no `application/json` → `400 invalid_parameter`
+   ([`pgo.md`](pgo.md) *Request media type*).
+4. Readiness → `503 not_ready`.
+5. PGO routes only: `501 pgo_disabled`, `503 pgo_unavailable`.
+6. **Credential placement.**
    A query parameter named `access_token` → `400 invalid_parameter`, in every mode, before any credential is read.
-6. **Authentication.**
+7. **Authentication.**
    Resolve the principal and realm per `auth.mode` (this document)
    → `401 unauthenticated`, `429 too_many_auth`, `503 auth_unavailable`, or, for a browser navigation, `302`.
-7. Realm → `403 realm_denied`.
-8. Parameters and everything after, unchanged.
+8. Realm → `403 realm_denied`.
+9. Parameters and everything after, unchanged.
 
-Step 5 sits before authentication so that a token in the URL is refused even when a valid one is also in the header;
+Step 3 refuses a request another origin could have produced,
+and it sits where it does so that the refusal comes before anything reads a credential;
+under `oidc` the cross-site refusal of section 6.6 is a second layer over it and never the first rejection,
+because it runs at step 7.
+Step 6 sits before authentication so that a token in the URL is refused even when a valid one is also in the header;
 the point is to make the URL form never work, not to make it redundant.
+
+`/v1/auth` is under `/v1` and runs steps 1, 2, 4, and 9 alone:
+it has no credential-placement, authentication, or realm step,
+because it is the route a command-line client reads before it holds a credential
+([`cli.md`](cli.md) *Gateway discovery*).
+That route mints no `401`.
+Everything this section says about a failed authentication, and about what a `401` discloses,
+therefore says nothing about it.
 
 The three `/auth/` routes (section 6) are not under `/v1` and do not run this algorithm;
 section 6.5 defines theirs.
 
-Per mode, step 6 is:
+Per mode, step 7 is:
 
 | Mode | Step outcome |
 |---|---|
@@ -139,7 +156,7 @@ Under `oidc`, a request that carries both a bearer token and a session cookie is
 
 ### 2.1 Failure responses
 
-A request that fails step 6 answers **`401 unauthenticated`** with a `WWW-Authenticate` header,
+A request that fails step 7 answers **`401 unauthenticated`** with a `WWW-Authenticate` header,
 which names the scheme the mode accepts:
 `Basic realm="profgate"` or `Bearer realm="profgate"`.
 The status is `401`, not `403`,
@@ -179,6 +196,8 @@ It carries `Retry-After: 5` and no `WWW-Authenticate`.
 
 `405`, `404 route_unknown`, `503 not_ready`, and the PGO availability codes precede authentication,
 so an unauthenticated probe learns whether a route exists and whether the gateway is ready, and nothing else.
+`/v1/auth` tells the same probe which mode is configured,
+which the `WWW-Authenticate` header on any `401` above already names ([`cli.md`](cli.md) *Gateway discovery*).
 The ops listener is unchanged: no authentication, no realm.
 
 ### 2.2 Configuration snapshot
@@ -781,12 +800,16 @@ they live in `docs/` and are cited here so the design is checkable against real 
   and appear as full paths (`/engineering/payments`) unless "Full group path" is off.
   `preferred_username` is present in both token kinds.
   ID and access tokens live 5 minutes by default and the SSO session 30 minutes idle, 10 hours maximum;
-  a `curl` user should raise the client's token lifespan or use the command-line client.
+  a `curl` user should raise the client's token lifespan or use the command-line client of [`cli.md`](cli.md).
+  A device login needs `oauth2.device.authorization.grant.enabled` on the client,
+  which Keycloak reads as `false` when the attribute is absent.
   The logout redirect reaches a confirmation page, because the gateway sends no `id_token_hint`;
   Keycloak returns to `/` once the user confirms.
 - **Dex.** ID tokens carry the client ID as `aud`, `groups` as a flat array, and `email` / `name`;
   there is no `preferred_username`, so `usernameClaim: email` is the usual choice.
   Dex has no `end_session_endpoint`; logout clears the cookie and returns to `/`.
+  A refresh token for the command-line client requires the `offline_access` scope,
+  which is why [`cli.md`](cli.md) *Configuration* defaults `auth.oidc.cli.scopes` to it.
 - **Okta.** ID tokens carry the client ID as `aud`;
   `groups` requires a claim added to the authorization server.
 - **Entra ID.** `aud` on an ID token is the application (client) ID;
@@ -835,6 +858,9 @@ Added and changed rows in the gateway *Configuration* table:
 | `auth.oidc.browser.cookieKeyFile` | `PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE` | — | restart (path) | section 6.3 |
 | `auth.oidc.browser.sessionTTL` | `PROFGATE_AUTH_OIDC_SESSION_TTL` | `8h` | restart | 5m–24h |
 | `auth.oidc.browser.transactionTTL` | `PROFGATE_AUTH_OIDC_TRANSACTION_TTL` | `5m` | restart | 1m–15m |
+| `auth.oidc.cli.clientID` | `PROFGATE_AUTH_OIDC_CLI_CLIENT_ID` | `auth.oidc.audience` | restart | 1–256 bytes; must equal `auth.oidc.audience` when `tokenType` is `id` ([`cli.md`](cli.md) *Configuration*) |
+| `auth.oidc.cli.scopes` | — | `openid, offline_access` | restart | must contain `openid`; each 1–64 bytes of RFC 6749 scope characters; unique |
+| `auth.oidc.cli.pkce` | `PROFGATE_AUTH_OIDC_CLI_PKCE` | `false` | restart | boolean |
 
 `anonymousRealm` is required only in `disabled` mode;
 in the other two it is a validation error if set,
@@ -843,6 +869,16 @@ The `basic` block is a validation error unless `mode` is `basic`, and likewise f
 so a block that does not apply cannot be mistaken for one that does.
 In Go the inactive blocks are pointers, so "absent" and "present with defaults" are distinguishable
 and a default inside an absent block cannot make the block look configured.
+
+The `cli` block is what makes `/v1/auth` report a device login;
+an empty `auth.oidc.cli: {}` is valid and enables it with every default above,
+and without the block that route reports the mode alone
+and infers nothing from `auth.oidc.browser` ([`cli.md`](cli.md) *Gateway discovery*).
+The gateway performs no device grant of its own: the three keys change only what `/v1/auth` reports.
+When the block is present and `tokenType` is `id`, `auth.oidc.browser.clientSecretFile` must be unset,
+because `clientID` then equals `audience` and the registration is shared with the browser flow,
+and a registration holding a secret is confidential where the device grant needs a public client.
+Setting both is a validation error naming the two keys.
 
 Only policy is hot: users, mappings, and `anonymousRealm`.
 No configuration reloader exists yet (gateway *Non-goals*);
@@ -943,7 +979,9 @@ Integration, in `internal/httpapi`:
 - The composed order of section 2: an unauthenticated request to an unknown route gets `404`;
   to a not-ready gateway `503 not_ready`; to a PGO route with PGO disabled `501`;
   with `?access_token=` `400` even when a valid bearer is also present;
-  to a denied namespace `401`, not `403`.
+  to a denied namespace `401`, not `403`;
+  and a `POST` to a PGO write route with no JSON media type `400 invalid_parameter`,
+  with no credential read and before readiness would have refused it.
 - The audit line for a `401` carries `auth_reason` and principal `-`;
   for a `302` carries code `auth_redirect`;
   for a successful callback carries the resolved principal.
@@ -1089,3 +1127,5 @@ Edits made to this document after it was accepted, each in the change that made 
 | *The `/auth/` routes*, *The session*, *Audit and metrics*, *Testing* | a successful callback answers `200` with a landing page that sends the browser to the return path, instead of `302`: a browser computes `Sec-Fetch-Site` over the whole redirect chain, so the redirect delivered the first request of every login as `cross-site` and the session rule refused it with `csrf`; the audit status of a successful callback is `200`; the unit and Dex tests send what a browser sends |
 | *Wire values and bounds* | the 1024-byte bound on the return path applies to the value as received, before percent-decoding, and a path with a `.` or `..` segment is refused: the bound is checked before anything is parsed, and a dot segment would reach a route the client did not name |
 | *Non-goals*, *What is redirected*, *The `/auth/` routes*, *Testing* | the console of [`ui.md`](ui.md): the UI non-goal points to that document; the `fetch` sentence names the console; logout's fallback `302` to `/` lands on `/ui/` when `ui.enabled`; the two end-to-end lanes gain the console steps of that document's *End to end* |
+| *Request algorithm*, *Testing* | the composed order gains a **JSON media type** step immediately after the method step, which the two PGO write routes run ([`pgo.md`](pgo.md) *Request media type*); the session's cross-site refusal is a second layer over it, because that runs at the authentication step; the numbered steps below the new one shift by one |
+| *Non-goals*, *Request algorithm*, *Failure responses*, *Configuration*, *Issuer notes* | the command line of [`cli.md`](cli.md): the token-acquisition non-goal points to that document; the composed order covers every `/v1` route except `/v1/auth`, which runs no credential-placement, authentication, or realm step and mints no `401`; the three `auth.oidc.cli` rows, the block that makes a device login discoverable, and the refusal of a browser client secret beside it under `tokenType: id`; the Keycloak note names the device-grant attribute and the Dex note the `offline_access` scope a refresh token needs |

@@ -58,10 +58,10 @@ where the cost is visible.
 ## Planned Structure
 
 ```
-cmd/profgate/          // CLI entrypoint: serve, config validate, version
+cmd/profgate/          // CLI entrypoint: serve, collect, config validate, version, and the client verbs
 internal/k8s/          // the Kubernetes seam; sole non-test importer of client-go
 internal/proxy/        // upstream HTTP to PodIP:port, timeouts, error mapping
-internal/httpapi/      // routing, realm checks, handlers, audit log
+internal/httpapi/      // routing, realm checks, handlers, audit log, the embedded OpenAPI document
 internal/config/       // fuda-loaded Config and validation
 internal/metrics/      // Recorder interface, Prometheus implementation
 internal/tlscert/      // the API listener's certificate, re-read while the process runs
@@ -70,7 +70,8 @@ internal/auth/         // Authenticator; basic, oidc, disabled; sole non-test im
 internal/natskv/       // the NATS seam; sole non-test importer of nats.go
 internal/pgo/          // policy, publisher, scheduler, worker, merge, sweeper
 internal/ops/          // liveness, readiness, and the Prometheus /metrics listener
-internal/ui/           // the console: embedded page and vendored browser libraries; sole user of go:embed
+internal/ui/           // the console: embedded page and vendored browser libraries
+internal/client/       // the command-line client; reachable only from cmd/profgate
 deploy/                // kustomize base: RBAC, Deployment, NetworkPolicy
 test/e2e/              // kind harness, versions.yaml, testapp, overlays, cmd/lanes (CI lane matrix)
 scripts/               // repository checks; check-repo.py
@@ -79,6 +80,11 @@ docs/                  // see docs/README.md
 
 `internal/pgo/`, `internal/natskv/`, and `internal/admit/`
 are defined by the accepted PGO design ([`docs/specs/pgo.md`](../../docs/specs/pgo.md)).
+`internal/client/` is defined by the accepted command-line design
+([`docs/specs/cli.md`](../../docs/specs/cli.md)).
+
+Two packages embed files with `go:embed` and no others do:
+`internal/ui/` the console tree, and `internal/httpapi/` the one OpenAPI document it serves.
 
 ## External HTTP API
 
@@ -88,6 +94,7 @@ The name `profgate` does not appear in versioned API paths:
 ```
 /v1/namespaces/{namespace}/services/{service}/targets
 /v1/namespaces/{namespace}/services/{service}/profiles/{profile}
+/v1/openapi.json
 ```
 
 The accepted PGO design ([`docs/specs/pgo.md`](../../docs/specs/pgo.md)) adds:
@@ -95,6 +102,8 @@ The accepted PGO design ([`docs/specs/pgo.md`](../../docs/specs/pgo.md)) adds:
 ```
 /v1/namespaces/{namespace}/services/{service}/pgo
 /v1/namespaces/{namespace}/services/{service}/collections
+/v1/namespaces/{namespace}/services/{service}/collections/latest
+/v1/namespaces/{namespace}/services/{service}/collections/latest/profile
 /v1/collections/{id}
 /v1/collections/{id}/profile
 /v1/collections/{id}/cancel
@@ -122,9 +131,21 @@ and three routes present only when `ui.enabled`:
 
 ```
 /ui/
-/ui/static/{hash}/{file}
+/ui/{file}
 /
 ```
+
+The accepted command-line design ([`docs/specs/cli.md`](../../docs/specs/cli.md)) adds one route,
+the only `/v1` route with no authentication step:
+
+```
+/v1/auth
+```
+
+Every route above is served by the API listener and declared in one route table
+([`docs/specs/gateway.md`](../../docs/specs/gateway.md) *The OpenAPI document*),
+which the router, the `Allow` header of a `405`, and `/v1/openapi.json` all read.
+The ops listener's `/healthz`, `/readyz`, and `/metrics` are outside that table and outside the document.
 
 ## Documentation
 

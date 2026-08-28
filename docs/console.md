@@ -41,6 +41,11 @@ and, on the way, a namespace and a Service picker.
   shows "`<value>` is not listed" and keeps the value until you pick another, so reloading retries it.
 - **Profile.** A profile `<select>` (filtered by your realm), a duration field for `cpu` and `trace` bounded by the operator's configured limit, a port control, and a Pod and version `<select>`
   once targets have loaded.
+  The port control is a menu of the configured default and every entry `discovery.pprof.allowedSelections` lists,
+  read from `/v1/limits`.
+  A free-form field appears beside the menu only for the kind whose wildcard is configured:
+  a port-number field under `{port: "*"}`, a port-name field under `{portName: "*"}`.
+  Typing in one field clears the other, and a non-empty field wins over the menu.
   Building this fills in a read-only Profile URL field with a **Download** link
   and, where the browser allows it, a **Copy URL** button.
 - **Collections.** Shown only when PGO collection is enabled and your realm may read it;

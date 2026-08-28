@@ -1,6 +1,10 @@
+a: &a
+  allowedPortNames: [pprof-alt]
+b: &b
+  port: 6060
 discovery:
   pprof:
-    allowedPorts: [6060, 6060]
+    <<: [*a, *b]
 auth:
   anonymousRealm: developer
 realms:

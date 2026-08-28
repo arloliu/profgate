@@ -325,7 +325,7 @@ func (q *request) fail(w http.ResponseWriter, e *requestError) {
 	if e.auditCode != "" {
 		q.audit.code = e.auditCode
 	}
-	WriteError(w, e.status, e.code, e.message)
+	writeError(w, e)
 }
 
 // ServeHTTP runs the request algorithm:
@@ -511,9 +511,9 @@ func allowPort(pprof config.PprofConfig, port portParams) *requestError {
 	sel := port.sel
 	switch {
 	case sel.Port != 0 && !pprof.AllowsPort(sel.Port):
-		return portNotAllowed(port.sent)
+		return portNotAllowed("port", port.sent)
 	case sel.PortName != "" && !pprof.AllowsPortName(sel.PortName):
-		return portNotAllowed(port.sent)
+		return portNotAllowed("portName", port.sent)
 	default:
 		return nil
 	}

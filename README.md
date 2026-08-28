@@ -7,10 +7,13 @@ An optional PGO mode, off by default, collects representative CPU profiles on a 
 and merges them into an artifact for `go build -pgo=`.
 
 Profgate requires no Kubernetes write permissions.
-It only lists and watches Services and EndpointSlices and gets, lists, and watches Pods in authorized namespaces,
-connects to application ports the operator permits —
-when an allowlist is empty, any port or port name a client names —
-and, in PGO mode, touches only its own `PROFGATE_*` NATS stores.
+It observes Services, Pods, and EndpointSlices cluster-wide,
+and serves each caller only the namespaces, Services, and profiles that caller's realm admits.
+It connects to the configured pprof port of a Pod,
+and to any port or port name `discovery.pprof.allowedSelections` admits,
+by an exact entry or by a wildcard, wherever NetworkPolicy permits the connection.
+It manipulates only its dedicated `PROFGATE_*` NATS stores.
+The gateway itself uses no NATS store at all; the three exist only in PGO mode.
 
 ## Features
 
@@ -70,8 +73,8 @@ go tool pprof "http://localhost:8080/v1/namespaces/<ns>/services/<svc>/profiles/
 The one requirement on the application:
 its Pods must serve Go's `net/http/pprof` handlers on the configured default,
 `discovery.pprof.port` (6060 by default) or `discovery.pprof.portName`,
-and on any other port a client selects with `port` or `portName`
-that `discovery.pprof.allowedPorts` and `allowedPortNames` permit.
+and on any other port or port name a client selects with `port` or `portName`,
+which is whatever `discovery.pprof.allowedSelections` admits by an exact entry or by a wildcard.
 
 ## Documentation
 

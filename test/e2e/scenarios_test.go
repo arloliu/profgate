@@ -83,7 +83,14 @@ type targetsResponse struct {
 
 // errorResponse mirrors the gateway's error envelope.
 type errorResponse struct {
-	Error string `json:"error"`
+	Error   string        `json:"error"`
+	Code    string        `json:"code"`
+	Details []errorDetail `json:"details"`
+}
+
+// errorDetail is one item of the details a port_not_allowed envelope carries.
+type errorDetail struct {
+	Field string `json:"field"`
 	Code  string `json:"code"`
 }
 
@@ -1118,9 +1125,11 @@ const (
 	altAddr     = ":" + altPort
 )
 
-// scenarioPortSelection proves that, against the default gateway whose allowlists are empty,
-// a request naming the test app's second port by number or by name is served from that port
-// and nothing the gateway generates carries the number.
+// scenarioPortSelection proves that, against the default gateway whose allowedSelections
+// holds {port: 6061} and {portName: pprof-alt}, a request naming the test app's second port
+// by number or by name is served from that port, which the app's per-listener hits attribute
+// to :6061, nothing the gateway generates carries the number, and the targets endpoint
+// lists the app's Pods for the name.
 func scenarioPortSelection(t *testing.T, h *Harness) {
 	ns := h.Namespace(t)
 	pods := deployTestApp(t, h, ns)
@@ -1171,9 +1180,10 @@ func scenarioPortSelection(t *testing.T, h *Harness) {
 	}
 }
 
-// scenarioPortSelectionRefused proves that a gateway whose allowlists exclude the test app's
-// second port and name refuses both before discovery, so the test app never sees the request,
-// while the configured default still passes.
+// scenarioPortSelectionRefused proves that the ports-gateway overlay, whose allowedSelections
+// is empty, refuses the test app's second port and its name with 400 port_not_allowed naming
+// the value sent and the parameter it came in, before discovery, so the test app's :6061
+// count does not move, while ?port=6060, the configured default, still fetches.
 func scenarioPortSelectionRefused(t *testing.T, h *Harness) {
 	ns := h.Namespace(t)
 	pods := deployTestApp(t, h, ns)
@@ -1181,13 +1191,21 @@ func scenarioPortSelectionRefused(t *testing.T, h *Harness) {
 	app := h.ForwardTestApp(t, ns, pods[0].Name)
 
 	before := listenerHits(t, app, altAddr)
-	for _, tc := range []struct{ query, sent string }{
-		{query: "port=" + altPort, sent: altPort},
-		{query: "portName=" + altPortName, sent: altPortName},
+	for _, tc := range []struct{ field, sent string }{
+		{field: "port", sent: altPort},
+		{field: "portName", sent: altPortName},
 	} {
-		body := expectError(t, c, gatewayURL(ns, testAppName, "profiles/heap?"+tc.query), http.StatusBadRequest, "port_not_allowed")
-		if !bytes.Contains(body, []byte(tc.sent)) {
-			t.Fatalf("heap?%s: body %s does not name %q", tc.query, body, tc.sent)
+		query := tc.field + "=" + tc.sent
+		body := expectError(t, c, gatewayURL(ns, testAppName, "profiles/heap?"+query), http.StatusBadRequest, "port_not_allowed")
+		var e errorResponse
+		if err := json.Unmarshal(body, &e); err != nil {
+			t.Fatalf("heap?%s: %v", query, err)
+		}
+		if !strings.Contains(e.Error, tc.sent) {
+			t.Fatalf("heap?%s: error %q does not name %q", query, e.Error, tc.sent)
+		}
+		if len(e.Details) != 1 || e.Details[0].Field != tc.field || e.Details[0].Code != "not_admitted" {
+			t.Fatalf("heap?%s: details %+v, want one item with field %q and code not_admitted", query, e.Details, tc.field)
 		}
 	}
 	if after := listenerHits(t, app, altAddr); after != before {
@@ -1197,5 +1215,8 @@ func scenarioPortSelectionRefused(t *testing.T, h *Harness) {
 	resp := get(t, c, gatewayURL(ns, testAppName, "profiles/heap?port="+testAppPort))
 	if resp.Status != http.StatusOK {
 		t.Fatalf("heap?port=%s: status %d: %s", testAppPort, resp.Status, resp.Body)
+	}
+	if _, err := profile.ParseData(resp.Body); err != nil {
+		t.Fatalf("heap?port=%s: profile.Parse: %v", testAppPort, err)
 	}
 }

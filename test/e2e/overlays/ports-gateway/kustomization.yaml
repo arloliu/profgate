@@ -1,8 +1,9 @@
 # A one-replica gateway the port-selection-refused scenario owns, whose
-# allowlists hold only the configured port and its name. Configuration is loaded
-# once per process, and one gateway cannot show both the accepted and the
-# refused outcome, so the shared gateways keep their empty lists and this one
-# refuses. Everything is named profgate-ports; the ClusterRoleBinding reuses the
+# allowedSelections is empty, so only the configured port is admitted.
+# Configuration is loaded once per process, and one gateway cannot show both
+# the accepted and the refused outcome, so the default gateway lists the test
+# app's second port and its name and this one refuses them.
+# Everything is named profgate-ports; the ClusterRoleBinding reuses the
 # shipped ClusterRole. The scenario wraps this overlay in a kustomization that
 # sets the namespace and patches the realm's namespace list to the one it
 # created.
