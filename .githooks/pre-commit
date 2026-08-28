@@ -1,0 +1,11 @@
+#!/bin/sh
+# Refuse a commit whose changed prose breaks semantic linefeeds.
+# semlf --base HEAD reports only the diagnostics the lines changed since
+# HEAD own, so an old finding elsewhere in a touched file does not block.
+# Install the hooks once per clone with: mise run hooks
+set -e
+if ! command -v semlf >/dev/null 2>&1; then
+    echo "pre-commit: semlf is not installed; install it (uv tool install semlf) or see .agents/rules/500-validation-and-workflow.md" >&2
+    exit 1
+fi
+semlf --base HEAD

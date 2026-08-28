@@ -2,6 +2,21 @@
 
 Apply before every commit and before opening a PR.
 
+## Once per clone
+
+```bash
+mise run hooks
+```
+
+This points `core.hooksPath` at `.githooks/`.
+The `pre-commit` hook runs `semlf --base HEAD`,
+which reports only the semantic-linefeed findings the lines you changed own,
+and refuses the commit on a fused or column-wrapped line;
+an old finding elsewhere in a file you touched does not block you.
+The `commit-msg` hook holds the message to [600](600-git-conventions.md).
+Both need `semlf` on `PATH` and fail plainly when it is missing.
+A pull request runs the same check against its base branch in CI.
+
 ## Before every commit
 
 Run the validation block and fix what it reports:
@@ -10,8 +25,10 @@ Run the validation block and fix what it reports:
 mise run lint && mise run test && mise run check
 ```
 
-Prose gets the same treatment:
-run `semlf check <file>` on every Markdown file you wrote or edited and fix the findings.
+Prose gets the same treatment before the hook sees it:
+run `semlf check <file>` on every Markdown file and every Go file with doc comments you wrote or edited,
+and fix the findings.
+`mise run prose` runs the check over everything changed since `main`.
 
 ## Before a PR
 

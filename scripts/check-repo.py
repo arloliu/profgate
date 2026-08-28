@@ -270,6 +270,23 @@ def check_pkce_override_name(root):
     return bad
 
 
+def check_hooks(root):
+    """Fail when a repository git hook is missing or not executable.
+
+    Rule 500 tells every clone to point core.hooksPath at .githooks; a hook
+    that git cannot execute is skipped without a word, which reads as a
+    commit that passed the check.
+    """
+    bad = []
+    for name in ("pre-commit", "commit-msg"):
+        path = root / ".githooks" / name
+        if not path.is_file():
+            bad.append(f".githooks/{name}: missing")
+        elif not os.access(path, os.X_OK):
+            bad.append(f".githooks/{name}: not executable (chmod +x)")
+    return bad
+
+
 def main():
     errors = []
     check_links(errors)
@@ -284,6 +301,7 @@ def main():
     errors.extend(check_client_imports(root))
     errors.extend(check_removed_port_keys(root))
     errors.extend(check_pkce_override_name(root))
+    errors.extend(check_hooks(root))
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
