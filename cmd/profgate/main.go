@@ -32,32 +32,15 @@ const secondSignalExit = 1
 // version is set by the linker at build time; "dev" is the fallback for local builds.
 var version = "dev"
 
-const usage = "usage: profgate <version|config validate|auth hash|serve> [flags]"
-
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// run dispatches to the profgate subcommands and returns the process exit code.
+// run dispatches to the profgate subcommands and returns the process exit code:
+// the operator verbs through their own functions, the client verbs through
+// the grammar of docs/specs/cli.md.
 func run(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, usage)
-		return 2
-	}
-
-	switch args[0] {
-	case "version":
-		return runVersion(args[1:], stdout, stderr)
-	case "config":
-		return runConfig(args[1:], stdout, stderr)
-	case "auth":
-		return runAuth(args[1:], os.Stdin, stdout, stderr)
-	case "serve":
-		return runServe(args[1:], stdout, stderr)
-	default:
-		_, _ = fmt.Fprintln(stderr, usage)
-		return 2
-	}
+	return dispatch(context.Background(), newEnv(os.Stdin, stdout, stderr), clientVerbs(), args)
 }
 
 // runVersion prints the binary's version.
@@ -74,7 +57,7 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 // runConfig dispatches the "config" subcommands.
 func runConfig(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "validate" {
-		_, _ = fmt.Fprintln(stderr, usage)
+		_, _ = fmt.Fprintln(stderr, usageLine(clientVerbs()))
 		return 2
 	}
 

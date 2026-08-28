@@ -1,12 +1,14 @@
 package client
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/url"
 	"os"
@@ -547,4 +549,227 @@ func TestSaveFile(t *testing.T) {
 	if err := SaveFile(path, f); err != nil {
 		t.Fatalf("SaveFile: %v", err)
 	}
+}
+
+func TestUseContext(t *testing.T) {
+	t.Run("sets currentContext to an existing name", func(t *testing.T) {
+		f := &File{CurrentContext: "prod", Contexts: map[string]Context{"prod": {Server: "https://a.example"}, "dev": {Server: "https://b.example"}}}
+		if err := UseContext(f, "dev"); err != nil {
+			t.Fatal(err)
+		}
+		if f.CurrentContext != "dev" {
+			t.Fatalf("currentContext = %q, want dev", f.CurrentContext)
+		}
+	})
+	t.Run("a name with no entry is a usage error and changes nothing", func(t *testing.T) {
+		f := &File{CurrentContext: "prod", Contexts: map[string]Context{"prod": {Server: "https://a.example"}}}
+		err := UseContext(f, "staging")
+		if !errors.Is(err, ErrUsage) || !strings.Contains(err.Error(), "staging") {
+			t.Fatalf("err = %v, want a usage error naming staging", err)
+		}
+		if f.CurrentContext != "prod" {
+			t.Fatalf("currentContext = %q, want prod untouched", f.CurrentContext)
+		}
+	})
+	t.Run("a nil file is a usage error", func(t *testing.T) {
+		if err := UseContext(nil, "prod"); !errors.Is(err, ErrUsage) {
+			t.Fatalf("err = %v, want a usage error", err)
+		}
+	})
+}
+
+// deleteFixture is one DeleteContext run: a two-context file with prod
+// current, a Store over a fresh directory, and a save that records what it
+// saw of the lock and the cache entry at the moment it ran.
+type deleteFixture struct {
+	f         *File
+	store     *Store
+	dir       string
+	saves     int
+	lockHeld  bool // the lock file existed when save ran
+	entryGone bool // the cache entry was gone when save ran
+	saveErr   error
+}
+
+func newDeleteFixture(t *testing.T) *deleteFixture {
+	t.Helper()
+	store, _, dir := testStore(t)
+	return &deleteFixture{
+		f:     &File{CurrentContext: "prod", Contexts: map[string]Context{"prod": {Server: "https://a.example"}, "dev": {Server: "https://b.example"}}},
+		store: store,
+		dir:   dir,
+	}
+}
+
+func (d *deleteFixture) save(*File) error {
+	d.saves++
+	_, err := os.Stat(filepath.Join(d.dir, "prod.lock"))
+	d.lockHeld = err == nil
+	_, err = os.Stat(filepath.Join(d.dir, "prod.json"))
+	d.entryGone = errors.Is(err, os.ErrNotExist)
+	return d.saveErr
+}
+
+func (d *deleteFixture) writeEntry(t *testing.T) {
+	t.Helper()
+	if err := d.store.Write("prod", testEntry()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (d *deleteFixture) entryExists(t *testing.T) bool {
+	t.Helper()
+	_, err := os.Stat(filepath.Join(d.dir, "prod.json"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	return err == nil
+}
+
+func (d *deleteFixture) lockExists(t *testing.T) bool {
+	t.Helper()
+	_, err := os.Stat(filepath.Join(d.dir, "prod.lock"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	return err == nil
+}
+
+func TestDeleteContext(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("takes the lock, deletes the entry, then saves, and releases", func(t *testing.T) {
+		d := newDeleteFixture(t)
+		d.writeEntry(t)
+		if err := DeleteContext(ctx, d.f, "prod", d.store, d.save); err != nil {
+			t.Fatal(err)
+		}
+		if d.saves != 1 || !d.lockHeld || !d.entryGone {
+			t.Fatalf("saves = %d, lock held at save = %v, entry gone at save = %v; want one save under the lock after the deletion", d.saves, d.lockHeld, d.entryGone)
+		}
+		if _, ok := d.f.Contexts["prod"]; ok {
+			t.Fatal("prod is still in the file")
+		}
+		if _, ok := d.f.Contexts["dev"]; !ok {
+			t.Fatal("dev was removed too")
+		}
+		if d.f.CurrentContext != "" {
+			t.Fatalf("currentContext = %q, want empty: it named the deleted entry", d.f.CurrentContext)
+		}
+		if d.lockExists(t) {
+			t.Fatal("the lock was not released")
+		}
+	})
+
+	t.Run("leaves currentContext alone when it names another entry", func(t *testing.T) {
+		d := newDeleteFixture(t)
+		if err := DeleteContext(ctx, d.f, "dev", d.store, d.save); err != nil {
+			t.Fatal(err)
+		}
+		if d.f.CurrentContext != "prod" {
+			t.Fatalf("currentContext = %q, want prod", d.f.CurrentContext)
+		}
+	})
+
+	t.Run("succeeds with no cache entry", func(t *testing.T) {
+		d := newDeleteFixture(t)
+		if err := DeleteContext(ctx, d.f, "prod", d.store, d.save); err != nil {
+			t.Fatal(err)
+		}
+		if d.saves != 1 {
+			t.Fatalf("saves = %d, want 1", d.saves)
+		}
+	})
+
+	t.Run("a lock held past its bound names the lock file and touches nothing", func(t *testing.T) {
+		d := newDeleteFixture(t)
+		d.writeEntry(t)
+		lock := filepath.Join(d.dir, "prod.lock")
+		if err := os.WriteFile(lock, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := DeleteContext(ctx, d.f, "prod", d.store, d.save)
+		if err == nil || !strings.Contains(err.Error(), lock) {
+			t.Fatalf("err = %v, want one naming %s", err, lock)
+		}
+		if errors.Is(err, ErrUsage) {
+			t.Fatalf("err = %v is a usage error; a held lock is exit 1", err)
+		}
+		if d.saves != 0 || !d.entryExists(t) {
+			t.Fatalf("saves = %d, entry exists = %v; want nothing touched", d.saves, d.entryExists(t))
+		}
+		if _, ok := d.f.Contexts["prod"]; !ok {
+			t.Fatal("prod was removed from the file")
+		}
+	})
+
+	t.Run("a failed cache deletion names the cache file and leaves the file unwritten", func(t *testing.T) {
+		d := newDeleteFixture(t)
+		// A non-empty directory in the entry's place: it passes the mode
+		// check and cannot be removed.
+		entry := filepath.Join(d.dir, "prod.json")
+		if err := os.MkdirAll(filepath.Join(entry, "child"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		err := DeleteContext(ctx, d.f, "prod", d.store, d.save)
+		if err == nil || !strings.Contains(err.Error(), entry) {
+			t.Fatalf("err = %v, want one naming %s", err, entry)
+		}
+		if d.saves != 0 {
+			t.Fatalf("saves = %d, want 0: the context must still name the credential that still exists", d.saves)
+		}
+		if _, ok := d.f.Contexts["prod"]; !ok || d.f.CurrentContext != "prod" {
+			t.Fatalf("file = %+v, want prod still present and current", d.f)
+		}
+		if d.lockExists(t) {
+			t.Fatal("the lock was not released")
+		}
+	})
+
+	t.Run("a failed save names the context file, the credential is gone, and a second run completes", func(t *testing.T) {
+		d := newDeleteFixture(t)
+		d.writeEntry(t)
+		d.saveErr = errors.New("write /home/alice/.config/profgate/config.yaml: disk full")
+		err := DeleteContext(ctx, d.f, "prod", d.store, d.save)
+		if err == nil || !strings.Contains(err.Error(), "/home/alice/.config/profgate/config.yaml") {
+			t.Fatalf("err = %v, want one naming the context file", err)
+		}
+		if d.entryExists(t) {
+			t.Fatal("the cache entry survived the deletion")
+		}
+		if d.lockExists(t) {
+			t.Fatal("the lock was not released")
+		}
+		d.saveErr = nil
+		// The caller reloads the file before running again; the entry is
+		// still in it because the save failed.
+		d.f = &File{CurrentContext: "prod", Contexts: map[string]Context{"prod": {Server: "https://a.example"}, "dev": {Server: "https://b.example"}}}
+		if err := DeleteContext(ctx, d.f, "prod", d.store, d.save); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+		if _, ok := d.f.Contexts["prod"]; ok || d.f.CurrentContext != "" {
+			t.Fatalf("file after the second run = %+v", d.f)
+		}
+	})
+
+	t.Run("a name with no entry is a usage error before the lock", func(t *testing.T) {
+		d := newDeleteFixture(t)
+		err := DeleteContext(ctx, d.f, "staging", d.store, d.save)
+		if !errors.Is(err, ErrUsage) || !strings.Contains(err.Error(), "staging") {
+			t.Fatalf("err = %v, want a usage error naming staging", err)
+		}
+		if d.saves != 0 {
+			t.Fatalf("saves = %d, want 0", d.saves)
+		}
+		if _, err := os.Stat(d.dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the tokens directory was created for a name with no entry: %v", err)
+		}
+	})
+
+	t.Run("a nil file is a usage error", func(t *testing.T) {
+		d := newDeleteFixture(t)
+		if err := DeleteContext(ctx, nil, "prod", d.store, d.save); !errors.Is(err, ErrUsage) {
+			t.Fatalf("err = %v, want a usage error", err)
+		}
+	})
 }

@@ -27,7 +27,7 @@ const (
 // terminal, and the only line printed is the hash.
 func runAuth(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "hash" {
-		_, _ = fmt.Fprintln(stderr, usage)
+		_, _ = fmt.Fprintln(stderr, usageLine(clientVerbs()))
 
 		return 2
 	}

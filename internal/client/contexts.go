@@ -5,6 +5,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -25,30 +26,32 @@ import (
 // File is the contexts file, read with KnownFields(true) so an unknown key
 // at any level is an error naming the key.
 type File struct {
-	CurrentContext string             `yaml:"currentContext"`
+	CurrentContext string             `yaml:"currentContext,omitempty"`
 	Contexts       map[string]Context `yaml:"contexts"`
 }
 
 // Context is one gateway and the authentication snapshot the last login recorded for it.
 // Normal commands act on that snapshot and never read /v1/auth; only login refreshes it.
+// The json tags carry the same keys, which is what context show prints
+// under --output json.
 type Context struct {
-	Server     string   `yaml:"server"`
-	CAFile     string   `yaml:"caFile,omitempty"`
-	ServerName string   `yaml:"serverName,omitempty"`
-	Namespace  string   `yaml:"namespace,omitempty"`
-	Auth       AuthSnap `yaml:"auth,omitempty"`
+	Server     string   `yaml:"server" json:"server"`
+	CAFile     string   `yaml:"caFile,omitempty" json:"caFile,omitempty"`
+	ServerName string   `yaml:"serverName,omitempty" json:"serverName,omitempty"`
+	Namespace  string   `yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	Auth       AuthSnap `yaml:"auth,omitempty" json:"auth,omitzero"`
 }
 
 // AuthSnap is what GET /v1/auth reported at the last login.
 // An empty Mode means no login has recorded a snapshot yet.
 type AuthSnap struct {
-	Mode         string   `yaml:"mode,omitempty"`
-	Issuer       string   `yaml:"issuer,omitempty"`
-	ClientID     string   `yaml:"clientID,omitempty"`
-	TokenType    string   `yaml:"tokenType,omitempty"`
-	Scopes       []string `yaml:"scopes,omitempty"`
-	PKCE         bool     `yaml:"pkce,omitempty"`
-	IssuerCAFile string   `yaml:"issuerCAFile,omitempty"`
+	Mode         string   `yaml:"mode,omitempty" json:"mode,omitempty"`
+	Issuer       string   `yaml:"issuer,omitempty" json:"issuer,omitempty"`
+	ClientID     string   `yaml:"clientID,omitempty" json:"clientID,omitempty"`
+	TokenType    string   `yaml:"tokenType,omitempty" json:"tokenType,omitempty"`
+	Scopes       []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+	PKCE         bool     `yaml:"pkce,omitempty" json:"pkce,omitempty"`
+	IssuerCAFile string   `yaml:"issuerCAFile,omitempty" json:"issuerCAFile,omitempty"`
 }
 
 // Overrides is what one command's flags said; an empty field said nothing.
@@ -168,6 +171,55 @@ func (f *File) RecordLogin(s Settings, snap AuthSnap) {
 	}
 	c.Auth = snap
 	f.Contexts[s.ContextName] = c
+}
+
+// UseContext sets currentContext to name, which must exist.
+func UseContext(f *File, name string) error {
+	if err := requireContext(f, name); err != nil {
+		return err
+	}
+	f.CurrentContext = name
+	return nil
+}
+
+// DeleteContext removes name from the file and its cache entry, under the
+// entry's lock, and reports which of the two steps failed by naming its path.
+// The lock is taken first so a refresh in another process cannot write a
+// fresh token into the entry being deleted, which would leave a credential
+// on disk with no context that names it.
+// When the cache deletion fails the file is not saved, so the context still
+// names a credential that still exists; when the save fails the credential
+// is already gone, and running again completes the removal because Delete
+// treats a missing entry as done.
+func DeleteContext(ctx context.Context, f *File, name string, s *Store, save func(*File) error) (err error) {
+	if err := requireContext(f, name); err != nil {
+		return err
+	}
+	release, err := s.Lock(ctx, name)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, release())
+	}()
+	if err := s.Delete(name); err != nil {
+		return err
+	}
+	delete(f.Contexts, name)
+	if f.CurrentContext == name {
+		f.CurrentContext = ""
+	}
+	return save(f)
+}
+
+// requireContext is the usage error for a name the file does not hold.
+func requireContext(f *File, name string) error {
+	if f != nil {
+		if _, ok := f.Contexts[name]; ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: context %q is not in the contexts file", ErrUsage, name)
 }
 
 // validateFile checks every key of the file, not only the ones a command

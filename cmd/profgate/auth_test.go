@@ -119,7 +119,7 @@ func TestRunAuthUsage(t *testing.T) {
 	if !strings.Contains(stderr.String(), "auth hash") {
 		t.Fatalf("stderr = %q, want the usage line to list auth hash", stderr.String())
 	}
-	if usage != "usage: profgate <version|config validate|auth hash|serve> [flags]" {
+	if usage := usageLine(nil); usage != "usage: profgate <version|config validate|auth hash|serve> [flags]" {
 		t.Fatalf("usage = %q", usage)
 	}
 }
