@@ -124,7 +124,8 @@ func New(d Deps) http.Handler {
 // routeKind is which of the /v1 routes a path matched.
 type routeKind int
 
-// The routes the gateway serves: the two interactive ones, the five PGO ones, and the four listing ones.
+// The routes the gateway serves: the two interactive ones, the five PGO ones, the four listing ones,
+// and the one authentication-discovery route, which runs no authentication step.
 // Each classification below is an exhaustive switch that names every kind,
 // so declaration order carries no meaning and a kind added later is classified by name.
 const (
@@ -139,6 +140,7 @@ const (
 	kindServices
 	kindWhoami
 	kindLimits
+	kindAuth
 )
 
 // isPGO reports whether the route reads or writes PGO state, which is what the
@@ -147,7 +149,7 @@ func (k routeKind) isPGO() bool {
 	switch k {
 	case kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel:
 		return true
-	case kindTargets, kindProfile, kindNamespaces, kindServices, kindWhoami, kindLimits:
+	case kindTargets, kindProfile, kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth:
 		return false
 	default:
 		return false
@@ -160,7 +162,7 @@ func (k routeKind) isCollectionScoped() bool {
 	switch k {
 	case kindCollection, kindCollectionProfile, kindCollectionCancel:
 		return true
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindNamespaces, kindServices, kindWhoami, kindLimits:
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth:
 		return false
 	default:
 		return false
@@ -173,7 +175,7 @@ func (k routeKind) isListing() bool {
 	switch k {
 	case kindNamespaces, kindServices, kindWhoami, kindLimits:
 		return true
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel:
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel, kindAuth:
 		return false
 	default:
 		return false
@@ -190,7 +192,7 @@ func (k routeKind) methods() []string {
 	case kindCollectionCancel:
 		return []string{http.MethodPost}
 	case kindTargets, kindProfile, kindCollection, kindCollectionProfile,
-		kindNamespaces, kindServices, kindWhoami, kindLimits:
+		kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth:
 		return []string{http.MethodGet}
 	default:
 		return []string{http.MethodGet}
@@ -206,10 +208,12 @@ type route struct {
 	collection string // set for the three Collection-scoped routes
 }
 
-// parseRoute matches path against the eleven routes,
+// parseRoute matches path against the twelve routes,
 // validating the name segments as DNS-1123 labels and the identifier against its own grammar.
 func parseRoute(path string) (route, bool) {
 	switch path {
+	case "/v1/auth":
+		return route{kind: kindAuth}, true
 	case "/v1/namespaces":
 		return route{kind: kindNamespaces}, true
 	case "/v1/whoami":
@@ -307,6 +311,8 @@ func (q *request) labels() (metrics.Endpoint, string) {
 		return metrics.EndpointWhoami, labelNone
 	case kindLimits:
 		return metrics.EndpointLimits, labelNone
+	case kindAuth:
+		return metrics.EndpointAuth, labelNone
 	case kindProfile:
 		if config.IsProfile(q.route.profile) {
 			return metrics.EndpointProfile, q.route.profile
@@ -316,6 +322,17 @@ func (q *request) labels() (metrics.Endpoint, string) {
 	default:
 		return metrics.EndpointProfile, labelNone
 	}
+}
+
+// narrated reports whether the request writes an audit record.
+// A console request and a /v1/auth request are counted, not narrated:
+// each carries no principal and names nothing a realm bounds.
+func (q *request) narrated() bool {
+	if q.console {
+		return false
+	}
+
+	return !q.routed || q.route.kind != kindAuth
 }
 
 // fail writes a gateway-generated error and records it.
@@ -333,6 +350,7 @@ func (q *request) fail(w http.ResponseWriter, e *requestError) {
 // filter and select, admit, confirm, proxy.
 // The first failing step answers.
 // The configuration is loaded once here and the request uses that snapshot throughout.
+// /v1/auth stops after readiness and answers without an authentication step.
 // A path under /auth/ is not a /v1 route and takes the shorter algorithm of serveAuthRoute;
 // a path under /ui/ or exactly / is handed to the console, which runs its own.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -345,8 +363,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		q.audit.duration = time.Since(start)
 		endpoint, profile := q.labels()
 		s.deps.Recorder.Request(endpoint, profile, q.audit.code, q.audit.duration)
-		// A console request is counted, not narrated: it carries no principal and names nothing a realm bounds.
-		if !q.console {
+		if q.narrated() {
 			writeAudit(s.deps.Logger, q.audit)
 		}
 	}()
@@ -396,6 +413,15 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if !s.ready() {
 		q.fail(w, &requestError{status: http.StatusServiceUnavailable, code: "not_ready", message: "the gateway is not ready"})
+
+		return
+	}
+
+	// The one /v1 route with no authentication step: it answers here, before
+	// the PGO and credential-placement steps, because it is what a client
+	// reads before it holds a credential.
+	if rt.kind == kindAuth {
+		s.serveAuthInfo(w, r, q, cfg)
 
 		return
 	}

@@ -50,7 +50,7 @@ except where authentication requires TLS;
 on an HTTPS listener this same shape applies to every one of them.
 
 There is no index route and no OpenAPI document.
-Eleven routes live under `/v1`; the seven that take path parameters are:
+Twelve routes live under `/v1`; the seven that take path parameters are:
 
 | Route | Methods |
 |---|---|
@@ -84,7 +84,7 @@ A listing request ([Listing endpoints](#listing-endpoints)) runs the same steps 
 answering from the configuration snapshot or the Service cache with no discovery, selection, admission,
 confirmation, or proxy step.
 
-1. **Route** — the path must match one of the eleven `/v1` routes (`404 route_unknown`),
+1. **Route** — the path must match one of the twelve `/v1` routes (`404 route_unknown`),
    and a profile route must name a known profile (`404 profile_unknown`).
 2. **Method** — `405 method_not_allowed` plus `Allow` otherwise.
 3. **Readiness** — until discovery has synced its caches, everything answers `503 not_ready`;
@@ -707,7 +707,7 @@ the gateway forwards that status and body verbatim instead of wrapping it.
 | 401 | `unauthenticated` | No credential, a wrong or expired one, or one that maps to no realm; see [Authentication](#authentication). `WWW-Authenticate` names the scheme. |
 | 403 | `realm_denied` | The realm does not allow this namespace, Service, profile, or PGO action. |
 | 403 | `config_api_disabled` | `pgo.configAPI` is `disabled`; policy reads still work. |
-| 404 | `route_unknown` | The path is not one of the eleven `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
+| 404 | `route_unknown` | The path is not one of the twelve `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
 | 404 | `profile_unknown` | The profile name is not in the profile table. |
 | 404 | `service_not_found` | The Service does not exist in that namespace. |
 | 404 | `pod_not_found` | The pinned Pod is not currently an eligible target. |

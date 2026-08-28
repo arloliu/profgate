@@ -120,7 +120,7 @@ func (s *server) serveListing(
 			slices.Sort(names)
 			body = servicesBody{Namespace: q.route.namespace, Services: names}
 		}
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel:
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel, kindAuth:
 		// Not a listing route; ServeHTTP never dispatches one here.
 		q.fail(w, &requestError{status: http.StatusNotFound, code: "route_unknown", message: "no such route"})
 
