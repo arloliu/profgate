@@ -74,11 +74,30 @@ type target struct {
 	Version string `json:"version"`
 }
 
-// targetsResponse mirrors the targets endpoint's body.
+// targetsResponse mirrors the targets endpoint's body;
+// the last two fields are present only for a request that sent explain=true.
 type targetsResponse struct {
-	Namespace string   `json:"namespace"`
-	Service   string   `json:"service"`
-	Targets   []target `json:"targets"`
+	Namespace       string      `json:"namespace"`
+	Service         string      `json:"service"`
+	Targets         []target    `json:"targets"`
+	SelectorMatched int         `json:"selectorMatched"`
+	Excluded        []exclusion `json:"excluded"`
+}
+
+// exclusion is one entry of excluded: a reason from the gateway's vocabulary and how many Pods it kept out.
+type exclusion struct {
+	Reason string `json:"reason"`
+	Count  int    `json:"count"`
+}
+
+// count returns how many Pods the response counted under reason, zero when the reason is absent.
+func (tr targetsResponse) count(reason string) int {
+	for _, e := range tr.Excluded {
+		if e.Reason == reason {
+			return e.Count
+		}
+	}
+	return 0
 }
 
 // errorResponse mirrors the gateway's error envelope.
@@ -210,6 +229,91 @@ func tryTargetNames(ctx context.Context, c *http.Client, ns, service string) ([]
 	}
 	slices.Sort(names)
 	return names, nil
+}
+
+// explain reads the targets endpoint with explain=true and query appended to it,
+// after checking that none of the strings in absent occurs anywhere in the response bytes.
+// The raw bytes are checked before decoding because json.Unmarshal ignores a field the struct does not name,
+// so a Pod name or address that leaked into an exclusion entry would otherwise pass unnoticed.
+// A status other than 200 and a leaked string are both errors,
+// so a caller polling through poll stops on either instead of retrying it.
+func explain(ctx context.Context, c *http.Client, ns, service, query string, absent []string) (targetsResponse, error) {
+	var tr targetsResponse
+	rawURL := gatewayURL(ns, service, "targets?explain=true"+query)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return tr, err
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return tr, fmt.Errorf("GET %s: %w", rawURL, err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return tr, fmt.Errorf("GET %s: %w", rawURL, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return tr, fmt.Errorf("GET %s: status %d: %s", rawURL, resp.StatusCode, body)
+	}
+	for _, a := range absent {
+		if a != "" && bytes.Contains(body, []byte(a)) {
+			return tr, fmt.Errorf("GET %s: response names %q, which the caller may not learn: %s", rawURL, a, body)
+		}
+	}
+	if err := json.Unmarshal(body, &tr); err != nil {
+		return tr, fmt.Errorf("GET %s: %w", rawURL, err)
+	}
+	if tr.Excluded == nil {
+		return tr, fmt.Errorf("GET %s: excluded is missing or null: %s", rawURL, body)
+	}
+	return tr, nil
+}
+
+// waitExcluded polls until every client in clients counts exactly want Pods of ns/service under reason,
+// with query appended to the explain request and every string in absent checked against the raw response.
+// Replicas can hold caches that differ for a moment, and each answers for the cache it holds,
+// so a single read of one replica is not the fact this waits for.
+func waitExcluded(t *testing.T, clients []*http.Client, ns, service, query string, absent []string, reason string, want int) {
+	t.Helper()
+	var last []targetsResponse
+	err := poll(t.Context(), eligibilityDeadline, func(ctx context.Context) (bool, error) {
+		last = last[:0]
+		for _, c := range clients {
+			tr, err := explain(ctx, c, ns, service, query, absent)
+			if err != nil {
+				return false, err
+			}
+			last = append(last, tr)
+		}
+		for _, tr := range last {
+			if tr.count(reason) != want {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("%s/%s never counted %d under %s on every gateway: %v (last %+v)", ns, service, want, reason, err, last)
+	}
+	for i, tr := range last {
+		sum := len(tr.Targets)
+		for _, e := range tr.Excluded {
+			sum += e.Count
+		}
+		if tr.SelectorMatched != sum {
+			t.Fatalf("gateway %d: selectorMatched %d, want targets plus counts %d: %+v", i, tr.SelectorMatched, sum, tr)
+		}
+	}
+}
+
+// podAddresses lists the names and IPs of pods: what a response may not name beyond its targets.
+func podAddresses(pods ...corev1.Pod) []string {
+	out := make([]string, 0, 2*len(pods))
+	for _, p := range pods {
+		out = append(out, p.Name, p.Status.PodIP)
+	}
+	return out
 }
 
 // waitTargets polls until every gateway reports exactly want for ns/service,
@@ -583,6 +687,10 @@ func scenarioIneligiblePods(t *testing.T, h *Harness) {
 	app := h.ForwardTestApp(t, ns, failing.Name)
 	post(t, app+"/healthz/fail")
 	waitPodGoneFromTargets(t, h, ns, testAppName, failing.Name, eligibilityDeadline)
+	// pod_not_ready is the first reason the Pod satisfies, and the response names neither the Pod nor its address.
+	// A replica that saw the endpoint update before the Pod update reports endpoint_not_ready until the Pod update lands,
+	// which is why both are polled.
+	waitExcluded(t, h.Gateways[:], ns, testAppName, "", podAddresses(failing), "pod_not_ready", 1)
 
 	// Terminating: the preStop sleep keeps the Pod alive while targets must already exclude it.
 	deletePod(t, h, ns, terminating.Name)
@@ -745,6 +853,20 @@ func scenarioErrors(t *testing.T, h *Harness) {
 	otherPods := waitDeploymentReady(t, h, ns, "otherapp")
 	waitTargets(t, h, ns, "otherapp", podNames(otherPods))
 	expectError(t, c, gatewayURL(ns, testAppName, "profiles/heap?pod="+otherPods[0].Name), http.StatusNotFound, "pod_not_found")
+	// The targets endpoint answers the same filter with an empty list rather than an error.
+	resp := get(t, c, gatewayURL(ns, testAppName, "targets?pod="+otherPods[0].Name))
+	if resp.Status != http.StatusOK {
+		t.Fatalf("targets?pod= naming another Service's Pod: status %d: %s", resp.Status, resp.Body)
+	}
+	var filtered targetsResponse
+	if err := json.Unmarshal(resp.Body, &filtered); err != nil {
+		t.Fatalf("targets?pod= naming another Service's Pod: %v: %s", err, resp.Body)
+	}
+	if filtered.Targets == nil || len(filtered.Targets) != 0 {
+		t.Fatalf("targets?pod= naming another Service's Pod: targets %v, want an empty array: %s", filtered.Targets, resp.Body)
+	}
+	// With explain=true the Service's own Pods are counted under pod_name_mismatch and named nowhere.
+	waitExcluded(t, []*http.Client{c}, ns, testAppName, "&pod="+otherPods[0].Name, podAddresses(pods...), "pod_name_mismatch", len(pods))
 }
 
 // createNamespace creates a labeled namespace that is deleted when the test ends.
@@ -841,10 +963,35 @@ func scenarioVersionFilter(t *testing.T, h *Harness) {
 	}
 	createService(t, h, testAppService(app, ns, app, false))
 	var want []string
+	var v2, rest []corev1.Pod
 	for name := range versions {
-		want = append(want, podNames(waitDeploymentReady(t, h, ns, name))...)
+		pods := waitDeploymentReady(t, h, ns, name)
+		want = append(want, podNames(pods)...)
+		if name == "app-v2" {
+			v2 = append(v2, pods...)
+		} else {
+			rest = append(rest, pods...)
+		}
 	}
 	waitTargets(t, h, ns, app, want)
+
+	// The targets endpoint lists only the Pods carrying the version,
+	// and with explain=true counts the rest under version_mismatch without naming them.
+	for g, c := range h.Gateways {
+		tr, err := explain(t.Context(), c, ns, app, "&version=2.0.0", podAddresses(rest...))
+		if err != nil {
+			t.Fatalf("gateway %d: %v", g, err)
+		}
+		var got []string
+		for _, tg := range tr.Targets {
+			got = append(got, tg.Pod)
+		}
+		slices.Sort(got)
+		if wantV2 := podNames(v2); !slices.Equal(got, wantV2) {
+			t.Fatalf("gateway %d: targets?version=2.0.0 lists %v, want %v", g, got, wantV2)
+		}
+	}
+	waitExcluded(t, h.Gateways[:], ns, app, "&version=2.0.0", podAddresses(rest...), "version_mismatch", len(rest))
 
 	for i := 0; i < versionRequests; i++ {
 		c := h.Gateways[i%gatewayReplicas]
