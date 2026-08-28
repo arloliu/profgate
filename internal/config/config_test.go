@@ -1398,6 +1398,109 @@ func TestLoadAuth(t *testing.T) {
 	})
 }
 
+// TestLoadOIDCCLI covers the auth.oidc.cli block: the defaults its presence
+// fills, the rule that binds its client identifier to the audience under ID
+// tokens, the scope rules refused under the block's own key, and the modes
+// that cannot carry it at all.
+func TestLoadOIDCCLI(t *testing.T) {
+	// The default scope list requests offline_access because Dex issues a
+	// refresh token only when asked; the browser flow's list does not.
+	defaultScopes := []string{"openid", "offline_access"}
+
+	for _, tc := range []struct {
+		name string
+		file string
+		// wantErr lists substrings the load error must all contain; empty means the load must succeed.
+		wantErr []string
+		// wantCLI is compared with the loaded block when the load succeeds; nil expects an absent block.
+		wantCLI *config.OIDCCLI
+	}{
+		{name: "absent", file: "auth-oidc.yaml"},
+		{name: "empty block takes every default", file: "cli-empty.yaml",
+			wantCLI: &config.OIDCCLI{ClientID: "profgate", Scopes: defaultScopes}},
+		{name: "clientID equals audience under id", file: "cli-clientid-equal.yaml",
+			wantCLI: &config.OIDCCLI{ClientID: "profgate", Scopes: defaultScopes}},
+		{name: "clientID differs from audience under id", file: "cli-clientid-differs.yaml",
+			wantErr: []string{"auth.oidc.cli.clientID", "auth.oidc.audience"}},
+		// RFC 9068 access tokens carry the resource as aud, so a second
+		// registration does not produce an azp the gateway refuses.
+		{name: "clientID differs from audience under access", file: "cli-clientid-differs-access.yaml",
+			wantCLI: &config.OIDCCLI{ClientID: "other", Scopes: defaultScopes}},
+		{name: "clientID 257 bytes", file: "cli-clientid-long.yaml",
+			wantErr: []string{"auth.oidc.cli.clientID", "1 to 256 bytes"}},
+		{name: "scopes without openid", file: "cli-scope-noopenid.yaml", wantErr: []string{"auth.oidc.cli.scopes"}},
+		{name: "scopes duplicate", file: "cli-scope-dup.yaml", wantErr: []string{"auth.oidc.cli.scopes"}},
+		{name: "scope 65 bytes", file: "cli-scope-long.yaml", wantErr: []string{"auth.oidc.cli.scopes"}},
+		{name: "scope with a space", file: "cli-scope-space.yaml", wantErr: []string{"auth.oidc.cli.scopes"}},
+		{name: "explicit scopes stay as written", file: "cli-scopes.yaml",
+			wantCLI: &config.OIDCCLI{ClientID: "profgate", Scopes: []string{"openid", "email"}}},
+		// The registration is shared with the browser flow under ID tokens, and
+		// a registration holding a secret is confidential where the device
+		// grant needs a public client.
+		{name: "beside a browser client secret", file: "cli-browser-secret.yaml",
+			wantErr: []string{"auth.oidc.cli", "auth.oidc.browser.clientSecretFile"}},
+		{name: "beside a public browser client", file: "cli-browser.yaml",
+			wantCLI: &config.OIDCCLI{ClientID: "profgate", Scopes: defaultScopes}},
+		{name: "under basic", file: "cli-basic.yaml", wantErr: []string{"auth.oidc must not be set"}},
+		{name: "under disabled", file: "cli-disabled.yaml", wantErr: []string{"auth.oidc must not be set"}},
+		{name: "unknown key", file: "cli-unknown.yaml",
+			wantErr: []string{"field clientId not found in type config.OIDCCLI"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.wantErr) > 0 {
+				loadErrAll(t, fixture(tc.file), tc.wantErr...)
+				return
+			}
+			cfg := loadOK(t, fixture(tc.file))
+			got := cfg.Auth.OIDC.CLI
+			if tc.wantCLI == nil {
+				if got != nil {
+					t.Fatalf("auth.oidc.cli = %+v, want no block", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("auth.oidc.cli = nil, want a block")
+			}
+			if !reflect.DeepEqual(*got, *tc.wantCLI) {
+				t.Fatalf("auth.oidc.cli = %+v, want %+v", *got, *tc.wantCLI)
+			}
+		})
+	}
+
+	// A scope error under cli names its own key; the browser key would send
+	// the operator to a block the file may not even carry.
+	t.Run("scope error never names the browser key", func(t *testing.T) {
+		_, err := config.Load(fixture("cli-scope-noopenid.yaml"))
+		if err == nil || strings.Contains(err.Error(), "browser") {
+			t.Fatalf("Load error = %v, want one naming auth.oidc.cli.scopes only", err)
+		}
+	})
+
+	t.Run("env", func(t *testing.T) {
+		// The loader walks a pointer block only when the file creates it, so a
+		// variable alone cannot make an absent block look configured.
+		t.Run("clientID variable creates no block", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_CLI_CLIENT_ID", "profgate")
+			cfg := loadOK(t, fixture("auth-oidc.yaml"))
+			if cfg.Auth.OIDC.CLI != nil {
+				t.Fatalf("auth.oidc.cli = %+v, want no block", *cfg.Auth.OIDC.CLI)
+			}
+		})
+		t.Run("clientID variable differs from audience under id", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_CLI_CLIENT_ID", "other")
+			loadErrAll(t, fixture("cli-empty.yaml"), "auth.oidc.cli.clientID", "auth.oidc.audience")
+		})
+		t.Run("pkce variable", func(t *testing.T) {
+			t.Setenv("PROFGATE_AUTH_OIDC_CLI_PKCE", "true")
+			cfg := loadOK(t, fixture("cli-empty.yaml"))
+			if !cfg.Auth.OIDC.CLI.PKCE {
+				t.Fatalf("auth.oidc.cli = %+v, want pkce true", *cfg.Auth.OIDC.CLI)
+			}
+		})
+	})
+}
+
 // TestLoadUI covers the console key: where its value comes from, what a value
 // that is not a boolean does, and the rule that holds an enabled console to a
 // browser login under oidc.

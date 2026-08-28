@@ -1,0 +1,14 @@
+auth:
+  mode: disabled
+  anonymousRealm: developer
+  oidc:
+    issuer: https://issuer.example
+    audience: profgate
+    mapping:
+      defaultRealm: developer
+    cli: {}
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

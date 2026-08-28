@@ -273,6 +273,7 @@ type OIDCConfig struct {
 	JWKSMaxStale     time.Duration `yaml:"jwksMaxStale"     env:"AUTH_OIDC_JWKS_MAX_STALE"    default:"24h" validate:"max=168h"`
 	Mapping          OIDCMapping   `yaml:"mapping"`
 	Browser          *OIDCBrowser  `yaml:"browser"`
+	CLI              *OIDCCLI      `yaml:"cli"`
 }
 
 // OIDCMappingEntry maps one username or one group name to a realm.
@@ -300,6 +301,17 @@ type OIDCBrowser struct {
 	CookieKeyFile    string        `yaml:"cookieKeyFile"    env:"AUTH_OIDC_COOKIE_KEY_FILE"`
 	SessionTTL       time.Duration `yaml:"sessionTTL"       env:"AUTH_OIDC_SESSION_TTL"     default:"8h" validate:"min=5m,max=24h"`
 	TransactionTTL   time.Duration `yaml:"transactionTTL"   env:"AUTH_OIDC_TRANSACTION_TTL" default:"5m" validate:"min=1m,max=15m"`
+}
+
+// OIDCCLI is the optional block that tells a command-line client this
+// gateway's issuer admits a device login.
+// Its presence is what makes GET /v1/auth report an oidc object;
+// the gateway performs no device grant of its own and holds no client
+// secret for the command line.
+type OIDCCLI struct {
+	ClientID string   `yaml:"clientID" env:"AUTH_OIDC_CLI_CLIENT_ID"`
+	Scopes   []string `yaml:"scopes"`
+	PKCE     bool     `yaml:"pkce"     env:"AUTH_OIDC_CLI_PKCE" default:"false"`
 }
 
 // Realm lists what a principal may reach; each list is exact strings or "*".
@@ -437,6 +449,16 @@ var defaultScopes = [...]string{openidScope, "profile", "email"}
 // browserDefaultScopes returns a copy of the browser flow's default scope list.
 func browserDefaultScopes() []string {
 	return slices.Clone(defaultScopes[:])
+}
+
+// cliScopes is the command-line client's scope list when the operator writes none.
+// It differs from the browser flow's
+// because Dex issues a refresh token only when offline_access is requested.
+var cliScopes = [...]string{openidScope, "offline_access"}
+
+// cliDefaultScopes returns a copy of the command-line client's default scopes.
+func cliDefaultScopes() []string {
+	return slices.Clone(cliScopes[:])
 }
 
 // proxySchemes are the schemes auth.oidc.httpProxy may name.
@@ -696,6 +718,14 @@ func normalize(cfg *Config) {
 	}
 	if oidc := cfg.Auth.OIDC; oidc != nil && oidc.Browser != nil && len(oidc.Browser.Scopes) == 0 {
 		oidc.Browser.Scopes = browserDefaultScopes()
+	}
+	if oidc := cfg.Auth.OIDC; oidc != nil && oidc.CLI != nil {
+		if oidc.CLI.ClientID == "" {
+			oidc.CLI.ClientID = oidc.Audience
+		}
+		if len(oidc.CLI.Scopes) == 0 {
+			oidc.CLI.Scopes = cliDefaultScopes()
+		}
 	}
 }
 
@@ -957,8 +987,40 @@ func validateOIDC(cfg *Config) error {
 	if err := validateMapping(&oidc.Mapping, cfg.Realms); err != nil {
 		return err
 	}
+	if oidc.CLI != nil {
+		if err := validateCLI(oidc); err != nil {
+			return err
+		}
+	}
 	if oidc.Browser != nil {
 		return validateBrowser(cfg)
+	}
+
+	return nil
+}
+
+// validateCLI checks the block that lets a command-line client log in by device code.
+// An ID token's aud carries the client it was requested for
+// and the gateway requires aud to contain the audience,
+// so under ID tokens the client must be the audience itself:
+// a second registration would produce a multi-valued aud with an azp the gateway refuses.
+func validateCLI(oidc *OIDCConfig) error {
+	cli := oidc.CLI
+	if n := len(cli.ClientID); n < 1 || n > maxAudienceBytes {
+		return fmt.Errorf("auth.oidc.cli.clientID: 1 to %d bytes, found %d", maxAudienceBytes, n)
+	}
+	if oidc.TokenType == "id" && cli.ClientID != oidc.Audience {
+		return fmt.Errorf("auth.oidc.cli.clientID %q must equal auth.oidc.audience %q when auth.oidc.tokenType is id",
+			cli.ClientID, oidc.Audience)
+	}
+	if err := validateScopes("auth.oidc.cli.scopes", cli.Scopes); err != nil {
+		return err
+	}
+	// Under ID tokens the registration is shared with the browser flow, and a
+	// registration holding a secret is confidential, which a device grant sent
+	// without a secret cannot use.
+	if oidc.TokenType == "id" && oidc.Browser != nil && oidc.Browser.ClientSecretFile != "" {
+		return errors.New("auth.oidc.cli requires a public client: unset auth.oidc.browser.clientSecretFile or leave auth.oidc.cli out")
 	}
 
 	return nil
@@ -1038,7 +1100,7 @@ func validateBrowser(cfg *Config) error {
 	if redirect.Path != callbackPath {
 		return fmt.Errorf("auth.oidc.browser.redirectURL %q: path must be %s", browser.RedirectURL, callbackPath)
 	}
-	if err := validateScopes(browser.Scopes); err != nil {
+	if err := validateScopes("auth.oidc.browser.scopes", browser.Scopes); err != nil {
 		return err
 	}
 	if browser.CookieKeyFile == "" {
@@ -1085,25 +1147,26 @@ func validateHTTPSURL(key, raw string) error {
 	return nil
 }
 
-// validateScopes checks the authorization request's scope list.
-// Without openid the issuer returns no ID token, and the flow mints its
-// session from the ID token.
-func validateScopes(scopes []string) error {
+// validateScopes checks an authorization request's scope list; key is the
+// configuration key an error names.
+// Without openid the issuer returns no ID token, and both the browser flow
+// and the command-line client mint what they hold from the ID token.
+func validateScopes(key string, scopes []string) error {
 	if !slices.Contains(scopes, openidScope) {
-		return fmt.Errorf("auth.oidc.browser.scopes %v: must contain %q", scopes, openidScope)
+		return fmt.Errorf("%s %v: must contain %q", key, scopes, openidScope)
 	}
 	for _, scope := range scopes {
 		if n := len(scope); n < 1 || n > maxScopeBytes {
-			return fmt.Errorf("auth.oidc.browser.scopes %q: 1 to %d bytes, found %d", scope, maxScopeBytes, n)
+			return fmt.Errorf("%s %q: 1 to %d bytes, found %d", key, scope, maxScopeBytes, n)
 		}
 		for i := range len(scope) {
 			if !isScopeByte(scope[i]) {
-				return fmt.Errorf("auth.oidc.browser.scopes %q: %q is not a scope character", scope, scope[i])
+				return fmt.Errorf("%s %q: %q is not a scope character", key, scope, scope[i])
 			}
 		}
 	}
 	if scope, ok := firstDuplicate(scopes); ok {
-		return fmt.Errorf("auth.oidc.browser.scopes: duplicate entry %q", scope)
+		return fmt.Errorf("%s: duplicate entry %q", key, scope)
 	}
 
 	return nil

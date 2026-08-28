@@ -1,0 +1,15 @@
+auth:
+  mode: oidc
+  oidc:
+    issuer: https://issuer.example
+    audience: profgate
+    tokenType: id
+    mapping:
+      defaultRealm: developer
+    cli:
+      clientID: profgate
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
