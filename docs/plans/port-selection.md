@@ -956,14 +956,16 @@ git commit -m "docs: default-deny client-selected ports"
   fuda applies an `env` tag on presence, empty value included,
   and converts a string into a slice as one CSV record, which cannot yield an empty list;
   `gopkg.in/yaml.v3` decodes a `null` value into a pointer field as the nil pointer,
-  which is why the removed-key probe reads key nodes;
+  which is why the removed-key probe decodes the `discovery.pprof` mapping into a map and looks the names up as keys,
+  where a `null` value is still a present key;
   `docs/deployment.md` names the old lists in three places:
   the pprof-port bullet, the invariant paragraph, and the NetworkPolicy sentence.
 - Decided here because the spec leaves it to the implementer:
   `Selection` is a two-field record — the kind and the value, with `"*"` as the value of a wildcard —
   rather than four fields that could contradict each other;
   the environment variable is read by `Load` rather than by an `env` tag, for the fuda reason above;
-  the removed file keys are detected by walking the key nodes of the `discovery.pprof` mapping before the strict pass,
+  the removed file keys are detected by decoding the `discovery.pprof` mapping into a map before the strict pass,
+  so a key a YAML merge carries in is seen,
   and the removed variables by name before the file is read;
   the list rules run after the environment override, on the list that will be used;
   `details` is a nil slice under `omitempty` rather than a pointer or a second envelope type;
