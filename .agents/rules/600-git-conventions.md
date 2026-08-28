@@ -18,7 +18,7 @@ Review enforces the rest.
   Optional scope: `fix(k8s): ...`.
   Present tense, imperative.
 - Header under 50 characters.
-- Body lines under 72 characters, broken at clause boundaries:
+- Body lines under 120 characters, broken at clause boundaries:
   one sentence per line, a long sentence split where a clause ends,
   never at a column.
   The hook runs `semlf check` on the message and refuses a fused line.
