@@ -248,7 +248,8 @@ Record that reason in a comment beside the field so nobody restores the tag.
    before the strict unknown-key pass,
    which would otherwise report only that the key is unknown and leave the operator to guess the replacement.
    Decode the bytes into a `yaml.Node`, walk to the `discovery` mapping and then to its `pprof` mapping,
-   decode that one mapping into a `map[string]any`,
+   decode that one mapping into a `map[string]yaml.Node`,
+   which resolves merge keys and decodes nothing below the mapping's own values,
    and look the two names up in the map.
    Presence is the key, never its value:
    `allowedPorts: null` and `allowedPorts: []` are both a set key, the first with a `nil` value,
@@ -455,7 +456,7 @@ and loads with an empty `AllowedSelections`.
 | `TestChartConfigIsMergedAndParses` | `raw config block` — asserts both old lists empty beside the raw block's values | asserts `AllowedSelections` is empty |
 | `TestChartPortAllowlists` | `defaults render both lists empty` | `defaults render the list empty`: the rendered `config.yaml` contains `allowedSelections: []`, and the loaded list is empty; the test's comment says the empty list admits only the configured default |
 | `TestChartPortAllowlists` | `portName only` — a named default leaves both lists empty | a named default leaves `AllowedSelections` empty |
-| `TestChartPortAllowlists` | `narrows the lists` — `allowedPorts=[6060]` and `allowedPortNames=["pprof"]` set independently | `a mixed list keeps its order`: `--set-json config.discovery.pprof.allowedSelections=[{"portName":"pprof-alt"},{"port":6061},{"port":"*"}]`, loaded through `config.Load`, is exactly those three entries in that order with their kinds intact — a named entry, a numeric one, and the port wildcard, proving the chart's merge neither sorts nor re-types them |
+| `TestChartPortAllowlists` | `narrows the lists` — `allowedPorts=[6060]` and `allowedPortNames=["pprof"]` set independently | `a mixed list keeps its order`: two admitted lists, `[{"portName":"pprof-alt"},{"port":6061}]` and `[{"port":"*"},{"portName":"pprof-alt"}]`, each loaded through `config.Load`, come back as exactly those entries in that order with their kinds intact, proving the chart's merge neither sorts nor re-types them (a port wildcard beside a numeric entry is refused by *Port resolution*, so no admitted list holds all three kinds) |
 | `TestChartPortAllowlists` | none | `the chart cannot bypass validation`: `--set-json config.discovery.pprof.allowedSelections=[{"port":"*"},{"port":6061}]` renders, and `config.Load` refuses the rendered file with the wildcard-beside-concrete message; the same for `[{"portName":"*"},{"portName":"pprof-alt"}]` |
 
 `TestChartPortAllowlists` is renamed to say what it now covers, `TestChartAllowedSelections`.
