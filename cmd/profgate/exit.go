@@ -42,8 +42,7 @@ func unauthorized(err error) bool {
 }
 
 // fail prints the error as one stderr line and returns its exit code.
-// The envelope's code and message, the status line of a response that is
-// not the envelope, and a transport error's origin each arrive verbatim in
+// The envelope's code and message, the status line of a response that is not the envelope, and a transport error's origin each arrive verbatim in
 // the error itself.
 func fail(env *cmdEnv, err error) int {
 	_, _ = fmt.Fprintf(env.stderr, "profgate: %v\n", err)

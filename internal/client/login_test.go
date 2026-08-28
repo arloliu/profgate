@@ -31,9 +31,8 @@ func authOIDC(tokenType string, pkce bool) string {
 }
 
 // loginTransport is the gateway and every issuer in one round tripper.
-// Any https host answers discovery with a document naming itself as the
-// issuer and its endpoints under its own origin, so a flag that moves the
-// issuer is observable by which origin was discovered.
+// Any https host answers discovery with a document naming itself as the issuer and its endpoints under its own origin,
+// so a flag that moves the issuer is observable by which origin was discovered.
 // Every request is appended to events, in order, by a short name.
 type loginTransport struct {
 	t       *testing.T
@@ -143,8 +142,7 @@ type loginFixture struct {
 	basic    func() (string, string, error)
 }
 
-// newLogin builds a fixture whose gateway reports the device login with
-// tokenType access, whose device endpoint answers with the complete URI,
+// newLogin builds a fixture whose gateway reports the device login with tokenType access, whose device endpoint answers with the complete URI,
 // and whose token endpoint issues on the first poll.
 func newLogin(t *testing.T) *loginFixture {
 	t.Helper()
@@ -249,8 +247,7 @@ func (f *loginFixture) lockPath() string {
 	return filepath.Join(f.dir, f.settings.CacheName+".lock")
 }
 
-// assertNoSecretPrinted fails when a token or the device code reached any
-// writer the test supplied.
+// assertNoSecretPrinted fails when a token or the device code reached any writer the test supplied.
 func (f *loginFixture) assertNoSecretPrinted() {
 	f.t.Helper()
 	for _, w := range []*bytes.Buffer{&f.stdout, &f.stderr, &f.verbose} {

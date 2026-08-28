@@ -39,8 +39,8 @@ func RefreshExpiryOf(refreshExpiresIn int, obtainedAt time.Time) time.Time {
 
 // tokenExp base64url-decodes the second segment of a token of at most 16 KiB,
 // parses it as JSON, and takes exp as a number of seconds.
-// It is not a verification and grants nothing: the client reads one number to
-// decide when to refresh, and the gateway verifies everything.
+// It is not a verification and grants nothing:
+// the client reads one number to decide when to refresh, and the gateway verifies everything.
 func tokenExp(token string) (time.Time, error) {
 	if len(token) > maxTokenBytes {
 		return time.Time{}, fmt.Errorf("id token exceeds %d bytes", maxTokenBytes)

@@ -6,16 +6,15 @@ import (
 	"github.com/arloliu/profgate/internal/config"
 )
 
-// authInfoBody is what GET /v1/auth reports: the mode always, and the oidc
-// object only where auth.oidc.cli is configured.
+// authInfoBody is what GET /v1/auth reports: the mode always, and the oidc object only where auth.oidc.cli is configured.
 type authInfoBody struct {
 	Mode string       `json:"mode"`
 	OIDC *authInfoCLI `json:"oidc,omitempty"`
 }
 
-// authInfoCLI is the device login an operator configured: never derived from
-// auth.oidc.browser, because a browser registration and a device-flow
-// registration are the same one under tokenType id and may differ under access.
+// authInfoCLI is the device login an operator configured:
+// never derived from auth.oidc.browser,
+// because a browser registration and a device-flow registration are the same one under tokenType id and may differ under access.
 type authInfoCLI struct {
 	Issuer    string   `json:"issuer"`
 	ClientID  string   `json:"clientID"`

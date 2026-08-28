@@ -78,8 +78,7 @@ func readForm(t *testing.T, req *http.Request) url.Values {
 	return form
 }
 
-// idTokenExpiring is a token whose payload carries exp and nothing the client
-// verifies; the signature segment is filler.
+// idTokenExpiring is a token whose payload carries exp and nothing the client verifies; the signature segment is filler.
 func idTokenExpiring(exp time.Time) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256"}`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":` + strconv.FormatInt(exp.Unix(), 10) + `}`))
@@ -96,8 +95,8 @@ type refreshFixture struct {
 	dir      string
 }
 
-// refreshIssuer builds a store and an issuer over one clock, with the token
-// endpoint scripted; the settings resolve to the entry's origin.
+// refreshIssuer builds a store and an issuer over one clock, with the token endpoint scripted;
+// the settings resolve to the entry's origin.
 func refreshIssuer(t *testing.T, tokenType string, steps ...pollStep) *refreshFixture {
 	t.Helper()
 	store, clock, dir := testStore(t)
@@ -130,8 +129,8 @@ func refreshIssuer(t *testing.T, tokenType string, steps ...pollStep) *refreshFi
 	}
 }
 
-// entry is a cached credential for the fixture's gateway whose token expires
-// at now plus ttl; the refresh token is refresh-old.
+// entry is a cached credential for the fixture's gateway whose token expires at now plus ttl;
+// the refresh token is refresh-old.
 func (f *refreshFixture) entry(ttl time.Duration) Entry {
 	e := Entry{
 		Origin:       f.settings.Origin,
@@ -211,8 +210,7 @@ func refreshed(body string) pollStep {
 
 func TestCachedCredentialUsesAFreshToken(t *testing.T) {
 	f := refreshIssuer(t, "access")
-	// A refusing round tripper proves no request is built; the store must not
-	// take the lock either.
+	// A refusing round tripper proves no request is built; the store must not take the lock either.
 	iss, err := NewIssuer(IssuerOptions{Transport: refusingRoundTripper{t: t}, Now: f.clock.Now, Sleep: f.clock.Sleep})
 	if err != nil {
 		t.Fatal(err)

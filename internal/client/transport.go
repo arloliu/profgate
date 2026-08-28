@@ -13,13 +13,12 @@ import (
 )
 
 // connectTimeout bounds the dial and the TLS handshake.
-// Nothing bounds the response: a profile takes as long as its seconds
-// parameter says, and the context is the caller's deadline.
+// Nothing bounds the response:
+// a profile takes as long as its seconds parameter says, and the context is the caller's deadline.
 const connectTimeout = 10 * time.Second
 
 // NewTransport builds the gateway transport from the resolved settings: the
-// system pool plus the certificates in CAFile when given, ServerName and
-// nothing else in the TLS configuration, and TLS 1.2 as the minimum.
+// system pool plus the certificates in CAFile when given, ServerName and nothing else in the TLS configuration, and TLS 1.2 as the minimum.
 // There is no field, flag, or option that skips verification.
 func NewTransport(s Settings) (*http.Transport, error) {
 	pool, err := x509.SystemCertPool()
@@ -60,8 +59,7 @@ func isLoopbackHost(host string) bool {
 
 // checkPlaintext applies the plaintext rule to a URL a credential is about
 // to be attached to.
-// It returns whether the send is the loopback exception, which the caller
-// warns about, or the refusal.
+// It returns whether the send is the loopback exception, which the caller warns about, or the refusal.
 func checkPlaintext(u *url.URL) (loopback bool, err error) {
 	switch {
 	case strings.EqualFold(u.Scheme, "https"):

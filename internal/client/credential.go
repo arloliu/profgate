@@ -8,8 +8,7 @@ import (
 )
 
 // CredentialInput is everything the resolver reads: the two token flags, the
-// environment seam, the store and issuer for the cached path, the context's
-// snapshot, and the command-side prompt for basic.
+// environment seam, the store and issuer for the cached path, the context's snapshot, and the command-side prompt for basic.
 type CredentialInput struct {
 	TokenFile  string
 	TokenStdin bool
@@ -27,8 +26,7 @@ type CredentialInput struct {
 // design fixes, or returns nil when the command sends none:
 // --token-file or --token-stdin, then PROFGATE_TOKEN, then the cached token
 // for the context, then, under basic, the user name and password, then nothing.
-// A token from the first three is used for this one command and never
-// written to the cache.
+// A token from the first three is used for this one command and never written to the cache.
 func ResolveCredential(in CredentialInput) (Credential, error) {
 	if in.Getenv == nil {
 		in.Getenv = os.LookupEnv

@@ -2668,8 +2668,8 @@ func TestChartAuth(t *testing.T) {
 
 // parseRenderedConfig renders the chart's config.yaml with the given values
 // and decodes it into a plain mapping, for the assertions that are about the
-// shape of the file itself -- a key present or absent -- rather than what
-// config.Load makes of it, which fills defaults the file does not carry.
+// shape of the file itself -- a key present or absent -- rather than what config.Load makes of it,
+// which fills defaults the file does not carry.
 func parseRenderedConfig(t *testing.T, values ...string) (map[string]any, string) {
 	t.Helper()
 
@@ -2682,8 +2682,7 @@ func parseRenderedConfig(t *testing.T, values ...string) (map[string]any, string
 	return parsed, body
 }
 
-// mappingAt walks nested mappings by key and returns the mapping at the end
-// of the path, or nil when any step is absent or not a mapping.
+// mappingAt walks nested mappings by key and returns the mapping at the end of the path, or nil when any step is absent or not a mapping.
 func mappingAt(m map[string]any, path ...string) map[string]any {
 	for _, key := range path {
 		next, ok := m[key].(map[string]any)
@@ -2720,8 +2719,8 @@ func hasKeyAnywhere(v any, key string) bool {
 }
 
 // authBrowserSecretValues is authBrowserValues with the browser block naming
-// a client secret that exists in the mount directory, because config.Load
-// opens the file auth.oidc.browser.clientSecretFile names.
+// a client secret that exists in the mount directory,
+// because config.Load opens the file auth.oidc.browser.clientSecretFile names.
 func authBrowserSecretValues(t *testing.T) []string {
 	t.Helper()
 
@@ -2733,15 +2732,13 @@ func authBrowserSecretValues(t *testing.T) []string {
 	return append(values, "--set", "auth.oidc.browser.clientSecretFile=client-secret")
 }
 
-// TestChartAuthOIDCCLI covers the auth.oidc.cli block the chart renders by
-// default under oidc mode.
+// TestChartAuthOIDCCLI covers the auth.oidc.cli block the chart renders by default under oidc mode.
 // The block's presence is what makes GET /v1/auth report a device login,
-// so a fresh chart install serves one until the operator sets
-// auth.oidc.cli.enabled false; the binary's own default stays no block.
-// The empty form, cli: {}, is what reaches the gateway when none of
-// clientID, scopes, and pkce is set,
-// and it has to survive the fromYaml/mergeOverwrite/toYaml round trip
-// profgate.config runs the file through, which the first case is the proof of.
+// so a fresh chart install serves one until the operator sets auth.oidc.cli.enabled false;
+// the binary's own default stays no block.
+// The empty form, cli: {}, is what reaches the gateway when none of clientID, scopes, and pkce is set,
+// and it has to survive the fromYaml/mergeOverwrite/toYaml round trip profgate.config runs the file through,
+// which the first case is the proof of.
 func TestChartAuthOIDCCLI(t *testing.T) {
 	t.Run("rendered by default under oidc", func(t *testing.T) {
 		parsed, body := parseRenderedConfig(t, authOIDCValues(t)...)

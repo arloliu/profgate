@@ -20,8 +20,8 @@ import (
 
 // verb is one client verb: its name, its subverbs, how many positionals it
 // takes, its own flags, and what it does with them.
-// A subverb is one or more words, so pgo declares "policy get" and its two
-// siblings and the dispatcher matches all of them.
+// A subverb is one or more words,
+// so pgo declares "policy get" and its two siblings and the dispatcher matches all of them.
 // The dispatcher removes exactly the declared positionals from the front of
 // the arguments, parses everything after them over the global flags and the
 // verb's own, and hands run the result.
@@ -36,8 +36,7 @@ type verb struct {
 }
 
 // invocation is one parsed command line: the subverb, the positionals, the
-// global flags after both positions, and the flag set the verb's own values
-// were parsed from.
+// global flags after both positions, and the flag set the verb's own values were parsed from.
 type invocation struct {
 	subverb     string
 	positionals []string
@@ -49,8 +48,7 @@ type invocation struct {
 // environment seam, the clock and the sleeper a wait paces itself on, the
 // random source the idempotency key is drawn from, whether stdout is a
 // terminal, the password prompt, the two transports a test replaces, and the
-// path lookup and command runner that --open resolves and starts the viewer
-// through.
+// path lookup and command runner that --open resolves and starts the viewer through.
 type cmdEnv struct {
 	stdin           io.Reader
 	stdout          io.Writer
@@ -88,8 +86,7 @@ func newEnv(stdin io.Reader, stdout, stderr io.Writer) *cmdEnv {
 	return env
 }
 
-// isTerminal reports whether w is a character device, which is what decides
-// padded columns against tab-separated ones.
+// isTerminal reports whether w is a character device, which is what decides padded columns against tab-separated ones.
 func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
@@ -100,8 +97,7 @@ func isTerminal(w io.Writer) bool {
 }
 
 // globals is what the global flags said: the resolution flags, --verbose,
-// and the three credential flags, each naming where a credential is read
-// from and never the credential.
+// and the three credential flags, each naming where a credential is read from and never the credential.
 type globals struct {
 	context, server, caFile, issuerCAFile, serverName, namespace, output string
 	verbose                                                              bool
@@ -110,8 +106,7 @@ type globals struct {
 	user                                                                 string
 }
 
-// globalFlags registers the flags of Resolution and the three credential
-// flags on fs, and returns what they said.
+// globalFlags registers the flags of Resolution and the three credential flags on fs, and returns what they said.
 func globalFlags(fs *flag.FlagSet) *globals {
 	g := &globals{}
 	g.register(fs)
@@ -150,8 +145,7 @@ func (g *globals) overrides() client.Overrides {
 // operatorVerbs and reservedOperatorNames are the operator half of the
 // binary's one verb namespace; clientVerbs is the client half.
 // A name belongs to one half permanently, and reservedOperatorNames holds
-// the operator names that have no implementation yet, so the client half
-// can never take one.
+// the operator names that have no implementation yet, so the client half can never take one.
 var operatorVerbs = [...]string{"serve", "version", "config", "auth"}
 
 var reservedOperatorNames = [...]string{"collector"}
@@ -190,14 +184,13 @@ func usageLine(verbs []verb) string {
 	return "usage: profgate <" + strings.Join(names, "|") + "> [flags]"
 }
 
-// dispatch runs one command line: an operator verb through its own
-// function, and a client verb through the grammar of the design.
+// dispatch runs one command line:
+// an operator verb through its own function, and a client verb through the grammar of the design.
 func dispatch(ctx context.Context, env *cmdEnv, verbs []verb, args []string) int {
 	if len(args) > 0 && isOperatorVerb(args[0]) {
 		return runOperator(args, env)
 	}
-	// The global flags may precede the verb; flag stops at the first
-	// argument that is not a flag, which is the verb.
+	// The global flags may precede the verb; flag stops at the first argument that is not a flag, which is the verb.
 	fs := flag.NewFlagSet("profgate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	g := globalFlags(fs)
@@ -226,8 +219,7 @@ func dispatch(ctx context.Context, env *cmdEnv, verbs []verb, args []string) int
 	return v.run(ctx, env, in)
 }
 
-// runOperator is the operator half, which takes no global flags and keeps
-// its own behavior.
+// runOperator is the operator half, which takes no global flags and keeps its own behavior.
 func runOperator(args []string, env *cmdEnv) int {
 	switch args[0] {
 	case "version":
@@ -244,8 +236,7 @@ func runOperator(args []string, env *cmdEnv) int {
 	}
 }
 
-// usageError prints the cause when there is one, then the usage line, and
-// returns 2.
+// usageError prints the cause when there is one, then the usage line, and returns 2.
 func usageError(env *cmdEnv, verbs []verb, err error) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(env.stderr, "profgate: %v\n", err)
@@ -256,8 +247,7 @@ func usageError(env *cmdEnv, verbs []verb, err error) int {
 
 // parse applies the grammar: the subverb, exactly the declared positionals,
 // then the flags.
-// A flag where a positional belongs, too few positionals, and anything left
-// after the flags are each a usage error.
+// A flag where a positional belongs, too few positionals, and anything left after the flags are each a usage error.
 func (v verb) parse(g *globals, args []string) (*invocation, error) {
 	in := &invocation{positionals: []string{}}
 	if len(v.subverbs) > 0 {
@@ -323,8 +313,7 @@ func pluralPositionals(n int) string {
 	return fmt.Sprintf("%d positionals", n)
 }
 
-// address parses <namespace>/<service>, or <service> against the context's
-// namespace, and is a usage error otherwise.
+// address parses <namespace>/<service>, or <service> against the context's namespace, and is a usage error otherwise.
 func address(arg, contextNamespace string) (namespace, service string, err error) {
 	parts := strings.Split(arg, "/")
 	switch len(parts) {
@@ -346,9 +335,8 @@ func address(arg, contextNamespace string) (namespace, service string, err error
 	}
 }
 
-// promptPassword reads a password without echo through readPassword, which
-// reads without echo when stdin is the process's terminal and one line
-// otherwise.
+// promptPassword reads a password without echo through readPassword,
+// which reads without echo when stdin is the process's terminal and one line otherwise.
 func promptPassword(env *cmdEnv, user string) (string, error) {
 	p, err := readPassword(env.stdin, env.stderr)
 	if err != nil {
@@ -357,8 +345,7 @@ func promptPassword(env *cmdEnv, user string) (string, error) {
 	return string(p), nil
 }
 
-// settings resolves the context file and the global flags into one
-// command's settings; a failure here is a usage error.
+// settings resolves the context file and the global flags into one command's settings; a failure here is a usage error.
 func (env *cmdEnv) settings(g *globals) (client.Settings, *client.File, error) {
 	path, err := client.ConfigPath(env.getenv)
 	if err != nil {

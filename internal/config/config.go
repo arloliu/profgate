@@ -303,11 +303,9 @@ type OIDCBrowser struct {
 	TransactionTTL   time.Duration `yaml:"transactionTTL"   env:"AUTH_OIDC_TRANSACTION_TTL" default:"5m" validate:"min=1m,max=15m"`
 }
 
-// OIDCCLI is the optional block that tells a command-line client this
-// gateway's issuer admits a device login.
+// OIDCCLI is the optional block that tells a command-line client this gateway's issuer admits a device login.
 // Its presence is what makes GET /v1/auth report an oidc object;
-// the gateway performs no device grant of its own and holds no client
-// secret for the command line.
+// the gateway performs no device grant of its own and holds no client secret for the command line.
 type OIDCCLI struct {
 	ClientID string   `yaml:"clientID" env:"AUTH_OIDC_CLI_CLIENT_ID"`
 	Scopes   []string `yaml:"scopes"`
@@ -1017,8 +1015,7 @@ func validateCLI(oidc *OIDCConfig) error {
 		return err
 	}
 	// Under ID tokens the registration is shared with the browser flow, and a
-	// registration holding a secret is confidential, which a device grant sent
-	// without a secret cannot use.
+	// registration holding a secret is confidential, which a device grant sent without a secret cannot use.
 	if oidc.TokenType == "id" && oidc.Browser != nil && oidc.Browser.ClientSecretFile != "" {
 		return errors.New("auth.oidc.cli requires a public client: unset auth.oidc.browser.clientSecretFile or leave auth.oidc.cli out")
 	}
@@ -1147,8 +1144,7 @@ func validateHTTPSURL(key, raw string) error {
 	return nil
 }
 
-// validateScopes checks an authorization request's scope list; key is the
-// configuration key an error names.
+// validateScopes checks an authorization request's scope list; key is the configuration key an error names.
 // Without openid the issuer returns no ID token, and both the browser flow
 // and the command-line client mint what they hold from the ID token.
 func validateScopes(key string, scopes []string) error {

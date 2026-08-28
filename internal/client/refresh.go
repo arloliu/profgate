@@ -9,12 +9,11 @@ import (
 	"time"
 )
 
-// refreshWindow is how close to expiry a cached token is refreshed rather
-// than sent.
+// refreshWindow is how close to expiry a cached token is refreshed rather than sent.
 const refreshWindow = 30 * time.Second
 
-// ErrLoginNeeded is what a Credential returns when no usable token exists and
-// none can be obtained without a login: the process exits 3 on it.
+// ErrLoginNeeded is what a Credential returns when no usable token exists and none can be obtained without a login:
+// the process exits 3 on it.
 var ErrLoginNeeded = errors.New("no valid token; run profgate login")
 
 // Refresh posts grant_type=refresh_token with client_id.
@@ -45,8 +44,7 @@ func (i *Issuer) Revoke(ctx context.Context, m Metadata, clientID, refreshToken 
 }
 
 // permanent reports whether an issuer 4xx ends the refresh token's life.
-// Every 4xx does except 429, which is the issuer asking for time rather than
-// refusing the grant.
+// Every 4xx does except 429, which is the issuer asking for time rather than refusing the grant.
 func permanent(err *IssuerError) bool {
 	return err.Status != http.StatusTooManyRequests
 }
@@ -61,9 +59,8 @@ type cachedCredential struct {
 	applied *Entry
 }
 
-// diagnose wraps a 401 answered to the applied token with the issuer and
-// client identifier it was obtained for, so a reconfigured gateway is
-// diagnosed at the first refusal.
+// diagnose wraps a 401 answered to the applied token with the issuer and client identifier it was obtained for,
+// so a reconfigured gateway is diagnosed at the first refusal.
 func (c *cachedCredential) diagnose(err error) error {
 	if c.applied == nil {
 		return err
@@ -71,8 +68,7 @@ func (c *cachedCredential) diagnose(err error) error {
 	return &AuthDiagnostic{Issuer: c.applied.Issuer, ClientID: c.applied.ClientID, Err: err}
 }
 
-// CachedCredential is the cached token for the resolved gateway, refreshed
-// under the lock when it is within 30 seconds of expiry.
+// CachedCredential is the cached token for the resolved gateway, refreshed under the lock when it is within 30 seconds of expiry.
 func CachedCredential(s *Store, iss *Issuer, set Settings, now func() time.Time) Credential {
 	if now == nil {
 		now = time.Now
@@ -82,8 +78,8 @@ func CachedCredential(s *Store, iss *Issuer, set Settings, now func() time.Time)
 
 // Apply sets the bearer token, refreshing it first when it is inside the
 // window.
-// The entry is read and checked before anything else; a token more than 30
-// seconds from expiry is sent and no lock is taken.
+// The entry is read and checked before anything else;
+// a token more than 30 seconds from expiry is sent and no lock is taken.
 func (c *cachedCredential) Apply(ctx context.Context, r *http.Request) error {
 	e, ok, err := c.store.Read(c.settings.CacheName)
 	if err != nil {
@@ -158,10 +154,9 @@ func (c *cachedCredential) refresh(ctx context.Context) (token string, err error
 }
 
 // refused handles a failed refresh: a permanent 4xx deletes the file, and
-// only when the re-read shows the same obtainedAt the refused refresh token
-// came from, because a filesystem that ignores the lock may have let another
-// process write a newer entry meanwhile; everything else leaves the file as
-// it was.
+// only when the re-read shows the same obtainedAt the refused refresh token came from,
+// because a filesystem that ignores the lock may have let another process write a newer entry meanwhile;
+// everything else leaves the file as it was.
 func (c *cachedCredential) refused(e Entry, err error) error {
 	var ie *IssuerError
 	if !errors.As(err, &ie) || !permanent(ie) {
@@ -179,12 +174,11 @@ func (c *cachedCredential) refused(e Entry, err error) error {
 	return fmt.Errorf("the refresh was refused (%w): %w", ie, c.loginNeeded())
 }
 
-// record writes what a successful refresh changed: the token the token type
-// names when the response carries it, the rotated refresh token when it
+// record writes what a successful refresh changed:
+// the token the token type names when the response carries it, the rotated refresh token when it
 // carries one, and the two expiries from the response time.
-// Without the selected token the old one is kept until its own expiry, and
-// without a rotation or a refresh lifetime the recorded refresh expiry is
-// kept rather than erased.
+// Without the selected token the old one is kept until its own expiry,
+// and without a rotation or a refresh lifetime the recorded refresh expiry is kept rather than erased.
 func (c *cachedCredential) record(e Entry, tr TokenResponse) (string, error) {
 	now := c.now()
 	name := c.settings.CacheName

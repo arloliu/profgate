@@ -14,8 +14,7 @@ import (
 )
 
 // pgoVerb is the three policy subverbs over GET, PUT, and DELETE .../pgo:
-// get reads, and set and delete each read first and then send one
-// conditional write.
+// get reads, and set and delete each read first and then send one conditional write.
 func pgoVerb() verb {
 	var f policyFlags
 	return verb{
@@ -64,8 +63,8 @@ func pgoVerb() verb {
 	}
 }
 
-// policyFlags is what pgo policy set said: the file, the two schedule
-// fields, enabled, and the field flags it shares with collect.
+// policyFlags is what pgo policy set said:
+// the file, the two schedule fields, enabled, and the field flags it shares with collect.
 // Whether --enabled was passed at all is read from the parsed flag set,
 // because an absent field is left to the defaults and a false one is not.
 type policyFlags struct {
@@ -76,8 +75,7 @@ type policyFlags struct {
 
 // requestBody is the override document: the file under --file, or the
 // flags as the override shape, with --file beside any flag a usage error
-// and nothing at all one too, because an empty override would replace
-// whatever is stored with nothing.
+// and nothing at all one too, because an empty override would replace whatever is stored with nothing.
 func (f policyFlags) requestBody(fs *flag.FlagSet) ([]byte, error) {
 	set := map[string]bool{}
 	fs.Visit(func(fl *flag.Flag) { set[fl.Name] = true })
@@ -141,8 +139,7 @@ func readETag(ctx context.Context, gw *client.Client, path string) (string, erro
 }
 
 // conditional is the write's header: If-Match with the ETag the read
-// carried, and no If-Match at all when it carried none, which is what
-// creates the override rather than updating it.
+// carried, and no If-Match at all when it carried none, which is what creates the override rather than updating it.
 // If-Match: * is never sent; the gateway refuses it.
 func conditional(etag string) http.Header {
 	h := http.Header{"Accept": {"application/json"}}
@@ -152,10 +149,9 @@ func conditional(etag string) http.Header {
 	return h
 }
 
-// lostCondition wraps a 412 or a 428, the two ways the policy is no longer
-// what this command read, naming the command to run again after looking
-// at the current value; nothing retries, because a retry would overwrite
-// what the other writer decided.
+// lostCondition wraps a 412 or a 428, the two ways the policy is no longer what this command read, naming the command to run again after looking at the current value;
+// nothing retries,
+// because a retry would overwrite what the other writer decided.
 func lostCondition(err error, service string) error {
 	var ae *client.APIError
 	var se *client.StatusError
@@ -231,8 +227,7 @@ func (env *cmdEnv) deletePolicy(ctx context.Context, in *invocation) error {
 }
 
 // renderPolicy prints the source, the effective policy one field per row,
-// the two update fields when the override is stored, and one row per
-// violation.
+// the two update fields when the override is stored, and one row per violation.
 func renderPolicy(env *cmdEnv, body []byte) error {
 	p, err := client.Decode[client.PolicyResponse](body)
 	if err != nil {

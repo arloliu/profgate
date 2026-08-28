@@ -41,8 +41,7 @@ func jsonResponse(status int, body string) *http.Response {
 	}
 }
 
-// testEnv is a cmdEnv over buffers, a temporary HOME, and a refusing
-// transport; each field a test needs is replaced after.
+// testEnv is a cmdEnv over buffers, a temporary HOME, and a refusing transport; each field a test needs is replaced after.
 type testEnv struct {
 	env    *cmdEnv
 	stdout *bytes.Buffer
@@ -82,9 +81,8 @@ type smokeRun struct {
 	seconds     int
 }
 
-// smokeVerbs are the verbs the dispatcher tests drive: one with two
-// positionals and a flag of its own, one with subverbs, one with an optional
-// positional, and one that sends GET /v1/whoami as the resolved principal.
+// smokeVerbs are the verbs the dispatcher tests drive:
+// one with two positionals and a flag of its own, one with subverbs, one with an optional positional, and one that sends GET /v1/whoami as the resolved principal.
 func smokeVerbs(t *testing.T, got *smokeRun) []verb {
 	t.Helper()
 	record := func(in *invocation) {
@@ -196,9 +194,8 @@ func TestDispatchGrammar(t *testing.T) {
 	}
 }
 
-// TestDispatchEveryVerbParses drives each registered client verb with its
-// declared positional count and no gateway, which reaches the verb's own
-// code and never a usage error.
+// TestDispatchEveryVerbParses drives each registered client verb with its declared positional count and no gateway,
+// which reaches the verb's own code and never a usage error.
 func TestDispatchEveryVerbParses(t *testing.T) {
 	for _, v := range clientVerbs() {
 		t.Run(v.name, func(t *testing.T) {
@@ -219,8 +216,7 @@ func TestDispatchEveryVerbParses(t *testing.T) {
 }
 
 // TestVerbNamespaces asserts the one verb namespace over the two lists:
-// the operator half, reserved names included, and the client half never
-// share a name, and each half holds a name once.
+// the operator half, reserved names included, and the client half never share a name, and each half holds a name once.
 func TestVerbNamespaces(t *testing.T) {
 	operator := append(slices.Clone(operatorVerbs[:]), reservedOperatorNames[:]...)
 	seen := map[string]bool{}
@@ -243,9 +239,9 @@ func TestVerbNamespaces(t *testing.T) {
 	}
 }
 
-// TestVerbFlagSets asserts over every verb's assembled flag set: nothing
-// disables verification, no flag's value is a token or a password, and every
-// verb carries the three flags that name where a credential is read from.
+// TestVerbFlagSets asserts over every verb's assembled flag set:
+// nothing disables verification, no flag's value is a token or a password,
+// and every verb carries the three flags that name where a credential is read from.
 func TestVerbFlagSets(t *testing.T) {
 	var got smokeRun
 	verbs := append(clientVerbs(), smokeVerbs(t, &got)...)

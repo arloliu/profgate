@@ -188,11 +188,10 @@ CLIENT_FORBIDDEN_IMPORTS = (
 def check_client_imports(root):
     """Keep internal/client's dependency set an argument about one package.
 
-    The command-line client reaches neither cluster dependency and verifies no
-    signature, so it imports no Kubernetes package, no NATS package, and none
-    of internal/k8s, internal/natskv, or internal/auth; and only cmd/profgate
-    imports it, so the gateway's binary size and dependency set stay an
-    argument about internal/client rather than about the whole tree.
+    The command-line client reaches neither cluster dependency and verifies no signature,
+    so it imports no Kubernetes package, no NATS package, and none of internal/k8s, internal/natskv, or internal/auth;
+    and only cmd/profgate imports it,
+    so the gateway's binary size and dependency set stay an argument about internal/client rather than about the whole tree.
     """
     bad = []
     for path in root.rglob("*.go"):
@@ -249,12 +248,10 @@ PKCE_OVERRIDE_ALLOWED = (
 def check_pkce_override_name(root):
     """Fail on any code or manifest line naming the PKCE verifier override.
 
-    The end-to-end lanes prove PKCE enforcement by polling with a verifier
-    that does not match the challenge, and the substitution lives in the
-    client binary behind the e2e build tag, read from that variable.
-    The override must never reach a manifest, the chart, or an untagged Go
-    file: only the e2e-tagged file, the test proving the default build
-    ignores the variable, and the end-to-end scenarios may name it.
+    The end-to-end lanes prove PKCE enforcement by polling with a verifier that does not match the challenge,
+    and the substitution lives in the client binary behind the e2e build tag, read from that variable.
+    The override must never reach a manifest, the chart, or an untagged Go file:
+    only the e2e-tagged file, the test proving the default build ignores the variable, and the end-to-end scenarios may name it.
     """
     bad = []
     paths = [p for pattern in ("*.go", "*.yaml", "*.yml", "*.tpl") for p in root.rglob(pattern)]

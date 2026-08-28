@@ -84,9 +84,9 @@ func (f collectFlags) fieldFlagSet() bool {
 	return false
 }
 
-// requestBody is the create's body: the file under --body, or the field
-// flags as the override shape of the Collection routes, each flag validated
-// locally and a flag left unset absent, so the effective policy decides it.
+// requestBody is the create's body:
+// the file under --body, or the field flags as the override shape of the Collection routes, each flag validated locally and a flag left unset absent,
+// so the effective policy decides it.
 func (f collectFlags) requestBody() ([]byte, error) {
 	if f.body != "" {
 		if f.fieldFlagSet() {
@@ -108,9 +108,9 @@ func (f collectFlags) requestBody() ([]byte, error) {
 	return json.Marshal(body)
 }
 
-// fieldBody is the field flags as the override shape, which the policy
-// override shares with the Collection request: sampling, target, and
-// artifact, each present only when a flag under it is set.
+// fieldBody is the field flags as the override shape,
+// which the policy override shares with the Collection request:
+// sampling, target, and artifact, each present only when a flag under it is set.
 func (f collectFlags) fieldBody() (map[string]any, error) {
 	sampling := map[string]any{}
 	body := map[string]any{}
@@ -186,8 +186,9 @@ func positiveInt(flag, value string) (int, error) {
 // collect runs the verb: the body, the key, the one create, and the
 // identifier and state it answered; under --wait, the poll of that record
 // until it ends, which begins only once an answer has carried an identifier.
-// A transport failure or a 5xx is reported once: the gateway does not yet
-// record the key, so nothing retries the create, and the message says a
+// A transport failure or a 5xx is reported once:
+// the gateway does not yet record the key,
+// so nothing retries the create, and the message says a
 // Collection may already exist and how to find out.
 func (env *cmdEnv) collect(ctx context.Context, in *invocation, f collectFlags) error {
 	if err := f.checkWaitFlags(); err != nil {
@@ -233,11 +234,9 @@ func (env *cmdEnv) collect(ctx context.Context, in *invocation, f collectFlags) 
 
 // wait polls the record until it ends and prints it, then decides the exit:
 // completed is 0; failed and cancelled are 1 with the record's reason;
-// expired is 1 with a fixed message, because an expired record carries no
-// reason.
+// expired is 1 with a fixed message, because an expired record carries no reason.
 // An interrupt stops the watching and not the collecting: the message names
-// the identifier and the command that reads the record again, and nothing
-// is cancelled.
+// the identifier and the command that reads the record again, and nothing is cancelled.
 // Every other failure of the wait names the identifier beside the cause, so
 // a denial of the record route still leaves the caller holding the
 // Collection it started.
@@ -266,11 +265,9 @@ func (env *cmdEnv) wait(ctx context.Context, gw *client.Client, s client.Setting
 	}
 }
 
-// collectionsVerb is GET .../collections: the Service's records, newest
-// first, with no filter and no cursor because the gateway's listing accepts
-// none.
-// The plural takes a Service; an identifier in its place fails the address
-// grammar before any request.
+// collectionsVerb is GET .../collections:
+// the Service's records, newest first, with no filter and no cursor because the gateway's listing accepts none.
+// The plural takes a Service; an identifier in its place fails the address grammar before any request.
 func collectionsVerb() verb {
 	return verb{
 		name: "collections", positionals: 1, grammar: "collections <ns>/<svc>",
@@ -327,8 +324,7 @@ func collectionVerb() verb {
 	}
 }
 
-// collectionID is the one positional of the singular verb, refused before
-// any request when it is not the identifier grammar.
+// collectionID is the one positional of the singular verb, refused before any request when it is not the identifier grammar.
 func collectionID(in *invocation) (string, error) {
 	id := in.positionals[0]
 	if !client.IsCollectionID(id) {
@@ -337,8 +333,8 @@ func collectionID(in *invocation) (string, error) {
 	return id, nil
 }
 
-// cancel runs collection cancel: the one cancel, its retry of
-// collection_initializing inside the client, and the updated record.
+// cancel runs collection cancel:
+// the one cancel, its retry of collection_initializing inside the client, and the updated record.
 func (env *cmdEnv) cancel(ctx context.Context, in *invocation) error {
 	id, err := collectionID(in)
 	if err != nil {
@@ -377,9 +373,8 @@ func renderCollection(env *cmdEnv, body []byte) error {
 	return writeTable(env.stdout, env.terminal, nil, rows)
 }
 
-// createIndeterminate reports a create whose outcome the answer does not
-// settle: no answer at all, or a 5xx, after either of which the gateway may
-// hold a Collection this command has no identifier for.
+// createIndeterminate reports a create whose outcome the answer does not settle:
+// no answer at all, or a 5xx, after either of which the gateway may hold a Collection this command has no identifier for.
 func createIndeterminate(err error) bool {
 	var te *client.TransportError
 	var se *client.StatusError
@@ -421,10 +416,9 @@ type artifactTarget struct {
 	Version    string `json:"version"`
 }
 
-// download runs the verb: the identifier grammar, the destination opened
-// before the request, the fetch, and the metadata on stderr.
-// 410 artifact_gone and 409 collection_not_completed come back as the
-// envelope, printed by the caller, with no file left behind.
+// download runs the verb:
+// the identifier grammar, the destination opened before the request, the fetch, and the metadata on stderr.
+// 410 artifact_gone and 409 collection_not_completed come back as the envelope, printed by the caller, with no file left behind.
 func (env *cmdEnv) download(ctx context.Context, in *invocation, output string) error {
 	id, err := collectionID(in)
 	if err != nil {

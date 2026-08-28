@@ -25,8 +25,7 @@ func acceptedResponse() *http.Response {
 	return resp
 }
 
-// createTransport records every request with its body and answers each
-// with the response the test supplies.
+// createTransport records every request with its body and answers each with the response the test supplies.
 type createTransport struct {
 	requests []*http.Request
 	bodies   []string
@@ -492,8 +491,8 @@ func TestCollectionGetJSON(t *testing.T) {
 	}
 }
 
-// The plural takes a Service and the singular takes an identifier; each
-// refuses the other's argument before any request reaches the transport.
+// The plural takes a Service and the singular takes an identifier;
+// each refuses the other's argument before any request reaches the transport.
 func TestCollectionGrammarRefusals(t *testing.T) {
 	tests := []struct {
 		name string
@@ -956,8 +955,7 @@ func (at *artifactTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	return artifactResponse(strings.NewReader(profileBytes)), nil
 }
 
-// runDownload runs the download verb in a fresh working directory against
-// rt and returns the exit code and that directory.
+// runDownload runs the download verb in a fresh working directory against rt and returns the exit code and that directory.
 func runDownload(t *testing.T, te *testEnv, rt http.RoundTripper, args ...string) (int, string) {
 	t.Helper()
 	dir := t.TempDir()

@@ -10,10 +10,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The context verb acts on the contexts file and the token cache and sends
-// nothing: list prints the contexts and marks the current one, show prints
-// one with no token material in it, use sets currentContext, and delete
-// removes an entry and its cache file under the entry's lock.
+// The context verb acts on the contexts file and the token cache and sends nothing:
+// list prints the contexts and marks the current one, show prints
+// one with no token material in it, use sets currentContext,
+// and delete removes an entry and its cache file under the entry's lock.
 func contextVerb() verb {
 	return verb{
 		name:        "context",
@@ -137,9 +137,9 @@ func (env *cmdEnv) showContext(f *client.File, g *globals, name string) error {
 	return enc.Close()
 }
 
-// outputFormat is --output, PROFGATE_OUTPUT when the flag is absent, and
-// table otherwise; the context verb resolves no gateway, so this is the one
-// value of Resolution it needs.
+// outputFormat is --output, PROFGATE_OUTPUT when the flag is absent, and table otherwise;
+// the context verb resolves no gateway,
+// so this is the one value of Resolution it needs.
 func (env *cmdEnv) outputFormat(g *globals) (string, error) {
 	output := g.output
 	if output == "" {

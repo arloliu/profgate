@@ -12,14 +12,12 @@ import (
 	"time"
 )
 
-// maxResponseBytes bounds every JSON document the client reads; a body that
-// fills the bound is refused rather than read.
+// maxResponseBytes bounds every JSON document the client reads; a body that fills the bound is refused rather than read.
 // Profile bytes stream through Do and are not bounded here.
 const maxResponseBytes = 1 << 20
 
 // maxPasswordBytes is where bcrypt stops reading, so the gateway refuses a
-// longer password; the client refuses it first because the gateway's 401 is
-// deliberately uninformative.
+// longer password; the client refuses it first because the gateway's 401 is deliberately uninformative.
 const maxPasswordBytes = 72
 
 // Credential supplies the Authorization header for one request.
@@ -40,8 +38,8 @@ type Client struct {
 	warn       io.Writer
 }
 
-// Options is everything a Client is built from; every field a test replaces
-// is a seam rather than something New reaches for.
+// Options is everything a Client is built from;
+// every field a test replaces is a seam rather than something New reaches for.
 type Options struct {
 	Settings   Settings
 	Credential Credential
@@ -133,8 +131,8 @@ func (c *Client) Do(ctx context.Context, req Request) (*http.Response, error) {
 	return nil, failure
 }
 
-// diagnoser is a Credential that can say more about a 401 than the gateway
-// does: the cached token knows the issuer and client it was obtained for.
+// diagnoser is a Credential that can say more about a 401 than the gateway does:
+// the cached token knows the issuer and client it was obtained for.
 type diagnoser interface {
 	diagnose(err error) error
 }

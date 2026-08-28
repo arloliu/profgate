@@ -131,8 +131,7 @@ func deviceIssuer(t *testing.T, interval int, steps ...pollStep) *deviceFixture 
 	}
 }
 
-// login runs Authorize then Poll with the deadline the caller computes from
-// expires_in and the login timeout, and returns the start of polling.
+// login runs Authorize then Poll with the deadline the caller computes from expires_in and the login timeout, and returns the start of polling.
 func (f *deviceFixture) login(t *testing.T, pkce bool, timeout time.Duration) (DeviceAuth, TokenResponse, time.Time, error) {
 	t.Helper()
 	d, err := f.iss.Authorize(context.Background(), f.meta, "profgate-cli", []string{"openid", "profile"}, pkce)
@@ -347,8 +346,8 @@ func TestPollRetriesUntilTheDeadline(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// A 12-second login timeout admits polls at 0, 5, and 10 seconds; the
-			// fourth would fall at 15, after the deadline, and is never sent.
+			// A 12-second login timeout admits polls at 0, 5, and 10 seconds;
+			// the fourth would fall at 15, after the deadline, and is never sent.
 			f := deviceIssuer(t, 5, tc.step, tc.step, tc.step, issued())
 			d, _, start, err := f.login(t, false, 12*time.Second)
 			if err == nil {

@@ -417,9 +417,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The one /v1 route with no authentication step: it answers here, before
-	// the PGO and credential-placement steps, because it is what a client
-	// reads before it holds a credential.
+	// The one /v1 route with no authentication step:
+	// it answers here, before the PGO and credential-placement steps,
+	// because it is what a client reads before it holds a credential.
 	if rt.kind == kindAuth {
 		s.serveAuthInfo(w, r, q, cfg)
 

@@ -614,8 +614,7 @@ func TestIssuerVerboseNilPrintsNothing(t *testing.T) {
 		t.Fatal("a nil Verbose was replaced")
 	}
 	// The recording transport answers {} with no issuer, so discovery is
-	// refused after the request; the point is that logging a nil writer
-	// does not panic.
+	// refused after the request; the point is that logging a nil writer does not panic.
 	if _, err := iss.Discover(context.Background(), "https://issuer.example"); err == nil {
 		t.Fatal("expected a refusal")
 	}

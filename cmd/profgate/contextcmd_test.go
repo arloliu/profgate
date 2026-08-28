@@ -235,8 +235,7 @@ func TestContextUse(t *testing.T) {
 		if info.Mode().Perm() != 0o600 {
 			t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
 		}
-		// The atomic write renames a temporary file over the target and
-		// leaves nothing beside it.
+		// The atomic write renames a temporary file over the target and leaves nothing beside it.
 		entries, err := os.ReadDir(filepath.Dir(contextFile(te)))
 		if err != nil {
 			t.Fatal(err)
@@ -431,8 +430,7 @@ func TestContextDelete(t *testing.T) {
 }
 
 // TestContextSubverbs asserts the four subverbs make no request, which the
-// refusing transport in the test env proves, and that an unknown subverb
-// prints the usage line and exits 2.
+// refusing transport in the test env proves, and that an unknown subverb prints the usage line and exits 2.
 func TestContextSubverbs(t *testing.T) {
 	for _, args := range [][]string{{"list"}, {"show"}, {"use", "dev"}, {"delete", "dev"}} {
 		t.Run(args[0], func(t *testing.T) {

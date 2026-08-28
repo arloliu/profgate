@@ -21,15 +21,13 @@ const (
 	defaultPollInterval = 5 * time.Second
 	// slowDownIncrement is what slow_down adds to the interval (RFC 8628).
 	slowDownIncrement = 5 * time.Second
-	// verifierBytes is the entropy of a PKCE verifier: 32 bytes encode to 43
-	// characters, RFC 7636's minimum length.
+	// verifierBytes is the entropy of a PKCE verifier: 32 bytes encode to 43 characters, RFC 7636's minimum length.
 	verifierBytes = 32
 )
 
 // DeviceAuth is the device authorization response and, under PKCE, the
 // verifier every poll must carry.
-// Interval is the value the issuer sent, 0 when it sent none; Poll applies
-// the 5-second default.
+// Interval is the value the issuer sent, 0 when it sent none; Poll applies the 5-second default.
 type DeviceAuth struct {
 	DeviceCode, UserCode                     string
 	VerificationURI, VerificationURIComplete string
@@ -67,9 +65,9 @@ type deviceResponse struct {
 	Interval                int    `json:"interval"`
 }
 
-// Authorize posts to the device endpoint; pkce adds code_challenge and
-// code_challenge_method=S256, which is always sent explicitly because an
-// issuer that defaults the method defaults it to plain.
+// Authorize posts to the device endpoint;
+// pkce adds code_challenge and code_challenge_method=S256,
+// which is always sent explicitly because an issuer that defaults the method defaults it to plain.
 // No client secret is sent: the device grant is a public client's grant.
 func (i *Issuer) Authorize(ctx context.Context, m Metadata, clientID string, scopes []string, pkce bool) (DeviceAuth, error) {
 	if m.DeviceAuthorizationEndpoint == "" {
@@ -120,8 +118,9 @@ func (i *Issuer) Authorize(ctx context.Context, m Metadata, clientID string, sco
 
 // Poll runs RFC 8628's polling loop on the injected clock until a token, a
 // permanent failure, or the earlier of the code's expiry and the deadline.
-// authorization_pending waits one interval; slow_down adds 5 seconds to the
-// interval and waits; access_denied, expired_token, and any other 4xx stop;
+// authorization_pending waits one interval;
+// slow_down adds 5 seconds to the interval and waits;
+// access_denied, expired_token, and any other 4xx stop;
 // a transport failure or a 5xx waits one interval and polls again.
 // No poll is sent at or after the deadline.
 func (i *Issuer) Poll(ctx context.Context, m Metadata, clientID string, d DeviceAuth, deadline time.Time) (TokenResponse, error) {
@@ -170,8 +169,8 @@ var errDeadline = errors.New("the login deadline passed before the issuer issued
 
 // classifyPoll sorts one failed poll: whether slow_down raised the interval,
 // and the error that stops polling, nil when the poll is retried.
-// An IssuerError with no code is a 4xx whose body is not the error shape and
-// stops with its status; a 5xx or a transport failure is retried.
+// An IssuerError with no code is a 4xx whose body is not the error shape and stops with its status;
+// a 5xx or a transport failure is retried.
 func classifyPoll(err error) (raise bool, stop error) {
 	var ie *IssuerError
 	var se *StatusError

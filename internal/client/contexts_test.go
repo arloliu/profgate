@@ -596,9 +596,8 @@ func TestUseContext(t *testing.T) {
 	})
 }
 
-// deleteFixture is one DeleteContext run: a two-context file with prod
-// current, a Store over a fresh directory, and a save that records what it
-// saw of the lock and the cache entry at the moment it ran.
+// deleteFixture is one DeleteContext run:
+// a two-context file with prod current, a Store over a fresh directory, and a save that records what it saw of the lock and the cache entry at the moment it ran.
 type deleteFixture struct {
 	f         *File
 	store     *Store
@@ -723,8 +722,7 @@ func TestDeleteContext(t *testing.T) {
 
 	t.Run("a failed cache deletion names the cache file and leaves the file unwritten", func(t *testing.T) {
 		d := newDeleteFixture(t)
-		// A non-empty directory in the entry's place: it passes the mode
-		// check and cannot be removed.
+		// A non-empty directory in the entry's place: it passes the mode check and cannot be removed.
 		entry := filepath.Join(d.dir, "prod.json")
 		if err := os.MkdirAll(filepath.Join(entry, "child"), 0o700); err != nil {
 			t.Fatal(err)
@@ -759,8 +757,7 @@ func TestDeleteContext(t *testing.T) {
 			t.Fatal("the lock was not released")
 		}
 		d.saveErr = nil
-		// The caller reloads the file before running again; the entry is
-		// still in it because the save failed.
+		// The caller reloads the file before running again; the entry is still in it because the save failed.
 		d.f = &File{CurrentContext: "prod", Contexts: map[string]Context{"prod": {Server: "https://a.example"}, "dev": {Server: "https://b.example"}}}
 		if err := DeleteContext(ctx, d.f, "prod", d.store, d.save); err != nil {
 			t.Fatalf("second run: %v", err)

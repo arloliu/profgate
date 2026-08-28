@@ -44,8 +44,7 @@ type Store struct {
 	write writeFunc
 }
 
-// StoreOptions is everything a Store is built from; a nil clock or sleeper
-// is the real one.
+// StoreOptions is everything a Store is built from; a nil clock or sleeper is the real one.
 type StoreOptions struct {
 	Dir   string
 	Now   func() time.Time
@@ -130,10 +129,10 @@ func (s *Store) Delete(name string) error {
 }
 
 // Lock takes the exclusive lock on <name>.lock and returns the release.
-// The lock is a file created exclusively, which every platform the binary
-// builds for supports; it gives up after 30 seconds rather than breaking a
-// lock it did not take, because breaking one would defeat the serialization
-// the lock exists for.
+// The lock is a file created exclusively,
+// which every platform the binary builds for supports;
+// it gives up after 30 seconds rather than breaking a
+// lock it did not take, because breaking one would defeat the serialization the lock exists for.
 func (s *Store) Lock(ctx context.Context, name string) (func() error, error) {
 	if err := checkName(name); err != nil {
 		return nil, err
@@ -169,9 +168,8 @@ func (s *Store) Lock(ctx context.Context, name string) (func() error, error) {
 	}
 }
 
-// Usable reports whether e may be sent for this command: its origin equals
-// the resolved gateway's byte for byte, and its issuer, client, and token
-// type still match the context.
+// Usable reports whether e may be sent for this command:
+// its origin equals the resolved gateway's byte for byte, and its issuer, client, and token type still match the context.
 // With no snapshot to compare against — --server alone, or a context no
 // login has recorded — the entry carries its own values and only the
 // origin is checked.

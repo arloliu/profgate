@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 )
 
-// writeFunc creates a temporary file in dir with mode, writes data, and
-// renames it over name, so a crash mid-write leaves the previous file.
+// writeFunc creates a temporary file in dir with mode, writes data, and renames it over name,
+// so a crash mid-write leaves the previous file.
 // The temporary file is created with the final mode rather than chmod-ed.
 // It is the seam under the atomic write, so a test observes the sequence.
 type writeFunc func(dir, name string, data []byte, mode os.FileMode) error

@@ -25,8 +25,7 @@ func (r refusingRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	return nil, nil
 }
 
-// recordingRoundTripper answers 200 with an empty JSON object and keeps the
-// last request it saw.
+// recordingRoundTripper answers 200 with an empty JSON object and keeps the last request it saw.
 type recordingRoundTripper struct {
 	last *http.Request
 }
@@ -197,8 +196,8 @@ func TestHTTPSSendsWithoutWarning(t *testing.T) {
 }
 
 // TestServerNameAndCAFile verifies a port-forward shape: the URL names
-// 127.0.0.1, the certificate names example.com, and --server-name bridges
-// them while the Host header stays the URL's authority.
+// 127.0.0.1, the certificate names example.com,
+// and --server-name bridges them while the Host header stays the URL's authority.
 func TestServerNameAndCAFile(t *testing.T) {
 	var gotHost string
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

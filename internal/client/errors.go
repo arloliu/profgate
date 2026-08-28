@@ -8,8 +8,8 @@ import (
 	"strconv"
 )
 
-// ErrUsage marks a failure decided locally, before any request: a bad flag
-// value, a credential the rules refuse, a certificate file with nothing in it.
+// ErrUsage marks a failure decided locally, before any request:
+// a bad flag value, a credential the rules refuse, a certificate file with nothing in it.
 // The command line maps it to exit 2; every other error from this package is
 // the gateway's refusal or a transport failure, exit 1.
 var ErrUsage = errors.New("usage")

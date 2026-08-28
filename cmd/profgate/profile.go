@@ -19,9 +19,9 @@ import (
 	"github.com/arloliu/profgate/internal/config"
 )
 
-// profileVerb is GET .../profiles/{profile}: every parameter is passed
-// through and judged by the gateway, and the client refuses only what it can
-// refuse without guessing the gateway's configuration.
+// profileVerb is GET .../profiles/{profile}:
+// every parameter is passed through and judged by the gateway,
+// and the client refuses only what it can refuse without guessing the gateway's configuration.
 func profileVerb() verb {
 	var f profileFlags
 	return verb{
@@ -51,8 +51,8 @@ type profileFlags struct {
 	open                                          bool
 }
 
-// query is the flags as the route's query, after the local refusals: both
-// port flags, and a --seconds that is not a positive integer.
+// query is the flags as the route's query, after the local refusals:
+// both port flags, and a --seconds that is not a positive integer.
 func (f profileFlags) query() (url.Values, error) {
 	if f.port != "" && f.portName != "" {
 		return nil, fmt.Errorf("%w: --port and --port-name name two ports; pass one", client.ErrUsage)
@@ -95,8 +95,8 @@ func (env *cmdEnv) profile(ctx context.Context, in *invocation, f profileFlags) 
 	if f.open && f.output == "-" {
 		return fmt.Errorf("%w: -o - writes the profile to stdout and --open needs a file; pass one", client.ErrUsage)
 	}
-	// go is resolved before anything is fetched: refusing here means no
-	// profile is collected and thrown away, and no message names a file
+	// go is resolved before anything is fetched:
+	// refusing here means no profile is collected and thrown away, and no message names a file
 	// the cleanup has removed.
 	goPath := ""
 	if f.open {
@@ -148,8 +148,7 @@ func (env *cmdEnv) profile(ctx context.Context, in *invocation, f profileFlags) 
 	return nil
 }
 
-// printTarget prints the three target headers on stderr: one line each, or
-// one JSON object under --output json.
+// printTarget prints the three target headers on stderr: one line each, or one JSON object under --output json.
 func (env *cmdEnv) printTarget(s client.Settings, h http.Header) error {
 	t := target{Pod: h.Get("X-Pprof-Target-Pod"), Node: h.Get("X-Pprof-Target-Node"), Version: h.Get("X-Pprof-Target-Version")}
 	if s.Output == "json" {
@@ -160,8 +159,7 @@ func (env *cmdEnv) printTarget(s client.Settings, h http.Header) error {
 }
 
 // destination is where the profile bytes go: stdout, a file the user named,
-// the derived name in the working directory, or a file in a temporary
-// directory that --open removes on the way out.
+// the derived name in the working directory, or a file in a temporary directory that --open removes on the way out.
 type destination struct {
 	w       io.Writer
 	file    *os.File

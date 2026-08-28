@@ -12,11 +12,11 @@ import (
 	"github.com/arloliu/profgate/internal/client"
 )
 
-// A read verb issues exactly one GET and prints the result: the body byte
-// for byte under --output json, and a table otherwise.
+// A read verb issues exactly one GET and prints the result:
+// the body byte for byte under --output json, and a table otherwise.
 
-// reading is what one read verb declares: how to build its request from the
-// resolved settings, and how to render the body as a table.
+// reading is what one read verb declares:
+// how to build its request from the resolved settings, and how to render the body as a table.
 type reading struct {
 	build  func(s client.Settings, in *invocation) (client.Request, error)
 	render func(env *cmdEnv, body []byte) error
@@ -172,9 +172,9 @@ func oneColumn(values []string) [][]string {
 	return rows
 }
 
-// targetsVerb is GET .../targets with --port or --port-name, which the
-// gateway needs in order to decide eligibility; both together is a usage
-// error before any request.
+// targetsVerb is GET .../targets with --port or --port-name,
+// which the gateway needs in order to decide eligibility;
+// both together is a usage error before any request.
 func targetsVerb() verb {
 	var port, portName string
 	return verb{
@@ -308,8 +308,7 @@ func (env *cmdEnv) login(ctx context.Context, g *globals, flags client.LoginFlag
 }
 
 // basicPair is the user name from -u or PROFGATE_USER and the password from
-// PROFGATE_PASSWORD or the prompt, which login under basic verifies and
-// never stores.
+// PROFGATE_PASSWORD or the prompt, which login under basic verifies and never stores.
 func (env *cmdEnv) basicPair(g *globals) (user, password string, err error) {
 	user = g.user
 	if user == "" {

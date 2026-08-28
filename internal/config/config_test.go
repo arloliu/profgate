@@ -1398,9 +1398,8 @@ func TestLoadAuth(t *testing.T) {
 	})
 }
 
-// TestLoadOIDCCLI covers the auth.oidc.cli block: the defaults its presence
-// fills, the rule that binds its client identifier to the audience under ID
-// tokens, the scope rules refused under the block's own key, and the modes
+// TestLoadOIDCCLI covers the auth.oidc.cli block:
+// the defaults its presence fills, the rule that binds its client identifier to the audience under ID tokens, the scope rules refused under the block's own key, and the modes
 // that cannot carry it at all.
 func TestLoadOIDCCLI(t *testing.T) {
 	// The default scope list requests offline_access because Dex issues a
@@ -1422,8 +1421,7 @@ func TestLoadOIDCCLI(t *testing.T) {
 			wantCLI: &config.OIDCCLI{ClientID: "profgate", Scopes: defaultScopes}},
 		{name: "clientID differs from audience under id", file: "cli-clientid-differs.yaml",
 			wantErr: []string{"auth.oidc.cli.clientID", "auth.oidc.audience"}},
-		// RFC 9068 access tokens carry the resource as aud, so a second
-		// registration does not produce an azp the gateway refuses.
+		// RFC 9068 access tokens carry the resource as aud, so a second registration does not produce an azp the gateway refuses.
 		{name: "clientID differs from audience under access", file: "cli-clientid-differs-access.yaml",
 			wantCLI: &config.OIDCCLI{ClientID: "other", Scopes: defaultScopes}},
 		{name: "clientID 257 bytes", file: "cli-clientid-long.yaml",
@@ -1435,8 +1433,7 @@ func TestLoadOIDCCLI(t *testing.T) {
 		{name: "explicit scopes stay as written", file: "cli-scopes.yaml",
 			wantCLI: &config.OIDCCLI{ClientID: "profgate", Scopes: []string{"openid", "email"}}},
 		// The registration is shared with the browser flow under ID tokens, and
-		// a registration holding a secret is confidential where the device
-		// grant needs a public client.
+		// a registration holding a secret is confidential where the device grant needs a public client.
 		{name: "beside a browser client secret", file: "cli-browser-secret.yaml",
 			wantErr: []string{"auth.oidc.cli", "auth.oidc.browser.clientSecretFile"}},
 		{name: "beside a public browser client", file: "cli-browser.yaml",

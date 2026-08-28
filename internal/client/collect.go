@@ -34,10 +34,10 @@ type createdBody struct {
 // Create posts one Collection and returns the identifier and state the
 // answer carried.
 // It sends the key and retries nothing.
-// The gateway does not yet record the key, so a retry it cannot recognize
-// would meet 429 collection_in_progress while the first Collection runs and
-// start a second one once it has finished; the caller reports the failure
-// instead.
+// The gateway does not yet record the key,
+// so a retry it cannot recognize would meet 429 collection_in_progress
+// while the first Collection runs and start a second one once it has finished;
+// the caller reports the failure instead.
 func (c *Client) Create(ctx context.Context, ns, svc string, body []byte, key string) (Created, error) {
 	if body == nil {
 		body = []byte("{}")
@@ -75,18 +75,17 @@ func (c *Client) Create(ctx context.Context, ns, svc string, body []byte, key st
 }
 
 // collectionIDAlphabet is Crockford base32 in lowercase, the alphabet of a
-// Collection identifier: the digits and the letters that cannot be confused
-// with them, so i, l, o, and u are absent.
+// Collection identifier: the digits and the letters that cannot be confused with them, so i, l, o, and u are absent.
 const collectionIDAlphabet = "0123456789abcdefghjkmnpqrstvwxyz"
 
 // collectionIDLength is the character count of a Collection identifier.
 const collectionIDLength = 20
 
-// IsCollectionID reports whether s is the Collection identifier grammar
-// exactly: 20 lowercase Crockford base32 characters, the grammar the
+// IsCollectionID reports whether s is the Collection identifier grammar exactly:
+// 20 lowercase Crockford base32 characters, the grammar the
 // gateway's route matching accepts and nothing else.
-// The singular verbs refuse anything else before a request is built, which
-// is what keeps a Service address out of the record route.
+// The singular verbs refuse anything else before a request is built,
+// which is what keeps a Service address out of the record route.
 func IsCollectionID(s string) bool {
 	if len(s) != collectionIDLength {
 		return false
@@ -129,29 +128,26 @@ const (
 	StateExpired      = "expired"
 )
 
-// ErrWaitTimeout marks a wait that reached its timeout before the record
-// reached a terminal state.
+// ErrWaitTimeout marks a wait that reached its timeout before the record reached a terminal state.
 var ErrWaitTimeout = errors.New("the wait timed out")
 
 // ErrUnknownState marks a record whose state is none of the seven the
-// gateway defines; a client that treated it as non-terminal would poll until
-// its deadline for no reason.
+// gateway defines; a client that treated it as non-terminal would poll until its deadline for no reason.
 var ErrUnknownState = errors.New("unknown collection state")
 
-// cancelRetryInterval and cancelRetryWindow pace the retry of a cancel that
-// met 409 collection_initializing, which means "not yet claimable, retry".
+// cancelRetryInterval and cancelRetryWindow pace the retry of a cancel that met 409 collection_initializing,
+// which means "not yet claimable, retry".
 const (
 	cancelRetryInterval = time.Second
 	cancelRetryWindow   = 10 * time.Second
 )
 
-// Wait polls the record on the injected clock and sleeper until a terminal
-// state, the timeout, or a cancelled context, writing one progress line to w
+// Wait polls the record on the injected clock and sleeper until a terminal state, the timeout, or a cancelled context, writing one progress line to w
 // each time the record's progress changes.
-// It returns the terminal record with its body verbatim; the caller decides
-// what each terminal state means.
-// A 503 pgo_unavailable is retried on the same interval, because the record
-// outlives a NATS outage; any other refusal ends the wait.
+// It returns the terminal record with its body verbatim; the caller decides what each terminal state means.
+// A 503 pgo_unavailable is retried on the same interval,
+// because the record outlives a NATS outage;
+// any other refusal ends the wait.
 func (c *Client) Wait(ctx context.Context, id string, interval, timeout time.Duration, w io.Writer) (CollectionRecord, []byte, error) {
 	deadline := c.now().Add(timeout)
 	var last CollectionProgress
@@ -189,8 +185,7 @@ func (c *Client) Wait(ctx context.Context, id string, interval, timeout time.Dur
 }
 
 // Cancel posts the cancel with the JSON media type and no body, retrying
-// 409 collection_initializing once a second for ten seconds on the injected
-// clock, and returns the updated record's body.
+// 409 collection_initializing once a second for ten seconds on the injected clock, and returns the updated record's body.
 // 409 collection_terminal and every other refusal are returned as they came.
 func (c *Client) Cancel(ctx context.Context, id string) ([]byte, error) {
 	deadline := c.now().Add(cancelRetryWindow)

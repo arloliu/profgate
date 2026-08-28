@@ -9,10 +9,8 @@ import (
 	"time"
 )
 
-// TestDefaultBuildIgnoresTheVerifierOverride proves the binary every release
-// compiles reads no environment variable: with the override set to another
-// valid verifier, the poll still sends the verifier whose SHA-256 the device
-// request carried.
+// TestDefaultBuildIgnoresTheVerifierOverride proves the binary every release compiles reads no environment variable:
+// with the override set to another valid verifier, the poll still sends the verifier whose SHA-256 the device request carried.
 func TestDefaultBuildIgnoresTheVerifierOverride(t *testing.T) {
 	t.Setenv("PROFGATE_E2E_PKCE_VERIFIER_OVERRIDE", "another-valid-verifier-of-at-least-43-characters-x")
 

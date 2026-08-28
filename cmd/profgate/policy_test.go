@@ -15,8 +15,7 @@ const defaultsPolicyBody = `{"namespace":"payments","service":"checkout","source
 const overridePolicyBody = `{"namespace":"payments","service":"checkout","source":"override","override":{"enabled":true,"sampling":{"rounds":3}},"effective":{"enabled":true,"schedule":{"every":"6h","jitter":"10m"},"sampling":{"duration":"30s","rounds":3,"roundInterval":"30s","replicas":2,"maxParallel":4},"target":{"versionPolicy":"strict","version":""},"artifact":{"retention":"2h"}},"violations":[{"field":"/artifact/retention","ceiling":"pgo.defaults.schedule.every","detail":"retention 2h is under the interval 6h"}],"updatedBy":"alice","updatedAt":"2026-08-26T09:00:00Z"}` + "\n"
 
 // policyTransport is the gateway's policy route: every GET answers the read
-// with its ETag when one is set, and every other method answers with what
-// the test supplies.
+// with its ETag when one is set, and every other method answers with what the test supplies.
 // It records each request with its body and counts the modifying ones.
 type policyTransport struct {
 	etag      string
@@ -142,8 +141,7 @@ func TestPolicyWritesAreNotRetried(t *testing.T) {
 		{name: "set against a concurrent create", sub: "set", read: defaultsPolicyBody, status: http.StatusPreconditionRequired, body: `{"error":"the service already has a policy override; send If-Match with its ETag","code":"precondition_required"}`, code: "precondition_required"},
 		{name: "set against a concurrent update", sub: "set", etag: `"42"`, read: overridePolicyBody, status: http.StatusPreconditionFailed, body: `{"error":"the policy has moved since the revision If-Match names","code":"precondition_failed"}`, code: "precondition_failed"},
 		{name: "delete against a concurrent delete", sub: "delete", etag: `"42"`, read: overridePolicyBody, status: http.StatusPreconditionFailed, body: `{"error":"the policy has moved since the revision If-Match names","code":"precondition_failed"}`, code: "precondition_failed"},
-		// A 412 without the envelope, as a proxy in front of the gateway
-		// might answer it, still names the command to run again.
+		// A 412 without the envelope, as a proxy in front of the gateway might answer it, still names the command to run again.
 		{name: "set against a 412 without the envelope", sub: "set", etag: `"42"`, read: overridePolicyBody, status: http.StatusPreconditionFailed, body: "", code: "HTTP 412 Precondition Failed"},
 		{name: "delete against a 428 without the envelope", sub: "delete", read: defaultsPolicyBody, status: http.StatusPreconditionRequired, body: "", code: "HTTP 428 Precondition Required"},
 	}

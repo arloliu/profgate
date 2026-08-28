@@ -48,9 +48,8 @@ const (
 	// dexPort is its listener, and dexNodePort the Service's NodePort.
 	// The issuer is https://<node IP>:<dexNodePort>: the gateway inside the
 	// cluster and the profgate client on the host must reach one issuer at
-	// one address, an issuer is compared byte for byte, and the node's
-	// address is the one both sides can dial, so the certificate is issued
-	// for that address and no name is resolved on either side.
+	// one address, an issuer is compared byte for byte, and the node's address is the one both sides can dial,
+	// so the certificate is issued for that address and no name is resolved on either side.
 	dexName     = "dex"
 	dexPort     = "5556"
 	dexNodePort = "30556"
@@ -98,8 +97,8 @@ const (
 	dialTimeout = 5 * time.Second
 )
 
-// dexServer is a running Dex Deployment, reached at its NodePort by the
-// gateway and by the host alike; a restart replaces the Pod.
+// dexServer is a running Dex Deployment, reached at its NodePort by the gateway and by the host alike;
+// a restart replaces the Pod.
 type dexServer struct {
 	h   *Harness
 	ns  string
@@ -140,8 +139,7 @@ staticPasswords:
 `, issuer, dexPort, dexClientID, dexClientID, clientRedirect, deviceCallback, dexUser, passwordHash)
 }
 
-// deployDex writes Dex's configuration and certificate, applies dex.yaml into
-// ns, and waits for the rollout.
+// deployDex writes Dex's configuration and certificate, applies dex.yaml into ns, and waits for the rollout.
 // nodeIP is the address the issuer is published at, which ca must certify;
 // clientRedirect is the callback Dex accepts; passwordHash is the bcrypt hash
 // of the static user's password.
@@ -219,9 +217,9 @@ func (d *dexServer) restart(ctx context.Context) error {
 
 // authClient walks the browser flow by hand: a cookie jar, no redirect
 // following so every Location header is asserted, keep-alives off, and a
-// dialer that maps the gateway's real hostname to its forward, so the walk
-// follows the Location headers the gateway writes with the hostname its
-// certificate carries; Dex is dialed at the address it publishes.
+// dialer that maps the gateway's real hostname to its forward,
+// so the walk follows the Location headers the gateway writes with the hostname its certificate carries;
+// Dex is dialed at the address it publishes.
 func authClient(gwLocal, dexAddr string, pool *x509.CertPool) *http.Client {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
@@ -235,8 +233,7 @@ func authClient(gwLocal, dexAddr string, pool *x509.CertPool) *http.Client {
 			DisableKeepAlives: true,
 			TLSClientConfig:   &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				// A connection attempt to the NodePort while Dex's Pod is being
-				// replaced is dropped rather than refused; the timeout turns
+				// A connection attempt to the NodePort while Dex's Pod is being replaced is dropped rather than refused; the timeout turns
 				// that into a failed attempt the polls retry.
 				d := net.Dialer{Timeout: dialTimeout}
 				switch addr {
@@ -252,9 +249,8 @@ func authClient(gwLocal, dexAddr string, pool *x509.CertPool) *http.Client {
 	}
 }
 
-// dialForward dials a port-forward's local address, retrying a refused
-// connection until dialTimeout passes: the harness reopens a forward whose
-// session the Pod ended, and a dial inside that window finds no listener.
+// dialForward dials a port-forward's local address, retrying a refused connection until dialTimeout passes:
+// the harness reopens a forward whose session the Pod ended, and a dial inside that window finds no listener.
 func dialForward(ctx context.Context, d *net.Dialer, network, addr string) (net.Conn, error) {
 	deadline := time.Now().Add(dialTimeout)
 	for {
@@ -446,9 +442,7 @@ func passwordGrant(t *testing.T, c *http.Client, issuer, password string) string
 // oidcAuthBlock is the oidc gateway's auth block: Dex as the issuer behind
 // the mounted CA, the email claim mapped to the developer realm, the browser
 // block with the gateway's callback, the cli block that makes /v1/auth report
-// the device login with a PKCE challenge and the scopes that carry the email
-// claim and a refresh token, and a one-second refresh floor so a key
-// rotation is observed inside the scenario.
+// the device login with a PKCE challenge and the scopes that carry the email claim and a refresh token, and a one-second refresh floor so a key rotation is observed inside the scenario.
 func oidcAuthBlock(issuer string) string {
 	return fmt.Sprintf(`auth:
   mode: oidc
@@ -858,8 +852,7 @@ func scenarioAuthOIDCBrowser(t *testing.T, h *Harness) {
 	clientOIDCSteps(t, h, local, gwCA, dexCA, dex, client, password)
 }
 
-// walkIssuer follows the issuer's redirects from rawURL to the page that
-// holds a form and returns that page.
+// walkIssuer follows the issuer's redirects from rawURL to the page that holds a form and returns that page.
 func walkIssuer(t *testing.T, c *http.Client, rawURL string) string {
 	t.Helper()
 	current := rawURL
@@ -1092,11 +1085,9 @@ func scenarioAuthBasic(t *testing.T, h *Harness) {
 	clientBasicSteps(t, h, ns, pods, local, caFile, password)
 }
 
-// clientBasicSteps runs the profgate client against the basic gateway's
-// port-forward: the reading verbs and a profile fetch as alice, a login that
-// verifies the pair and stores nothing, and the three refusals that prove the
-// variables are required, the certificate is verified, and no password
-// travels over plaintext.
+// clientBasicSteps runs the profgate client against the basic gateway's port-forward:
+// the reading verbs and a profile fetch as alice, a login that verifies the pair and stores nothing, and the three refusals that prove the
+// variables are required, the certificate is verified, and no password travels over plaintext.
 func clientBasicSteps(t *testing.T, h *Harness, ns string, pods []corev1.Pod, local, caFile, password string) {
 	t.Helper()
 	bin := buildClient(t, h)
@@ -1153,8 +1144,8 @@ func clientBasicSteps(t *testing.T, h *Harness, ns string, pods []corev1.Pod, lo
 		t.Fatalf("the profile the client wrote does not parse: %v", err)
 	}
 
-	// login verifies the pair, prints the principal and realm as key: value
-	// lines, names the two variables, and stores nothing.
+	// login verifies the pair, prints the principal and realm as key:
+	// value lines, names the two variables, and stores nothing.
 	out, errOut := client("login", env, "login")
 	expectLine("login", out, "principal: alice")
 	expectLine("login", out, "realm: developer")
@@ -1172,8 +1163,8 @@ func clientBasicSteps(t *testing.T, h *Harness, ns string, pods []corev1.Pod, lo
 		t.Fatalf("login without the variables: exit %d, want %d:\n%s", code, exitUsage, errOut)
 	}
 
-	// A certificate authority that did not issue the gateway's leaf is a TLS
-	// failure, which is what proves the client verifies the certificate.
+	// A certificate authority that did not issue the gateway's leaf is a TLS failure,
+	// which is what proves the client verifies the certificate.
 	other := newAuthority(t, tlsHost)
 	otherCA := filepath.Join(home, "other-ca.pem")
 	if err := os.WriteFile(otherCA, other.caPEM, 0o600); err != nil {
@@ -1185,8 +1176,7 @@ func clientBasicSteps(t *testing.T, h *Harness, ns string, pods []corev1.Pod, lo
 	}
 
 	// The password travels only over https://: the client refuses the
-	// plaintext address before it builds the request, so the name is never
-	// dialed and nothing is written.
+	// plaintext address before it builds the request, so the name is never dialed and nothing is written.
 	_, port, err := net.SplitHostPort(local)
 	if err != nil {
 		t.Fatal(err)
@@ -1209,8 +1199,8 @@ const (
 	exitUsage   = 2
 )
 
-// buildClient builds the profgate binary under the e2e Go build tag, which
-// compiles in the test-only seams the client scenarios drive, into the
+// buildClient builds the profgate binary under the e2e Go build tag,
+// which compiles in the test-only seams the client scenarios drive, into the
 // test's temporary directory and returns its path.
 // The gateway image is built without it: ko's --tags names an image tag,
 // not a Go build tag.
@@ -1238,8 +1228,7 @@ func clientEnv(home string, extra ...string) []string {
 	return append(env, extra...)
 }
 
-// runClient runs the client binary with exactly env, stdin closed, and
-// returns its stdout, stderr, and exit code.
+// runClient runs the client binary with exactly env, stdin closed, and returns its stdout, stderr, and exit code.
 func runClient(t *testing.T, bin string, env []string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), bin, args...) //nolint:gosec // the test built the binary and composes its arguments
@@ -1265,8 +1254,7 @@ const (
 	// clientContext is the context name the oidc lane logs in under; the
 	// login creates the entry, and the cache entry carries the same name.
 	clientContext = "e2e"
-	// cacheDir and contextsFile are where the client keeps its state under
-	// the two XDG directories clientEnv points into home.
+	// cacheDir and contextsFile are where the client keeps its state under the two XDG directories clientEnv points into home.
 	cacheDir     = "state/profgate/tokens"
 	contextsFile = "config/profgate/config.yaml"
 )
@@ -1274,9 +1262,9 @@ const (
 // clientOIDCSteps runs the profgate client against the oidc gateway's
 // port-forward: /v1/auth reports the device login, a login completes once
 // the lane approves the user code at Dex, whoami answers from the cache,
-// the cache and context files carry what the login recorded, logout removes
-// the cache, and a login polling with a verifier that does not match its
-// challenge is refused by Dex, which is what proves PKCE is enforced.
+// the cache and context files carry what the login recorded, logout removes the cache,
+// and a login polling with a verifier that does not match its challenge is refused by Dex,
+// which is what proves PKCE is enforced.
 func clientOIDCSteps(t *testing.T, h *Harness, local string, gwCA, dexCA authority, dex *dexServer, browser *http.Client, password string) {
 	t.Helper()
 
@@ -1311,9 +1299,9 @@ func clientOIDCSteps(t *testing.T, h *Harness, local string, gwCA, dexCA authori
 		}
 	}
 	env := clientEnv(home)
-	// The context names the entry the login creates; the forward is dialed
-	// by address and the certificate is verified for the name it was issued
-	// to; the issuer is trusted through its own authority.
+	// The context names the entry the login creates;
+	// the forward is dialed by address and the certificate is verified for the name it was issued to;
+	// the issuer is trusted through its own authority.
 	server := []string{"--context", clientContext, "--server", "https://" + local, "--server-name", tlsHost,
 		"--ca-file", gwCAFile, "--issuer-ca-file", dexCAFile}
 	cacheFile := filepath.Join(home, cacheDir, clientContext+".json")
@@ -1345,8 +1333,7 @@ func clientOIDCSteps(t *testing.T, h *Harness, local string, gwCA, dexCA authori
 		}
 	}
 
-	// The cache entry is private, bound to the gateway's origin, and holds
-	// the refresh token offline_access asked for.
+	// The cache entry is private, bound to the gateway's origin, and holds the refresh token offline_access asked for.
 	var entry struct {
 		Origin       string `json:"origin"`
 		Issuer       string `json:"issuer"`
@@ -1396,11 +1383,10 @@ func clientOIDCSteps(t *testing.T, h *Harness, local string, gwCA, dexCA authori
 	}
 
 	// PKCE is proven negatively: the device request carries the challenge of
-	// the verifier the client generated, the poll sends another valid
-	// verifier, and Dex refuses the approved code with invalid_grant,
+	// the verifier the client generated, the poll sends another valid verifier,
+	// and Dex refuses the approved code with invalid_grant,
 	// the value its device token handler sends for a wrong code_verifier.
-	// The code is approved first, because a refusal of a pending code would
-	// prove only that it was pending.
+	// The code is approved first, because a refusal of a pending code would prove only that it was pending.
 	mismatched := append(clientEnv(home), "PROFGATE_E2E_PKCE_VERIFIER_OVERRIDE="+otherVerifier(t))
 	run = startClient(t, bin, mismatched, append([]string{"login"}, server...)...)
 	code, _, complete = deviceLines(t, run, dex.issuer)
@@ -1415,9 +1401,7 @@ func clientOIDCSteps(t *testing.T, h *Harness, local string, gwCA, dexCA authori
 	}
 }
 
-// deviceLines waits for the three lines login prints before it polls and
-// returns the user code, the verification URI, and the complete URI, checking
-// their order and that both URIs are the issuer's.
+// deviceLines waits for the three lines login prints before it polls and returns the user code, the verification URI, and the complete URI, checking their order and that both URIs are the issuer's.
 func deviceLines(t *testing.T, run *clientRun, issuer string) (code, verification, complete string) {
 	t.Helper()
 	var lines []string
@@ -1447,10 +1431,8 @@ func deviceLines(t *testing.T, run *clientRun, issuer string) (code, verificatio
 
 // approveDevice approves a user code at Dex the way a browser would: the
 // complete verification URI is opened, its form is submitted with the code,
-// the password form that follows is submitted, and the redirects are followed
-// to the page that confirms the device.
-// The client and the headers are the ones the browser walk sends to Dex's
-// password form.
+// the password form that follows is submitted, and the redirects are followed to the page that confirms the device.
+// The client and the headers are the ones the browser walk sends to Dex's password form.
 func approveDevice(t *testing.T, c *http.Client, issuer, complete, code, password string) {
 	t.Helper()
 	formHeaders := http.Header{"Content-Type": {"application/x-www-form-urlencoded"}}
@@ -1505,8 +1487,7 @@ func otherVerifier(t *testing.T) string {
 
 const (
 	// keycloakName is the Deployment, Service, and label value in
-	// keycloak.yaml; keycloakNodePort is the Service's NodePort, published
-	// for the same reason as Dex's.
+	// keycloak.yaml; keycloakNodePort is the Service's NodePort, published for the same reason as Dex's.
 	keycloakName     = "keycloak"
 	keycloakNodePort = "30443"
 	keycloakManifest = "test/e2e/keycloak.yaml"
@@ -1514,9 +1495,8 @@ const (
 	// keycloakTLSSecret its certificate.
 	keycloakConfigMap = "keycloak-config"
 	keycloakTLSSecret = "keycloak-tls" //nolint:gosec // the Secret's name, not its contents
-	// keycloakRealmFile is the realm export the scenario imports, the one
-	// docs/authentication.md records as verified by hand; keycloakRealm,
-	// keycloakUser, keycloakPassword, and keycloakGroup are what it holds.
+	// keycloakRealmFile is the realm export the scenario imports, the one docs/authentication.md records as verified by hand;
+	// keycloakRealm, keycloakUser, keycloakPassword, and keycloakGroup are what it holds.
 	keycloakRealmFile = "docs/keycloak-realm.json"
 	keycloakRealm     = "profgate"
 	keycloakUser      = "alice"
@@ -1524,8 +1504,7 @@ const (
 	keycloakGroup     = "engineering"
 	// keycloakTokenLifespan is the client's access.token.lifespan in the
 	// lane's copy of the realm, in seconds: Keycloak issues its ID token for
-	// the same span, so a login is stale within the scenario and the refresh
-	// is observed.
+	// the same span, so a login is stale within the scenario and the refresh is observed.
 	// The committed export keeps Keycloak's default.
 	keycloakTokenLifespan = 60
 	// keycloakRefreshDeadline bounds the wait for that ID token to expire.
@@ -1543,8 +1522,7 @@ type keycloakServer struct {
 	issuer string // https://<addr>/realms/<keycloakRealm>
 }
 
-// keycloakRealmJSON is the committed realm export with the client's token
-// lifespan shortened to keycloakTokenLifespan.
+// keycloakRealmJSON is the committed realm export with the client's token lifespan shortened to keycloakTokenLifespan.
 func keycloakRealmJSON(t *testing.T, h *Harness) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(h.root, keycloakRealmFile))
@@ -1578,8 +1556,7 @@ func keycloakRealmJSON(t *testing.T, h *Harness) string {
 	return string(marshal(realm))
 }
 
-// deployKeycloak writes Keycloak's realm, hostname, and certificate, applies
-// keycloak.yaml into ns, and waits for the rollout.
+// deployKeycloak writes Keycloak's realm, hostname, and certificate, applies keycloak.yaml into ns, and waits for the rollout.
 // nodeIP is the address the issuer is published at, which ca must certify.
 func (h *Harness) deployKeycloak(ctx context.Context, ns string, ca authority, nodeIP, realmJSON string) (*keycloakServer, error) {
 	if err := h.applyNamedTLSSecret(ctx, ns, keycloakTLSSecret, ca.certPEM, ca.keyPEM); err != nil {
@@ -1620,8 +1597,7 @@ func (h *Harness) deployKeycloak(ctx context.Context, ns string, ca authority, n
 // PKCE challenge.
 // The scope list is openid alone: Keycloak issues a refresh token bound to
 // the SSO session without offline_access, and with it would issue an offline
-// token instead, which needs the offline_access realm role on the user and
-// carries no expiry.
+// token instead, which needs the offline_access realm role on the user and carries no expiry.
 func keycloakAuthBlock(issuer string) string {
 	return fmt.Sprintf(`auth:
   mode: oidc
@@ -1784,8 +1760,8 @@ func scenarioAuthOIDCKeycloak(t *testing.T, h *Harness) {
 		t.Fatalf("the cached token expires in %v; the realm's client issues one for %ds", lifespan.Round(time.Second), keycloakTokenLifespan)
 	}
 
-	// Once the ID token has expired, a profile is still fetched: the refresh
-	// ran first and the cache holds the token it produced.
+	// Once the ID token has expired, a profile is still fetched:
+	// the refresh ran first and the cache holds the token it produced.
 	err = poll(ctx, keycloakRefreshDeadline, func(context.Context) (bool, error) {
 		return time.Now().After(entry.ExpiresAt), nil
 	})
@@ -1827,9 +1803,9 @@ func scenarioAuthOIDCKeycloak(t *testing.T, h *Harness) {
 		t.Fatalf("the refresh token after logout: status %d: %s, want 400 invalid_grant", revoked.Status, revoked.Body)
 	}
 
-	// PKCE is proven negatively, as under Dex: the code is approved, the poll
-	// sends another valid verifier, and Keycloak refuses the approved code
-	// with invalid_grant, its value for a failed PKCE verification.
+	// PKCE is proven negatively, as under Dex:
+	// the code is approved, the poll sends another valid verifier,
+	// and Keycloak refuses the approved code with invalid_grant, its value for a failed PKCE verification.
 	mismatched := append(clientEnv(home), "PROFGATE_E2E_PKCE_VERIFIER_OVERRIDE="+otherVerifier(t))
 	run = startClient(t, bin, mismatched, append([]string{"login"}, server...)...)
 	_, _, complete = deviceLines(t, run, kc.issuer)
@@ -1847,11 +1823,10 @@ func scenarioAuthOIDCKeycloak(t *testing.T, h *Harness) {
 // keycloakGrantCode matches the hidden code of Keycloak's grant form.
 var keycloakGrantCode = regexp.MustCompile(`<input[^>]*name="code"[^>]*value="([^"]*)"`)
 
-// approveKeycloakDevice approves a user code at Keycloak the way a browser
-// would: the complete verification URI carries the code and lands on the
-// login form, which is submitted with the realm's user; the grant form that
-// follows, which Keycloak shows for every device login, is accepted; and the
-// redirects are followed to the page that confirms the device.
+// approveKeycloakDevice approves a user code at Keycloak the way a browser would:
+// the complete verification URI carries the code and lands on the login form, which is submitted with the realm's user;
+// the grant form that follows, which Keycloak shows for every device login, is accepted;
+// and the redirects are followed to the page that confirms the device.
 // The client and the headers are the ones the browser walk sends to an
 // issuer's forms.
 func approveKeycloakDevice(t *testing.T, c *http.Client, issuer, complete string) {
@@ -1903,8 +1878,8 @@ type clientRun struct {
 	exited         chan error
 }
 
-// startClient starts the client binary with exactly env, stdin closed, and
-// returns the running invocation; wait collects its result.
+// startClient starts the client binary with exactly env, stdin closed, and returns the running invocation;
+// wait collects its result.
 func startClient(t *testing.T, bin string, env []string, args ...string) *clientRun {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), bin, args...) //nolint:gosec // the test built the binary and composes its arguments
@@ -1949,8 +1924,7 @@ func (r *clientRun) wait(t *testing.T) (stdout, stderr string, code int) {
 	return r.stdout.String(), r.stderr.String(), code
 }
 
-// lockedBuffer is a bytes.Buffer the process writes into while the test
-// reads what it has printed so far.
+// lockedBuffer is a bytes.Buffer the process writes into while the test reads what it has printed so far.
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer

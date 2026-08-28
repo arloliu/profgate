@@ -27,8 +27,7 @@ type Whoami struct {
 }
 
 // LoginInput is everything login needs: the resolved settings, the gateway
-// client without a credential, the issuer client, the store, the flags that
-// override what /v1/auth reported, the clock, and the two writers.
+// client without a credential, the issuer client, the store, the flags that override what /v1/auth reported, the clock, and the two writers.
 type LoginInput struct {
 	Settings Settings
 	Gateway  *Client
@@ -51,8 +50,8 @@ type LoginFlags struct {
 	LoginTimeout                              time.Duration
 }
 
-// LogoutInput is everything logout needs: the resolved settings, the issuer
-// client for revocation, the store, and the two writers.
+// LogoutInput is everything logout needs:
+// the resolved settings, the issuer client for revocation, the store, and the two writers.
 type LogoutInput struct {
 	Settings Settings
 	Issuer   *Issuer
@@ -61,8 +60,7 @@ type LogoutInput struct {
 	Stderr   io.Writer // the revocation warning
 }
 
-// AuthDiagnostic wraps a 401 answered to a token the client believes valid
-// with the issuer and the client identifier the token was obtained for,
+// AuthDiagnostic wraps a 401 answered to a token the client believes valid with the issuer and the client identifier the token was obtained for,
 // which is the audience under tokenType id.
 type AuthDiagnostic struct {
 	Issuer, ClientID string
@@ -75,8 +73,8 @@ func (d *AuthDiagnostic) Error() string {
 
 func (d *AuthDiagnostic) Unwrap() error { return d.Err }
 
-// PKCEFlag turns --pkce and --no-pkce into what LoginFlags carries: nil when
-// neither was given, and a usage error when both were.
+// PKCEFlag turns --pkce and --no-pkce into what LoginFlags carries:
+// nil when neither was given, and a usage error when both were.
 func PKCEFlag(pkce, noPKCE bool) (*bool, error) {
 	switch {
 	case pkce && noPKCE:
@@ -130,8 +128,7 @@ func Login(ctx context.Context, in LoginInput) (Whoami, error) {
 	}
 	// The plaintext rule applies before the unauthenticated GET /v1/auth,
 	// not only where a credential is sent: over http:// to a non-loopback
-	// host the issuer that route names could be anyone's, and the device
-	// grant would run against it.
+	// host the issuer that route names could be anyone's, and the device grant would run against it.
 	if _, err := checkPlaintext(in.Settings.Server); err != nil {
 		return Whoami{}, err
 	}
@@ -258,8 +255,8 @@ func (f LoginFlags) apply(s AuthSnap) AuthSnap {
 	return s
 }
 
-// loginOIDC is the device grant: discovery, the device request, the two
-// lines on stderr, the poll, the cache write under the lock, and whoami.
+// loginOIDC is the device grant:
+// discovery, the device request, the two lines on stderr, the poll, the cache write under the lock, and whoami.
 func loginOIDC(ctx context.Context, in LoginInput, snap AuthSnap, timeout time.Duration) (Whoami, error) {
 	m, err := in.Issuer.Discover(ctx, snap.Issuer)
 	if err != nil {
@@ -335,8 +332,7 @@ func writeEntry(ctx context.Context, in LoginInput, e Entry) (err error) {
 	return in.Store.Write(in.Settings.CacheName, e)
 }
 
-// loginBasic verifies the prompted credential against whoami, stores
-// nothing, and says which two variables the next command reads.
+// loginBasic verifies the prompted credential against whoami, stores nothing, and says which two variables the next command reads.
 func loginBasic(ctx context.Context, in LoginInput) (Whoami, error) {
 	if in.Basic == nil {
 		return Whoami{}, fmt.Errorf("%w: the gateway authenticates with a user name and password, and no prompt is available", ErrUsage)
@@ -358,8 +354,8 @@ func loginBasic(ctx context.Context, in LoginInput) (Whoami, error) {
 	return w, nil
 }
 
-// recordLogin makes the selected context's auth block the snapshot the login
-// used and writes the file; --server alone with no context writes nothing.
+// recordLogin makes the selected context's auth block the snapshot the login used and writes the file;
+// --server alone with no context writes nothing.
 // The cache entry stays when the write fails: the login succeeded and the
 // snapshot did not record it.
 func recordLogin(in LoginInput, snap AuthSnap) error {
@@ -402,8 +398,7 @@ func unauthorized(err error) bool {
 		(errors.As(err, &se) && se.Status == http.StatusUnauthorized)
 }
 
-// Logout takes the lock, revokes the refresh token where the issuer
-// publishes an endpoint, and deletes the entry.
+// Logout takes the lock, revokes the refresh token where the issuer publishes an endpoint, and deletes the entry.
 // A revocation failure is a warning, because a local credential outliving a
 // failed revocation is the worse outcome; a deletion failure says the
 // credential remains and names the file.
@@ -441,9 +436,7 @@ func Logout(ctx context.Context, in LogoutInput) (err error) {
 	return nil
 }
 
-// revoke posts the refresh token to the revocation endpoint when discovery
-// publishes one, and warns on stderr when the issuer cannot be reached or
-// refuses.
+// revoke posts the refresh token to the revocation endpoint when discovery publishes one, and warns on stderr when the issuer cannot be reached or refuses.
 func revoke(ctx context.Context, in LogoutInput, e Entry) {
 	m, err := in.Issuer.Discover(ctx, e.Issuer)
 	if err != nil {

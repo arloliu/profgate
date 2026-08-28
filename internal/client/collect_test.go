@@ -186,8 +186,7 @@ func TestCollectionPath(t *testing.T) {
 	}
 }
 
-// pollClient is a Client over handler on a fake clock, so a wait advances the
-// clock instead of sleeping.
+// pollClient is a Client over handler on a fake clock, so a wait advances the clock instead of sleeping.
 func pollClient(t *testing.T, handler http.HandlerFunc) (*Client, *fakeClock) {
 	t.Helper()
 	srv := httptest.NewServer(handler)

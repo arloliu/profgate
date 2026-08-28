@@ -8,8 +8,7 @@ import (
 )
 
 // writeTable prints a header and rows: space-padded columns when stdout is
-// a terminal, one tab between columns when it is not, so a pipe into cut
-// behaves and a terminal reads.
+// a terminal, one tab between columns when it is not, so a pipe into cut behaves and a terminal reads.
 // A nil header is a key-and-value listing with no header line.
 // An empty list prints its header and nothing else, never "no results",
 // because the header is what tells a script the request succeeded.

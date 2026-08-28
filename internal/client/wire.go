@@ -3,8 +3,7 @@ package client
 import "fmt"
 
 // The response shapes the table renderer decodes, one per listing route.
-// Each holds what a table prints and nothing else; --output json never
-// passes through them.
+// Each holds what a table prints and nothing else; --output json never passes through them.
 
 // WhoamiResponse is GET /v1/whoami: the principal and its realm.
 type WhoamiResponse struct {
@@ -74,8 +73,7 @@ type Target struct {
 	Version string `json:"version"`
 }
 
-// CollectionsResponse is GET .../collections: the Service's records, newest
-// first.
+// CollectionsResponse is GET .../collections: the Service's records, newest first.
 type CollectionsResponse struct {
 	Collections []CollectionSummary `json:"collections"`
 }
@@ -89,8 +87,7 @@ type CollectionSummary struct {
 	CreatedAt string `json:"createdAt"`
 }
 
-// CollectionRecord is GET /v1/collections/{id}: the fields the table prints
-// of the full stored record.
+// CollectionRecord is GET /v1/collections/{id}: the fields the table prints of the full stored record.
 type CollectionRecord struct {
 	ID       string             `json:"id"`
 	State    string             `json:"state"`
@@ -109,8 +106,7 @@ type CollectionProgress struct {
 }
 
 // PolicyResponse is the body of the policy route, on a read and on a write:
-// the source, the effective policy, the violations, and the two update
-// fields a stored override carries.
+// the source, the effective policy, the violations, and the two update fields a stored override carries.
 // Durations stay the strings the gateway sent and replicas is "all" or a
 // count, so the table prints each unchanged.
 type PolicyResponse struct {

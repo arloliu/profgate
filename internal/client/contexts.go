@@ -23,8 +23,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// File is the contexts file, read with KnownFields(true) so an unknown key
-// at any level is an error naming the key.
+// File is the contexts file, read with KnownFields(true) so an unknown key at any level is an error naming the key.
 type File struct {
 	CurrentContext string             `yaml:"currentContext,omitempty"`
 	Contexts       map[string]Context `yaml:"contexts"`
@@ -32,8 +31,7 @@ type File struct {
 
 // Context is one gateway and the authentication snapshot the last login recorded for it.
 // Normal commands act on that snapshot and never read /v1/auth; only login refreshes it.
-// The json tags carry the same keys, which is what context show prints
-// under --output json.
+// The json tags carry the same keys, which is what context show prints under --output json.
 type Context struct {
 	Server     string   `yaml:"server" json:"server"`
 	CAFile     string   `yaml:"caFile,omitempty" json:"caFile,omitempty"`
@@ -60,8 +58,7 @@ type Overrides struct {
 }
 
 // Settings is one command's resolved configuration: the context it selected,
-// every value after the default-file-environment-flag order, the canonical
-// origin of the server, and the token cache entry name bound to it.
+// every value after the default-file-environment-flag order, the canonical origin of the server, and the token cache entry name bound to it.
 type Settings struct {
 	ContextName  string
 	Context      Context
@@ -95,8 +92,7 @@ func isDNSLabel(s string) bool {
 	return len(s) <= maxDNSLabelBytes && dnsLabel.MatchString(s)
 }
 
-// isDNSName reports whether s is RFC 1123 labels joined by dots, with no
-// trailing dot.
+// isDNSName reports whether s is RFC 1123 labels joined by dots, with no trailing dot.
 func isDNSName(s string) bool {
 	if s == "" || len(s) > maxDNSNameBytes {
 		return false
@@ -156,8 +152,7 @@ func saveFile(path string, f *File, write writeFunc) error {
 	return nil
 }
 
-// RecordLogin makes the selected context's auth block the snapshot a login
-// used and touches nothing else in it.
+// RecordLogin makes the selected context's auth block the snapshot a login used and touches nothing else in it.
 // A selected name with no entry gets one from the resolved server,
 // certificate file, server name, and namespace, which is the first-run shape
 // of profgate login --context <name> --server <url>.
@@ -187,10 +182,11 @@ func UseContext(f *File, name string) error {
 // The lock is taken first so a refresh in another process cannot write a
 // fresh token into the entry being deleted, which would leave a credential
 // on disk with no context that names it.
-// When the cache deletion fails the file is not saved, so the context still
-// names a credential that still exists; when the save fails the credential
-// is already gone, and running again completes the removal because Delete
-// treats a missing entry as done.
+// When the cache deletion fails the file is not saved,
+// so the context still names a credential that still exists;
+// when the save fails the credential is already gone,
+// and running again completes the removal
+// because Delete treats a missing entry as done.
 func DeleteContext(ctx context.Context, f *File, name string, s *Store, save func(*File) error) (err error) {
 	if err := requireContext(f, name); err != nil {
 		return err
@@ -222,8 +218,9 @@ func requireContext(f *File, name string) error {
 	return fmt.Errorf("%w: context %q is not in the contexts file", ErrUsage, name)
 }
 
-// validateFile checks every key of the file, not only the ones a command
-// happens to read, so a hand-written file is refused at load.
+// validateFile checks every key of the file,
+// not only the ones a command happens to read,
+// so a hand-written file is refused at load.
 func validateFile(f *File) error {
 	for name, c := range f.Contexts {
 		if !isDNSLabel(name) {
@@ -376,8 +373,8 @@ func Resolve(f *File, o Overrides, getenv func(string) (string, bool)) (Settings
 			s.Context, ok = f.Contexts[s.ContextName]
 		}
 		// A name with no entry is admitted only with a server from the flag
-		// or the environment: profgate login --context <name> --server <url>
-		// is the first-run shape, and RecordLogin creates the entry.
+		// or the environment:
+		// profgate login --context <name> --server <url> is the first-run shape, and RecordLogin creates the entry.
 		if !ok && o.Server == "" && lookup("PROFGATE_SERVER") == "" {
 			return Settings{}, fmt.Errorf("context %q is not in the contexts file", s.ContextName)
 		}
@@ -447,9 +444,8 @@ func xdgBase(getenv func(string) (string, bool), variable, fallback string) (str
 	return filepath.Join(home, fallback), nil
 }
 
-// CanonicalOrigin is the origin a credential is bound to: scheme and host
-// lowercased, an IPv6 host in brackets, the port always explicit, and no
-// path, query, fragment, or userinfo.
+// CanonicalOrigin is the origin a credential is bound to:
+// scheme and host lowercased, an IPv6 host in brackets, the port always explicit, and no path, query, fragment, or userinfo.
 func CanonicalOrigin(u *url.URL) string {
 	scheme := strings.ToLower(u.Scheme)
 	host := strings.ToLower(u.Hostname())

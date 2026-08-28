@@ -85,8 +85,8 @@ const (
 	// dexImage is the OpenID Connect issuer the auth scenarios log in
 	// through; TestMain loads it the way it loads the NATS server.
 	dexImage = "ghcr.io/dexidp/dex:v2.45.1"
-	// keycloakImage is the second issuer, the one docs/keycloak-realm.json
-	// was verified against; the Keycloak scenario imports that realm.
+	// keycloakImage is the second issuer, the one docs/keycloak-realm.json was verified against;
+	// the Keycloak scenario imports that realm.
 	keycloakImage = "quay.io/keycloak/keycloak:26.7.2"
 
 	// authSecret is the Secret deploy/base mounts for authentication, and
@@ -577,10 +577,10 @@ func (h *Harness) forwardGateways(ctx context.Context) (func(), error) {
 
 // forward opens a port-forward to pod and returns the local ports in the order requested.
 // The forward runs until stop is called; ctx only bounds opening it.
-// One connection the Pod resets ends the whole session: client-go's
-// handleConnection closes the stream connection on any message from the
-// kubelet's error stream, ForwardPorts returns, and its deferred Close drops
-// every local listener, so the next dial is refused.
+// One connection the Pod resets ends the whole session:
+// client-go's handleConnection closes the stream connection on any message from the
+// kubelet's error stream, ForwardPorts returns, and its deferred Close drops every local listener,
+// so the next dial is refused.
 // The session is reopened on the same local ports when that happens, so the
 // address a caller holds stays valid for as long as the Pod lives.
 func (h *Harness) forward(ctx context.Context, ns, pod string, ports []string) ([]uint16, func(), error) {
@@ -639,8 +639,7 @@ func (h *Harness) forward(ctx context.Context, ns, pod string, ports []string) (
 
 // openForward starts one port-forward session over dialer and waits for its
 // listeners; done carries ForwardPorts' result once the session ends.
-// A session still opening when ctx ends or stopCh closes is left to the
-// caller, whose close of stopCh ends it.
+// A session still opening when ctx ends or stopCh closes is left to the caller, whose close of stopCh ends it.
 func openForward(ctx context.Context, dialer httpstream.Dialer, ports []string, stopCh chan struct{}) ([]portforward.ForwardedPort, <-chan error, error) {
 	readyCh := make(chan struct{})
 	var errOut bytes.Buffer

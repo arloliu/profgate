@@ -22,14 +22,14 @@ const (
 	// issuerStepTimeout bounds each of connecting, the TLS handshake, and
 	// waiting for response headers.
 	issuerStepTimeout = 5 * time.Second
-	// issuerRequestTimeout bounds one whole request to the issuer; it is a
-	// setting of the two http.Clients, not a deadline computed from a clock.
+	// issuerRequestTimeout bounds one whole request to the issuer;
+	// it is a setting of the two http.Clients,
+	// not a deadline computed from a clock.
 	issuerRequestTimeout = 10 * time.Second
 	// maxIssuerBodyBytes is the largest body the client reads from the
 	// issuer; one more byte than that fails the request.
 	maxIssuerBodyBytes = 1 << 20
-	// maxIssuerRedirects is how many redirects discovery follows; the
-	// device, token, and revocation endpoints follow none.
+	// maxIssuerRedirects is how many redirects discovery follows; the device, token, and revocation endpoints follow none.
 	maxIssuerRedirects = 3
 	// discoveryPath is where an OpenID Connect issuer publishes its metadata.
 	discoveryPath = "/.well-known/openid-configuration"
@@ -46,8 +46,7 @@ type Issuer struct {
 	verbose io.Writer
 }
 
-// IssuerOptions is everything an Issuer is built from; every field a test
-// replaces is a seam.
+// IssuerOptions is everything an Issuer is built from; every field a test replaces is a seam.
 type IssuerOptions struct {
 	IssuerCAFile string
 	Transport    http.RoundTripper // nil means one built from IssuerCAFile
@@ -56,10 +55,8 @@ type IssuerOptions struct {
 	Verbose      io.Writer // nil prints no request lines
 }
 
-// Metadata is what discovery published, each endpoint an absolute https URL
-// with no userinfo and no fragment.
-// The device and revocation endpoints are empty when the issuer publishes
-// none; the token endpoint is required.
+// Metadata is what discovery published, each endpoint an absolute https URL with no userinfo and no fragment.
+// The device and revocation endpoints are empty when the issuer publishes none; the token endpoint is required.
 type Metadata struct {
 	Issuer                      string
 	DeviceAuthorizationEndpoint string
@@ -77,8 +74,8 @@ type TokenResponse struct {
 	RefreshExpiresIn int    `json:"refresh_expires_in"`
 }
 
-// IssuerError is a 4xx from an issuer endpoint: the status and the issuer's
-// own error value, and nothing else from the body.
+// IssuerError is a 4xx from an issuer endpoint:
+// the status and the issuer's own error value, and nothing else from the body.
 // Code is empty when the body is not the RFC 6749 error shape.
 type IssuerError struct {
 	Status int
@@ -92,8 +89,8 @@ func (e *IssuerError) Error() string {
 	return "the issuer answered " + (&StatusError{Status: e.Status}).Error()
 }
 
-// NewIssuer builds the Issuer; the transport comes from IssuerCAFile when
-// none is given, and a nil clock or sleeper is the real one.
+// NewIssuer builds the Issuer;
+// the transport comes from IssuerCAFile when none is given, and a nil clock or sleeper is the real one.
 func NewIssuer(o IssuerOptions) (*Issuer, error) {
 	rt := o.Transport
 	if rt == nil {
@@ -130,8 +127,7 @@ func NewIssuer(o IssuerOptions) (*Issuer, error) {
 		post: &http.Client{
 			Transport: rt,
 			Timeout:   issuerRequestTimeout,
-			// A 307 or 308 would replay the form, device code included, to
-			// whatever host the redirect names.
+			// A 307 or 308 would replay the form, device code included, to whatever host the redirect names.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		now:     now,
@@ -140,8 +136,8 @@ func NewIssuer(o IssuerOptions) (*Issuer, error) {
 	}, nil
 }
 
-// newIssuerTransport builds the transport: the system pool plus caFile when
-// given, never a proxy from the environment, and a timeout on each step.
+// newIssuerTransport builds the transport:
+// the system pool plus caFile when given, never a proxy from the environment, and a timeout on each step.
 func newIssuerTransport(caFile string) (*http.Transport, error) {
 	pool, err := x509.SystemCertPool()
 	if err != nil {
@@ -173,8 +169,7 @@ type discoveryDocument struct {
 	RevocationEndpoint          string `json:"revocation_endpoint"`
 }
 
-// Discover fetches <issuer>/.well-known/openid-configuration and requires the
-// document's issuer to equal the configured value byte for byte.
+// Discover fetches <issuer>/.well-known/openid-configuration and requires the document's issuer to equal the configured value byte for byte.
 func (i *Issuer) Discover(ctx context.Context, issuer string) (Metadata, error) {
 	base, err := checkEndpoint("issuer", issuer)
 	if err != nil {
@@ -222,8 +217,7 @@ func (i *Issuer) Discover(ctx context.Context, issuer string) (Metadata, error) 
 // postForm posts one form to an endpoint and decodes the bounded response:
 // a 200 into TokenResponse, a 4xx into *IssuerError, and a 5xx or a
 // transport failure into the errors the gateway client already uses.
-// name is what the --verbose line calls the endpoint: device, token, or
-// revocation.
+// name is what the --verbose line calls the endpoint: device, token, or revocation.
 func (i *Issuer) postForm(ctx context.Context, name, endpoint string, form url.Values) (TokenResponse, error) {
 	body, err := i.postFormBody(ctx, name, endpoint, form)
 	if err != nil {
@@ -236,8 +230,8 @@ func (i *Issuer) postForm(ctx context.Context, name, endpoint string, form url.V
 	return tr, nil
 }
 
-// postFormBody posts one form to an endpoint and returns a 200's bounded
-// body; the device endpoint decodes its own shape from it.
+// postFormBody posts one form to an endpoint and returns a 200's bounded body;
+// the device endpoint decodes its own shape from it.
 func (i *Issuer) postFormBody(ctx context.Context, name, endpoint string, form url.Values) ([]byte, error) {
 	if _, err := checkEndpoint(name, endpoint); err != nil {
 		return nil, err
@@ -251,8 +245,8 @@ func (i *Issuer) postFormBody(ctx context.Context, name, endpoint string, form u
 	return i.do(i.post, req, name)
 }
 
-// do sends one request, prints the --verbose line, and returns a 200's
-// bounded body; any other status becomes the error its class selects.
+// do sends one request, prints the --verbose line, and returns a 200's bounded body;
+// any other status becomes the error its class selects.
 func (i *Issuer) do(c *http.Client, req *http.Request, name string) ([]byte, error) {
 	start := i.now()
 	resp, err := c.Do(req)
@@ -278,8 +272,7 @@ func (i *Issuer) do(c *http.Client, req *http.Request, name string) ([]byte, err
 	return nil, &StatusError{Status: resp.StatusCode}
 }
 
-// issuerCode is the error member of an RFC 6749 error body, and the empty
-// string when the body is anything else.
+// issuerCode is the error member of an RFC 6749 error body, and the empty string when the body is anything else.
 func issuerCode(resp *http.Response, body []byte) string {
 	mediaType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
 	if strings.TrimSpace(strings.ToLower(mediaType)) != "application/json" {

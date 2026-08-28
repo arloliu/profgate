@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// recordingTransport answers every request with one body and records what
-// it saw: the method, the path, the query, and how many requests arrived.
+// recordingTransport answers every request with one body and records what it saw:
+// the method, the path, the query, and how many requests arrived.
 type recordingTransport struct {
 	body     string
 	status   int

@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// credFixture is one ResolveCredential call: a store, an issuer whose
-// transport fails the test, and settings under one mode.
+// credFixture is one ResolveCredential call:
+// a store, an issuer whose transport fails the test, and settings under one mode.
 type credFixture struct {
 	t       *testing.T
 	store   *Store
@@ -24,8 +24,8 @@ type credFixture struct {
 	writes  int
 }
 
-// newCred builds the fixture under mode, with the store's write seam
-// counting every call, because no token source may write the cache.
+// newCred builds the fixture under mode, with the store's write seam counting every call,
+// because no token source may write the cache.
 func newCred(t *testing.T, mode string) *credFixture {
 	t.Helper()
 	store, clock, dir := testStore(t)

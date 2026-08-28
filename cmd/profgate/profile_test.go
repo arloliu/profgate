@@ -11,8 +11,7 @@ import (
 	"testing"
 )
 
-// profileResponse is a 200 carrying profile bytes and the three target
-// headers, the body served by whatever reader the test passes.
+// profileResponse is a 200 carrying profile bytes and the three target headers, the body served by whatever reader the test passes.
 func profileResponse(body io.Reader) *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
@@ -252,8 +251,7 @@ func TestProfileCancelledMidBodyRemovesThePartialFile(t *testing.T) {
 }
 
 // openRun is what the runner seam recorded: the name, the arguments, the
-// context's error at the call, and what the file and its directory looked
-// like while the viewer ran.
+// context's error at the call, and what the file and its directory looked like while the viewer ran.
 type openRun struct {
 	name     string
 	args     []string
