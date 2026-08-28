@@ -1947,8 +1947,11 @@ Why kind rather than k3s for the old versions:
 - `PROFGATE_E2E_KEEP=1` leaves the cluster running; a cluster whose name and image match is reused.
 - Images (gateway and test application) are built with `ko build --local` and loaded with `kind load`.
 - Manifests are `deploy/` plus kustomize overlays under `test/e2e/`:
-  image substitution, `replicas: 2`, the default gateway's `allowedSelections`,
+  image substitution, `replicas: 2`,
   and ClusterRole variants missing `watch` and missing `get`.
+  The default gateway's configuration, its `allowedSelections` included,
+  is composed by the harness in Go and applied as a ConfigMap patch,
+  so one function shapes every gateway the suite deploys.
 - The reduced-ClusterRole scenario runs a second gateway Deployment with its own ServiceAccount
   and ClusterRoleBinding so it cannot disturb the main gateway.
 - The default gateway's `allowedSelections` holds `{port: 6061}` and `{portName: pprof-alt}`,
@@ -2680,6 +2683,7 @@ amends the following text.
 | `AGENTS.md` | *Four Specs, All Accepted* | five, adding [`cli.md`](cli.md) |
 | `docs/README.md` | *Where Contributors Start* | [`specs/cli.md`](cli.md) beside the other specs |
 | *Build and Deployment* | the chart's `auth.oidc.cli.enabled` value, default `true`, and the case in which the block is omitted ([`cli.md`](cli.md) *Configuration*) |
+| *Harness* | the default gateway's configuration is composed by the harness in Go and applied as a ConfigMap patch, not carried by an overlay, as the suite already does |
 
 Updated with the implementation:
 [`docs/api.md`](../api.md), [`docs/authentication.md`](../authentication.md),
