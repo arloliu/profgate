@@ -598,7 +598,7 @@ git commit -m "feat(httpapi): port_not_allowed names its field"
 The shape landed with the rename so the tree compiles; this task proves it against the encoded body,
 per [`docs/specs/ui.md`](../specs/ui.md) *Limits* and the listing rows of *Layers*.
 
-- [ ] **Write the shape table**
+- [x] **Write the shape table**
 
 | Configuration | Body |
 |---|---|
@@ -614,9 +614,9 @@ per [`docs/specs/ui.md`](../specs/ui.md) *Limits* and the listing rows of *Layer
 The route keeps everything else *Limits* gives it — `cpuSeconds`, `traceSeconds`, `profiles`, `pgo.enabled` —
 and every authenticated caller reads it, which *Non-disclosure* already accounts for.
 
-- [ ] **Run the tests and watch them fail if the encoder disagrees**
+- [x] **Run the tests and watch them fail if the encoder disagrees**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/

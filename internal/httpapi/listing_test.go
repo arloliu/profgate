@@ -482,7 +482,7 @@ func TestListingWhoami(t *testing.T) {
 func TestListingLimits(t *testing.T) {
 	profiles, _ := json.Marshal(config.Profiles())
 
-	t.Run("numeric default", func(t *testing.T) {
+	t.Run("whole body", func(t *testing.T) {
 		h := listingHarness()
 		h.configure(func(cfg *config.Config) {
 			cfg.Discovery.Pprof = config.PprofConfig{Port: 6060, AllowedSelections: []config.Selection{
@@ -494,30 +494,80 @@ func TestListingLimits(t *testing.T) {
 			cfg.Limits.TraceSeconds = 30
 			cfg.PGO.Enabled = true
 		})
-		rec := httptest.NewRecorder()
-		h.handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, limitsPath, nil))
+		rec := h.do(t, http.MethodGet, limitsPath)
 		expectJSON(t, rec, `{"cpuSeconds":60,"traceSeconds":30,"profiles":`+string(profiles)+
 			`,"pprof":{"default":{"port":6060},"allowedSelections":[{"port":6061},{"portName":"pprof-alt"},{"portName":"*"}]},`+
 			`"pgo":{"enabled":true}}`)
 	})
 
-	t.Run("named default", func(t *testing.T) {
-		h := listingHarness()
-		h.configure(func(cfg *config.Config) { cfg.Discovery.Pprof = config.PprofConfig{PortName: "pprof"} })
-		rec := h.do(t, http.MethodGet, limitsPath)
-		if !strings.Contains(rec.Body.String(), `"default":{"portName":"pprof"}`) {
-			t.Errorf("body = %q", rec.Body.String())
-		}
-	})
-
-	t.Run("empty list", func(t *testing.T) {
-		h := listingHarness()
-		rec := h.do(t, http.MethodGet, limitsPath)
-		body := rec.Body.String()
-		if !strings.Contains(body, `"allowedSelections":[]`) || strings.Contains(body, "null") {
-			t.Errorf("body = %q", body)
-		}
-	})
+	// The pprof object is the configuration as written, in its configured order:
+	// a port is a JSON number, a wildcard is the string "*", every entry has one key,
+	// an entry equal to the default is reported like any other, and an empty list is [].
+	port := func(v string) config.Selection { return config.Selection{Kind: config.SelectionPort, Value: v} }
+	name := func(v string) config.Selection { return config.Selection{Kind: config.SelectionPortName, Value: v} }
+	table := []struct {
+		name  string
+		pprof config.PprofConfig
+		want  string
+	}{
+		{
+			name:  "numeric default, empty list",
+			pprof: config.PprofConfig{Port: 6060},
+			want:  `{"default":{"port":6060},"allowedSelections":[]}`,
+		},
+		{
+			name:  "named default, empty list",
+			pprof: config.PprofConfig{PortName: "pprof"},
+			want:  `{"default":{"portName":"pprof"},"allowedSelections":[]}`,
+		},
+		{
+			name:  "a port then a name",
+			pprof: config.PprofConfig{Port: 6060, AllowedSelections: []config.Selection{port("6061"), name("pprof-alt")}},
+			want:  `{"default":{"port":6060},"allowedSelections":[{"port":6061},{"portName":"pprof-alt"}]}`,
+		},
+		{
+			name:  "a name then a port, never sorted",
+			pprof: config.PprofConfig{Port: 6060, AllowedSelections: []config.Selection{name("pprof-alt"), port("6061")}},
+			want:  `{"default":{"port":6060},"allowedSelections":[{"portName":"pprof-alt"},{"port":6061}]}`,
+		},
+		{
+			name:  "port wildcard",
+			pprof: config.PprofConfig{Port: 6060, AllowedSelections: []config.Selection{port("*")}},
+			want:  `{"default":{"port":6060},"allowedSelections":[{"port":"*"}]}`,
+		},
+		{
+			name:  "name wildcard",
+			pprof: config.PprofConfig{PortName: "pprof", AllowedSelections: []config.Selection{name("*")}},
+			want:  `{"default":{"portName":"pprof"},"allowedSelections":[{"portName":"*"}]}`,
+		},
+		{
+			name:  "an entry equal to the default",
+			pprof: config.PprofConfig{Port: 6060, AllowedSelections: []config.Selection{port("6060")}},
+			want:  `{"default":{"port":6060},"allowedSelections":[{"port":6060}]}`,
+		},
+	}
+	for _, tc := range table {
+		t.Run(tc.name, func(t *testing.T) {
+			h := listingHarness()
+			h.configure(func(cfg *config.Config) { cfg.Discovery.Pprof = tc.pprof })
+			rec := h.do(t, http.MethodGet, limitsPath)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "null") {
+				t.Errorf("body carries null: %s", rec.Body.String())
+			}
+			var body struct {
+				Pprof json.RawMessage `json:"pprof"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+			}
+			if got := string(body.Pprof); got != tc.want {
+				t.Errorf("pprof = %s, want %s", got, tc.want)
+			}
+		})
+	}
 
 	t.Run("pgo off", func(t *testing.T) {
 		h := listingHarness()
