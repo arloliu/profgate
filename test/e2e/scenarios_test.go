@@ -257,7 +257,10 @@ func explain(ctx context.Context, c *http.Client, ns, service, query string, abs
 		return tr, fmt.Errorf("GET %s: status %d: %s", rawURL, resp.StatusCode, body)
 	}
 	for _, a := range absent {
-		if a != "" && bytes.Contains(body, []byte(a)) {
+		if a == "" {
+			return tr, fmt.Errorf("GET %s: empty absent entry; the check would match nothing", rawURL)
+		}
+		if bytes.Contains(body, []byte(a)) {
 			return tr, fmt.Errorf("GET %s: response names %q, which the caller may not learn: %s", rawURL, a, body)
 		}
 	}

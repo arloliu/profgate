@@ -380,7 +380,7 @@ class App extends Component {
       return;
     }
     if (!body) {
-      this.setState({ targets: [], targetSummary: null });
+      this.setState({ targets: [], targetSummary: null, pod: "", version: "" });
       this.afterServiceError("targets");
       return;
     }
