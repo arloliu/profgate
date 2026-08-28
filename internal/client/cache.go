@@ -172,11 +172,17 @@ func (s *Store) Lock(ctx context.Context, name string) (func() error, error) {
 // Usable reports whether e may be sent for this command: its origin equals
 // the resolved gateway's byte for byte, and its issuer, client, and token
 // type still match the context.
+// With no snapshot to compare against — --server alone, or a context no
+// login has recorded — the entry carries its own values and only the
+// origin is checked.
 func (e Entry) Usable(s Settings) error {
 	if e.Origin != s.Origin {
-		return fmt.Errorf("the cached token for context %q was obtained for %s, and the command resolves to %s", s.ContextName, e.Origin, s.Origin)
+		return fmt.Errorf("the cached token for %s was obtained for %s, and the command resolves to %s", s.describe(), e.Origin, s.Origin)
 	}
 	a := s.Context.Auth
+	if a.Mode == "" {
+		return nil
+	}
 	switch {
 	case e.Issuer != a.Issuer:
 		return fmt.Errorf("the cached token was issued by %s, and the context names %s", e.Issuer, a.Issuer)

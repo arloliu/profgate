@@ -57,6 +57,18 @@ type cachedCredential struct {
 	issuer   *Issuer
 	settings Settings
 	now      func() time.Time
+	// applied is the entry the last Apply sent, which diagnose reads.
+	applied *Entry
+}
+
+// diagnose wraps a 401 answered to the applied token with the issuer and
+// client identifier it was obtained for, so a reconfigured gateway is
+// diagnosed at the first refusal.
+func (c *cachedCredential) diagnose(err error) error {
+	if c.applied == nil {
+		return err
+	}
+	return &AuthDiagnostic{Issuer: c.applied.Issuer, ClientID: c.applied.ClientID, Err: err}
 }
 
 // CachedCredential is the cached token for the resolved gateway, refreshed
@@ -83,6 +95,7 @@ func (c *cachedCredential) Apply(ctx context.Context, r *http.Request) error {
 	if err := e.Usable(c.settings); err != nil {
 		return fmt.Errorf("%w: %w", err, c.loginNeeded())
 	}
+	c.applied = &e
 	if c.fresh(e) {
 		r.Header.Set("Authorization", "Bearer "+e.Token)
 		return nil

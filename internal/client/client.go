@@ -114,14 +114,29 @@ func (c *Client) Do(ctx context.Context, req Request) (*http.Response, error) {
 		return resp, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := readBounded(resp.Body)
-	if err != nil {
-		return nil, &StatusError{Status: resp.StatusCode}
+	var failure error = &StatusError{Status: resp.StatusCode}
+	if body, err := readBounded(resp.Body); err == nil {
+		if e := decodeEnvelope(resp, body); e != nil {
+			failure = e
+		}
 	}
-	if e := decodeEnvelope(resp, body); e != nil {
-		return nil, e
+	if d, ok := c.credential.(diagnoser); ok && resp.StatusCode == http.StatusUnauthorized {
+		failure = d.diagnose(failure)
 	}
-	return nil, &StatusError{Status: resp.StatusCode}
+	return nil, failure
+}
+
+// diagnoser is a Credential that can say more about a 401 than the gateway
+// does: the cached token knows the issuer and client it was obtained for.
+type diagnoser interface {
+	diagnose(err error) error
+}
+
+// withCredential is the same gateway client speaking as one principal.
+func (c *Client) withCredential(cred Credential) *Client {
+	d := *c
+	d.credential = cred
+	return &d
 }
 
 // JSON issues one request and returns the response body verbatim, which is

@@ -258,6 +258,22 @@ func TestEntryUsable(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("an entry with no snapshot to compare against carries its own values", func(t *testing.T) {
+		s := testSettings(t, "https://profgate.example")
+		s.ContextName = ""
+		s.Context = Context{}
+		s.CacheName = "adhoc-" + strings.Repeat("0", 32)
+		if err := testEntry().Usable(s); err != nil {
+			t.Fatalf("Usable = %v for an ad-hoc entry at the resolved origin", err)
+		}
+		s = testSettings(t, "https://someone-elses.example")
+		s.ContextName = ""
+		s.Context = Context{}
+		if err := testEntry().Usable(s); err == nil {
+			t.Fatal("Usable = nil for an ad-hoc entry at another origin")
+		}
+	})
 }
 
 func TestStoreLock(t *testing.T) {

@@ -148,9 +148,26 @@ func saveFile(path string, f *File, write writeFunc) error {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
 	if err := write(dir, name, data, 0o600); err != nil {
-		return fmt.Errorf("write contexts file: %w", err)
+		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+// RecordLogin makes the selected context's auth block the snapshot a login
+// used and touches nothing else in it.
+// A selected name with no entry gets one from the resolved server,
+// certificate file, server name, and namespace, which is the first-run shape
+// of profgate login --context <name> --server <url>.
+func (f *File) RecordLogin(s Settings, snap AuthSnap) {
+	if f.Contexts == nil {
+		f.Contexts = map[string]Context{}
+	}
+	c, ok := f.Contexts[s.ContextName]
+	if !ok {
+		c = Context{Server: s.Server.String(), CAFile: s.CAFile, ServerName: s.ServerName, Namespace: s.Namespace}
+	}
+	c.Auth = snap
+	f.Contexts[s.ContextName] = c
 }
 
 // validateFile checks every key of the file, not only the ones a command
