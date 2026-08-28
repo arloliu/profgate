@@ -672,7 +672,7 @@ and ends in that single `export` statement and no other export,
 which is what makes cutting the last statement before evaluation safe —
 the interpreter has no module loader and cannot parse `export` ([`docs/specs/ui.md`](../specs/ui.md) *Unit*).
 
-- [ ] **Add the interpreter**
+- [x] **Add the interpreter**
 
 ```bash
 mise exec -- go get github.com/dop251/goja
@@ -682,7 +682,7 @@ It is imported only from `internal/ui/portmodel_test.go`.
 `go.mod` records it as a test-only dependency of this module;
 the `go` directive stays `1.26.0`, which `mise run check` verifies.
 
-- [ ] **Write the model tests**
+- [x] **Write the model tests**
 
 `portmodel_test.go` reads the source from the embedded tree, cuts the trailing `export` statement,
 evaluates the rest in the interpreter, and drives both functions from a table.
@@ -721,9 +721,9 @@ asserting both the `state` and the `params` returned:
 | number `7000`, then number cleared to the empty string | both fields empty | what the menu choice sends |
 | any sequence of edits | the returned `params` never holds both keys, and the state handed in is not mutated | — |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Write the module and move the page onto it**
+- [x] **Write the module and move the page onto it**
 
 `app.js` imports `./portmodel.js` and renders from `deriveControl`.
 `onPortChoice`, `onPortNumber`, and `onPortName` each call `applyInput` with their source and value
@@ -732,7 +732,7 @@ the `portChoice()` method, which today serializes the three fields by hand,
 becomes `applyInput(this.state).params`, so the rules exist in one place.
 `urls.js` stays the only module that spells a `/v1` path.
 
-- [ ] **Let the existing scans see the new file, and hold the page to it**
+- [x] **Let the existing scans see the new file, and hold the page to it**
 
 `consoleSources()` in `scan_test.go` gains `portmodel.js`, so the injection and path-literal scans cover it;
 `ui_test.go` gains its content type and includes it in the tree-hash cases;
@@ -743,7 +743,7 @@ no `import` and no `import(` at all, where `app.js` may hold relative ones.
 and calls `deriveControl(` and `applyInput(` at least once each,
 so a page that stops going through the model turns the suite red, even though no test renders it.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/ui/

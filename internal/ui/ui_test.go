@@ -88,6 +88,11 @@ func TestHashMoves(t *testing.T) {
 		{"two contents swapped", func(m fstest.MapFS) {
 			m["app.js"], m["urls.js"] = m["urls.js"], m["app.js"]
 		}},
+		{"one byte of portmodel.js", func(m fstest.MapFS) {
+			d := append([]byte(nil), m["portmodel.js"].Data...)
+			d = append(d, '\n')
+			m["portmodel.js"] = &fstest.MapFile{Data: d}
+		}},
 		{"one byte of index.html", func(m fstest.MapFS) {
 			d := append([]byte(nil), m["index.html"].Data...)
 			d = append(d, '\n')
@@ -212,6 +217,7 @@ func TestAssets(t *testing.T) {
 		{"app.js", "text/javascript; charset=utf-8"},
 		{"app.css", "text/css; charset=utf-8"},
 		{"urls.js", "text/javascript; charset=utf-8"},
+		{"portmodel.js", "text/javascript; charset=utf-8"},
 		{"vendor/preact/preact.module.js", "text/javascript; charset=utf-8"},
 		{"vendor/htm/htm.module.js", "text/javascript; charset=utf-8"},
 		{"vendor/pico/pico.classless.min.css", "text/css; charset=utf-8"},

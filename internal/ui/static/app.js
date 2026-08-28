@@ -20,6 +20,7 @@ import {
   logoutURL,
   pageURL,
 } from "./urls.js";
+import { deriveControl, applyInput } from "./portmodel.js";
 
 const html = htm.bind(h);
 
@@ -462,16 +463,19 @@ class App extends Component {
     this.setState({ seconds: e.target.value, copied: false });
   };
 
+  // The three port handlers go through applyInput, which holds the rules:
+  // each stores the returned state, so an edit to one free-form field clears
+  // the other in the model, not here.
   onPortChoice = (e) => {
-    this.setState({ portChoice: e.target.value, copied: false }, this.refetchTargets);
+    this.setState({ ...applyInput(this.state, "menu", e.target.value).state, copied: false }, this.refetchTargets);
   };
 
   onPortNumber = (e) => {
-    this.setState({ portNumber: e.target.value, portName: "", copied: false });
+    this.setState({ ...applyInput(this.state, "number", e.target.value).state, copied: false });
   };
 
   onPortName = (e) => {
-    this.setState({ portName: e.target.value, portNumber: "", copied: false });
+    this.setState({ ...applyInput(this.state, "name", e.target.value).state, copied: false });
   };
 
   refetchTargets = () => {
@@ -550,23 +554,10 @@ class App extends Component {
     return Number.isInteger(n) && n >= 1 && n <= limit;
   }
 
-  // portChoice is what the port control sends: a non-empty free-form field
-  // wins over the select, and default sends nothing.
+  // portChoice is what the port control sends: {port}, {portName}, or {}
+  // for default, as applyInput reads the current state with no edit.
   portChoice() {
-    const { portNumber, portName, portChoice } = this.state;
-    if (portNumber !== "") {
-      return { port: portNumber };
-    }
-    if (portName !== "") {
-      return { portName: portName };
-    }
-    if (portChoice.startsWith("port:")) {
-      return { port: portChoice.slice(5) };
-    }
-    if (portChoice.startsWith("name:")) {
-      return { portName: portChoice.slice(5) };
-    }
-    return null;
+    return applyInput(this.state).params;
   }
 
   // selectionListed reports whether the page's namespace and Service are both
@@ -589,7 +580,7 @@ class App extends Component {
     if (!this.selectionListed() || !profile || !this.secondsValid()) {
       return null;
     }
-    const port = this.portChoice() || {};
+    const port = this.portChoice();
     const params = { pod: pod, version: version, port: port.port, portName: port.portName };
     if (this.secondsLimit(profile)) {
       params.seconds = this.state.seconds;
@@ -707,25 +698,17 @@ class App extends Component {
 
   renderPortControl() {
     const limits = this.state.limits;
-    const pprof = (limits && limits.pprof) || {};
-    // One option per allowedSelections entry; a wildcard entry opens a free
-    // field for its kind instead. An empty list offers the default alone.
-    const selections = asList(pprof.allowedSelections);
-    const ports = selections.filter((s) => s.port !== undefined && s.port !== "*").map((s) => s.port);
-    const names = selections.filter((s) => s.portName !== undefined && s.portName !== "*").map((s) => s.portName);
-    const anyPort = selections.some((s) => s.port === "*");
-    const anyName = selections.some((s) => s.portName === "*");
-    const def = pprof.default || {};
-    const defLabel = def.portName ? `default (${def.portName})` : def.port ? `default (${def.port})` : "default";
+    // The menu's options and which free-form fields exist come from the model:
+    // one option per allowedSelections entry, a wildcard entry opening a field
+    // for its kind instead, and an empty list offering the default alone.
+    const control = deriveControl(limits && limits.pprof);
     return html`
       <fieldset>
         <legend>Port</legend>
         <select value=${this.state.portChoice} onChange=${this.onPortChoice}>
-          <option value="default">${defLabel}</option>
-          ${ports.map((p) => html`<option key=${`port:${p}`} value=${`port:${p}`}>${p}</option>`)}
-          ${names.map((n) => html`<option key=${`name:${n}`} value=${`name:${n}`}>${n}</option>`)}
+          ${control.options.map((o) => html`<option key=${o.value} value=${o.value}>${o.label}</option>`)}
         </select>
-        ${anyPort
+        ${control.numberField
           ? html`
               <label>
                 Port number
@@ -742,7 +725,7 @@ class App extends Component {
               </label>
             `
           : null}
-        ${anyName
+        ${control.nameField
           ? html`
               <label>
                 Port name

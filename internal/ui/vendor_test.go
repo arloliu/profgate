@@ -299,6 +299,20 @@ func TestVendorRelativeImports(t *testing.T) {
 	}
 }
 
+// TestVendorImportFreeModels holds the models the tests evaluate to the
+// stricter rule: no import statement and no dynamic import at all, where
+// app.js and urls.js may hold relative ones.
+func TestVendorImportFreeModels(t *testing.T) {
+	for _, name := range []string{"portmodel.js"} {
+		t.Run(name, func(t *testing.T) {
+			src := readSource(t, name)
+			if bad := anyImports(src); len(bad) > 0 {
+				t.Errorf("%s: imports: %v", name, bad)
+			}
+		})
+	}
+}
+
 func TestVendorNoInlineForms(t *testing.T) {
 	fsys := staticTree(t)
 
@@ -357,6 +371,8 @@ func TestVendorFixtureScansFail(t *testing.T) {
 	}{
 		{"static import bare specifier", len(nonRelativeImports(`import x from "preact"`))},
 		{"dynamic import bare specifier", len(nonRelativeImports(`import("htm")`))},
+		{"relative static import is still an import", len(anyImports(`import { h } from "./x.js"`))},
+		{"relative dynamic import is still an import", len(anyImports(`import("./x.js")`))},
 		{"script tag", len(inlineFormFindings(`<script>1</script>`, false))},
 		{"on attribute", len(inlineFormFindings(`onclick=`, false))},
 		{"eval call", len(inlineFormFindings(`eval(`, true))},

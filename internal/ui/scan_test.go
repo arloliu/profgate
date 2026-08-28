@@ -11,7 +11,7 @@ import (
 // consoleSources returns the console's own modules, the files the source scan
 // of Rendering response values runs against.
 func consoleSources() []string {
-	return []string{"app.js", "urls.js"}
+	return []string{"app.js", "urls.js", "portmodel.js"}
 }
 
 // htmlInterfaceRe matches every interface that turns a string into markup.
@@ -97,6 +97,29 @@ func TestScanRelativeImports(t *testing.T) {
 				t.Errorf("%s: non-relative import specifiers: %v", name, bad)
 			}
 		})
+	}
+}
+
+// portModelImportRe matches app.js's import of the model and captures the
+// names it binds.
+var portModelImportRe = regexp.MustCompile(`import\s*\{([^}]*)\}\s*from\s*["']\./portmodel\.js["']`)
+
+// TestScanPageUsesPortModel holds the page to the model: app.js imports both
+// functions from ./portmodel.js and calls each at least once, so a page that
+// spells the port rules again by hand turns the suite red.
+func TestScanPageUsesPortModel(t *testing.T) {
+	src := readSource(t, "app.js")
+	m := portModelImportRe.FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("app.js: no import from ./portmodel.js")
+	}
+	for _, fn := range []string{"deriveControl", "applyInput"} {
+		if !regexp.MustCompile(`\b` + fn + `\b`).MatchString(m[1]) {
+			t.Errorf("app.js: the import from ./portmodel.js does not name %s: %q", fn, m[1])
+		}
+		if !strings.Contains(src, fn+"(") {
+			t.Errorf("app.js: never calls %s(", fn)
+		}
 	}
 }
 
