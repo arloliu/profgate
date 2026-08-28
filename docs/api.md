@@ -93,9 +93,10 @@ and its `Allow` header lists what the route accepts.
 ## How a request is processed
 
 A profile request runs this full sequence, and the first failing step answers.
-A targets request runs steps 1 through 9 — parameter validation, the port allowlist, and discovery included —
-and answers from what discovery found;
-it never reaches single-target selection, admission, confirmation, or the proxy.
+A targets request runs steps 1 through 10 —
+parameter validation, the port allowlist, discovery, and the `version` and `pod` filters included —
+and answers from what remains after filtering, choosing no single target;
+it never reaches admission, confirmation, or the proxy.
 A policy or Collection request runs only steps 1 through 7 and then dispatches to its handler.
 A listing request ([Listing endpoints](#listing-endpoints)) runs the same steps 1 through 8 and then stops,
 answering from the configuration snapshot or the Service cache with no discovery, selection, admission,
@@ -128,8 +129,10 @@ because it is the route a client reads before it holds a credential
    both answered before discovery runs.
 9. **Discovery** — the Service is resolved to its Ready Pods
    (`404 service_not_found`, `422 service_selectorless`, `503 discovery_unavailable`).
-10. **Select** — filters are applied and one target is chosen
-    (`404 pod_not_found`, `503 no_targets`).
+10. **Select** — on the profile endpoint, `version` then `pod` are applied and one target is chosen
+    (`404 pod_not_found`, `503 no_targets`);
+    on the targets endpoint, the same two filters narrow the list rather than choose from it,
+    and an empty result is `200` with an empty array.
 11. **Admission** — a concurrency slot is taken or the request is refused now (`429 too_many_profiles`).
 12. **Confirm** — the chosen Pod is re-checked against the API server just before dialing
     (`503 target_changed`, which is safe to retry).
@@ -145,9 +148,21 @@ GET /v1/namespaces/{ns}/services/{svc}/targets
 ```
 
 Answers the Pods the gateway would profile right now, as its informer caches see them.
-The endpoint takes the optional `port` or `portName` parameter described under
-[Fetching a profile](#fetching-a-profile) and no other; any other query parameter is `400 invalid_parameter`.
-The list holds the Pods eligible under that port:
+Each parameter below may appear at most once, with a value; anything unknown is `400 invalid_parameter`.
+Parameters are validated in name order, so a query with several faults reports the same one every time.
+
+| Parameter | Meaning |
+|---|---|
+| `port` | The pprof port for every Pod, in place of the configured default; same grammar as [Fetching a profile](#fetching-a-profile). Excludes `portName`. |
+| `portName` | The named TCP container port, in place of the configured default; same grammar as [Fetching a profile](#fetching-a-profile). Excludes `port`. |
+| `version` | Keep only targets whose version label equals this value. |
+| `pod` | Keep only the target of this name. A name no eligible target carries is `200` with an empty array — never `404 pod_not_found`, which belongs to the profile endpoint. |
+| `explain` | `true` adds the exclusion counts described below; `false` is accepted and adds nothing. |
+
+`port` and `portName` exclude each other — sending both is `400 invalid_parameter` —
+and either one `discovery.pprof.allowedSelections` does not admit is `400 port_not_allowed`,
+exactly as on the profile endpoint.
+The list holds the Pods eligible under the resolved port:
 `portName` excludes a Pod that has no TCP container port of that name,
 while `port` never excludes a Pod, since a numeric port is used without checking that the Pod declares it.
 
@@ -171,6 +186,60 @@ Targets are sorted by Pod name, and `targets` is `[]` (never `null`) for a Servi
 `version` is the value of the Pod label named by `discovery.versionLabel`
 (default `app.kubernetes.io/version`), and is empty when the Pod has no such label.
 The response never discloses a Pod IP or port.
+
+### Exclusion counts
+
+`explain=true` keeps `targets` exactly as it is above and adds two fields:
+`selectorMatched`, the number of Pods in the namespace whose labels match the Service's selector,
+counted before eligibility runs;
+and `excluded`, one entry per exclusion reason with a non-zero count.
+
+```sh
+curl 'http://localhost:8080/v1/namespaces/payments/services/checkout/targets?explain=true'
+profgate targets payments/checkout --explain
+```
+
+```json
+{
+  "namespace": "payments",
+  "service": "checkout",
+  "targets": [
+    {"pod": "checkout-5f7c9d8b6-abcde", "node": "worker-1", "version": "1.42.0"}
+  ],
+  "selectorMatched": 3,
+  "excluded": [
+    {"reason": "pod_not_ready", "count": 1},
+    {"reason": "endpoint_missing", "count": 1}
+  ]
+}
+```
+
+`excluded` holds one entry per reason with a non-zero count, in the table order below,
+and is `[]` — never `null` — when every selected Pod is a target.
+`reason` is one of a closed set the gateway writes from its own vocabulary,
+never a value the client sent and never a Pod's own text.
+`selectorMatched` always equals the length of `targets` plus the sum of the `excluded` counts:
+every selected Pod is either a target or counted under exactly one reason.
+
+| Reason | A Pod the Service selects is excluded when |
+|---|---|
+| `pod_terminating` | its `deletionTimestamp` is set |
+| `pod_not_running` | its phase is not `Running` |
+| `pod_not_ready` | its `Ready` condition is not `True` |
+| `endpoint_missing` | no endpoint the gateway trusts names it |
+| `endpoint_not_ready` | a trusted endpoint of it carries `conditions.ready: false` |
+| `endpoint_address_mismatch` | a trusted endpoint of it carries no address, or one the Pod does not hold |
+| `endpoint_address_conflict` | two of its trusted endpoints each pass the ready and address checks but name different addresses it holds |
+| `port_name_not_declared` | the effective pprof port name matches no TCP container port of the Pod |
+| `version_mismatch` | the request carried `version=` and the Pod's version label holds another value |
+| `pod_name_mismatch` | the request carried `pod=` and the Pod has another name |
+
+A Pod matching more than one row is counted under the first one that holds, in the order above.
+The last two rows appear only for a request that sent the matching filter:
+a query with neither `version` nor `pod` can never produce them.
+`explain` changes no status code and no eligibility decision —
+it reports what the same request without it already did —
+and names no Pod, address, node, or version beyond what `targets` already lists.
 
 ## Listing endpoints
 
