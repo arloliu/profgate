@@ -15,8 +15,9 @@ run `semlf check <file>` on every Markdown file you wrote or edited and fix the 
 
 ## Before a PR
 
-Seven packages need the end-to-end suite on the `current` lane before a PR opens:
-`internal/k8s`, `internal/proxy`, `internal/pgo`, `internal/natskv`, `internal/auth`, `internal/ui`, and `deploy/`.
+Eight packages need the end-to-end suite on the `current` lane before a PR opens:
+`internal/k8s`, `internal/proxy`, `internal/pgo`, `internal/natskv`, `internal/auth`, `internal/ui`,
+`internal/client`, and `deploy/`.
 
 ```bash
 mise run test:e2e
@@ -31,5 +32,8 @@ The console's shell, hashed assets, headers, and login return meet a real gatewa
 the port-control model in `internal/ui/static/portmodel.js` runs under the goja interpreter in a Go test,
 and the rest of the page's JavaScript runs in none,
 so a change to `internal/ui/static/` outside `portmodel.js` also needs a check in a browser against a running gateway.
+The command-line client's device grant, refresh, and port-forward transport meet a real issuer only there too,
+which run the client as a separate process against Dex and Keycloak;
+its unit tests drive `httptest` servers.
 
 Report what ran and what was skipped in the PR description ([600](600-git-conventions.md)).

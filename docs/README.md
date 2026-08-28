@@ -3,6 +3,7 @@
 Start with the guide for your task:
 
 - **Pull a profile:** [`api.md`](api.md) — the HTTP API: routes, parameters, errors.
+- **Work from a terminal:** [`cli.md`](cli.md) — the `profgate` client: login, contexts, the verbs, exit codes.
 - **Deploy and operate the gateway:** [`deployment.md`](deployment.md).
 - **Configure the gateway:** [`configuration.md`](configuration.md).
 - **Authenticate users:** [`authentication.md`](authentication.md).

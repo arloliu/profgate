@@ -69,11 +69,15 @@ Dex has no `end_session_endpoint`: `/auth/logout` clears the session cookie and 
 
 Keycloak was verified against Keycloak `26.7.2` with the realm export in
 [`keycloak-realm.json`](keycloak-realm.json):
-a realm `profgate`, a public client `profgate` with PKCE `S256` and direct access grants,
+a realm `profgate`, a public client `profgate` with PKCE `S256`, direct access grants,
+and the device grant enabled (`oauth2.device.authorization.grant.enabled`, which Keycloak reads as `false` when absent),
 an audience mapper adding `profgate` to the access token,
 a "Group Membership" mapper on claim `groups` with "Full group path" off,
 groups `engineering` and `payments`, and a user `alice` in `engineering`.
 Import it into a Keycloak instance to reproduce the run.
+The end-to-end suite runs the same export against `quay.io/keycloak/keycloak:26.7.2`
+and completes a device login with the command-line client,
+with `auth.oidc.cli.scopes: [openid]` for the reason [The command-line client](#the-command-line-client) gives.
 
 Access tokens carry `aud` only when a client scope adds an audience mapper,
 and carry `typ: JWT` rather than `at+jwt` unless the client is configured for RFC 9068;
@@ -82,7 +86,8 @@ Groups appear only when a "Group Membership" mapper is added to the client scope
 and appear as full paths (`/engineering/payments`) unless "Full group path" is off, as in the export above.
 `preferred_username` is present in both token kinds.
 ID and access tokens live 5 minutes by default and the SSO session 30 minutes idle, 10 hours maximum;
-a `curl` user should raise the client's token lifespan, or use a client that refreshes on its own
+a `curl` user should raise the client's token lifespan,
+or use the `profgate` client, which refreshes on its own
 (see [The command-line client](#the-command-line-client) below).
 The logout redirect reaches a confirmation page, because the gateway sends no `id_token_hint`;
 Keycloak returns to `/` once the user confirms.
@@ -100,13 +105,26 @@ until someone runs `oidc` mode against a real instance and records what changed.
 
 ## The command-line client
 
-Profgate ships no client that acquires a token for `curl` or `go tool pprof`.
-Under Keycloak's defaults an ID token lives five minutes, so a `curl` user re-authenticates often;
-the fix is a `profgate` command-line client that performs a device-code flow,
-keeps the refresh token on the user's own machine, and wraps `go tool pprof`.
-That client does not exist yet — it is a separate design with its own document —
-and the gateway needs nothing from it to verify tokens another client obtains.
-`go tool pprof <url>` in particular fetches with `http.Client.Get` and offers no way to add a header,
+The `profgate` binary is also a client, and [cli.md](cli.md) is its guide.
+Under `oidc` it logs in by the device-code grant (RFC 8628):
+
+```sh
+profgate login --context prod --server https://profgate.example
+```
+
+The client reads `GET /v1/auth`, which reports the mode and, where the gateway's `auth.oidc.cli` block is present,
+the issuer, the client identifier, the token type, the scopes, and whether the device endpoint accepts a PKCE challenge
+([configuration.md](configuration.md#authoidccli)).
+It fetches the issuer's discovery document, asks the device endpoint for a code,
+prints the code and the verification address on stderr, and polls until you approve the code in any browser.
+The token, and the refresh token the issuer returned with it, are cached in a file only your user can read;
+later commands refresh the token before it expires and never show the code prompt again
+until the refresh token itself is refused.
+Under Keycloak's defaults an ID token lives five minutes, and the refresh makes that lifetime invisible.
+The gateway performs no part of the grant: it verifies the token the client obtained like any other bearer token.
+
+`profgate profile --open` fetches the profile with the bearer token and hands the file to `go tool pprof -http`,
+because `go tool pprof <url>` fetches with `http.Client.Get` and offers no way to add a header,
 so it cannot present a bearer token at all; `basic` mode's userinfo-URL form is what it can use directly
 (see [api.md](api.md#basic-mode)).
 
