@@ -239,6 +239,37 @@ def check_removed_port_keys(root):
     return bad
 
 
+PKCE_OVERRIDE_NAME = "PROFGATE_E2E_PKCE_VERIFIER_OVERRIDE"
+PKCE_OVERRIDE_ALLOWED = (
+    "internal/client/pkce_override_e2e.go",
+    "internal/client/pkce_override_test.go",
+)
+
+
+def check_pkce_override_name(root):
+    """Fail on any code or manifest line naming the PKCE verifier override.
+
+    The end-to-end lanes prove PKCE enforcement by polling with a verifier
+    that does not match the challenge, and the substitution lives in the
+    client binary behind the e2e build tag, read from that variable.
+    The override must never reach a manifest, the chart, or an untagged Go
+    file: only the e2e-tagged file, the test proving the default build
+    ignores the variable, and the end-to-end scenarios may name it.
+    """
+    bad = []
+    paths = [p for pattern in ("*.go", "*.yaml", "*.yml", "*.tpl") for p in root.rglob(pattern)]
+    for path in sorted(paths):
+        rel = path.relative_to(root).as_posix()
+        if not path.is_file() or rel in PKCE_OVERRIDE_ALLOWED:
+            continue
+        if rel.startswith("test/e2e/") and rel.endswith("_test.go") and "/" not in rel[len("test/e2e/"):]:
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if PKCE_OVERRIDE_NAME in line:
+                bad.append(f"{rel}:{number}: names {PKCE_OVERRIDE_NAME} outside the e2e-tagged client file, its test, and test/e2e")
+    return bad
+
+
 def main():
     errors = []
     check_links(errors)
@@ -252,6 +283,7 @@ def main():
     errors.extend(check_term_importers(root))
     errors.extend(check_client_imports(root))
     errors.extend(check_removed_port_keys(root))
+    errors.extend(check_pkce_override_name(root))
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
