@@ -690,6 +690,35 @@ func TestExplainReasons(t *testing.T) {
 			wantLog:     "conflict",
 		},
 		{
+			// A conflicted Pod with an eligible endpoint is excluded by the conflict alone,
+			// whatever another of its endpoints says.
+			name: "conflicting and eligible with an unready endpoint is conflicted",
+			mutate: func(f *fixture) {
+				f.pod.Status.PodIPs = []corev1.PodIP{{IP: fixtureIPv4}, {IP: "10.0.0.6"}}
+				f.slices = append(f.slices,
+					newSlice("payment-api-def", discoveryv1.AddressTypeIPv4, "10.0.0.6"),
+					newSlice("payment-api-ghi", discoveryv1.AddressTypeIPv4, fixtureIPv4))
+				f.slices[2].Endpoints[0].Conditions.Ready = ptr(false)
+			},
+			wantMatched: 1,
+			wantExcl:    wantExcluded(ReasonEndpointAddressConflict),
+			wantLog:     "conflict",
+		},
+		{
+			// Without an eligible endpoint the table order decides, and the unready endpoint comes first.
+			name: "conflicting and portless with an unready endpoint is endpoint not ready",
+			mutate: func(f *fixture) {
+				f.pod.Status.PodIPs = []corev1.PodIP{{IP: fixtureIPv4}, {IP: "10.0.0.6"}}
+				f.pod.Spec.Containers[0].Ports = nil
+				f.slices = append(f.slices,
+					newSlice("payment-api-def", discoveryv1.AddressTypeIPv4, "10.0.0.6"),
+					newSlice("payment-api-ghi", discoveryv1.AddressTypeIPv4, fixtureIPv4))
+				f.slices[2].Endpoints[0].Conditions.Ready = ptr(false)
+			},
+			wantMatched: 1,
+			wantExcl:    wantExcluded(ReasonEndpointNotReady),
+		},
+		{
 			name:        "named port missing",
 			mutate:      func(f *fixture) { f.pod.Spec.Containers[0].Ports = nil },
 			wantMatched: 1,

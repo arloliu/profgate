@@ -117,12 +117,21 @@ type endpointFacts struct {
 	address         string // the address of the first endpoint whose address the Pod holds
 	conflict        bool   // a later such endpoint named a different address the Pod holds
 	portless        bool   // an endpoint reached the port rule and no pprof port resolved
+	pod             string // the Pod's name, for the operator warning
 	target          Target
 	hasTarget       bool
 }
 
 // isTarget reports whether the Pod's endpoints made it a target: at least one eligible one, and no conflict.
 func (f *endpointFacts) isTarget() bool { return f.hasTarget && !f.conflict }
+
+// conflicted reports whether the Pod's exclusion is attributed to the address conflict.
+// A Pod with an eligible endpoint is excluded by the conflict alone;
+// any other conflicted Pod takes the first table reason that holds,
+// and an unready or mismatched endpoint precedes the conflict there.
+func (f *endpointFacts) conflicted() bool {
+	return f.conflict && (f.hasTarget || (!f.notReady && !f.addressMismatch))
+}
 
 // resolve walks the Service's slices of the read address family and evaluates the eligibility rules once:
 // the targets it yields, and, per Pod a trusted endpoint named, what its endpoints said about it.
@@ -131,8 +140,8 @@ func (f *endpointFacts) isTarget() bool { return f.hasTarget && !f.conflict }
 // an endpoint the gateway cannot vouch for is dropped,
 // and the rest of the Service is still resolvable.
 // Two endpoints that both pass the address rule and disagree on the address are a conflict:
-// that Pod is excluded and the conflict is logged,
-// whether or not a pprof port resolves for it.
+// that Pod is excluded whether or not a pprof port resolves for it,
+// and the conflict is logged when it is the reason the Pod carries.
 func (c *Cluster) resolve(svc *corev1.Service, selector labels.Selector,
 	epSlices []*discoveryv1.EndpointSlice, sel PortSelection, lookup podFor) ([]Target, map[string]*endpointFacts) {
 	family := addressFamily(epSlices)
@@ -163,7 +172,7 @@ func (c *Cluster) resolve(svc *corev1.Service, selector labels.Selector,
 			uid := string(pod.UID)
 			facts := seen[uid]
 			if facts == nil {
-				facts = &endpointFacts{}
+				facts = &endpointFacts{pod: pod.Name}
 				seen[uid] = facts
 				order = append(order, uid)
 			}
@@ -186,10 +195,8 @@ func (c *Cluster) resolve(svc *corev1.Service, selector labels.Selector,
 			switch {
 			case facts.address == "":
 				facts.address = address
-			case facts.address != address && !facts.conflict:
+			case facts.address != address:
 				facts.conflict = true
-				c.log.Warn("endpointslice address conflict, pod excluded",
-					"namespace", svc.Namespace, "service", svc.Name, "pod", pod.Name)
 			}
 			port, ok := c.pprofPort(pod, sel)
 			if !ok {
@@ -216,18 +223,24 @@ func (c *Cluster) resolve(svc *corev1.Service, selector labels.Selector,
 
 	var targets []Target
 	for _, uid := range order {
-		if facts := seen[uid]; facts.isTarget() {
+		facts := seen[uid]
+		if facts.isTarget() {
 			targets = append(targets, facts.target)
+		}
+		if facts.conflicted() {
+			c.log.Warn("endpointslice address conflict, pod excluded",
+				"namespace", svc.Namespace, "service", svc.Name, "pod", facts.pod)
 		}
 	}
 
 	return targets, seen
 }
 
-// attribute names the first reason of the vocabulary that holds for a selected Pod that is not a target.
-// Pod state is read before endpoint state, because a terminating or unready Pod explains its own endpoint.
-// A conflict is its own population and is attributed before the other endpoint reasons:
-// the Pod had endpoints the gateway could have followed, and it is their disagreement that excludes it.
+// attribute names the reason a selected Pod that is not a target carries (spec: Eligibility).
+// A Pod with at least one eligible trusted endpoint is excluded only by the address conflict, and carries it.
+// Every other Pod takes the first reason of the table that holds for it:
+// Pod state before endpoint state, because a terminating or unready Pod explains its own endpoint,
+// then the endpoint reasons in table order, where the conflict follows an unready or mismatched endpoint.
 // facts is nil for a Pod no trusted endpoint named.
 func attribute(pod *corev1.Pod, facts *endpointFacts) string {
 	switch {
@@ -239,12 +252,14 @@ func attribute(pod *corev1.Pod, facts *endpointFacts) string {
 		return ReasonPodNotReady
 	case facts == nil:
 		return ReasonEndpointMissing
-	case facts.conflict:
+	case facts.hasTarget:
 		return ReasonEndpointAddressConflict
 	case facts.notReady:
 		return ReasonEndpointNotReady
 	case facts.addressMismatch:
 		return ReasonEndpointAddressMismatch
+	case facts.conflict:
+		return ReasonEndpointAddressConflict
 	default:
 		return ReasonPortNameNotDeclared
 	}
