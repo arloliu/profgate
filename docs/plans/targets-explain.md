@@ -1,6 +1,6 @@
 # Target Exclusion Diagnostics
 
-**Status:** Approved
+**Status:** In Progress
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
