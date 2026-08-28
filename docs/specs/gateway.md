@@ -2281,6 +2281,14 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
   - `discovery.pprof.allowedSelections` rendered as an empty list in `values.yaml`,
     so a chart install accepts only the configured default until the operator lists more;
     the binary's own default is the same empty list.
+  - `auth.oidc.cli.enabled`, default `true`.
+    It renders an `auth.oidc.cli` block under `oidc` from the `clientID`, `scopes`, and `pkce` values beside it,
+    each rendered only when set,
+    so a chart install serves a device login until the operator sets it `false`;
+    the chart omits the block when `auth.oidc.browser.clientSecretFile` is set under `tokenType: id`,
+    the pair the binary refuses, and `NOTES.txt` says so
+    ([`cli.md`](cli.md) *Configuration*).
+    The binary's own default is no block.
   - An Ingress, off by default, routing `/`, `/ui/`, `/auth/`, and `/v1/` to the Service's API port,
     so an operator reaching the gateway from outside the cluster does not write one by hand.
     It never routes the ops port, which stays reachable only by the kubelet and the metrics scraper.
@@ -2671,6 +2679,7 @@ amends the following text.
 | `.agents/rules/100-project-map.md` | *Planned Structure*, *External HTTP API* | `internal/client/` and `/v1/auth` |
 | `AGENTS.md` | *Four Specs, All Accepted* | five, adding [`cli.md`](cli.md) |
 | `docs/README.md` | *Where Contributors Start* | [`specs/cli.md`](cli.md) beside the other specs |
+| *Build and Deployment* | the chart's `auth.oidc.cli.enabled` value, default `true`, and the case in which the block is omitted ([`cli.md`](cli.md) *Configuration*) |
 
 Updated with the implementation:
 [`docs/api.md`](../api.md), [`docs/authentication.md`](../authentication.md),

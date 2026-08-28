@@ -1005,6 +1005,20 @@ The client is a public client: it sends no client secret, and there is nowhere t
 A device grant needs none — RFC 8628 is defined for public clients —
 and a secret shipped in a binary that runs on user machines is not a secret.
 
+**The chart renders the block by default.**
+`values.yaml` carries `auth.oidc.cli.enabled`, default `true`,
+beside `clientID`, `scopes`, and `pkce` values that render only when set,
+so a chart install under `oidc` serves a device login with every default above
+and the operator who declines it sets `enabled: false`.
+The chart omits the block when `auth.oidc.browser.clientSecretFile` is set and `tokenType` is `id`,
+because the binary refuses that pair,
+and says so in `NOTES.txt` so the omission is not silent.
+The binary's own default is unchanged: without the block in its file, `/v1/auth` reports the mode alone.
+Opt-in stays the rule at the binary and becomes the default at the chart,
+because the chart is where a fresh install is shaped
+and a value the operator can read in `values.yaml` costs less than a block the operator must know to add
+(gateway *Build and Deployment*).
+
 ---
 
 ## 10. Testing
@@ -1315,6 +1329,7 @@ Each row names the heading it edits.
 | `docs/specs/gateway.md` | *Metrics* | `endpoint` gains `auth` |
 | `docs/specs/gateway.md` | *CLI* | the client verbs of [`cli.md`](cli.md) *The verbs* |
 | `docs/specs/gateway.md` | *Configuration* | none: the `auth.mode` row already sends the mode-specific keys to [`auth.md`](auth.md), where the three `auth.oidc.cli` rows are |
+| `docs/specs/gateway.md` | *Build and Deployment* | the chart's `auth.oidc.cli.enabled` value, default `true`, rendering an `auth.oidc.cli` block under `oidc` unless a browser client secret under `tokenType: id` forbids it |
 | `docs/specs/gateway.md` | *Dependencies* | a closing sentence: the command line adds no Go module, for the reason in [`cli.md`](cli.md) *Dependencies* |
 | `docs/specs/gateway.md` | *Package Layout* | `internal/client/` |
 | `docs/specs/gateway.md` | *Layers* | the unit rows of [`cli.md`](cli.md) *Testing* and the client steps in the two authentication lanes |
@@ -1359,3 +1374,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | Section | Change |
 |---|---|
 | *Collections*, *Failure table*, *Testing*, *Changes to the accepted designs* | the Idempotency-Key contract this document reads exists in [`pgo.md`](pgo.md) *Create a Collection*: a replay answers `{id, state}` with a `Location` rather than the record, `--wait` needs `pgo.read` to poll what it names, a mismatch is decided on the effective policy snapshot, and `collect` and `collection cancel` send `Content-Type: application/json` |
+| *Configuration*, *Changes to the accepted designs* | the chart renders `auth.oidc.cli` by default through `auth.oidc.cli.enabled`, and omits it beside a browser client secret under `tokenType: id`; the binary's opt-in is unchanged |
