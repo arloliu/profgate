@@ -24,39 +24,46 @@ var staticImportAnyRe = regexp.MustCompile(`(?m)^import\b`)
 // exportAnyRe matches any export statement, of any form.
 var exportAnyRe = regexp.MustCompile(`(?m)^export\b`)
 
-// cutExport returns the source with its trailing export statement removed.
+// cutExport returns the source of the named module with its trailing export statement removed.
 // It fails when the statement is absent, repeated, or not the last statement,
 // since evaluating the rest is only safe under that shape.
-func cutExport(tb testing.TB, src string) string {
+func cutExport(tb testing.TB, name, src string) string {
 	tb.Helper()
 
 	locs := exportRe.FindAllStringIndex(src, -1)
 	if len(locs) != 1 {
-		tb.Fatalf("%s: want exactly one export statement, found %d", portModelName, len(locs))
+		tb.Fatalf("%s: want exactly one export statement, found %d", name, len(locs))
 	}
 	if strings.TrimSpace(src[locs[0][1]:]) != "" {
-		tb.Fatalf("%s: the export statement is not the last statement", portModelName)
+		tb.Fatalf("%s: the export statement is not the last statement", name)
 	}
 
 	return src[:locs[0][0]]
 }
 
-// loadPortModel evaluates the model in a fresh interpreter and returns it
-// with both functions reachable as globals.
-func loadPortModel(tb testing.TB) *goja.Runtime {
+// loadModel evaluates the named module in a fresh interpreter,
+// and returns it with each named function reachable as a global.
+func loadModel(tb testing.TB, name string, fns ...string) *goja.Runtime {
 	tb.Helper()
 
 	vm := goja.New()
-	if _, err := vm.RunString(cutExport(tb, readSource(tb, portModelName))); err != nil {
-		tb.Fatalf("evaluate %s: %v", portModelName, err)
+	if _, err := vm.RunString(cutExport(tb, name, readSource(tb, name))); err != nil {
+		tb.Fatalf("evaluate %s: %v", name, err)
 	}
-	for _, name := range []string{"deriveControl", "applyInput"} {
-		if _, ok := goja.AssertFunction(vm.Get(name)); !ok {
-			tb.Fatalf("%s: %s is not a function", portModelName, name)
+	for _, fn := range fns {
+		if _, ok := goja.AssertFunction(vm.Get(fn)); !ok {
+			tb.Fatalf("%s: %s is not a function", name, fn)
 		}
 	}
 
 	return vm
+}
+
+// loadPortModel evaluates the port model with both functions reachable as globals.
+func loadPortModel(tb testing.TB) *goja.Runtime {
+	tb.Helper()
+
+	return loadModel(tb, portModelName, "deriveControl", "applyInput")
 }
 
 // modelResult is what callModel returns: the function's result as JSON, and
@@ -131,7 +138,7 @@ func TestPortModelShape(t *testing.T) {
 	if n := len(exportAnyRe.FindAllString(src, -1)); n != 1 {
 		t.Errorf("%s: %d export statements, want one", portModelName, n)
 	}
-	if rest := cutExport(t, src); exportAnyRe.MatchString(rest) {
+	if rest := cutExport(t, portModelName, src); exportAnyRe.MatchString(rest) {
 		t.Errorf("%s: an export remains after the trailing statement is cut", portModelName)
 	}
 	if !strings.Contains(src, "export { deriveControl, applyInput };") {

@@ -11,7 +11,7 @@ import (
 // consoleSources returns the console's own modules, the files the source scan
 // of Rendering response values runs against.
 func consoleSources() []string {
-	return []string{"app.js", "urls.js", "portmodel.js"}
+	return []string{"app.js", "urls.js", "portmodel.js", "targetmodel.js"}
 }
 
 // htmlInterfaceRe matches every interface that turns a string into markup.
