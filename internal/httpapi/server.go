@@ -494,17 +494,19 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var (
-		params profileParams
-		perr   *requestError
+		params  profileParams
+		tparams targetsParams
+		perr    *requestError
 	)
 	if rt.kind == kindTargets {
-		params.port, perr = parseTargetsParams(values)
+		tparams, perr = parseTargetsParams(values)
+		q.port = tparams.port
 	} else {
 		params, perr = parseProfileParams(values, spec, cfg.Limits)
+		q.port = params.port
 	}
 	// The selection is recorded as sent even when another parameter fails;
 	// a fault in the selection itself leaves it empty.
-	q.port = params.port
 	q.audit.port = q.port.sent
 	if perr != nil {
 		q.fail(w, perr)
@@ -524,7 +526,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if rt.kind == kindTargets {
-		s.serveTargets(w, r, q)
+		s.serveTargets(w, r, q, tparams)
 
 		return
 	}
@@ -549,23 +551,32 @@ func allowPort(pprof config.PprofConfig, port portParams) *requestError {
 func (s *server) discover(ctx context.Context, q *request) ([]k8s.Target, *requestError) {
 	rt := q.route
 	targets, err := s.deps.Discovery.Targets(ctx, rt.namespace, rt.service, q.port.sel)
+	if err != nil {
+		return nil, discoveryError(rt, err)
+	}
+
+	return targets, nil
+}
+
+// discoveryError maps a Discovery error to its response:
+// the two sentinels and the 503 everything else earns.
+// Targets and Explain share it.
+func discoveryError(rt route, err error) *requestError {
 	switch {
-	case err == nil:
-		return targets, nil
 	case errors.Is(err, k8s.ErrServiceNotFound):
-		return nil, &requestError{
+		return &requestError{
 			status:  http.StatusNotFound,
 			code:    "service_not_found",
 			message: fmt.Sprintf("service %s not found in namespace %s", rt.service, rt.namespace),
 		}
 	case errors.Is(err, k8s.ErrServiceSelectorless):
-		return nil, &requestError{
+		return &requestError{
 			status:  http.StatusUnprocessableEntity,
 			code:    "service_selectorless",
 			message: fmt.Sprintf("service %s in namespace %s has no selector", rt.service, rt.namespace),
 		}
 	default:
-		return nil, &requestError{
+		return &requestError{
 			status:  http.StatusServiceUnavailable,
 			code:    "discovery_unavailable",
 			message: fmt.Sprintf("discovery cannot resolve service %s in namespace %s", rt.service, rt.namespace),
@@ -573,17 +584,87 @@ func (s *server) discover(ctx context.Context, q *request) ([]k8s.Target, *reque
 	}
 }
 
-// serveTargets answers the targets endpoint from the cache.
-func (s *server) serveTargets(w http.ResponseWriter, r *http.Request, q *request) {
-	targets, derr := s.discover(r.Context(), q)
-	if derr != nil {
-		q.fail(w, derr)
+// serveTargets answers the targets endpoint from the cache:
+// Explain when the caller asked for the counts and Targets otherwise, then the version and Pod filters.
+// The explain body carries the seam's counts plus one entry per reason the filters produced.
+func (s *server) serveTargets(w http.ResponseWriter, r *http.Request, q *request, params targetsParams) {
+	rt := q.route
+	var (
+		targets []k8s.Target
+		explain k8s.Explanation
+		err     error
+	)
+	if params.explain {
+		q.audit.explain = true
+		explain, err = s.deps.Discovery.Explain(r.Context(), rt.namespace, rt.service, q.port.sel)
+		targets = explain.Targets
+	} else {
+		targets, err = s.deps.Discovery.Targets(r.Context(), rt.namespace, rt.service, q.port.sel)
+	}
+	if err != nil {
+		q.fail(w, discoveryError(rt, err))
 
 		return
 	}
+	targets, filtered := filterTargets(targets, params)
+
 	q.audit.status = http.StatusOK
 	q.audit.code = codeOK
-	writeTargets(w, q.route.namespace, q.route.service, targets)
+	if !params.explain {
+		writeTargets(w, rt.namespace, rt.service, targets)
+
+		return
+	}
+	writeExplain(w, rt.namespace, rt.service, targets, explain.SelectorMatched, mergeExclusions(explain.Excluded, filtered))
+}
+
+// filterTargets applies version, then pod, and counts what each dropped under its reason.
+func filterTargets(targets []k8s.Target, params targetsParams) ([]k8s.Target, map[string]int) {
+	dropped := map[string]int{}
+	remaining := targets
+	if params.version != "" {
+		remaining = nil
+		for _, t := range targets {
+			if t.Version == params.version {
+				remaining = append(remaining, t)
+			} else {
+				dropped[k8s.ReasonVersionMismatch]++
+			}
+		}
+	}
+	if params.pod != "" {
+		kept := remaining
+		remaining = nil
+		for _, t := range kept {
+			if t.Pod == params.pod {
+				remaining = append(remaining, t)
+			} else {
+				dropped[k8s.ReasonPodNameMismatch]++
+			}
+		}
+	}
+
+	return remaining, dropped
+}
+
+// mergeExclusions joins the seam's counts and the filters' counts in vocabulary order,
+// keeping only the reasons with a non-zero count.
+func mergeExclusions(seam []k8s.Exclusion, filtered map[string]int) []exclusionView {
+	counts := make(map[string]int, len(seam)+len(filtered))
+	for _, ex := range seam {
+		counts[ex.Reason] += ex.Count
+	}
+	for reason, n := range filtered {
+		counts[reason] += n
+	}
+	views := make([]exclusionView, 0, len(counts))
+	for _, reason := range k8s.ExclusionReasons() {
+		if n := counts[reason]; n > 0 {
+			views = append(views, exclusionView{Reason: reason, Count: n})
+		}
+	}
+
+	return views
 }
 
 // serveProfile runs discovery, selection, admission, confirmation, and the proxy.

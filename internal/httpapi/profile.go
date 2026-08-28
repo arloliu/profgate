@@ -102,19 +102,94 @@ func parsePortParams(values url.Values) (portParams, *requestError) {
 	}
 }
 
-// parseTargetsParams validates the targets endpoint's query:
-// the port selection and nothing else.
-// The selection is returned beside an unknown-parameter error, so the audit line records it as sent.
-func parseTargetsParams(values url.Values) (portParams, *requestError) {
-	port, perr := parsePortParams(values)
-	if perr != nil {
-		return portParams{}, perr
+// targetsParams is a validated targets query:
+// the port selection, the two filters, and whether the caller asked for the exclusion counts.
+type targetsParams struct {
+	port    portParams
+	version string
+	pod     string
+	explain bool
+}
+
+// parseTargetsParams validates the targets endpoint's query against the spec's parameter table,
+// in name order, so a query with several faults reports the same one every time.
+// port and portName together is a fault of the pair and is checked after the loop.
+// The port selection is returned beside any error whenever the selection alone is well-formed,
+// so the audit line records it as sent;
+// a selection that is malformed, repeated, or doubled leaves it empty.
+// values is left as it was.
+func parseTargetsParams(values url.Values) (targetsParams, *requestError) {
+	var (
+		params     targetsParams
+		port, name string
+		perr       *requestError
+	)
+	for _, key := range slices.Sorted(maps.Keys(values)) {
+		vs := values[key]
+		if len(vs) != 1 || vs[0] == "" {
+			perr = invalidParameter(fmt.Sprintf("parameter %q must appear once with a value", key))
+
+			break
+		}
+		value := vs[0]
+		switch key {
+		case "explain":
+			switch value {
+			case "true":
+				params.explain = true
+			case "false":
+			default:
+				perr = invalidParameter("explain must be true or false")
+			}
+		case "pod":
+			if len(validation.IsDNS1123Subdomain(value)) > 0 {
+				perr = invalidParameter("pod must be a DNS-1123 subdomain")
+			}
+			params.pod = value
+		case "port":
+			if _, ok := parsePort(value); !ok {
+				perr = invalidParameter("port must be a decimal integer between 1 and 65535")
+			}
+			port = value
+		case "portName":
+			if len(validation.IsValidPortName(value)) > 0 {
+				perr = invalidParameter("portName must be a container port name")
+			}
+			name = value
+		case "version":
+			params.version = value
+		default:
+			perr = invalidParameter(fmt.Sprintf("unknown parameter %q", key))
+		}
+		if perr != nil {
+			break
+		}
 	}
-	if rest := slices.Sorted(maps.Keys(values)); len(rest) > 0 {
-		return port, invalidParameter(fmt.Sprintf("unknown parameter %q", rest[0]))
+	// The selection is filled only when it is well-formed on its own,
+	// whatever else in the query failed.
+	params.port = targetsPortSelection(values)
+	if perr == nil && port != "" && name != "" {
+		perr = invalidParameter("port and portName exclude each other")
 	}
 
-	return port, nil
+	return params, perr
+}
+
+// targetsPortSelection reads the port selection out of a targets query without touching it,
+// and is empty unless that selection alone is well-formed.
+func targetsPortSelection(values url.Values) portParams {
+	copied := url.Values{}
+	for _, key := range []string{"port", "portName"} {
+		if vs, ok := values[key]; ok {
+			copied[key] = vs
+		}
+	}
+	port, perr := parsePortParams(copied)
+	if perr != nil {
+		return portParams{}
+	}
+
+	return port
 }
 
 // profileParams is a validated profile request:

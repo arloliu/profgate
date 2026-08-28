@@ -24,6 +24,7 @@ type auditRecord struct {
 	method     string
 	seconds    int
 	port       string // the port selection as sent; empty when absent or malformed
+	explain    bool   // set for a targets request that carried explain=true
 	status     int
 	code       string
 	duration   time.Duration
@@ -65,6 +66,9 @@ func writeAudit(log *slog.Logger, rec auditRecord) {
 	)
 	if rec.reason != "" {
 		attrs = append(attrs, "auth_reason", rec.reason)
+	}
+	if rec.explain {
+		attrs = append(attrs, "explain", true)
 	}
 	log.Info("request", attrs...)
 }
