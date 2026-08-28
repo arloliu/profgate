@@ -16,6 +16,7 @@ entries are `{port: N}` or `{portName: name}`,
 an empty list admits only the configured default,
 `{port: "*"}` and `{portName: "*"}` each open their own kind,
 and the two old keys and their two environment variables are removed and refused by validation.
+`400 port_not_allowed` names the parameter it refused in a `details` item,
 `/v1/limits` reports the list so the console can offer a menu or a free field,
 and the end-to-end suite proves both outcomes against a real cluster.
 
@@ -23,10 +24,13 @@ and the end-to-end suite proves both outcomes against a real cluster.
 `internal/config` gains the `Selection` value type, the `allowedSelections` field,
 and the two predicates the HTTP layer already calls;
 the admission point in `internal/httpapi` keeps its shape and changes only what the predicates answer;
+the error envelope in `internal/httpapi/errors.go` gains an optional `details` array,
+filled by `port_not_allowed` alone;
 `internal/httpapi/listing.go` renders the list into `/v1/limits`;
 `internal/ui` gains `static/portmodel.js`, two pure functions that turn `/v1/limits` into the port control
-and the control's state into the query parameter it sends;
+and an edit of the control into its next state and the query parameter it sends;
 `deploy/` and `test/e2e/` ship the new key;
+`scripts/check-repo.py` proves the removed names are gone from code and manifests;
 `internal/k8s` is untouched — `PortSelection`, `Targets`, and eligibility already carry a client's choice
 ([`docs/specs/gateway.md`](../specs/gateway.md) *The seam*, *Eligibility*).
 
@@ -53,6 +57,8 @@ Rules in force: [`.agents/rules/`](../../.agents/rules/), especially
   `AGENTS.md`, `README.md`, [`.agents/rules/800-security-invariant.md`](../../.agents/rules/800-security-invariant.md),
   and the spec's *Permission Boundary* already carry the wording that names `discovery.pprof.allowedSelections`.
   Confirm they still match before the last commit; do not reword them.
+  `docs/deployment.md` is the one document whose invariant paragraph still describes the old lists,
+  and the last task replaces it with that same wording.
 - **No RBAC change.**
   No Kubernetes verb, resource, or API group moves.
   `TestClusterRoleTuples` in `deploy/deploy_test.go`
@@ -60,9 +66,10 @@ Rules in force: [`.agents/rules/`](../../.agents/rules/), especially
 - **No new runtime module.**
   `github.com/dop251/goja` is imported only from `_test.go` files in `internal/ui`;
   the binary's module set does not change.
-  No import check is added to `scripts/check-repo.py`:
-  the greps there guard packages that can widen the gateway's runtime capability,
+  No import check for it is added to `scripts/check-repo.py`:
+  the import greps there guard packages that can widen the gateway's runtime capability,
   and an interpreter used by a test cannot.
+  The one check this plan adds there scans for the removed names, which is a different kind of guard.
 - **Only `internal/k8s` imports `k8s.io/client-go`**, unchanged;
   `mise run check` enforces it.
 - **The request algorithm does not move.**
@@ -70,7 +77,7 @@ Rules in force: [`.agents/rules/`](../../.agents/rules/), especially
   a realm denial still precedes both,
   and a refused value reaches no `Discovery` call (*Request algorithm*, *Port resolution*).
 - **Non-disclosure holds.**
-  A `400 port_not_allowed` body names only the value the client sent;
+  A `400 port_not_allowed` body names only the value the client sent, in `error` and in its one `details` item;
   no response, header, or audit line carries the number a `portName` resolved to (*Non-disclosure*, *Errors*).
 - **The audit record and the metric label sets do not change.**
   `port` keeps the meaning *Logging* gives it — the selection as sent, empty when absent or malformed,
@@ -79,11 +86,13 @@ Rules in force: [`.agents/rules/`](../../.agents/rules/), especially
   A configuration that sets either removed key, or either removed environment variable,
   fails validation with a message naming `allowedSelections` and `PROFGATE_PPROF_ALLOWED_SELECTIONS` (*Configuration*).
   It ships in the next minor release; the `CHANGELOG.md` entry says so.
-- **Structured error details are out of scope.**
-  *Errors* gives `port_not_allowed` a `details` item whose `code` is `not_admitted`,
-  but `details` belongs to the machine-contract work [`docs/plans/roadmap.md`](roadmap.md) orders after this one
-  and no `details` field exists in `internal/httpapi/errors.go` today.
-  This plan changes no error envelope.
+- **`details` is laid for one code and extended later.**
+  *Errors* gives `port_not_allowed` exactly one `details` item, `code` `not_admitted`, `field` `port` or `portName`.
+  This plan adds the field to the envelope and fills it for that code alone;
+  every other error omits the key.
+  The vocabularies of `invalid_parameter` and `limit_exceeded` belong to the machine-contract work
+  that [`docs/plans/roadmap.md`](roadmap.md) orders after this one,
+  and that work extends the field this plan lays rather than adding a second one.
 - No jargon: code comments, commit messages, and documentation state the current fact,
   never this plan's ordering, a review round, or a task name.
 - Every task ends with the same validation block before its commit:
@@ -103,19 +112,25 @@ mise run lint && mise run test && mise run check
 internal/config/config.go                       # Selection, SelectionKind, AllowedSelections, ParseSelection, AllowsPort, AllowsPortName
 internal/config/config_test.go                  # the load, validation, and environment tables; TestPprofAllows rewritten
 internal/config/testdata/selections-*.yaml      # the new fixtures; the allowed-ports-*.yaml files are deleted
+internal/config/testdata/removed-*.yaml         # files still setting a removed key, one per row
+internal/httpapi/errors.go                      # errorDetail; details on the envelope, omitted when empty
+internal/httpapi/errors_test.go                 # the envelope with and without details
+internal/httpapi/profile.go                     # portNotAllowed carries the one details item
+internal/httpapi/fixtures_test.go               # testConfig states its pprof block; expectError refuses stray details
 internal/httpapi/listing.go                     # pprofView carries allowedSelections
 internal/httpapi/listing_test.go                # the /v1/limits shape
 internal/httpapi/server.go                      # allowPort, unchanged in shape
-internal/httpapi/server_test.go                 # the refusal table under the new model
+internal/httpapi/server_test.go                 # every port case under a stated list
 internal/ui/static/portmodel.js                 # the port control's two pure functions
-internal/ui/static/app.js                       # renders from portmodel.js instead of the two lists
+internal/ui/static/app.js                       # renders and edits through portmodel.js
 internal/ui/portmodel_test.go                   # the goja table over both functions
-internal/ui/scan_test.go, ui_test.go, vendor_test.go   # portmodel.js joins the scanned tree
+internal/ui/scan_test.go, ui_test.go, vendor_test.go   # portmodel.js joins the scanned tree; app.js is held to it
 go.mod, go.sum                                  # github.com/dop251/goja, test-only
+scripts/check-repo.py                           # the removed-name scan
 deploy/base/configmap.yaml                      # allowedSelections: []
 deploy/chart/profgate/values.yaml               # allowedSelections: []
 deploy/chart/profgate/README.md                 # the shipped value and its row
-deploy/deploy_test.go, deploy/chart_test.go     # the shipped-empty assertions
+deploy/deploy_test.go, deploy/chart_test.go     # the shipped-empty and the mixed ordered list
 test/e2e/harness_test.go                        # the default gateway's two entries
 test/e2e/overlays/ports-gateway/configmap.yaml  # allowedSelections: []
 test/e2e/scenarios_test.go                      # the two port-selection scenarios
@@ -133,28 +148,38 @@ docs/plans/port-selection.md
 
 **Files:**
 - Modify: `internal/config/config.go`, `internal/config/config_test.go`
-- Create: `internal/config/testdata/selections-*.yaml`
+- Create: `internal/config/testdata/selections-*.yaml`, `internal/config/testdata/removed-*.yaml`
 - Delete: `internal/config/testdata/allowed-ports.yaml`, `allowed-ports-dup.yaml`,
   `allowed-ports-dup-name.yaml`, `allowed-ports-name.yaml`, `allowed-ports-range.yaml`,
   `allowed-ports-unknown.yaml`
-- Modify: `internal/httpapi/listing.go`, `internal/httpapi/listing_test.go`, `internal/httpapi/server_test.go`
+- Modify: `internal/httpapi/fixtures_test.go`, `internal/httpapi/server_test.go`,
+  `internal/httpapi/listing.go`, `internal/httpapi/listing_test.go`
+- Modify: `internal/httpapi/server.go` (only if the refusal table finds a gap)
 - Modify: `internal/ui/static/app.js`
+- Modify: `scripts/check-repo.py`
 - Modify: `deploy/base/configmap.yaml`, `deploy/chart/profgate/values.yaml`,
   `deploy/chart/profgate/README.md`, `deploy/deploy_test.go`, `deploy/chart_test.go`
 - Modify: `test/e2e/overlays/ports-gateway/configmap.yaml`, `test/e2e/scenarios_auth_test.go`
 
-**Why this commit is large.**
-`AllowedPorts` and `AllowedPortNames` are read by non-test code (`internal/httpapi/listing.go`).
-`deploy/deploy_test.go` and `deploy/chart_test.go` load the shipped and the rendered ConfigMap through `config.Load`,
+**Why this commit is one commit.**
+An empty list stops meaning *anything* and starts meaning *the default alone*,
+and the shared HTTP test configuration, `testConfig` in `internal/httpapi/fixtures_test.go`,
+sets no `Discovery.Pprof` at all.
+Every port case in `internal/httpapi/server_test.go` that names a value beyond the default passes today,
+because the old predicates accept everything under an empty list,
+so the rename and the new meaning cannot be separated into a commit that compiles and a commit that passes:
+the moment the predicates change, those cases fail unless each states the entry that admits its value.
+`AllowedPorts` and `AllowedPortNames` are also read by non-test code (`internal/httpapi/listing.go`),
+and `deploy/deploy_test.go` and `deploy/chart_test.go` load the shipped and the rendered ConfigMap through `config.Load`,
 so validation refusing the old keys turns those tests red until the manifests carry the new key.
 Every task ends with a green `mise run lint && mise run test && mise run check`,
-so the field rename and every place that names it land together.
+so the field, its meaning, and every place that names it land together.
 Two of those places fail silently rather than loudly and must not be forgotten:
 `test/e2e/overlays/ports-gateway/configmap.yaml`, whose gateway would simply refuse to start,
 and `internal/ui/static/app.js`, which no test executes today
 and would quietly render an empty menu.
-The richer behavior — the refusal table, the `/v1/limits` shape, the console model, the cluster proofs —
-lands in the tasks after this one, on a tree that already compiles.
+The `/v1/limits` shape, the `details` item, the console model, and the cluster proofs land in the tasks after this one,
+on a tree that is already default-deny.
 
 **Produces:**
 
@@ -216,13 +241,18 @@ Record that reason in a comment beside the field so nobody restores the tag.
 
 `Load` runs these steps in this order:
 
-1. Refuse `PROFGATE_PPROF_ALLOWED_PORTS` and `PROFGATE_PPROF_ALLOWED_PORT_NAMES` by name with `os.LookupEnv`.
+1. Refuse `PROFGATE_PPROF_ALLOWED_PORTS` and `PROFGATE_PPROF_ALLOWED_PORT_NAMES` by name with `os.LookupEnv`,
+   so a variable set to the empty string is refused like any other.
    No decoder can reach them: a variable no field claims is invisible to fuda (*Configuration*).
 2. Refuse a file that still sets `discovery.pprof.allowedPorts` or `discovery.pprof.allowedPortNames`,
    before the strict unknown-key pass,
    which would otherwise report only that the key is unknown and leave the operator to guess the replacement.
-   Decode the bytes into a small probe holding only those two keys as `*yaml.Node`, without `KnownFields`,
-   so only that nesting level is examined.
+   Decode the bytes into a `yaml.Node`, walk to the `discovery` mapping and then to its `pprof` mapping,
+   and compare the *key* nodes of that one mapping against the two names.
+   Presence is the key, never its value:
+   `allowedPorts: null`, `allowedPorts: []`, and an aliased or malformed value are all a set key,
+   and a decode into a pointer field would read a `null` value as absent.
+   A missing `discovery` or `pprof` mapping means neither key is set.
 3. The existing strict `KnownFields(true)` decode.
 4. The existing fuda load.
 5. Apply `PROFGATE_PPROF_ALLOWED_SELECTIONS` when it is set:
@@ -232,7 +262,7 @@ Record that reason in a comment beside the field so nobody restores the tag.
 6. `normalize`, unchanged.
 7. `validate`, which gains the list rules.
 
-Validation splits three ways, and each half has one home:
+Validation splits three ways, and each part has one home:
 the entry's shape and its scalar grammar in `UnmarshalYAML`;
 the token's shape in `ParseSelection`;
 and the list rules — no duplicate entry, no wildcard beside a concrete entry of its own kind — in `validate`,
@@ -240,6 +270,9 @@ because those must judge the list the environment may have replaced.
 
 A custom `UnmarshalYAML` bypasses `KnownFields(true)` inside the entry,
 so the unmarshaler itself refuses an entry carrying both keys, neither, or a third key.
+It counts the keys it is handed rather than assigning them,
+so a mapping that repeats one key — `{port: 6061, port: 6062}` — is refused as two keys,
+not collapsed into whichever value came last.
 
 - [ ] **Write the configuration tests**
 
@@ -270,7 +303,8 @@ Admission, one row per case, over `AllowsPort` and `AllowsPortName`:
 | `portName: pprof` | `{port: 6061}` | `portName=metrics` | no |
 | `port: 6060` | `{port: "*"}` and `{portName: "*"}` | any number, any name | yes to both |
 
-Loading and validation, one fixture per row under `testdata/selections-*.yaml`:
+Loading and validation, one fixture per row under `testdata/selections-*.yaml`
+and, for the removed keys, `testdata/removed-*.yaml`:
 
 | Fixture | Expect |
 |---|---|
@@ -282,6 +316,7 @@ Loading and validation, one fixture per row under `testdata/selections-*.yaml`:
 | `- {port: 6061, portName: pprof}` | error: an entry names exactly one of `port` and `portName` |
 | `- {}` | the same error |
 | `- {port: 6061, extra: x}` | the same error: the entry refuses a third key itself |
+| `- {port: 6061, port: 6062}` | error: a repeated key is two keys, not the last one |
 | `- port: 0` and `- port: 65536` | error naming the 1–65535 range |
 | `- port: abc` | error naming the range |
 | `- portName: Pprof`, `-x`, sixteen characters, all digits | error naming the container-port name rule |
@@ -290,8 +325,13 @@ Loading and validation, one fixture per row under `testdata/selections-*.yaml`:
 | `- port: "*"` beside `- port: 6061` | error: a wildcard beside a concrete entry of its own kind |
 | `- portName: "*"` beside `- portName: pprof-alt` | error |
 | `- port: "*"` beside `- portName: pprof-alt` | loads: the kinds do not interact |
-| a file setting `allowedPorts` | error naming `allowedSelections` and `PROFGATE_PPROF_ALLOWED_SELECTIONS` |
-| a file setting `allowedPortNames` | the same message |
+| `allowedPorts: [6061]` | error naming `allowedSelections` and `PROFGATE_PPROF_ALLOWED_SELECTIONS` |
+| `allowedPortNames: [pprof-alt]` | the same message |
+| `allowedPorts: null` | the same message: the key is set, whatever its value |
+| `allowedPortNames: null` | the same message |
+| `allowedPorts: []` | the same message |
+| `allowedPortNames: []` | the same message |
+| `allowedPorts: []` and `allowedPortNames: []` together | the same message, and it is the removed-key message rather than the unknown-key one |
 
 The environment, over the good fixture unless a row says otherwise:
 
@@ -311,62 +351,50 @@ The environment, over the good fixture unless a row says otherwise:
 | `port:70000` | any | error naming the 1–65535 range |
 | `port:6061,port:6061` | any | error naming the duplicate entry |
 | `port:*,port:6061` | any | error: a wildcard beside a concrete entry of its own kind |
-| `PROFGATE_PPROF_ALLOWED_PORTS` set | any | error naming `allowedSelections` and `PROFGATE_PPROF_ALLOWED_SELECTIONS` |
-| `PROFGATE_PPROF_ALLOWED_PORT_NAMES` set | any | the same message |
+| `PROFGATE_PPROF_ALLOWED_PORTS=6061` | any | error naming `allowedSelections` and `PROFGATE_PPROF_ALLOWED_SELECTIONS` |
+| `PROFGATE_PPROF_ALLOWED_PORT_NAMES=pprof-alt` | any | the same message |
+| `PROFGATE_PPROF_ALLOWED_PORTS=` (set, empty) | any | the same message: the variable is refused on presence, as `os.LookupEnv` reports it |
+| `PROFGATE_PPROF_ALLOWED_PORT_NAMES=` (set, empty) | any | the same message |
 
-The four refusal messages are asserted on their text,
+The refusal messages are asserted on their text,
 so an operator carrying an older deployment forward reads what to write (*Configuration*).
-
-- [ ] **Run the tests and watch them fail**
-
-- [ ] **Implement the configuration**
-
-Add the type, the field, the four methods, the `Load` steps, and the `validate` rules as written above.
-Delete `AllowedPorts`, `AllowedPortNames`, and the `firstDuplicate` calls they fed
-if nothing else uses that helper.
-Error text follows the existing style: the key path, then the rule.
-
-- [ ] **Carry the rename through the tree**
-
-| File | Change |
-|---|---|
-| `internal/httpapi/listing.go` | `pprofView` carries `AllowedSelections []config.Selection` under the JSON name `allowedSelections`, built so an empty list encodes `[]` and never `null` |
-| `internal/httpapi/listing_test.go`, `server_test.go` | every `config.PprofConfig` literal builds `AllowedSelections` instead of the two lists; behavior rows stay as they are and grow in the next tasks |
-| `internal/ui/static/app.js` | the port control reads `pprof.allowedSelections`, offering one option per entry and a free field only for a wildcard; the model moves to its own module in a later task |
-| `deploy/base/configmap.yaml`, `deploy/chart/profgate/values.yaml` | `allowedSelections: []`, with the comment saying an empty list accepts only the configured default |
-| `deploy/chart/profgate/README.md` | the example block and the `config` row name `allowedSelections` and say the empty list is default-deny |
-| `deploy/deploy_test.go`, `deploy/chart_test.go` | the shipped-empty assertions read `allowedSelections: []` and `AllowedSelections` |
-| `test/e2e/overlays/ports-gateway/configmap.yaml` | `allowedSelections: []`, which is what its scenario proves; the realm's `namespaces: ["placeholder"]` line stays exactly as written, because `deployScopedGateway` patches that literal and fails the scenario when it finds nothing to replace |
-| `test/e2e/scenarios_auth_test.go` | the `/v1/limits` struct reads `allowedSelections`; the assertion is adjusted again when the default gateway's list grows |
-
-- [ ] **Validate and commit**
-
-```bash
-mise exec -- go test -race ./internal/... ./deploy/
-mise exec -- go vet -tags e2e ./test/e2e/...
-mise run lint && mise run test && mise run check
-semlf check deploy/chart/profgate/README.md
-git add internal/ deploy/ test/e2e/
-git commit -m "feat(config)!: one allowedSelections list"
-```
-
----
-
-## What the gateway refuses
-
-**Files:**
-- Modify: `internal/httpapi/server_test.go`
-- Modify: `internal/httpapi/server.go` (only if the table finds a gap)
-
-`allowPort` in `internal/httpapi/server.go` already asks the configuration snapshot the two questions
-and answers `400 port_not_allowed` with the value as sent,
-so this task is where the request-level outcomes of the new model are proven.
-Change code only where a row fails.
+`t.Setenv` with an empty value is what sets a variable to the empty string in a Go test.
 
 - [ ] **Write the refusal table**
 
+`allowPort` in `internal/httpapi/server.go` already asks the configuration snapshot the two questions
+and answers `400 port_not_allowed` with the value as sent,
+so the request-level outcomes of the new model are proven here and the code changes only where a row fails.
 Rows restate *Port resolution*, *Request algorithm*, *Errors*, *Logging*, and the `internal/httpapi` rows of *Layers*,
 each run against the targets endpoint and the profile endpoint.
+
+First the shared configuration.
+`testConfig` in `fixtures_test.go` gains `Discovery.Pprof = config.PprofConfig{Port: 6060}` and no entry,
+so every harness starts default-deny and states the list it needs;
+the `pprof` helper in `TestPortAllowlist` keeps replacing the whole block.
+
+Then the cases that exist today, each of which named a value the old empty list let through.
+Every one keeps its purpose and gains the entry that admits its value,
+or turns into the refusal it now proves:
+
+| Test | Case today | Under a stated list |
+|---|---|---|
+| `TestPortAllowlist` | `portName abc is valid` — an arbitrary name is accepted under empty lists | under `{portName: "*"}`: `200`, and the fake sees `PortName: "abc"`; under the empty list the same request is `400 port_not_allowed` with no call |
+| `TestPortAllowlist` | `empty lists accept any port` — `port=9999` under empty lists | becomes `an empty list refuses a number beyond the default`: `400 port_not_allowed`, counts `0, 0`, no call; a sibling under `{port: "*"}` sends `port=9999` and gets `200` with the numeric selection seen |
+| `TestPortAllowlist` | `disallowed port` — `AllowedPorts: [6060]`, `port=6061` | the empty list; the body assertions stay: the message names `6061` and no other number |
+| `TestPortAllowlist` | `disallowed name` — `AllowedPortNames: [pprof]`, `portName=pprof-alt` | `{portName: pprof}`; the message names `pprof-alt` |
+| `TestPortAllowlist` | `lists are independent` — ports bound leaves any name, names bound leaves any port | becomes `each kind is bounded on its own`: `{port: 6061}` with `portName=anything` is `400 port_not_allowed`, `{portName: pprof-alt}` with `port=9999` is `400 port_not_allowed`, `{port: "*"}` with `portName=anything` is `400 port_not_allowed`, and `{portName: "*"}` with `port=9999` is `400 port_not_allowed` |
+| `TestPortAllowlist` | `default number always passes` — `AllowedPorts: [7070]`, `port=6060` | `{port: 7070}`; unchanged otherwise |
+| `TestPortAllowlist` | `default name always passes` — `PortName: pprof`, `AllowedPortNames: [metrics]` | `{portName: metrics}`; unchanged otherwise |
+| `TestPortAllowlist` | `narrowed` — both old lists set; no selection on either endpoint | `{port: 7070}` and `{portName: metrics}`; both rows still `200` with the zero selection |
+| `TestPortAllowlist` | `allowlist reads the request's snapshot` — `[6060, 7070]` narrowed to `[6060]` mid-request | `{port: 7070}` narrowed to the empty list; `port=7070` still `200` |
+| `TestPortAllowlist` | `realm before allowlist`, `grammar before allowlist`, `allowlist before discovery error`, `parameters before allowlist` | each configures the empty list, which refuses the value the row sends; outcomes unchanged |
+| `TestPortResolution` | `altHarness` — `pprof-alt` on one Pod of two, `nowhere` on none | the harness configures `{portName: pprof-alt}` and `{portName: nowhere}`, so `name on one Pod of two`, both `name on no Pod` rows, and `audit name` run under an admitted name and keep their outcomes: one Pod listed, an empty list, `503 no_targets`, and no resolved number in the audit line |
+| `TestPortResolution` | `audit numeric` — `port=6061` under the default harness | configures `{port: 6061}`; the audit field is still `6061` |
+| `TestPortResolution` | `audit disallowed` — `AllowedPorts: [6060]`, `port=6061` | the empty list; unchanged otherwise |
+| `TestPortResolution` | `non-pprof listener passes through` — `port=8080` under the default harness | configures `{port: 8080}`; the upstream `404` and the audit field are unchanged |
+
+Then the rows of the new model:
 
 | Case | Configuration | Request | Expect |
 |---|---|---|---|
@@ -405,14 +433,139 @@ Non-disclosure, from *Non-disclosure*:
 no response body, header, or audit line in any row above carries the number a `portName` selection resolved to,
 and a `400 port_not_allowed` body names the client's value and nothing else.
 
-Eligibility under a name, from *Eligibility* and *Layers*:
-a `portName` one fake Pod declares and another does not lists only the first on the targets endpoint,
-and one no Pod declares lists none and answers `503 no_targets` on the profile endpoint.
-These rows exist today; keep them and put them under a list that admits the name.
+- [ ] **Write the shipped-manifest tests**
 
-- [ ] **Run the tests and watch the new rows fail**
+`TestConfigMap` in `deploy/deploy_test.go` asserts the base ConfigMap renders `allowedSelections: []`
+and loads with an empty `AllowedSelections`.
 
-- [ ] **Close any gap the table finds**
+`deploy/chart_test.go` has four subtests that name the old fields, and each has a replacement:
+
+| Test | Subtest today | Replacement |
+|---|---|---|
+| `TestChartConfigIsMergedAndParses` | `raw config block` — asserts both old lists empty beside the raw block's values | asserts `AllowedSelections` is empty |
+| `TestChartPortAllowlists` | `defaults render both lists empty` | `defaults render the list empty`: the rendered `config.yaml` contains `allowedSelections: []`, and the loaded list is empty; the test's comment says the empty list admits only the configured default |
+| `TestChartPortAllowlists` | `portName only` — a named default leaves both lists empty | a named default leaves `AllowedSelections` empty |
+| `TestChartPortAllowlists` | `narrows the lists` — `allowedPorts=[6060]` and `allowedPortNames=["pprof"]` set independently | `a mixed list keeps its order`: `--set-json config.discovery.pprof.allowedSelections=[{"portName":"pprof-alt"},{"port":6061},{"port":"*"}]`, loaded through `config.Load`, is exactly those three entries in that order with their kinds intact — a named entry, a numeric one, and the port wildcard, proving the chart's merge neither sorts nor re-types them |
+| `TestChartPortAllowlists` | none | `the chart cannot bypass validation`: `--set-json config.discovery.pprof.allowedSelections=[{"port":"*"},{"port":6061}]` renders, and `config.Load` refuses the rendered file with the wildcard-beside-concrete message; the same for `[{"portName":"*"},{"portName":"pprof-alt"}]` |
+
+`TestChartPortAllowlists` is renamed to say what it now covers, `TestChartAllowedSelections`.
+
+- [ ] **Write the removed-name scan**
+
+`scripts/check-repo.py` gains `check_removed_port_keys`,
+beside the import checks it already runs over `*.go` files and in the same style.
+It reads every `*.go`, `*.yaml`, `*.yml`, and `*.tpl` file under the tree,
+plus `deploy/chart/profgate/README.md`,
+and fails on any line containing `AllowedPorts`, `AllowedPortNames`, `allowedPorts`, `allowedPortNames`,
+`PROFGATE_PPROF_ALLOWED_PORTS`, or `PROFGATE_PPROF_ALLOWED_PORT_NAMES`.
+It skips `internal/config/`, which holds the refusal and the fixtures that prove it,
+and it never reads `CHANGELOG.md` or `docs/configuration.md`,
+where the released entry and the migration table name the old keys on purpose.
+`mise run check` runs it in every validation block from here on,
+and the check's docstring gains one line saying what it guards.
+
+- [ ] **Run the tests and watch them fail**
+
+- [ ] **Implement the configuration**
+
+Add the type, the field, the four methods, the `Load` steps, and the `validate` rules as written above.
+Delete `AllowedPorts`, `AllowedPortNames`, and the `firstDuplicate` calls they fed
+if nothing else uses that helper.
+Error text follows the existing style: the key path, then the rule.
+
+- [ ] **Carry the rename through the tree**
+
+| File | Change |
+|---|---|
+| `internal/httpapi/fixtures_test.go` | `testConfig` states its pprof block as written above |
+| `internal/httpapi/server_test.go` | the two tables above |
+| `internal/httpapi/listing.go` | `pprofView` carries `AllowedSelections []config.Selection` under the JSON name `allowedSelections`, built so an empty list encodes `[]` and never `null` |
+| `internal/httpapi/listing_test.go` | every `config.PprofConfig` literal builds `AllowedSelections` instead of the two lists; the body assertions read `allowedSelections` and grow in the task after this one |
+| `internal/httpapi/server.go` | only where a row of the refusal table fails |
+| `internal/ui/static/app.js` | the port control reads `pprof.allowedSelections`, offering one option per entry and a free field only for a wildcard; the model moves to its own module in a later task |
+| `deploy/base/configmap.yaml`, `deploy/chart/profgate/values.yaml` | `allowedSelections: []`, with the comment saying an empty list accepts only the configured default |
+| `deploy/chart/profgate/README.md` | the example block and the `config` row name `allowedSelections` and say the empty list is default-deny |
+| `deploy/deploy_test.go`, `deploy/chart_test.go` | the tables above |
+| `test/e2e/overlays/ports-gateway/configmap.yaml` | `allowedSelections: []`, which is what its scenario proves; the realm's `namespaces: ["placeholder"]` line stays exactly as written, because `deployScopedGateway` patches that literal and fails the scenario when it finds nothing to replace |
+| `test/e2e/scenarios_auth_test.go` | the `/v1/limits` struct reads `allowedSelections`; the assertion is adjusted again when the default gateway's list grows |
+
+- [ ] **Validate and commit**
+
+```bash
+mise exec -- go test -race ./internal/... ./deploy/
+mise exec -- go vet -tags e2e ./test/e2e/...
+mise run lint && mise run test && mise run check
+semlf check deploy/chart/profgate/README.md
+git add internal/ scripts/ deploy/ test/e2e/
+git commit -m "feat(config)!: one allowedSelections list"
+```
+
+---
+
+## The refusal names its parameter
+
+**Files:**
+- Modify: `internal/httpapi/errors.go`, `internal/httpapi/errors_test.go`,
+  `internal/httpapi/profile.go`, `internal/httpapi/fixtures_test.go`, `internal/httpapi/server_test.go`
+
+*Errors* gives `port_not_allowed` one `details` item, and no other error this plan touches carries one;
+and the `internal/httpapi` row of *Layers* asks for it against the encoded body.
+The envelope today is two strings, `error` and `code`, in `errorBody`,
+written by `WriteError` from a `requestError` that `fail` hands it.
+The smallest change that carries the item:
+
+```go
+// errorDetail is one input the caller has to change (*Errors*).
+type errorDetail struct {
+    Field   string `json:"field"`
+    Code    string `json:"code"`
+    Message string `json:"message"`
+}
+
+// requestError gains:
+    details []errorDetail
+
+// errorBody gains:
+    Details []errorDetail `json:"details,omitempty"`
+```
+
+`fail` writes the body with the details its `requestError` carries;
+`ErrorEnvelope` and `WriteError` keep their signatures and write no details,
+because their callers — the console's own `404` and `405` in `internal/ui/ui.go`,
+and the upstream-outcome path in `server.go` — have none.
+`omitempty` on a nil slice is what omits the key;
+nothing may build an empty non-nil slice, and the test below holds that.
+`portNotAllowed` in `profile.go` takes the parameter beside the value,
+and `allowPort` passes `port` or `portName` for whichever case fired:
+
+```go
+details: []errorDetail{{Field: "port", Code: "not_admitted", Message: `6061 is not an admitted selection`}}
+```
+
+The message names the value the client sent and nothing else,
+which is what *Non-disclosure* already allows.
+
+- [ ] **Write the envelope tests**
+
+`errors_test.go` keeps `TestWriteError` byte for byte:
+its expected body has no `details` key, which is the proof that an error without details omits it.
+`server_test.go` adds, against the encoded body rather than the struct:
+
+| Request | Body |
+|---|---|
+| `port=6061` refused | `"details":[{"field":"port","code":"not_admitted","message":"6061 is not an admitted selection"}]`, exactly one item |
+| `portName=pprof-alt` refused | `"details":[{"field":"portName","code":"not_admitted","message":"pprof-alt is not an admitted selection"}]` |
+| `portName=pprof-alt` refused under the `altHarness` Pods | no item, and no byte of the body, carries `6061`, the number the name resolves to on one Pod |
+| `403 realm_denied`, `400 invalid_parameter`, `404 service_not_found`, `503 no_targets` | the body has no `details` key at all |
+
+`expectError` in `fixtures_test.go` gains one assertion that runs on every error it checks:
+the body contains no `"details":null` and no `"details":[]`,
+and contains `"details"` only when the code is `port_not_allowed`.
+Every existing error case in the package then proves the omission for its own code.
+
+- [ ] **Run the tests and watch them fail**
+
+- [ ] **Carry the item**
 
 - [ ] **Validate and commit**
 
@@ -420,7 +573,7 @@ These rows exist today; keep them and put them under a list that admits the name
 mise exec -- go test -race ./internal/httpapi/
 mise run lint && mise run test && mise run check
 git add internal/httpapi/
-git commit -m "test(httpapi): prove default-deny ports"
+git commit -m "feat(httpapi): port_not_allowed names its field"
 ```
 
 ---
@@ -474,6 +627,14 @@ git commit -m "test(httpapi): limits reports the selections"
 [`docs/specs/ui.md`](../specs/ui.md) *Controls* puts the port control's rules in two pure functions in `portmodel.js`,
 importing nothing,
 and *Unit* runs them in a pure-Go ECMAScript interpreter — the one part of the page a test executes.
+*Unit* also asks the table to prove that setting one field clears the other,
+and that transition today lives in the page's two input handlers, `onPortNumber` and `onPortName` in `app.js`,
+which a test cannot reach.
+So the second function is the transition itself, not a serializer of an already-formed state:
+it takes the control's state and one edit, and returns the next state and what that state sends.
+Both handlers call it, and so does the request builder, with no edit,
+so clearing passes through the function the table drives.
+The spec names no function, so no spec edit is needed.
 
 **Produces:**
 
@@ -482,12 +643,18 @@ and *Unit* runs them in a pure-Go ECMAScript interpreter — the one part of the
 // the menu's options and whether each free-form field exists.
 function deriveControl(pprof)
 
-// selectionParams turns the control's state into the query it sends:
-// {}, {port}, or {portName}, never both.
-function selectionParams(state)
+// applyInput applies one edit — source is "menu", "number", or "name",
+// or undefined for no edit — to the control's state and returns
+// { state, params }: the next state, and the query it sends, which is
+// {}, {port}, or {portName}, never both. An edit to one free-form field
+// clears the other.
+function applyInput(state, source, value)
 
-export { deriveControl, selectionParams };
+export { deriveControl, applyInput };
 ```
+
+The state is the three fields the page already keeps — `portChoice`, `portNumber`, `portName` —
+and `applyInput` returns a new object rather than mutating the one it was handed.
 
 The module imports nothing, declares plain functions,
 and ends in that single `export` statement and no other export,
@@ -525,34 +692,45 @@ Deriving the control, run against a numeric default and against a named one:
 | an entry equal to the default | that entry is left out of the menu, and the input list is unchanged | as above | as above |
 | `{portName: "6060"}` beside a `{port: 6060}` default | the entry is offered: kinds do not compare | no | no |
 
-Serializing the choice:
+Applying an edit, starting from the empty state unless a row says otherwise,
+asserting both the `state` and the `params` returned:
 
-| State | Sends |
-|---|---|
-| `default` | neither parameter |
-| a `{port: N}` option | `port=N` |
-| a `{portName: name}` option | `portName=name` |
-| the numeric field holding `7000` | `port=7000` |
-| the name field holding `pprof-alt` | `portName=pprof-alt` |
-| the name field holding `123` | `portName=123`, never `port=123`: the control decides the parameter, not the value |
-| a non-empty field beside a chosen menu entry | the field wins |
-| one field set after the other | the other is cleared, so the two parameters are never sent together |
+| Edit | State after | Sends |
+|---|---|---|
+| none, on the empty state | unchanged | neither parameter |
+| menu `default` | `portChoice` `default` | neither parameter |
+| menu, a `{port: N}` option | `portChoice` names it | `port=N` |
+| menu, a `{portName: name}` option | `portChoice` names it | `portName=name` |
+| number `7000` | `portNumber` `7000`, `portName` empty | `port=7000` |
+| name `pprof-alt` | `portName` `pprof-alt`, `portNumber` empty | `portName=pprof-alt` |
+| name `123` | `portName` `123` | `portName=123`, never `port=123`: the control decides the parameter, not the value |
+| number `7000` after a menu option was chosen | the menu choice stays in the state | `port=7000`: the field wins |
+| name `pprof-alt`, then number `7000` | `portName` is empty and `portNumber` is `7000` | only `port=7000` |
+| number `7000`, then name `pprof-alt` | `portNumber` is empty and `portName` is `pprof-alt` | only `portName=pprof-alt` |
+| number `7000`, then number cleared to the empty string | both fields empty | what the menu choice sends |
+| any sequence of edits | the returned `params` never holds both keys, and the state handed in is not mutated | — |
 
 - [ ] **Run the tests and watch them fail**
 
 - [ ] **Write the module and move the page onto it**
 
-`app.js` imports `./portmodel.js` and renders from `deriveControl`,
-and builds its request parameters with `selectionParams`.
-The page keeps its state fields and its handlers; only the rules move.
+`app.js` imports `./portmodel.js` and renders from `deriveControl`.
+`onPortChoice`, `onPortNumber`, and `onPortName` each call `applyInput` with their source and value
+and store the returned `state`;
+the `portChoice()` method, which today serializes the three fields by hand,
+becomes `applyInput(this.state).params`, so the rules exist in one place.
 `urls.js` stays the only module that spells a `/v1` path.
 
-- [ ] **Let the existing scans see the new file**
+- [ ] **Let the existing scans see the new file, and hold the page to it**
 
 `consoleSources()` in `scan_test.go` gains `portmodel.js`, so the injection and path-literal scans cover it;
 `ui_test.go` gains its content type and includes it in the tree-hash cases;
 the import scan in `vendor_test.go` holds it to the stricter rule *Unit* states —
 no `import` and no `import(` at all, where `app.js` may hold relative ones.
+`scan_test.go` also gains `TestScanPageUsesPortModel`:
+`app.js` contains an `import` whose specifier is `./portmodel.js` naming both functions,
+and calls `deriveControl(` and `applyInput(` at least once each,
+so a page that stops going through the model turns the suite red, even though no test renders it.
 
 - [ ] **Validate and commit**
 
@@ -595,7 +773,7 @@ and `default` stays `{"port":6060}`.
 | Scenario | Gateway | Proves |
 |---|---|---|
 | the second port is reachable | the default gateway, whose list holds both entries | `?port=6061` fetches a profile the application's `/hits` attributes to `:6061`; `?portName=pprof-alt` does the same; no `X-Pprof-Target-*` header carries the number; `?portName=pprof-alt` on the targets endpoint lists the application's Pods |
-| an empty list refuses both | the `ports-gateway` overlay, whose list is empty | `?port=6061` and `?portName=pprof-alt` are each `400 port_not_allowed` naming the value sent; the application's `:6061` count does not move; `?port=6060`, the configured default, still fetches |
+| an empty list refuses both | the `ports-gateway` overlay, whose list is empty | `?port=6061` and `?portName=pprof-alt` are each `400 port_not_allowed` naming the value sent, with one `details` item whose `field` is the parameter sent; the application's `:6061` count does not move; `?port=6060`, the configured default, still fetches |
 
 Both scenarios keep their `needsPodReach` capability and their separate registrations,
 so a degraded lane skips them by name.
@@ -627,8 +805,10 @@ git commit -m "test(e2e): default-deny port selection"
   `deploy/chart/profgate/README.md`, `.agents/rules/500-validation-and-workflow.md`,
   `CHANGELOG.md`, `docs/plans/roadmap.md`, `docs/plans/port-selection.md`
 
-The gateway spec's *Amendments* block names the first five files as updated when the implementation lands.
-Two more are added here because this change makes their current text false,
+The gateway spec's *Amendments* block names the first five files as updated when the implementation lands,
+and for `docs/deployment.md` names three edits:
+the invariant sentence, the pprof-port prose, and the NetworkPolicy sentence.
+Two more files are added here because this change makes their current text false,
 which is the same reason the table's own rows exist:
 `docs/console.md` describes the page's controls, and its port control is now a menu or a free field;
 `.agents/rules/500-validation-and-workflow.md` says the page's own JavaScript runs in no test,
@@ -638,19 +818,26 @@ which stops being true when `portmodel.js` is evaluated by a Go test.
 
 | File | Change |
 |---|---|
-| `docs/api.md` | the `/v1/limits` body carries `allowedSelections` as one-key objects, `[]` when empty; the `port` and `portName` rows name `discovery.pprof.allowedSelections`; the paragraph on what the endpoint discloses names the one list; the port observations under what choosing ports reveals name it too |
+| `docs/api.md` | the `/v1/limits` body carries `allowedSelections` as one-key objects, `[]` when empty; the `port` and `portName` rows name `discovery.pprof.allowedSelections`; `400 port_not_allowed` shows its one `details` item and says every other error omits the key; the paragraph on what the endpoint discloses names the one list; the port observations under what choosing ports reveals name it too |
 | `docs/configuration.md` | the `discovery` table row for `allowedSelections` with its environment variable and its constraints; the prose replacing the two independent fail-open lists with one default-deny list, the two wildcards, and the empty list admitting only the configured default; the three environment cases and the empty-token error; the cross-key validation bullets; the example block; a migration table converting `allowedPorts: []` to `- port: "*"`, `allowedPortNames: []` to `- portName: "*"`, and each concrete old entry to its one-key entry |
-| `docs/deployment.md` | the minimum-useful-configuration paragraph: the pprof port is bounded by `discovery.pprof.allowedSelections`, and the shipped manifests leave it empty, so a client may name only the configured default until the operator lists more |
+| `docs/deployment.md`, the pprof-port bullet under the minimum useful configuration | the pprof port is bounded by `discovery.pprof.allowedSelections`, and the shipped manifests leave it empty, so a client may name only the configured default until the operator lists more |
+| `docs/deployment.md`, the permission-invariant paragraph under *RBAC* | today it says that when an allowlist is empty the gateway connects to any port or port name a client names; replace it with the invariant wording `AGENTS.md`, `README.md`, and `.agents/rules/800-security-invariant.md` carry — the configured pprof port, and any port or port name `allowedSelections` admits by an exact entry or by a wildcard, wherever NetworkPolicy permits |
+| `docs/deployment.md`, the closing sentence of *NetworkPolicy, disruption budget, and scheduling* | today it says each empty allowlist accepts every value and two empty lists leave NetworkPolicy as the only bound; replace it with: a client may name the configured default and any selection `allowedSelections` admits, exactly or by wildcard, and only under a wildcard is NetworkPolicy the bound on which Pod ports the gateway reaches |
 | `docs/console.md` | the port control is a menu of the configured default and every listed selection, with a free-form field only where the matching wildcard is configured |
 | `deploy/chart/profgate/README.md` | confirm the value row and the example landed with the manifests |
 | `.agents/rules/500-validation-and-workflow.md` | the console's port-control model runs in a Go test; the rest of the page still runs in none, so a change to `internal/ui/static/` outside `portmodel.js` still needs a check in a browser |
-| `CHANGELOG.md` | under `## [Unreleased]`, a `### Changed` entry marked as a breaking change: `discovery.pprof.allowedPorts` and `allowedPortNames` are removed together with `PROFGATE_PPROF_ALLOWED_PORTS` and `PROFGATE_PPROF_ALLOWED_PORT_NAMES`, replaced by `discovery.pprof.allowedSelections`; an empty list now admits only the configured default where an empty allowlist used to admit anything; the migration is the two wildcards; `/v1/limits` reports `allowedSelections` in place of the two arrays. Leave the released `0.4.0` section as it is: it describes what that version shipped |
+| `CHANGELOG.md` | under `## [Unreleased]`, a `### Changed` entry marked as a breaking change: `discovery.pprof.allowedPorts` and `allowedPortNames` are removed together with `PROFGATE_PPROF_ALLOWED_PORTS` and `PROFGATE_PPROF_ALLOWED_PORT_NAMES`, replaced by `discovery.pprof.allowedSelections`; an empty list now admits only the configured default where an empty allowlist used to admit anything; the migration is the two wildcards; `/v1/limits` reports `allowedSelections` in place of the two arrays; `400 port_not_allowed` carries a `details` item. Leave the released `0.4.0` section as it is: it describes what that version shipped |
 
-- [ ] **Confirm the invariant wording still matches**
+- [ ] **Confirm the invariant wording matches everywhere**
 
 `AGENTS.md`, `README.md`, `.agents/rules/800-security-invariant.md`,
 and the spec's *Permission Boundary* already name `discovery.pprof.allowedSelections`;
-no edit belongs in this commit.
+no edit belongs in this commit for those four.
+Read the rewritten `docs/deployment.md` paragraph beside them and hold it to the same wording.
+Then search the guides and the manifests for the two removed key names:
+`mise run check` already refuses them in Go, YAML, and the chart,
+and a manual search over `docs/` and `README.md` should find them only in `docs/configuration.md`'s migration table,
+in `CHANGELOG.md`, and in the specs and plans that record the change.
 
 - [ ] **Finish the plan in the same commit**
 
@@ -690,12 +877,15 @@ git commit -m "docs: default-deny client-selected ports"
   A deployment whose configuration still sets a removed key does not start.
   That is the point — the alternative is a key ignored into a default-deny gateway — but it is a restart-time failure,
   so the changelog entry and `docs/configuration.md` carry the conversion table.
-- **No test proves the browser renders the control.**
-  The two pure functions are evaluated; the rendering around them is not.
+- **No test renders the browser control.**
+  The two pure functions are evaluated, and a scan holds `app.js` to importing and calling them;
+  the rendering around them is not executed.
   That gap is what the console work in [`docs/plans/roadmap.md`](roadmap.md) closes.
-- **Structured error `details`.**
-  *Errors* gives `port_not_allowed` a `details` item; no `details` field exists yet,
-  and building one is the machine-contract work ordered after this change.
+- **`details` for the other codes.**
+  The field exists after this plan and one code fills it.
+  The `invalid_parameter` and `limit_exceeded` vocabularies *Errors* defines are the machine-contract work
+  that [`docs/plans/roadmap.md`](roadmap.md) orders after this one,
+  and until it lands those errors omit the key, which *Errors* permits for a code without a vocabulary in place.
 
 ---
 
@@ -703,52 +893,74 @@ git commit -m "docs: default-deny client-selected ports"
 
 - Spec coverage:
   the entry shape, the empty list, the two wildcards, the always-permitted default, and `400 port_not_allowed`
-  (*Port resolution*, in the first two tasks);
-  the parameter step before discovery and the realm step before it (*Request algorithm*, second task);
-  the parameter rows of both endpoints (*List targets*, *Fetch a profile*, second task);
-  the error code and what its body may name (*Errors*, *Non-disclosure*, second task);
-  the audit field (*Logging*, second task) and the absence of a label (*Metrics*, no change);
+  (*Port resolution*, in *One list replaces two allowlists*);
+  the parameter step before discovery and the realm step before it (*Request algorithm*, the same task);
+  the parameter rows of both endpoints (*List targets*, *Fetch a profile*, the same task);
+  the error code, what its body may name, and its one `details` item
+  (*Errors*, *Non-disclosure*, *The refusal names its parameter*);
+  the audit field (*Logging*, the first task) and the absence of a label (*Metrics*, no change);
   the global reach of the list (*Limits are not authorization*, stated as a constraint);
-  the `/v1/limits` shape ([`docs/specs/ui.md`](../specs/ui.md) *Limits*, third task);
-  the port control ([`docs/specs/ui.md`](../specs/ui.md) *Controls*, *Unit*, fourth task);
-  the key, its environment form, the removed keys and variables, and the migration table
+  the `/v1/limits` shape ([`docs/specs/ui.md`](../specs/ui.md) *Limits*, *What `/v1/limits` reports*);
+  the port control, including the clearing transition
+  ([`docs/specs/ui.md`](../specs/ui.md) *Controls*, *Unit*, *The console's port control*);
+  the key, its environment form, the removed keys and variables including the null and empty forms,
+  and the migration table
   (*Configuration*, first and last tasks);
   shipped manifests (*Build and Deployment*, first task);
-  the harness and both cluster proofs (*Harness*, *What end-to-end proves*, fifth task);
+  the harness and both cluster proofs (*Harness*, *What end-to-end proves*, *What the cluster proves*);
   the unit rows of *Layers* split across the tasks that own their packages;
-  the documents *Amendments* says are updated with the implementation (last task).
+  the three `docs/deployment.md` edits and the other documents *Amendments* says are updated with the implementation
+  (last task).
+- Each task's stated tests are green before its commit against the tree that task leaves:
+  the first task carries the shared fixture and every port case the new meaning touches,
+  so no later task inherits a red package.
 - Names defined once and used by those names afterwards:
   `config.Selection`, `config.SelectionKind` with `SelectionPort` and `SelectionPortName`,
   `config.AnySelection`, `config.ParseSelection`, `PprofConfig.AllowedSelections`,
   and the two predicates `AllowsPort` and `AllowsPortName`, which keep their names and change their answers;
-  in the browser, `deriveControl` and `selectionParams`.
+  `errorDetail` and the `details` field in `internal/httpapi`;
+  `check_removed_port_keys` in `scripts/check-repo.py`;
+  in the browser, `deriveControl` and `applyInput`.
 - Current-source facts this plan rests on:
   `PortSelection`, `Targets`, and per-Pod port resolution already carry a client's choice,
   so the Kubernetes seam is untouched;
-  `allowPort` already asks the configuration snapshot and builds the error with the value as sent;
+  `allowPort` already asks the configuration snapshot and `portNotAllowed` builds the error with the value as sent;
   `parsePortParams` already holds the grammar of both parameters and already removes them from the query;
   the audit `port` field and its `invalid_parameter` and `port_not_allowed` cases already exist;
+  `testConfig` in `internal/httpapi/fixtures_test.go` sets no `Discovery.Pprof`,
+  and the port cases in `server_test.go` that name a value beyond the default rely on the old empty-list reading;
+  `errorBody` in `internal/httpapi/errors.go` is two strings, `fail` writes it through `WriteError`,
+  and `internal/ui/ui.go` calls `ErrorEnvelope` for the console's own errors;
   `pprofView` in `internal/httpapi/listing.go` is non-test code reading both removed fields;
-  `deploy/deploy_test.go` and `deploy/chart_test.go` load the shipped and rendered ConfigMap through `config.Load`;
+  `deploy/deploy_test.go` and `deploy/chart_test.go` load the shipped and rendered ConfigMap through `config.Load`,
+  and four chart subtests name the old fields;
+  `scripts/check-repo.py` already walks `*.go` files with path exemptions, and `mise run check` runs it;
   `test/e2e/overlays/ports-gateway/configmap.yaml` today lists a narrow allowlist rather than an empty one;
   the default gateway's configuration is composed by `gatewayConfig` and applied by `configPatch`;
   the two authentication lanes build their gateways from that same function;
   the test application already listens on `:6061` as `pprof-alt` and counts hits per listen address;
   `internal/ui/static/` holds `app.js` and `urls.js` and no model module,
+  `app.js` clears one port field in the handler of the other and serializes the three fields in `portChoice()`,
   and the scans in `scan_test.go`, `ui_test.go`, and `vendor_test.go` enumerate the files they cover;
   `go.mod` does not yet require `github.com/dop251/goja`;
   fuda applies an `env` tag on presence, empty value included,
   and converts a string into a slice as one CSV record, which cannot yield an empty list;
-  no `details` field exists in `internal/httpapi/errors.go`.
+  `gopkg.in/yaml.v3` decodes a `null` value into a pointer field as the nil pointer,
+  which is why the removed-key probe reads key nodes;
+  `docs/deployment.md` names the old lists in three places:
+  the pprof-port bullet, the invariant paragraph, and the NetworkPolicy sentence.
 - Decided here because the spec leaves it to the implementer:
   `Selection` is a two-field record — the kind and the value, with `"*"` as the value of a wildcard —
   rather than four fields that could contradict each other;
   the environment variable is read by `Load` rather than by an `env` tag, for the fuda reason above;
-  the removed file keys are detected by a probe decode before the strict pass,
+  the removed file keys are detected by walking the key nodes of the `discovery.pprof` mapping before the strict pass,
   and the removed variables by name before the file is read;
   the list rules run after the environment override, on the list that will be used;
-  the two browser functions are named `deriveControl` and `selectionParams`.
+  `details` is a nil slice under `omitempty` rather than a pointer or a second envelope type;
+  the removed-name scan lives in `scripts/check-repo.py` because that is where the tree-wide greps already are;
+  the two browser functions are named `deriveControl` and `applyInput`,
+  and the second carries the edit so that clearing is a tested transition.
 - Left to the implementer by design: helper names inside test files,
   the exact fixture file names under `internal/config/testdata/`,
   the wording of the console's labels,
-  and whether the removed-key probe is one struct or two.
+  and the exact `applyInput` source names beyond the three listed.
