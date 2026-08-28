@@ -1,6 +1,6 @@
 # Client-Selected Port Becomes Default-Deny
 
-**Status:** Draft
+**Status:** Approved
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task is written test-first and ends with its own validation block and one commit.
