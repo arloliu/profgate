@@ -108,7 +108,6 @@ discovery:
     port: 6060
     allowedSelections:
       - port: 6061
-      - portName: pprof-alt
       - portName: "*"
 ```
 

@@ -65,5 +65,5 @@ func writeErrorBody(w http.ResponseWriter, status int, body []byte) {
 	header.Set("Content-Type", "application/json")
 	header.Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_, _ = w.Write(body) //nolint:gosec // G705: a JSON-encoded envelope of gateway-chosen strings, never request input
+	_, _ = w.Write(body) //nolint:gosec // G705: a JSON-encoded envelope; the one client value it can carry, a port selection, was bounded to a port number or an IANA name before it got here, and the encoder escapes it
 }
