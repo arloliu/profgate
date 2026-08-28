@@ -1344,13 +1344,14 @@ Each row names the heading it edits.
 | `.agents/rules/100-project-map.md` | *External HTTP API* | `/v1/auth` |
 | `AGENTS.md` | *Four Specs, All Accepted* | five, adding this document |
 | `docs/README.md` | *Where Contributors Start* | [`specs/cli.md`](cli.md) beside the other specs |
+| `docs/README.md` | the opening guide list | the client guide [`docs/cli.md`](../cli.md) beside the other user guides |
 
 Updated with the implementation:
 [`docs/api.md`](../api.md) (the `/v1/auth` route and the client's examples beside the `curl` ones),
 [`docs/authentication.md`](../authentication.md) (*The command-line client*,
-which today says the client does not exist),
+the device-login walk-through),
 [`docs/configuration.md`](../configuration.md) (`auth.oidc.cli`),
-and a client guide of its own, linked from the user-guide list in [`docs/README.md`](../README.md).
+and the client guide [`docs/cli.md`](../cli.md).
 [`docs/keycloak-realm.json`](../keycloak-realm.json) gains
 `oauth2.device.authorization.grant.enabled` on its client,
 which Keycloak reads as `false` when it is absent,
@@ -1359,11 +1360,7 @@ so the exported realm reproduces a device login rather than only a browser one.
 ### 13.1 Required by this revision and not yet made
 
 The table above records edits that have been made.
-The rows below are edits this document requires and has not made.
-
-| File | Section | Change |
-|---|---|---|
-| `docs/README.md` | the opening guide list | a client guide beside the other user guides, once one exists |
+This document requires no edit it has not made; the list is empty.
 
 ---
 

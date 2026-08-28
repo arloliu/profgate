@@ -8,15 +8,20 @@ Prefixes: `feat/`, `fix/`, `docs/`, `chore/`, `test/`, `refactor/`, `perf/`.
 
 ## Commit Messages
 
-No `commitlint` configuration exists yet — until one does, convention and
-review enforce what follows.
+The `commit-msg` hook in `.githooks/` refuses a message that breaks the three measurable rules below;
+`mise run hooks` installs it once per clone ([500](500-validation-and-workflow.md)).
+Review enforces the rest.
 
 - [Conventional Commits](https://www.conventionalcommits.org/) type prefix
   required: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
   `build`, `ci`, `chore`, `revert`.
   Optional scope: `fix(k8s): ...`.
   Present tense, imperative.
-- Header under 50 characters; body lines under 72.
+- Header under 50 characters.
+- Body lines under 120 characters, broken at clause boundaries:
+  one sentence per line, a long sentence split where a clause ends,
+  never at a column.
+  The hook runs `semlf check` on the message and refuses a fused line.
 - Body explains what changed and why, at a level a reader gets nothing else
   from — the diff already lists the files.
 

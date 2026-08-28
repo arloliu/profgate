@@ -1,0 +1,14 @@
+auth:
+  mode: oidc
+  oidc:
+    issuer: https://issuer.example
+    audience: profgate
+    mapping:
+      defaultRealm: developer
+    cli:
+      scopes: ["openid", "offline access"]
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

@@ -8,6 +8,8 @@ The normative behavior lives in the specs:
 [specs/pgo.md](specs/pgo.md) for collection.
 Configuration keys mentioned here are described in [configuration.md](configuration.md);
 how to deploy the gateway is in [deployment.md](deployment.md).
+The `profgate` binary is also a client of this API, one verb per route;
+[cli.md](cli.md) covers it, and its form of each example appears beside the `curl` one below.
 
 ## Reaching the API
 
@@ -32,6 +34,12 @@ curl -sf -o heap.pprof http://localhost:8080/v1/namespaces/payments/services/che
 go tool pprof heap.pprof
 ```
 
+The same profile through the client, which opens the viewer itself:
+
+```sh
+profgate --server http://localhost:8080 profile payments/checkout heap --open
+```
+
 ### When the listener serves HTTPS
 
 When `server.tls` is configured, the certificate is issued for a DNS name,
@@ -45,12 +53,19 @@ curl -sf -o heap.pprof --cacert ca.crt --resolve "<name>:8080:127.0.0.1" \
   "https://<name>:8080/v1/namespaces/payments/services/checkout/profiles/heap"
 ```
 
+The client keeps the forwarded address in the URL and names the certificate's name and authority separately:
+
+```sh
+profgate --server https://localhost:8080 --server-name <name> --ca-file ca.crt \
+  profile payments/checkout heap -o heap.pprof
+```
+
 The examples in the rest of this guide stay HTTP,
 except where authentication requires TLS;
 on an HTTPS listener this same shape applies to every one of them.
 
 There is no index route and no OpenAPI document.
-Eleven routes live under `/v1`; the seven that take path parameters are:
+Twelve routes live under `/v1`; the seven that take path parameters are:
 
 | Route | Methods |
 |---|---|
@@ -62,8 +77,10 @@ Eleven routes live under `/v1`; the seven that take path parameters are:
 | `/v1/collections/{id}/profile` | GET |
 | `/v1/collections/{id}/cancel` | POST |
 
-Four more routes under `/v1` take no path parameter and answer from configuration or the cache:
-[Listing endpoints](#listing-endpoints) below covers them.
+Five more routes under `/v1` take no path parameter and answer from configuration or the cache:
+[Listing endpoints](#listing-endpoints) below covers four of them,
+and [Discovering how to log in](#discovering-how-to-log-in) covers `GET /v1/auth`,
+the one `/v1` route that requires no credential.
 
 `{ns}` and `{svc}` must be DNS-1123 labels,
 and `{id}` is a Collection identifier: exactly 20 lowercase Crockford base32 characters
@@ -83,8 +100,12 @@ A policy or Collection request runs only steps 1 through 7 and then dispatches t
 A listing request ([Listing endpoints](#listing-endpoints)) runs the same steps 1 through 8 and then stops,
 answering from the configuration snapshot or the Service cache with no discovery, selection, admission,
 confirmation, or proxy step.
+`GET /v1/auth` runs steps 1 through 3 and then step 8 alone:
+it has no credential-placement, authentication, or realm step,
+because it is the route a client reads before it holds a credential
+([Discovering how to log in](#discovering-how-to-log-in)).
 
-1. **Route** — the path must match one of the eleven `/v1` routes (`404 route_unknown`),
+1. **Route** — the path must match one of the twelve `/v1` routes (`404 route_unknown`),
    and a profile route must name a known profile (`404 profile_unknown`).
 2. **Method** — `405 method_not_allowed` plus `Allow` otherwise.
 3. **Readiness** — until discovery has synced its caches, everything answers `503 not_ready`;
@@ -132,6 +153,7 @@ while `port` never excludes a Pod, since a numeric port is used without checking
 
 ```sh
 curl http://localhost:8080/v1/namespaces/payments/services/checkout/targets
+profgate targets payments/checkout
 ```
 
 ```json
@@ -163,9 +185,12 @@ Four routes let a script, or [the console](console.md), discover what a realm ca
 They read informer caches and configuration, never the API server, take no query parameter
 (any parameter is `400 invalid_parameter`), and answer from the realm the caller's credential resolves to.
 Every array in these responses is `[]`, never `null`, when empty, and lists are sorted by name.
+The client's `namespaces`, `services <namespace>`, `whoami`, and `limits` verbs call these four routes
+and print the bodies below as tables, or verbatim under `--output json`.
 
 ```sh
 curl http://localhost:8080/v1/namespaces
+profgate namespaces
 ```
 
 ```json
@@ -338,6 +363,10 @@ curl -sf -o cpu.pprof \
 go tool pprof cpu.pprof
 ```
 
+```sh
+profgate profile payments/checkout cpu --seconds 30 -o cpu.pprof
+```
+
 `go tool pprof` can also fetch through the gateway directly:
 
 ```sh
@@ -350,6 +379,10 @@ A heap profile pinned to one Pod:
 curl -sf -o heap.pprof \
   "http://localhost:8080/v1/namespaces/payments/services/checkout/profiles/heap?pod=checkout-5f7c9d8b6-abcde"
 go tool pprof heap.pprof
+```
+
+```sh
+profgate profile payments/checkout heap --pod checkout-5f7c9d8b6-abcde --open
 ```
 
 A CPU profile from whatever Pods run a specific release:
@@ -553,6 +586,14 @@ curl -sf -o merged.pprof \
   http://localhost:8080/v1/collections/3g7hk2m9p4qr8s1tvw5x/profile
 ```
 
+The same four steps through the client, which reads the `ETag` and waits on the record itself:
+
+```sh
+profgate pgo policy set payments/checkout --enabled --rounds 3 --replicas all
+profgate collect payments/checkout --wait
+profgate download 3g7hk2m9p4qr8s1tvw5x -o merged.pprof
+```
+
 The downloaded profile feeds straight into a PGO build:
 
 ```sh
@@ -580,8 +621,10 @@ the response never says which check failed.
 ```sh
 curl -u alice -sf -o cpu.pprof \
   "https://profgate.example/v1/namespaces/payments/services/checkout/profiles/cpu?seconds=30"
+profgate --server https://profgate.example -u alice profile payments/checkout cpu --seconds 30 -o cpu.pprof
 ```
 
+The client prompts for the password without echo, or reads `PROFGATE_USER` and `PROFGATE_PASSWORD`.
 `basic` mode requires `server.tls`, because the password crosses the network on every request;
 a gateway configured with `basic` and no server certificate refuses to start
 unless `auth.basic.allowPlaintext: true` is set, the escape hatch for a lab behind a TLS-terminating Ingress,
@@ -610,6 +653,63 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 `go tool pprof <url>` fetches with `http.Client.Get` and offers no way to add a header,
 so it cannot present a bearer token; use `curl` to save the profile, then open the file.
+The client obtains the token itself, caches it, and refreshes it:
+
+```sh
+profgate login --context prod --server https://profgate.example
+profgate --context prod profile payments/checkout cpu --seconds 30 --open
+```
+
+### Discovering how to log in
+
+```
+GET /v1/auth
+```
+
+The one `/v1` route that requires no credential:
+it is what a client reads before it holds one, so requiring one would make it answer only callers who no longer need it.
+It runs the route, method, readiness, and parameter steps of [How a request is processed](#how-a-request-is-processed)
+and none of the others: `GET` only, `503 not_ready` before the gateway is ready,
+`400 invalid_parameter` for any query parameter (an `access_token` parameter included), and `Cache-Control: no-store`.
+It writes no audit record.
+
+```sh
+curl http://localhost:8080/v1/auth
+```
+
+The body has four shapes.
+Under `basic` it is `{"mode": "basic"}` and under `disabled` `{"mode": "disabled"}`.
+Under `oidc` it is `{"mode": "oidc"}`, carrying an `oidc` object only when `auth.oidc.cli` is configured,
+the operator's statement that this issuer admits a device login:
+
+```json
+{
+  "mode": "oidc",
+  "oidc": {
+    "issuer": "https://keycloak.example/realms/engineering",
+    "clientID": "profgate",
+    "tokenType": "id",
+    "scopes": ["openid", "offline_access"],
+    "pkce": true
+  }
+}
+```
+
+`clientID` is `auth.oidc.cli.clientID`, `auth.oidc.audience` by default;
+`scopes` is `auth.oidc.cli.scopes`, `["openid", "offline_access"]` by default;
+`pkce` is `auth.oidc.cli.pkce`.
+None of the three is derived from `auth.oidc.browser`.
+
+**What it discloses.**
+Under `basic` and `disabled` it publishes the mode, which the `WWW-Authenticate` header on every `401` already names.
+Under `oidc` with the `cli` block it publishes four more values to an unauthenticated caller:
+an issuer URL, a public client identifier, a token type, and scope names.
+A deployment running the browser flow already hands all four out through the `302` that `/auth/login` answers;
+a bearer-only deployment does not, and for it this is a new disclosure.
+It is accepted because an issuer publishes its discovery document by design,
+a public client identifier cannot be secret,
+and no namespace, Service, Pod, realm, principal, or credential appears in the body.
+An operator who declines it configures no `auth.oidc.cli` block, and the route reports the mode alone.
 
 ### The browser flow
 
@@ -628,7 +728,8 @@ serve `GET` only, and are not under `/v1`:
 | `GET /auth/logout` | clears the session cookie and redirects to the issuer's logout, or to `/` |
 
 Without the browser block, `oidc` mode is bearer-only and a browser gets `401` like any other client.
-There is no command-line client that acquires a token — that is a separate, later tool;
+A terminal acquires its token with `profgate login` ([cli.md](cli.md#the-first-login)),
+which needs `auth.oidc.cli` rather than the browser block;
 see [authentication.md](authentication.md) for the issuers this has been run against.
 
 ## Realms
@@ -707,7 +808,7 @@ the gateway forwards that status and body verbatim instead of wrapping it.
 | 401 | `unauthenticated` | No credential, a wrong or expired one, or one that maps to no realm; see [Authentication](#authentication). `WWW-Authenticate` names the scheme. |
 | 403 | `realm_denied` | The realm does not allow this namespace, Service, profile, or PGO action. |
 | 403 | `config_api_disabled` | `pgo.configAPI` is `disabled`; policy reads still work. |
-| 404 | `route_unknown` | The path is not one of the eleven `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
+| 404 | `route_unknown` | The path is not one of the twelve `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
 | 404 | `profile_unknown` | The profile name is not in the profile table. |
 | 404 | `service_not_found` | The Service does not exist in that namespace. |
 | 404 | `pod_not_found` | The pinned Pod is not currently an eligible target. |

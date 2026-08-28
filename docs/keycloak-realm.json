@@ -32,6 +32,7 @@
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
+        "oauth2.device.authorization.grant.enabled": "true",
         "post.logout.redirect.uris": "https://localhost:9443/"
       },
       "protocolMappers": [

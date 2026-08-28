@@ -2,6 +2,21 @@
 
 Apply before every commit and before opening a PR.
 
+## Once per clone
+
+```bash
+mise run hooks
+```
+
+This points `core.hooksPath` at `.githooks/`.
+The `pre-commit` hook runs `semlf --base HEAD`,
+which reports only the semantic-linefeed findings the lines you changed own,
+and refuses the commit on a fused or column-wrapped line;
+an old finding elsewhere in a file you touched does not block you.
+The `commit-msg` hook holds the message to [600](600-git-conventions.md).
+Both need `semlf` on `PATH` and fail plainly when it is missing.
+A pull request runs the same check against its base branch in CI.
+
 ## Before every commit
 
 Run the validation block and fix what it reports:
@@ -10,13 +25,16 @@ Run the validation block and fix what it reports:
 mise run lint && mise run test && mise run check
 ```
 
-Prose gets the same treatment:
-run `semlf check <file>` on every Markdown file you wrote or edited and fix the findings.
+Prose gets the same treatment before the hook sees it:
+run `semlf check <file>` on every Markdown file and every Go file with doc comments you wrote or edited,
+and fix the findings.
+`mise run prose` runs the check over everything changed since `main`.
 
 ## Before a PR
 
-Seven packages need the end-to-end suite on the `current` lane before a PR opens:
-`internal/k8s`, `internal/proxy`, `internal/pgo`, `internal/natskv`, `internal/auth`, `internal/ui`, and `deploy/`.
+Eight packages need the end-to-end suite on the `current` lane before a PR opens:
+`internal/k8s`, `internal/proxy`, `internal/pgo`, `internal/natskv`, `internal/auth`, `internal/ui`,
+`internal/client`, and `deploy/`.
 
 ```bash
 mise run test:e2e
@@ -31,5 +49,8 @@ The console's shell, hashed assets, headers, and login return meet a real gatewa
 the port-control model in `internal/ui/static/portmodel.js` runs under the goja interpreter in a Go test,
 and the rest of the page's JavaScript runs in none,
 so a change to `internal/ui/static/` outside `portmodel.js` also needs a check in a browser against a running gateway.
+The command-line client's device grant, refresh, and port-forward transport meet a real issuer only there too,
+which run the client as a separate process against Dex and Keycloak;
+its unit tests drive `httptest` servers.
 
 Report what ran and what was skipped in the PR description ([600](600-git-conventions.md)).

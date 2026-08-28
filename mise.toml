@@ -18,6 +18,14 @@ description = "Verify the repository invariants that need no build"
 # Runs on the system python3 with standard library only; mise does not pin it.
 run = "python3 scripts/check-repo.py"
 
+[tasks.hooks]
+description = "Point this clone at the repository's git hooks (run once per clone)"
+run = "git config core.hooksPath .githooks && echo 'core.hooksPath = .githooks'"
+
+[tasks.prose]
+description = "semlf on the lines changed since main; the pre-commit hook runs the same check against HEAD"
+run = "semlf --base origin/main"
+
 [tasks.build]
 run = "go build ./..."
 

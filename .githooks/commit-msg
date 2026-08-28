@@ -1,0 +1,25 @@
+#!/bin/sh
+# Refuse a commit message that breaks .agents/rules/600-git-conventions.md:
+# a header of 50 characters or more, a body line of 120 or more, or prose
+# that breaks semantic linefeeds. Comment lines and everything after the
+# scissors line are not part of the message.
+set -e
+msg="$1"
+if ! command -v semlf >/dev/null 2>&1; then
+    echo "commit-msg: semlf is not installed; install it (uv tool install semlf) or see .agents/rules/500-validation-and-workflow.md" >&2
+    exit 1
+fi
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+sed -e '/^# ------------------------ >8 ------------------------$/,$d' -e '/^#/d' "$msg" > "$tmp/message.md"
+header=$(sed -n '1p' "$tmp/message.md")
+if [ "${#header}" -ge 50 ]; then
+    echo "commit-msg: header is ${#header} characters; keep it under 50: $header" >&2
+    exit 1
+fi
+long=$(sed -n '3,$p' "$tmp/message.md" | awk 'length >= 120 && / / { print; exit }')
+if [ -n "$long" ]; then
+    echo "commit-msg: body line is 120 characters or more; break it at a clause boundary: $long" >&2
+    exit 1
+fi
+semlf check "$tmp/message.md"

@@ -32,6 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/httpstream"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -84,6 +85,9 @@ const (
 	// dexImage is the OpenID Connect issuer the auth scenarios log in
 	// through; TestMain loads it the way it loads the NATS server.
 	dexImage = "ghcr.io/dexidp/dex:v2.45.1"
+	// keycloakImage is the second issuer, the one docs/keycloak-realm.json was verified against;
+	// the Keycloak scenario imports that realm.
+	keycloakImage = "quay.io/keycloak/keycloak:26.7.2"
 
 	// authSecret is the Secret deploy/base mounts for authentication, and
 	// authMountPath is where its keys appear in the container.
@@ -168,6 +172,7 @@ func runners() map[string]func(t *testing.T, h *Harness) {
 		"tls-rotation":                   scenarioTLSRotation,
 		"auth-oidc-browser":              scenarioAuthOIDCBrowser,
 		"auth-basic":                     scenarioAuthBasic,
+		"auth-oidc-keycloak":             scenarioAuthOIDCKeycloak,
 	}
 }
 
@@ -222,6 +227,9 @@ func TestMain(m *testing.M) {
 	}
 	if err := h.loadImage(ctx, dexImage); err != nil {
 		fail("load dex image", err)
+	}
+	if err := h.loadImage(ctx, keycloakImage); err != nil {
+		fail("load keycloak image", err)
 	}
 
 	kubeconfigDir, err := os.MkdirTemp("", "profgate-e2e-")
@@ -569,6 +577,12 @@ func (h *Harness) forwardGateways(ctx context.Context) (func(), error) {
 
 // forward opens a port-forward to pod and returns the local ports in the order requested.
 // The forward runs until stop is called; ctx only bounds opening it.
+// One connection the Pod resets ends the whole session:
+// client-go's handleConnection closes the stream connection on any message from the
+// kubelet's error stream, ForwardPorts returns, and its deferred Close drops every local listener,
+// so the next dial is refused.
+// The session is reopened on the same local ports when that happens, so the
+// address a caller holds stays valid for as long as the Pod lives.
 func (h *Harness) forward(ctx context.Context, ns, pod string, ports []string) ([]uint16, func(), error) {
 	req := h.Client.CoreV1().RESTClient().Post().Resource("pods").Namespace(ns).Name(pod).SubResource("portforward")
 	transport, upgrader, err := spdy.RoundTripperFor(h.restConfig)
@@ -577,31 +591,42 @@ func (h *Harness) forward(ctx context.Context, ns, pod string, ports []string) (
 	}
 	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, req.URL())
 	stopCh := make(chan struct{})
-	readyCh := make(chan struct{})
-	var errOut bytes.Buffer
-	pf, err := portforward.New(dialer, ports, stopCh, readyCh, io.Discard, &errOut)
-	if err != nil {
-		return nil, nil, fmt.Errorf("port-forward: %w", err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- pf.ForwardPorts() }()
-	select {
-	case <-readyCh:
-	case err := <-done:
-		return nil, nil, fmt.Errorf("port-forward %s/%s: %w (%s)", ns, pod, err, errOut.String())
-	case <-ctx.Done():
-		close(stopCh)
-		return nil, nil, fmt.Errorf("port-forward %s/%s: %w", ns, pod, ctx.Err())
-	}
-	forwarded, err := pf.GetPorts()
+	forwarded, done, err := openForward(ctx, dialer, ports, stopCh)
 	if err != nil {
 		close(stopCh)
-		return nil, nil, fmt.Errorf("forwarded ports: %w", err)
+
+		return nil, nil, fmt.Errorf("port-forward %s/%s: %w", ns, pod, err)
 	}
 	local := make([]uint16, len(forwarded))
+	pinned := make([]string, len(forwarded))
 	for i, fp := range forwarded {
 		local[i] = fp.Local
+		pinned[i] = fmt.Sprintf("%d:%d", fp.Local, fp.Remote)
 	}
+	go func() {
+		for {
+			select {
+			case <-stopCh:
+				return
+			case err := <-done:
+				h.log.Warn("port-forward ended; reopening", "namespace", ns, "pod", pod, "ports", pinned, "err", err)
+			}
+			for {
+				_, next, err := openForward(context.Background(), dialer, pinned, stopCh)
+				if err == nil {
+					done = next
+
+					break
+				}
+				h.log.Warn("port-forward reopen failed", "namespace", ns, "pod", pod, "ports", pinned, "err", err)
+				select {
+				case <-stopCh:
+					return
+				case <-time.After(pollInterval):
+				}
+			}
+		}
+	}()
 	var once bool
 	stop := func() {
 		if !once {
@@ -610,6 +635,35 @@ func (h *Harness) forward(ctx context.Context, ns, pod string, ports []string) (
 		}
 	}
 	return local, stop, nil
+}
+
+// openForward starts one port-forward session over dialer and waits for its
+// listeners; done carries ForwardPorts' result once the session ends.
+// A session still opening when ctx ends or stopCh closes is left to the caller, whose close of stopCh ends it.
+func openForward(ctx context.Context, dialer httpstream.Dialer, ports []string, stopCh chan struct{}) ([]portforward.ForwardedPort, <-chan error, error) {
+	readyCh := make(chan struct{})
+	var errOut bytes.Buffer
+	pf, err := portforward.New(dialer, ports, stopCh, readyCh, io.Discard, &errOut)
+	if err != nil {
+		return nil, nil, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- pf.ForwardPorts() }()
+	select {
+	case <-readyCh:
+	case err := <-done:
+		return nil, nil, fmt.Errorf("%w (%s)", err, errOut.String())
+	case <-stopCh:
+		return nil, nil, errors.New("stopped")
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+	forwarded, err := pf.GetPorts()
+	if err != nil {
+		return nil, nil, fmt.Errorf("forwarded ports: %w", err)
+	}
+
+	return forwarded, done, nil
 }
 
 // Namespace creates a namespace named after the test, labeled as a test-app namespace,

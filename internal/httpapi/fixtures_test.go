@@ -78,6 +78,16 @@ func testConfig() *config.Config {
 	}
 }
 
+// oidcConfig is an oidc block whose issuer, audience, and token type are set,
+// mapping one user to the developer realm, with the cli and browser blocks the row asks for.
+func oidcConfig(cli *config.OIDCCLI, browser *config.OIDCBrowser) *config.OIDCConfig {
+	return &config.OIDCConfig{
+		Issuer: "https://issuer.example", Audience: "profgate", TokenType: "id",
+		Mapping: config.OIDCMapping{Users: []config.OIDCMappingEntry{{Name: "alice", Realm: "developer"}}},
+		Browser: browser, CLI: cli,
+	}
+}
+
 // fakeDiscovery is a Discovery whose answers the test sets up front.
 type fakeDiscovery struct {
 	targets    []k8s.Target

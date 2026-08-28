@@ -37,7 +37,8 @@ If in doubt, read the file rather than guess its contents.
 ## Before Every Commit or PR
 
 - **[500-validation-and-workflow.md](500-validation-and-workflow.md)** —
-  the validation block, `semlf check` on prose, and when the end-to-end suite must run before a PR.
+  the git hooks to install once per clone, the validation block, `semlf check` on prose,
+  and when the end-to-end suite must run before a PR.
 
 ## For Kubernetes Access, NATS Access, RBAC, or Auth
 

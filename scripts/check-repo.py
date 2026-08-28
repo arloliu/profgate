@@ -14,6 +14,8 @@
 - Only internal/natskv imports github.com/nats-io/nats.go outside tests and test/.
 - Only internal/auth imports github.com/go-jose/go-jose and golang.org/x/crypto outside tests and test/.
 - Only cmd/profgate imports golang.org/x/term, which reads a password without echo.
+- internal/client imports no Kubernetes package, no NATS package, and none of
+  internal/k8s, internal/natskv, or internal/auth; only cmd/profgate imports it.
 - The removed discovery.pprof.allowedPorts and allowedPortNames keys, their Go
   fields, and their environment variables appear in no code or manifest;
   internal/config refuses them by name and keeps the fixtures that prove it.
@@ -174,6 +176,36 @@ def check_term_importers(root):
     return bad
 
 
+CLIENT_FORBIDDEN_IMPORTS = (
+    '"k8s.io/',
+    '"github.com/nats-io/nats.go',
+    '"github.com/arloliu/profgate/internal/k8s',
+    '"github.com/arloliu/profgate/internal/natskv',
+    '"github.com/arloliu/profgate/internal/auth',
+)
+
+
+def check_client_imports(root):
+    """Keep internal/client's dependency set an argument about one package.
+
+    The command-line client reaches neither cluster dependency and verifies no signature,
+    so it imports no Kubernetes package, no NATS package, and none of internal/k8s, internal/natskv, or internal/auth;
+    and only cmd/profgate imports it,
+    so the gateway's binary size and dependency set stay an argument about internal/client rather than about the whole tree.
+    """
+    bad = []
+    for path in root.rglob("*.go"):
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text()
+        if rel.startswith("internal/client/"):
+            for mod in CLIENT_FORBIDDEN_IMPORTS:
+                if mod in text:
+                    bad.append(f"{rel}: imports {mod[1:]} inside internal/client")
+        elif not rel.startswith("cmd/profgate/") and '"github.com/arloliu/profgate/internal/client' in text:
+            bad.append(f"{rel}: imports internal/client outside cmd/profgate")
+    return bad
+
+
 REMOVED_PORT_KEYS = (
     "AllowedPorts",
     "AllowedPortNames",
@@ -206,6 +238,52 @@ def check_removed_port_keys(root):
     return bad
 
 
+PKCE_OVERRIDE_NAME = "PROFGATE_E2E_PKCE_VERIFIER_OVERRIDE"
+PKCE_OVERRIDE_ALLOWED = (
+    "internal/client/pkce_override_e2e.go",
+    "internal/client/pkce_override_test.go",
+)
+
+
+def check_pkce_override_name(root):
+    """Fail on any code or manifest line naming the PKCE verifier override.
+
+    The end-to-end lanes prove PKCE enforcement by polling with a verifier that does not match the challenge,
+    and the substitution lives in the client binary behind the e2e build tag, read from that variable.
+    The override must never reach a manifest, the chart, or an untagged Go file:
+    only the e2e-tagged file, the test proving the default build ignores the variable, and the end-to-end scenarios may name it.
+    """
+    bad = []
+    paths = [p for pattern in ("*.go", "*.yaml", "*.yml", "*.tpl") for p in root.rglob(pattern)]
+    for path in sorted(paths):
+        rel = path.relative_to(root).as_posix()
+        if not path.is_file() or rel in PKCE_OVERRIDE_ALLOWED:
+            continue
+        if rel.startswith("test/e2e/") and rel.endswith("_test.go") and "/" not in rel[len("test/e2e/"):]:
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if PKCE_OVERRIDE_NAME in line:
+                bad.append(f"{rel}:{number}: names {PKCE_OVERRIDE_NAME} outside the e2e-tagged client file, its test, and test/e2e")
+    return bad
+
+
+def check_hooks(root):
+    """Fail when a repository git hook is missing or not executable.
+
+    Rule 500 tells every clone to point core.hooksPath at .githooks; a hook
+    that git cannot execute is skipped without a word, which reads as a
+    commit that passed the check.
+    """
+    bad = []
+    for name in ("pre-commit", "commit-msg"):
+        path = root / ".githooks" / name
+        if not path.is_file():
+            bad.append(f".githooks/{name}: missing")
+        elif not os.access(path, os.X_OK):
+            bad.append(f".githooks/{name}: not executable (chmod +x)")
+    return bad
+
+
 def main():
     errors = []
     check_links(errors)
@@ -217,7 +295,10 @@ def main():
     errors.extend(check_nats_importers(root))
     errors.extend(check_auth_importers(root))
     errors.extend(check_term_importers(root))
+    errors.extend(check_client_imports(root))
     errors.extend(check_removed_port_keys(root))
+    errors.extend(check_pkce_override_name(root))
+    errors.extend(check_hooks(root))
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

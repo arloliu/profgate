@@ -329,6 +329,29 @@ a read that fails, or a file with zero or more than two keys, leaves the previou
 Rotating straight to a single new key loses sessions on replicas that have not re-read yet —
 [`deployment.md`](deployment.md) walks the staged rotation and the metric that confirms propagation.
 
+### `auth.oidc.cli`
+
+| Key | Environment variable | Default | Reload | Constraints |
+|---|---|---|---|---|
+| `cli.clientID` | `PROFGATE_AUTH_OIDC_CLI_CLIENT_ID` | `oidc.audience` | restart | 1-256 bytes; must equal `oidc.audience` when `oidc.tokenType` is `id` |
+| `cli.scopes` | — | `[openid, offline_access]` | restart | must contain `openid`; each 1-64 RFC 6749 scope bytes; unique |
+| `cli.pkce` | `PROFGATE_AUTH_OIDC_CLI_PKCE` | `false` | restart | boolean; an assertion that the issuer's device endpoint accepts a PKCE challenge |
+
+The presence of the block is what makes `GET /v1/auth` report a device login to the command-line client
+([`cli.md`](cli.md)):
+an empty `auth.oidc.cli: {}` is valid and enables it with every default above,
+and without the block the route reports the mode alone and infers nothing from `oidc.browser`.
+The three keys change nothing else:
+the gateway performs no device grant of its own and holds no client secret for the command line.
+`clientID` must equal `oidc.audience` under `tokenType: id` for the reason `browser.clientID` must:
+the ID token carries the client it was requested for as `aud`, and the gateway verifies `aud` against `audience`.
+Because that registration is then shared with the browser flow,
+`auth.oidc.cli` beside `browser.clientSecretFile` under `tokenType: id` is a validation error:
+a registration holding a secret is confidential, and the device grant is sent without one.
+Keycloak issues an offline token for `offline_access` and refuses it unless the user holds that realm role;
+[`authentication.md`](authentication.md#keycloak) and [`cli.md`](cli.md#under-keycloak)
+say when to set `scopes: [openid]` instead.
+
 ## `nats`
 
 | Key | Environment variable | Default | Constraints |
@@ -496,6 +519,8 @@ Always, whatever `pgo.enabled` says:
   every mapping entry's `realm` names an entry in `realms`.
 - When `auth.oidc.browser` is set: `clientID` equals `oidc.audience`; `tokenType` is `id`;
   `server.tls` is set; `redirectURL`'s path is `/auth/callback` with no query.
+- When `auth.oidc.cli` is set: `clientID` equals `oidc.audience` when `tokenType` is `id`;
+  `scopes` contains `openid`; `auth.oidc.browser.clientSecretFile` is unset when `tokenType` is `id`.
 - `ui.enabled` requires `auth.oidc.browser` when `auth.mode` is `oidc`.
 - `pgo.limits.maxRounds × pgo.limits.maxTargetsPerRound` must be at most `256`.
 - `pgo.jobRetention` must be at least `pgo.limits.maxRetention + 1h`.

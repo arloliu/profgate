@@ -36,6 +36,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The `profgate` binary is also a client.**
+  `login`, `logout`, `whoami`, `limits`, `namespaces`, `services`, `targets`, `profile`,
+  `collect`, `collections`, `collection get|cancel`, `download`, `pgo policy get|set|delete`,
+  and `context list|show|use|delete` talk to a gateway from a terminal,
+  each calling one route of the HTTP API;
+  `docs/cli.md` is the guide.
+  Under `oidc`, `login` obtains a token by the device-code grant, with a PKCE challenge where the gateway asserts one,
+  caches it under `$XDG_STATE_HOME/profgate/tokens/` with `0600` permissions,
+  and refreshes it before it expires;
+  under `basic` it verifies a user name and a password it never stores;
+  `profile --open` hands the fetched profile to `go tool pprof -http`.
+  A credential travels only over `https://` or to a loopback address, and no flag skips certificate verification.
+  `collect` sends an `Idempotency-Key` on every create;
+  the gateway does not read the header yet,
+  so the client retries no create until it does and reports a lost response once.
+  No Go module was added.
+- **`GET /v1/auth`, the one `/v1` route with no authentication step.**
+  It reports `auth.mode` to an unauthenticated caller and, where `auth.oidc.cli` is configured,
+  the issuer, the client identifier, the token type, the scopes, and whether the device endpoint accepts PKCE,
+  which is what a device login needs before it holds a credential.
+  It writes no audit record and is counted under `endpoint="auth"`.
+- **The optional `auth.oidc.cli` block.**
+  `clientID` (default `auth.oidc.audience`), `scopes` (default `openid, offline_access`), and `pkce` (default `false`),
+  under `PROFGATE_AUTH_OIDC_CLI_CLIENT_ID` and `PROFGATE_AUTH_OIDC_CLI_PKCE`.
+  The block's presence is what makes `GET /v1/auth` report a device login; an empty block enables it with every default.
+  `clientID` must equal `auth.oidc.audience` under `tokenType: id`,
+  and the block is refused beside `auth.oidc.browser.clientSecretFile` under that token type,
+  because the shared registration must stay a public client.
+  The chart renders the block by default through `auth.oidc.cli.enabled: true`,
+  and omits it, saying so in `NOTES.txt`, when a browser client secret under `tokenType: id` forbids it.
 - **Optional chart templates for the pieces every install needed to write by hand.**
   `ingress.enabled` renders an Ingress routing `/`, `/ui/`, `/auth/`, and `/v1/` to the API port;
   `podMonitor.enabled` renders a PodMonitor for the ops port, which the Service deliberately omits;

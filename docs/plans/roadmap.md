@@ -88,7 +88,7 @@ and `docs/authentication.md` sends the user to another tool for one.
   `namespaces`, `services`, `targets`, `profile` (with `--open` running `go tool pprof -http`),
   `collect --wait`, `collections`, and `download`;
   the same binary or a second `cmd/`.
-- [ ] Write the implementation plan once the spec is `Accepted`.
+- [x] Write the implementation plan once the spec is `Accepted`.
 
 Spec: new (`docs/specs/cli.md`), layered on `docs/specs/auth.md`,
 which already defers token acquisition to this document.
