@@ -347,3 +347,134 @@ func TestLogoutVerb(t *testing.T) {
 		t.Fatalf("stdout = %q, want the notice that nothing was cached", te.stdout.String())
 	}
 }
+
+const explainBody = `{"namespace":"payments","service":"checkout","targets":[{"pod":"checkout-1","node":"worker-07","version":"1.42.3"}],"selectorMatched":4,"excluded":[{"reason":"pod_not_ready","count":2},{"reason":"port_name_not_declared","count":1}]}` + "\n"
+
+func TestTargetsExplain(t *testing.T) {
+	t.Run("without the flag no explain parameter is sent and one table prints", func(t *testing.T) {
+		te := newTestEnv(t)
+		code, rt := runRead(t, te, explainBody, "targets", "payments/checkout")
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+		}
+		if len(rt.requests) != 1 || rt.requests[0].URL.Query().Has("explain") {
+			t.Fatalf("requests = %d, query = %q, want one without explain", len(rt.requests), rt.requests[0].URL.RawQuery)
+		}
+		if want := "POD\tNODE\tVERSION\ncheckout-1\tworker-07\t1.42.3\n"; te.stdout.String() != want {
+			t.Fatalf("stdout = %q, want %q", te.stdout.String(), want)
+		}
+	})
+
+	t.Run("the flag sends explain=true once", func(t *testing.T) {
+		te := newTestEnv(t)
+		code, rt := runRead(t, te, explainBody, "targets", "payments/checkout", "--explain")
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+		}
+		if len(rt.requests) != 1 || rt.requests[0].URL.RawQuery != "explain=true" {
+			t.Fatalf("requests = %d, query = %q, want exactly one with explain=true", len(rt.requests), rt.requests[0].URL.RawQuery)
+		}
+	})
+
+	tables := []struct {
+		name     string
+		body     string
+		terminal bool
+		want     string
+	}{
+		{
+			name: "counted reasons print in the order the body listed them",
+			body: explainBody,
+			want: "POD\tNODE\tVERSION\ncheckout-1\tworker-07\t1.42.3\n\nREASON\tCOUNT\npod_not_ready\t2\nport_name_not_declared\t1\n",
+		},
+		{
+			name:     "on a terminal both tables pad",
+			body:     explainBody,
+			terminal: true,
+			want:     "POD         NODE       VERSION\ncheckout-1  worker-07  1.42.3\n\nREASON                  COUNT\npod_not_ready           2\nport_name_not_declared  1\n",
+		},
+		{
+			name: "excluded absent prints the second header alone",
+			body: `{"namespace":"payments","service":"checkout","targets":[]}`,
+			want: "POD\tNODE\tVERSION\n\nREASON\tCOUNT\n",
+		},
+		{
+			name: "excluded empty prints the second header alone",
+			body: `{"namespace":"payments","service":"checkout","targets":[],"selectorMatched":0,"excluded":[]}`,
+			want: "POD\tNODE\tVERSION\n\nREASON\tCOUNT\n",
+		},
+		{
+			name: "a reason outside the vocabulary prints as it arrived",
+			body: `{"namespace":"payments","service":"checkout","targets":[],"selectorMatched":1,"excluded":[{"reason":"quarantined_by_operator","count":1}]}`,
+			want: "POD\tNODE\tVERSION\n\nREASON\tCOUNT\nquarantined_by_operator\t1\n",
+		},
+	}
+	for _, tc := range tables {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEnv(t)
+			te.env.terminal = tc.terminal
+			code, _ := runRead(t, te, tc.body, "targets", "payments/checkout", "--explain")
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+			}
+			if te.stdout.String() != tc.want {
+				t.Fatalf("stdout = %q, want %q", te.stdout.String(), tc.want)
+			}
+		})
+	}
+
+	t.Run("json copies the body and prints no table", func(t *testing.T) {
+		te := newTestEnv(t)
+		code, _ := runRead(t, te, explainBody, "targets", "payments/checkout", "--explain", "--output", "json")
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+		}
+		if te.stdout.String() != explainBody {
+			t.Fatalf("stdout = %q, want the body byte for byte", te.stdout.String())
+		}
+	})
+
+	t.Run("beside --port both parameters are sent", func(t *testing.T) {
+		te := newTestEnv(t)
+		code, rt := runRead(t, te, explainBody, "targets", "payments/checkout", "--explain", "--port", "6061")
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+		}
+		q := rt.requests[0].URL.Query()
+		if len(rt.requests) != 1 || q.Get("explain") != "true" || q.Get("port") != "6061" || len(q) != 2 {
+			t.Fatalf("requests = %d, query = %q, want one with explain=true and port=6061", len(rt.requests), rt.requests[0].URL.RawQuery)
+		}
+	})
+
+	t.Run("beside both port flags it is the usage error before any request", func(t *testing.T) {
+		te := newTestEnv(t)
+		rt := &recordingTransport{body: explainBody, status: http.StatusOK}
+		te.env.transport = rt
+		code := dispatch(context.Background(), te.env, clientVerbs(), []string{"targets", "payments/checkout", "--explain", "--port", "6060", "--port-name", "pprof", "--server", "https://g.example"})
+		if code != 2 {
+			t.Fatalf("code = %d, want 2 (stderr=%q)", code, te.stderr.String())
+		}
+		if len(rt.requests) != 0 {
+			t.Fatalf("requests = %d, want none", len(rt.requests))
+		}
+	})
+
+	t.Run("a 400 invalid_parameter is the envelope's message and exit 1 with no retry", func(t *testing.T) {
+		te := newTestEnv(t)
+		rt := &recordingTransport{body: `{"error":"explain is not a boolean","code":"invalid_parameter"}`, status: http.StatusBadRequest}
+		te.env.transport = rt
+		code := dispatch(context.Background(), te.env, clientVerbs(), []string{"targets", "payments/checkout", "--explain", "--server", "https://g.example"})
+		if code != 1 {
+			t.Fatalf("code = %d, want 1 (stderr=%q)", code, te.stderr.String())
+		}
+		if len(rt.requests) != 1 {
+			t.Fatalf("requests = %d, want exactly one", len(rt.requests))
+		}
+		if !strings.Contains(te.stderr.String(), "invalid_parameter: explain is not a boolean") {
+			t.Fatalf("stderr = %q, want the envelope's message", te.stderr.String())
+		}
+		if te.stdout.String() != "" {
+			t.Fatalf("stdout = %q, want nothing", te.stdout.String())
+		}
+	})
+}

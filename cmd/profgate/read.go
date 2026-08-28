@@ -175,13 +175,16 @@ func oneColumn(values []string) [][]string {
 // targetsVerb is GET .../targets with --port or --port-name,
 // which the gateway needs in order to decide eligibility;
 // both together is a usage error before any request.
+// --explain sends explain=true and prints the excluded rows under their own header below the list.
 func targetsVerb() verb {
 	var port, portName string
+	var explain bool
 	return verb{
-		name: "targets", positionals: 1, grammar: "targets <ns>/<svc> [--port <n> | --port-name <name>]",
+		name: "targets", positionals: 1, grammar: "targets <ns>/<svc> [--port <n> | --port-name <name>] [--explain]",
 		flags: func(fs *flag.FlagSet) {
 			fs.StringVar(&port, "port", "", "the pprof port number, in place of the configured default")
 			fs.StringVar(&portName, "port-name", "", "the pprof container-port name, in place of the configured default")
+			fs.BoolVar(&explain, "explain", false, "also print why the Service's other selected Pods are not targets")
 		},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			return env.read(ctx, in, reading{
@@ -200,6 +203,9 @@ func targetsVerb() verb {
 					if portName != "" {
 						q.Set("portName", portName)
 					}
+					if explain {
+						q.Set("explain", "true")
+					}
 					return client.Request{Method: http.MethodGet, Path: servicePath(ns, svc) + "/targets", Query: q}, nil
 				},
 				render: func(env *cmdEnv, body []byte) error {
@@ -211,7 +217,20 @@ func targetsVerb() verb {
 					for _, t := range r.Targets {
 						rows = append(rows, []string{t.Pod, t.Node, t.Version})
 					}
-					return writeTable(env.stdout, env.terminal, []string{"POD", "NODE", "VERSION"}, rows)
+					if err := writeTable(env.stdout, env.terminal, []string{"POD", "NODE", "VERSION"}, rows); err != nil {
+						return err
+					}
+					if !explain {
+						return nil
+					}
+					if _, err := fmt.Fprintln(env.stdout); err != nil {
+						return err
+					}
+					reasons := make([][]string, 0, len(r.Excluded))
+					for _, e := range r.Excluded {
+						reasons = append(reasons, []string{e.Reason, fmt.Sprint(e.Count)})
+					}
+					return writeTable(env.stdout, env.terminal, []string{"REASON", "COUNT"}, reasons)
 				},
 			})
 		},
