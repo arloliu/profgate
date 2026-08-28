@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -240,7 +241,7 @@ func authClient(gwLocal, dexAddr string, pool *x509.CertPool) *http.Client {
 				d := net.Dialer{Timeout: dialTimeout}
 				switch addr {
 				case tlsHost + ":443":
-					return d.DialContext(ctx, network, gwLocal)
+					return dialForward(ctx, &d, network, gwLocal)
 				case dexAddr:
 					return d.DialContext(ctx, network, addr)
 				default:
@@ -248,6 +249,24 @@ func authClient(gwLocal, dexAddr string, pool *x509.CertPool) *http.Client {
 				}
 			},
 		},
+	}
+}
+
+// dialForward dials a port-forward's local address, retrying a refused
+// connection until dialTimeout passes: the harness reopens a forward whose
+// session the Pod ended, and a dial inside that window finds no listener.
+func dialForward(ctx context.Context, d *net.Dialer, network, addr string) (net.Conn, error) {
+	deadline := time.Now().Add(dialTimeout)
+	for {
+		conn, err := d.DialContext(ctx, network, addr)
+		if !errors.Is(err, syscall.ECONNREFUSED) || time.Now().After(deadline) {
+			return conn, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(pollInterval):
+		}
 	}
 }
 
