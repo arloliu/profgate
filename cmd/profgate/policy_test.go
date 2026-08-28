@@ -142,6 +142,10 @@ func TestPolicyWritesAreNotRetried(t *testing.T) {
 		{name: "set against a concurrent create", sub: "set", read: defaultsPolicyBody, status: http.StatusPreconditionRequired, body: `{"error":"the service already has a policy override; send If-Match with its ETag","code":"precondition_required"}`, code: "precondition_required"},
 		{name: "set against a concurrent update", sub: "set", etag: `"42"`, read: overridePolicyBody, status: http.StatusPreconditionFailed, body: `{"error":"the policy has moved since the revision If-Match names","code":"precondition_failed"}`, code: "precondition_failed"},
 		{name: "delete against a concurrent delete", sub: "delete", etag: `"42"`, read: overridePolicyBody, status: http.StatusPreconditionFailed, body: `{"error":"the policy has moved since the revision If-Match names","code":"precondition_failed"}`, code: "precondition_failed"},
+		// A 412 without the envelope, as a proxy in front of the gateway
+		// might answer it, still names the command to run again.
+		{name: "set against a 412 without the envelope", sub: "set", etag: `"42"`, read: overridePolicyBody, status: http.StatusPreconditionFailed, body: "", code: "HTTP 412 Precondition Failed"},
+		{name: "delete against a 428 without the envelope", sub: "delete", read: defaultsPolicyBody, status: http.StatusPreconditionRequired, body: "", code: "HTTP 428 Precondition Required"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

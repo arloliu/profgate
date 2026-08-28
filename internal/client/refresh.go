@@ -182,7 +182,9 @@ func (c *cachedCredential) refused(e Entry, err error) error {
 // record writes what a successful refresh changed: the token the token type
 // names when the response carries it, the rotated refresh token when it
 // carries one, and the two expiries from the response time.
-// Without the selected token the old one is kept until its own expiry.
+// Without the selected token the old one is kept until its own expiry, and
+// without a rotation or a refresh lifetime the recorded refresh expiry is
+// kept rather than erased.
 func (c *cachedCredential) record(e Entry, tr TokenResponse) (string, error) {
 	now := c.now()
 	name := c.settings.CacheName
@@ -201,7 +203,9 @@ func (c *cachedCredential) record(e Entry, tr TokenResponse) (string, error) {
 	if tr.RefreshToken != "" {
 		e.RefreshToken = tr.RefreshToken
 	}
-	e.RefreshExpiresAt = RefreshExpiryOf(tr.RefreshExpiresIn, now)
+	if tr.RefreshToken != "" || tr.RefreshExpiresIn > 0 {
+		e.RefreshExpiresAt = RefreshExpiryOf(tr.RefreshExpiresIn, now)
+	}
 	e.ObtainedAt = now
 	if err := c.store.Write(name, e); err != nil {
 		return "", err

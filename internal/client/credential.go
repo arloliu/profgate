@@ -125,7 +125,7 @@ func basicCredentialFor(in CredentialInput) (Credential, error) {
 	password, ok := in.Getenv("PROFGATE_PASSWORD")
 	if !ok {
 		if in.Prompt == nil {
-			return nil, fmt.Errorf("%w: no password for %s: stdin is not a terminal to prompt on, and PROFGATE_PASSWORD is unset", ErrUsage, user)
+			return nil, fmt.Errorf("%w: no password for %s: no prompt is available, and PROFGATE_PASSWORD is unset", ErrUsage, user)
 		}
 		p, err := in.Prompt(user)
 		if err != nil {

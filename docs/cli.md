@@ -44,6 +44,8 @@ or over `http://` to a host spelled `127.0.0.1`, `::1`, or `localhost`, which is
 Every request that sends a credential over loopback plaintext prints one warning line on stderr.
 Any other `http://` gateway is refused before the request is built, with exit 2,
 unless the command has no credential to send, which is every command against a gateway in `disabled` mode.
+`profgate login` is refused outright over such a gateway, credential or not,
+because the issuer it would learn from `GET /v1/auth` could be anyone's.
 
 ## The first login
 

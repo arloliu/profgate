@@ -158,7 +158,15 @@ func conditional(etag string) http.Header {
 // what the other writer decided.
 func lostCondition(err error, service string) error {
 	var ae *client.APIError
-	if errors.As(err, &ae) && (ae.Status == http.StatusPreconditionFailed || ae.Status == http.StatusPreconditionRequired) {
+	var se *client.StatusError
+	var status int
+	switch {
+	case errors.As(err, &ae):
+		status = ae.Status
+	case errors.As(err, &se):
+		status = se.Status
+	}
+	if status == http.StatusPreconditionFailed || status == http.StatusPreconditionRequired {
 		return fmt.Errorf("%w; the policy changed since it was read: run profgate pgo policy get %s, then decide again", err, service)
 	}
 	return err

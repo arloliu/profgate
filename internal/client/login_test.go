@@ -426,6 +426,71 @@ func TestLoginTimeoutRange(t *testing.T) {
 	}
 }
 
+func TestLoginPlaintextGateway(t *testing.T) {
+	t.Run("a non-loopback http:// gateway is refused before any request", func(t *testing.T) {
+		f := newLogin(t)
+		f.rt = &loginTransport{t: t, events: &f.events}
+		u, err := url.Parse("http://profgate.example")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.settings.Server = u
+		f.settings.Origin = CanonicalOrigin(u)
+		in := f.input()
+		in.Gateway = serveRefusing(t, f.settings)
+		_, err = Login(context.Background(), in)
+		if !errors.Is(err, ErrUsage) || !strings.Contains(err.Error(), "https://") {
+			t.Fatalf("err = %v, want a usage error naming the plaintext rule", err)
+		}
+		if len(f.events) != 0 {
+			t.Fatalf("events = %v, want none: the gateway was never asked", f.events)
+		}
+		if _, ok := f.entry(); ok {
+			t.Fatal("an entry was written for a refused login")
+		}
+	})
+	t.Run("a loopback http:// gateway proceeds with the warning", func(t *testing.T) {
+		f := newLogin(t)
+		u, err := url.Parse("http://localhost:8080")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.settings.Server = u
+		f.settings.Origin = CanonicalOrigin(u)
+		f.settings.Context.Server = u.String()
+		gw, err := New(Options{Settings: f.settings, Transport: rehosted{f.rt}, Now: f.clock.Now, Warn: &f.stderr})
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := f.input()
+		in.Gateway = gw
+		if _, err := Login(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"auth", "discovery", "device", "token", "cache", "whoami", "file"}
+		if !slices.Equal(f.events, want) {
+			t.Fatalf("events = %v, want %v", f.events, want)
+		}
+		if !strings.Contains(f.stderr.String(), "warning: sending a credential over plaintext to http://localhost:8080/v1/whoami") {
+			t.Fatalf("stderr = %q, want the loopback warning for the request that carried the token", f.stderr.String())
+		}
+		f.assertNoSecretPrinted()
+	})
+}
+
+// rehosted answers a request to any gateway origin as the test gateway,
+// so a fixture can select a loopback address and still be scripted.
+type rehosted struct{ rt *loginTransport }
+
+func (r rehosted) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Path == "/v1/auth" || req.URL.Path == "/v1/whoami" {
+		req = req.Clone(req.Context())
+		req.URL.Scheme = "https"
+		req.URL.Host = "profgate.example"
+	}
+	return r.rt.RoundTrip(req)
+}
+
 // serveRefusing is a gateway client whose transport fails the test.
 func serveRefusing(t *testing.T, s Settings) *Client {
 	t.Helper()

@@ -259,7 +259,9 @@ func TestCachedCredentialRefreshOutcomes(t *testing.T) {
 		name      string
 		tokenType string
 		body      func(f *refreshFixture) string
-		check     func(t *testing.T, f *refreshFixture, header string, before Entry)
+		// refreshTTL, when set, records a refresh expiry on the entry.
+		refreshTTL time.Duration
+		check      func(t *testing.T, f *refreshFixture, header string, before Entry)
 	}{
 		{
 			name:      "a response carrying the access token replaces the cached token",
@@ -343,6 +345,17 @@ func TestCachedCredentialRefreshOutcomes(t *testing.T) {
 			},
 		},
 		{
+			name:       "no rotation and no refresh_expires_in keeps the recorded refreshExpiresAt",
+			tokenType:  "access",
+			body:       func(*refreshFixture) string { return `{"access_token":"access-secret","expires_in":300}` },
+			refreshTTL: time.Hour,
+			check: func(t *testing.T, f *refreshFixture, _ string, before Entry) {
+				if e := f.read(t); !e.RefreshExpiresAt.Equal(before.RefreshExpiresAt) {
+					t.Fatalf("refreshExpiresAt = %v, want %v kept: the response said nothing about the refresh token", e.RefreshExpiresAt, before.RefreshExpiresAt)
+				}
+			},
+		},
+		{
 			name:      "a rotation without the selected token stores the rotation and keeps the old token",
 			tokenType: "id",
 			body: func(*refreshFixture) string {
@@ -366,6 +379,9 @@ func TestCachedCredentialRefreshOutcomes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := refreshIssuer(t, tc.tokenType)
 			before := f.entry(30 * time.Second)
+			if tc.refreshTTL > 0 {
+				before.RefreshExpiresAt = f.clock.Now().Add(tc.refreshTTL)
+			}
 			f.write(t, before)
 			// The response arrives five seconds after the entry was written.
 			f.clock.now = f.clock.now.Add(5 * time.Second)

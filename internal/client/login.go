@@ -128,6 +128,13 @@ func Login(ctx context.Context, in LoginInput) (Whoami, error) {
 	if in.Now == nil {
 		in.Now = time.Now
 	}
+	// The plaintext rule applies before the unauthenticated GET /v1/auth,
+	// not only where a credential is sent: over http:// to a non-loopback
+	// host the issuer that route names could be anyone's, and the device
+	// grant would run against it.
+	if _, err := checkPlaintext(in.Settings.Server); err != nil {
+		return Whoami{}, err
+	}
 	snap, err := gatewayAuth(ctx, in)
 	if err != nil {
 		return Whoami{}, err
@@ -300,7 +307,7 @@ func loginOIDC(ctx context.Context, in LoginInput, snap AuthSnap, timeout time.D
 		RefreshExpiresAt: RefreshExpiryOf(tr.RefreshExpiresIn, now),
 		ObtainedAt:       now,
 	}
-	if err := writeEntry(ctx, in, snap, e); err != nil {
+	if err := writeEntry(ctx, in, e); err != nil {
 		return Whoami{}, err
 	}
 	w, err := fetchWhoami(ctx, in.Gateway.withCredential(tokenCredential(token)))
@@ -314,10 +321,8 @@ func loginOIDC(ctx context.Context, in LoginInput, snap AuthSnap, timeout time.D
 	return w, nil
 }
 
-// writeEntry writes the cache under the lock, with Usable checked against
-// the resolved gateway first, so a token obtained for one gateway is never
-// written into an entry another reads.
-func writeEntry(ctx context.Context, in LoginInput, snap AuthSnap, e Entry) (err error) {
+// writeEntry writes the cache under the lock.
+func writeEntry(ctx context.Context, in LoginInput, e Entry) (err error) {
 	release, err := in.Store.Lock(ctx, in.Settings.CacheName)
 	if err != nil {
 		return err
@@ -327,11 +332,6 @@ func writeEntry(ctx context.Context, in LoginInput, snap AuthSnap, e Entry) (err
 			err = rerr
 		}
 	}()
-	resolved := in.Settings
-	resolved.Context.Auth = snap
-	if err := e.Usable(resolved); err != nil {
-		return err
-	}
 	return in.Store.Write(in.Settings.CacheName, e)
 }
 
