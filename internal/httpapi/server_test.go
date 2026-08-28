@@ -1239,6 +1239,87 @@ func TestPortAllowlist(t *testing.T) {
 	})
 }
 
+// TestPortNotAllowedDetails checks the encoded body of a refusal: exactly one
+// details item naming the parameter and the value the client sent, never the
+// number a name resolves to, and no details key on any other error.
+func TestPortNotAllowedDetails(t *testing.T) {
+	detailsOf := func(t *testing.T, rec *httptest.ResponseRecorder) string {
+		t.Helper()
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("body %q: %v", rec.Body.String(), err)
+		}
+		details, ok := raw["details"]
+		if !ok {
+			t.Fatalf("body %q has no details", rec.Body.String())
+		}
+
+		return string(details)
+	}
+
+	t.Run("a refused port", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		rec := h.do(t, http.MethodGet, profilePath+"heap?port=6061")
+		h.expectError(t, rec, http.StatusBadRequest, "port_not_allowed")
+		want := `[{"field":"port","code":"not_admitted","message":"6061 is not an admitted selection"}]`
+		if got := detailsOf(t, rec); got != want {
+			t.Errorf("details = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("a refused name", func(t *testing.T) {
+		h := newHarness(baseTarget())
+		rec := h.do(t, http.MethodGet, targetsPath+"?portName=pprof-alt")
+		h.expectError(t, rec, http.StatusBadRequest, "port_not_allowed")
+		want := `[{"field":"portName","code":"not_admitted","message":"pprof-alt is not an admitted selection"}]`
+		if got := detailsOf(t, rec); got != want {
+			t.Errorf("details = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("a refused name resolves nowhere in the body", func(t *testing.T) {
+		alt := namedTarget("pod-1", fixtureVersion)
+		alt.Port = 6061
+		h := newHarness(namedTarget("pod-1", fixtureVersion), namedTarget("pod-2", fixtureVersion))
+		h.disc.byName = map[string][]k8s.Target{"pprof-alt": {alt}}
+		rec := h.do(t, http.MethodGet, profilePath+"heap?portName=pprof-alt")
+		h.expectError(t, rec, http.StatusBadRequest, "port_not_allowed")
+		h.expectCounts(t, 0, 0)
+		if body := rec.Body.String(); strings.Contains(body, "6061") {
+			t.Errorf("body %q names the number the name resolves to", body)
+		}
+	})
+
+	t.Run("no other error carries details", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			configure func(*harness)
+			path      string
+			status    int
+			code      string
+		}{
+			{"realm denied", func(h *harness) {
+				h.configure(func(cfg *config.Config) {
+					cfg.Realms["developer"] = config.Realm{Namespaces: []string{"other"}, Services: []string{"*"}, Profiles: []string{"*"}}
+				})
+			}, profilePath + "heap?port=6061", http.StatusForbidden, "realm_denied"},
+			{"invalid parameter", func(*harness) {}, profilePath + "heap?port=abc", http.StatusBadRequest, "invalid_parameter"},
+			{"service not found", func(h *harness) { h.disc.err = k8s.ErrServiceNotFound }, profilePath + "heap", http.StatusNotFound, "service_not_found"},
+			{"no targets", func(h *harness) { h.disc.targets = nil }, profilePath + "heap", http.StatusServiceUnavailable, "no_targets"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				h := newHarness(baseTarget())
+				tc.configure(h)
+				rec := h.do(t, http.MethodGet, tc.path)
+				h.expectError(t, rec, tc.status, tc.code)
+				if strings.Contains(rec.Body.String(), `"details"`) {
+					t.Errorf("body %q carries details", rec.Body.String())
+				}
+			})
+		}
+	})
+}
+
 // TestPortResolution covers what a selection does past the allowlist: the
 // per-Pod name resolution the fake models, the audit field, the metric
 // labels, the pass-through of a non-pprof listener, and that nothing the

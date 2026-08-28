@@ -556,7 +556,7 @@ details: []errorDetail{{Field: "port", Code: "not_admitted", Message: `6061 is n
 The message names the value the client sent and nothing else,
 which is what *Non-disclosure* already allows.
 
-- [ ] **Write the envelope tests**
+- [x] **Write the envelope tests**
 
 `errors_test.go` keeps `TestWriteError` byte for byte:
 its expected body has no `details` key, which is the proof that an error without details omits it.
@@ -574,11 +574,11 @@ the body contains no `"details":null` and no `"details":[]`,
 and contains `"details"` only when the code is `port_not_allowed`.
 Every existing error case in the package then proves the omission for its own code.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Carry the item**
+- [x] **Carry the item**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/

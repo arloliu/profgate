@@ -546,6 +546,14 @@ func (h *harness) expectError(t *testing.T, rec *httptest.ResponseRecorder, stat
 	if got, _ := errorBodyOf(t, rec); got != code {
 		t.Errorf("code = %q, want %q (body %q)", got, code, rec.Body.String())
 	}
+	// details is omitted, never null or empty, and only port_not_allowed carries it.
+	body := rec.Body.String()
+	if strings.Contains(body, `"details":null`) || strings.Contains(body, `"details":[]`) {
+		t.Errorf("body %q carries an empty details", body)
+	}
+	if strings.Contains(body, `"details"`) != (code == "port_not_allowed") {
+		t.Errorf("body %q: details must appear for port_not_allowed and no other code", body)
+	}
 	for name := range rec.Header() {
 		if strings.HasPrefix(name, "X-Pprof-Target-") {
 			t.Errorf("gateway error carries %s", name)
