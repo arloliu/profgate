@@ -174,6 +174,10 @@ func (f *fakeDiscovery) Catalog(_ context.Context, namespace string) ([]k8s.Serv
 	return refs, nil
 }
 
+func (f *fakeDiscovery) Explain(context.Context, string, string, k8s.PortSelection) (k8s.Explanation, error) {
+	return k8s.Explanation{}, nil
+}
+
 // catalogNamespacesSeen is the namespace argument of every Catalog call, in order.
 func (f *fakeDiscovery) catalogNamespacesSeen() []string {
 	f.mu.Lock()

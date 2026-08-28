@@ -18,69 +18,236 @@ const podKind = "Pod"
 // It reads only the informer caches and never calls the API server, which is why it ignores the context:
 // its answer is as current as the caches are,
 // and it cannot block.
+// It reaches each endpoint's Pod by name and makes no namespace-wide read of the Pod cache;
+// that read is Explain's alone.
 func (c *Cluster) Targets(_ context.Context, namespace, service string, port PortSelection) ([]Target, error) {
+	svc, selector, epSlices, err := c.serviceSlices(namespace, service)
+	if err != nil {
+		return nil, err
+	}
+	lookup := func(name string) (*corev1.Pod, bool) {
+		pod, err := c.pods.Pods(namespace).Get(name)
+
+		return pod, err == nil
+	}
+	targets, _ := c.resolve(svc, selector, epSlices, port, lookup)
+
+	return targets, nil
+}
+
+// Explain returns the targets of a Service beside the reasons its other selected Pods were dropped,
+// from one captured list of the namespace's selected Pods and the EndpointSlice pass Targets makes.
+// It counts Pods and names none.
+// The captured list is the population it counts and the map it resolves endpoints against,
+// so both come from one snapshot of the Pod cache read once.
+func (c *Cluster) Explain(_ context.Context, namespace, service string, port PortSelection) (Explanation, error) {
+	svc, selector, epSlices, err := c.serviceSlices(namespace, service)
+	if err != nil {
+		return Explanation{}, err
+	}
+	pods, err := c.pods.Pods(namespace).List(selector)
+	if err != nil {
+		return Explanation{}, fmt.Errorf("read pods of %s/%s from cache: %w", namespace, service, err)
+	}
+	byName := make(map[string]*corev1.Pod, len(pods))
+	for _, pod := range pods {
+		byName[pod.Name] = pod
+	}
+	lookup := func(name string) (*corev1.Pod, bool) {
+		pod, ok := byName[name]
+
+		return pod, ok
+	}
+	targets, seen := c.resolve(svc, selector, epSlices, port, lookup)
+
+	counts := make(map[string]int, len(exclusionReasons))
+	for _, pod := range pods {
+		facts := seen[string(pod.UID)]
+		if facts != nil && facts.isTarget() {
+			continue
+		}
+		counts[attribute(pod, facts)]++
+	}
+	var excluded []Exclusion
+	for _, reason := range exclusionReasons {
+		if n := counts[reason]; n > 0 {
+			excluded = append(excluded, Exclusion{Reason: reason, Count: n})
+		}
+	}
+
+	return Explanation{Targets: targets, SelectorMatched: len(pods), Excluded: excluded}, nil
+}
+
+// serviceSlices reads a Service and its EndpointSlices from the caches,
+// answering the two sentinel errors a caller branches on.
+func (c *Cluster) serviceSlices(namespace, service string) (*corev1.Service, labels.Selector, []*discoveryv1.EndpointSlice, error) {
 	svc, err := c.services.Services(namespace).Get(service)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("service %s/%s: %w", namespace, service, ErrServiceNotFound)
+			return nil, nil, nil, fmt.Errorf("service %s/%s: %w", namespace, service, ErrServiceNotFound)
 		}
 
-		return nil, fmt.Errorf("read service %s/%s from cache: %w", namespace, service, err)
+		return nil, nil, nil, fmt.Errorf("read service %s/%s from cache: %w", namespace, service, err)
 	}
 	if len(svc.Spec.Selector) == 0 {
-		return nil, fmt.Errorf("service %s/%s: %w", namespace, service, ErrServiceSelectorless)
+		return nil, nil, nil, fmt.Errorf("service %s/%s: %w", namespace, service, ErrServiceSelectorless)
 	}
 	selector := labels.SelectorFromSet(svc.Spec.Selector)
 
 	owned := labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: service})
 	epSlices, err := c.endpointSlices.EndpointSlices(namespace).List(owned)
 	if err != nil {
-		return nil, fmt.Errorf("read endpointslices of %s/%s from cache: %w", namespace, service, err)
+		return nil, nil, nil, fmt.Errorf("read endpointslices of %s/%s from cache: %w", namespace, service, err)
 	}
-	family := addressFamily(epSlices)
 
-	// Valid entries are collected in the order they are met and deduplicated by Pod UID.
-	// Two valid entries for one UID that disagree on address are a conflict: that Pod is excluded,
-	// because the gateway cannot tell which address belongs to it.
-	var found []Target
-	seen := make(map[string]int, len(epSlices))
-	conflicted := make(map[string]bool)
+	return svc, selector, epSlices, nil
+}
+
+// podFor resolves an endpoint's targetRef.name to the cached Pod behind it.
+// Targets passes the lister's per-name read;
+// Explain passes a lookup into the one selector-matched list it captured, so it reads the Pod cache once.
+type podFor func(name string) (*corev1.Pod, bool)
+
+// endpointFacts is what a Pod's trusted endpoints said about it, gathered over the endpoint pass.
+// Each flag records that at least one trusted endpoint stopped at that rule;
+// address and conflict are decided over the endpoints that passed the address rule.
+type endpointFacts struct {
+	notReady        bool   // an endpoint carries conditions.ready: false
+	addressMismatch bool   // an endpoint has no address, or one the Pod's status.podIPs does not list
+	address         string // the address of the first endpoint whose address the Pod holds
+	conflict        bool   // a later such endpoint named a different address the Pod holds
+	portless        bool   // an endpoint reached the port rule and no pprof port resolved
+	target          Target
+	hasTarget       bool
+}
+
+// isTarget reports whether the Pod's endpoints made it a target: at least one eligible one, and no conflict.
+func (f *endpointFacts) isTarget() bool { return f.hasTarget && !f.conflict }
+
+// resolve walks the Service's slices of the read address family and evaluates the eligibility rules once:
+// the targets it yields, and, per Pod a trusted endpoint named, what its endpoints said about it.
+// seen is keyed by Pod UID.
+// A rule that does not hold makes the entry ineligible, never an error:
+// an endpoint the gateway cannot vouch for is dropped,
+// and the rest of the Service is still resolvable.
+// Two endpoints that both pass the address rule and disagree on the address are a conflict:
+// that Pod is excluded and the conflict is logged,
+// whether or not a pprof port resolves for it.
+func (c *Cluster) resolve(svc *corev1.Service, selector labels.Selector,
+	epSlices []*discoveryv1.EndpointSlice, sel PortSelection, lookup podFor) ([]Target, map[string]*endpointFacts) {
+	family := addressFamily(epSlices)
+	seen := make(map[string]*endpointFacts)
+	var order []string // Pod UIDs in the order their first trusted endpoint was met
 	for _, es := range epSlices {
 		if es.AddressType != family {
 			continue
 		}
 		for i := range es.Endpoints {
-			target, ok := c.eligible(svc, selector, &es.Endpoints[i], port)
+			ep := &es.Endpoints[i]
+			ref := ep.TargetRef
+			if ref == nil || ref.Kind != podKind || ref.Namespace != svc.Namespace {
+				continue
+			}
+			pod, ok := lookup(ref.Name)
 			if !ok {
 				continue
 			}
-			first, dup := seen[target.UID]
-			if !dup {
-				seen[target.UID] = len(found)
-				found = append(found, target)
+			// A slice naming a recreated Pod by its predecessor's UID does not qualify.
+			if pod.UID != ref.UID {
+				continue
+			}
+			// A slice entry for a Pod the Service would not select is ignored.
+			if !selector.Matches(labels.Set(pod.Labels)) {
+				continue
+			}
+			uid := string(pod.UID)
+			facts := seen[uid]
+			if facts == nil {
+				facts = &endpointFacts{}
+				seen[uid] = facts
+				order = append(order, uid)
+			}
+			// An unset endpoint readiness counts as ready, matching the EndpointSlice API contract.
+			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
+				facts.notReady = true
 
 				continue
 			}
-			if conflicted[target.UID] || found[first].PodIP == target.PodIP {
+			// The Pod's own state is attributed from the Pod object, not recorded per endpoint.
+			if pod.Status.Phase != corev1.PodRunning || !podReady(pod) || pod.DeletionTimestamp != nil {
 				continue
 			}
-			conflicted[target.UID] = true
-			c.log.Warn("endpointslice address conflict, pod excluded",
-				"namespace", namespace, "service", service, "pod", target.Pod)
+			if len(ep.Addresses) == 0 || !hasPodIP(pod, ep.Addresses[0]) {
+				facts.addressMismatch = true
+
+				continue
+			}
+			address := ep.Addresses[0]
+			switch {
+			case facts.address == "":
+				facts.address = address
+			case facts.address != address && !facts.conflict:
+				facts.conflict = true
+				c.log.Warn("endpointslice address conflict, pod excluded",
+					"namespace", svc.Namespace, "service", svc.Name, "pod", pod.Name)
+			}
+			port, ok := c.pprofPort(pod, sel)
+			if !ok {
+				facts.portless = true
+
+				continue
+			}
+			if facts.hasTarget {
+				continue
+			}
+			facts.hasTarget = true
+			facts.target = Target{
+				Namespace: svc.Namespace,
+				Service:   svc.Name,
+				Pod:       pod.Name,
+				Node:      pod.Spec.NodeName,
+				PodIP:     address,
+				Port:      port,
+				Version:   pod.Labels[c.opts.VersionLabel],
+				UID:       uid,
+			}
 		}
 	}
-	if len(conflicted) == 0 {
-		return found, nil
-	}
 
-	targets := make([]Target, 0, len(found))
-	for _, t := range found {
-		if !conflicted[t.UID] {
-			targets = append(targets, t)
+	var targets []Target
+	for _, uid := range order {
+		if facts := seen[uid]; facts.isTarget() {
+			targets = append(targets, facts.target)
 		}
 	}
 
-	return targets, nil
+	return targets, seen
+}
+
+// attribute names the first reason of the vocabulary that holds for a selected Pod that is not a target.
+// Pod state is read before endpoint state, because a terminating or unready Pod explains its own endpoint.
+// A conflict is its own population and is attributed before the other endpoint reasons:
+// the Pod had endpoints the gateway could have followed, and it is their disagreement that excludes it.
+// facts is nil for a Pod no trusted endpoint named.
+func attribute(pod *corev1.Pod, facts *endpointFacts) string {
+	switch {
+	case pod.DeletionTimestamp != nil:
+		return ReasonPodTerminating
+	case pod.Status.Phase != corev1.PodRunning:
+		return ReasonPodNotRunning
+	case !podReady(pod):
+		return ReasonPodNotReady
+	case facts == nil:
+		return ReasonEndpointMissing
+	case facts.conflict:
+		return ReasonEndpointAddressConflict
+	case facts.notReady:
+		return ReasonEndpointNotReady
+	case facts.addressMismatch:
+		return ReasonEndpointAddressMismatch
+	default:
+		return ReasonPortNameNotDeclared
+	}
 }
 
 // addressFamily is the address type Targets reads: IPv4 when the Service has any IPv4 slice,
@@ -97,57 +264,6 @@ func addressFamily(epSlices []*discoveryv1.EndpointSlice) discoveryv1.AddressTyp
 	}
 
 	return family
-}
-
-// eligible applies the spec's eligibility rules to one endpoint and the cached Pod behind it.
-// A rule that does not hold makes the entry ineligible, never an error:
-// an endpoint the gateway cannot vouch for is dropped,
-// and the rest of the Service is still resolvable.
-func (c *Cluster) eligible(svc *corev1.Service, selector labels.Selector, ep *discoveryv1.Endpoint, sel PortSelection) (Target, bool) {
-	ref := ep.TargetRef
-	if ref == nil || ref.Kind != podKind || ref.Namespace != svc.Namespace {
-		return Target{}, false
-	}
-	pod, err := c.pods.Pods(svc.Namespace).Get(ref.Name)
-	if err != nil {
-		return Target{}, false
-	}
-	// A slice naming a recreated Pod by its predecessor's UID does not qualify.
-	if pod.UID != ref.UID {
-		return Target{}, false
-	}
-	if !selector.Matches(labels.Set(pod.Labels)) {
-		return Target{}, false
-	}
-	// An unset endpoint readiness counts as ready, matching the EndpointSlice API contract.
-	if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
-		return Target{}, false
-	}
-	if pod.Status.Phase != corev1.PodRunning || !podReady(pod) || pod.DeletionTimestamp != nil {
-		return Target{}, false
-	}
-	if len(ep.Addresses) == 0 {
-		return Target{}, false
-	}
-	address := ep.Addresses[0]
-	if !hasPodIP(pod, address) {
-		return Target{}, false
-	}
-	port, ok := c.pprofPort(pod, sel)
-	if !ok {
-		return Target{}, false
-	}
-
-	return Target{
-		Namespace: svc.Namespace,
-		Service:   svc.Name,
-		Pod:       pod.Name,
-		Node:      pod.Spec.NodeName,
-		PodIP:     address,
-		Port:      port,
-		Version:   pod.Labels[c.opts.VersionLabel],
-		UID:       string(pod.UID),
-	}, true
 }
 
 // podReady reports whether the Pod's Ready condition is True.
