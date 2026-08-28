@@ -46,7 +46,7 @@ Both are cited by heading name below, never by number;
 an unqualified heading is the gateway spec's.
 The gateway spec's *Amendments* block lists this change's edits as already made,
 and names the documents updated when the implementation lands;
-the last task is where that second list is honored.
+the documentation change is where that second list is honored.
 This work is ordered by [`docs/plans/roadmap.md`](roadmap.md).
 Rules in force: [`.agents/rules/`](../../.agents/rules/), especially
 [`800-security-invariant.md`](../../.agents/rules/800-security-invariant.md).
@@ -58,7 +58,7 @@ Rules in force: [`.agents/rules/`](../../.agents/rules/), especially
   and the spec's *Permission Boundary* already carry the wording that names `discovery.pprof.allowedSelections`.
   Confirm they still match before the last commit; do not reword them.
   `docs/deployment.md` is the one document whose invariant paragraph still describes the old lists,
-  and the last task replaces it with that same wording.
+  and the documentation change replaces it with that same wording.
 - **No RBAC change.**
   No Kubernetes verb, resource, or API group moves.
   `TestClusterRoleTuples` in `deploy/deploy_test.go`
@@ -248,11 +248,18 @@ Record that reason in a comment beside the field so nobody restores the tag.
    before the strict unknown-key pass,
    which would otherwise report only that the key is unknown and leave the operator to guess the replacement.
    Decode the bytes into a `yaml.Node`, walk to the `discovery` mapping and then to its `pprof` mapping,
-   and compare the *key* nodes of that one mapping against the two names.
+   decode that one mapping into a `map[string]any`,
+   and look the two names up in the map.
    Presence is the key, never its value:
-   `allowedPorts: null`, `allowedPorts: []`, and an aliased or malformed value are all a set key,
-   and a decode into a pointer field would read a `null` value as absent.
-   A missing `discovery` or `pprof` mapping means neither key is set.
+   `allowedPorts: null` and `allowedPorts: []` are both a set key, the first with a `nil` value,
+   where a decode into a pointer field would read `null` as absent.
+   Decoding into a map rather than reading key nodes is what makes a merge key count:
+   `gopkg.in/yaml.v3` resolves `<<` while decoding a mapping into a map as it does into a struct,
+   so a removed key carried in by an anchored mapping, or by a sequence of them,
+   is present in the map and gets the replacement message,
+   where a walk over the mapping's own key nodes would see only `<<`.
+   A missing `discovery` or `pprof` mapping means neither key is set,
+   and a `pprof` value that is not a mapping is left to the strict decode to refuse.
 3. The existing strict `KnownFields(true)` decode.
 4. The existing fuda load.
 5. Apply `PROFGATE_PPROF_ALLOWED_SELECTIONS` when it is set:
@@ -329,6 +336,9 @@ and, for the removed keys, `testdata/removed-*.yaml`:
 | `allowedPortNames: [pprof-alt]` | the same message |
 | `allowedPorts: null` | the same message: the key is set, whatever its value |
 | `allowedPortNames: null` | the same message |
+| `allowedPorts: [6061]` behind `<<: *old`, an anchored mapping defined above `discovery` | the same message: a merged key is a set key |
+| `allowedPortNames: [pprof-alt]` behind `<<: [*a, *b]`, a sequence of anchored mappings | the same message |
+| `allowedSelections: [{port: 6061}]` beside `<<: *old` carrying `allowedPorts` | the same message: a valid key beside a merged removed one does not hide it |
 | `allowedPorts: []` | the same message |
 | `allowedPortNames: []` | the same message |
 | `allowedPorts: []` and `allowedPortNames: []` together | the same message, and it is the removed-key message rather than the unknown-key one |
@@ -482,7 +492,7 @@ Error text follows the existing style: the key path, then the rule.
 | `internal/httpapi/listing.go` | `pprofView` carries `AllowedSelections []config.Selection` under the JSON name `allowedSelections`, built so an empty list encodes `[]` and never `null` |
 | `internal/httpapi/listing_test.go` | every `config.PprofConfig` literal builds `AllowedSelections` instead of the two lists; the body assertions read `allowedSelections` and grow in the task after this one |
 | `internal/httpapi/server.go` | only where a row of the refusal table fails |
-| `internal/ui/static/app.js` | the port control reads `pprof.allowedSelections`, offering one option per entry and a free field only for a wildcard; the model moves to its own module in a later task |
+| `internal/ui/static/app.js` | the port control reads `pprof.allowedSelections`, offering one option per entry and a free field only for a wildcard; the model moves to its own module with the port-control change |
 | `deploy/base/configmap.yaml`, `deploy/chart/profgate/values.yaml` | `allowedSelections: []`, with the comment saying an empty list accepts only the configured default |
 | `deploy/chart/profgate/README.md` | the example block and the `config` row name `allowedSelections` and say the empty list is default-deny |
 | `deploy/deploy_test.go`, `deploy/chart_test.go` | the tables above |
@@ -845,7 +855,7 @@ Tick the remaining checkbox of the client-selected-port item in [`docs/plans/roa
 set line 3 of this file to `**Status:** Done`;
 insert `**Outcome:**` as line 4, naming the commit or tag that shipped the change.
 [`.agents/rules/900-design-and-review-loops.md`](../../.agents/rules/900-design-and-review-loops.md)
-binds that flip to the change that lands the last task,
+binds that flip to the change that lands the plan's remaining work,
 and the next commit that touches this file deletes it and rewrites every link that cited it.
 
 - [ ] **Validate and commit**
@@ -898,22 +908,22 @@ git commit -m "docs: default-deny client-selected ports"
   the parameter rows of both endpoints (*List targets*, *Fetch a profile*, the same task);
   the error code, what its body may name, and its one `details` item
   (*Errors*, *Non-disclosure*, *The refusal names its parameter*);
-  the audit field (*Logging*, the first task) and the absence of a label (*Metrics*, no change);
+  the audit field (*Logging*, the configuration change) and the absence of a label (*Metrics*, no change);
   the global reach of the list (*Limits are not authorization*, stated as a constraint);
   the `/v1/limits` shape ([`docs/specs/ui.md`](../specs/ui.md) *Limits*, *What `/v1/limits` reports*);
   the port control, including the clearing transition
   ([`docs/specs/ui.md`](../specs/ui.md) *Controls*, *Unit*, *The console's port control*);
   the key, its environment form, the removed keys and variables including the null and empty forms,
   and the migration table
-  (*Configuration*, first and last tasks);
-  shipped manifests (*Build and Deployment*, first task);
+  (*Configuration*, the configuration change and the documentation change);
+  shipped manifests (*Build and Deployment*, the configuration change);
   the harness and both cluster proofs (*Harness*, *What end-to-end proves*, *What the cluster proves*);
   the unit rows of *Layers* split across the tasks that own their packages;
   the three `docs/deployment.md` edits and the other documents *Amendments* says are updated with the implementation
-  (last task).
+  (the documentation change).
 - Each task's stated tests are green before its commit against the tree that task leaves:
-  the first task carries the shared fixture and every port case the new meaning touches,
-  so no later task inherits a red package.
+  the configuration change carries the shared fixture and every port case the new meaning touches,
+  so no change after it inherits a red package.
 - Names defined once and used by those names afterwards:
   `config.Selection`, `config.SelectionKind` with `SelectionPort` and `SelectionPortName`,
   `config.AnySelection`, `config.ParseSelection`, `PprofConfig.AllowedSelections`,
