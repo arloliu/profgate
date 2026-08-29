@@ -1105,10 +1105,28 @@ func waitCrashLoop(t *testing.T, h *Harness, ns, selector string) string {
 // podLogs returns the logs of the last terminated run of the Pod's only container.
 func podLogs(t *testing.T, h *Harness, ns, name string) string {
 	t.Helper()
-	out, err := h.Client.CoreV1().Pods(ns).GetLogs(name, &corev1.PodLogOptions{Previous: true}).DoRaw(t.Context())
+	// A container that keeps restarting is replaced while its predecessor's log is still being asked for,
+	// and the runtime then answers the request with a placeholder in place of the log,
+	// carrying no error of its own.
+	// Both that answer and an outright failure are retried until the deadline,
+	// so what the caller reads is the log the Pod actually wrote.
+	var out []byte
+	err := poll(t.Context(), crashDeadline, func(ctx context.Context) (bool, error) {
+		b, err := h.Client.CoreV1().Pods(ns).GetLogs(name, &corev1.PodLogOptions{Previous: true}).DoRaw(ctx)
+		if err != nil {
+			return false, nil //nolint:nilerr // the container settles; the poll bounds the wait
+		}
+		if bytes.Contains(b, []byte("unable to retrieve container logs")) {
+			return false, nil
+		}
+		out = b
+
+		return true, nil
+	})
 	if err != nil {
 		t.Fatalf("logs of %s: %v", name, err)
 	}
+
 	return string(out)
 }
 
