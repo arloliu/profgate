@@ -361,8 +361,42 @@ func deployTestApp(t *testing.T, h *Harness, ns string) []corev1.Pod {
 	if err := h.kubectl(ctx, "rollout", "status", "deployment/"+testAppName, "-n", ns, "--timeout="+podTimeout.String()); err != nil {
 		t.Fatal(err)
 	}
-	pods := readyPods(t, h, ns, testAppLabel+"="+testAppName)
+	pods := waitReadyPods(t, h, ns, testAppLabel+"="+testAppName, deploymentReplicas(t, h, ns, testAppName))
 	waitTargets(t, h, ns, testAppName, podNames(pods))
+	return pods
+}
+
+// deploymentReplicas is the replica count the named Deployment asks for.
+func deploymentReplicas(t *testing.T, h *Harness, ns, name string) int {
+	t.Helper()
+	d, err := h.Client.AppsV1().Deployments(ns).Get(t.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get deployment %s/%s: %v", ns, name, err)
+	}
+	if d.Spec.Replicas == nil {
+		return 1
+	}
+
+	return int(*d.Spec.Replicas)
+}
+
+// waitReadyPods lists the ready Pods matching selector until there are want of them, sorted by name.
+// A rollout reports complete from the Deployment's own status,
+// and the Pod list is a read of its own taken after that,
+// so a list taken while a Pod is between the two is short and carries no error,
+// and a caller that hands it on names a set the Service does not have.
+func waitReadyPods(t *testing.T, h *Harness, ns, selector string, want int) []corev1.Pod {
+	t.Helper()
+	var pods []corev1.Pod
+	err := poll(t.Context(), podTimeout, func(context.Context) (bool, error) {
+		pods = readyPods(t, h, ns, selector)
+
+		return len(pods) == want, nil
+	})
+	if err != nil {
+		t.Fatalf("%d ready pods match %s in %s, want %d: %v", len(pods), selector, ns, want, err)
+	}
+
 	return pods
 }
 
@@ -525,7 +559,7 @@ func waitDeploymentReady(t *testing.T, h *Harness, ns, name string) []corev1.Pod
 	if err := h.kubectl(t.Context(), "rollout", "status", "deployment/"+name, "-n", ns, "--timeout="+podTimeout.String()); err != nil {
 		t.Fatal(err)
 	}
-	return readyPods(t, h, ns, "profgate-e2e/deployment="+name)
+	return waitReadyPods(t, h, ns, "profgate-e2e/deployment="+name, deploymentReplicas(t, h, ns, name))
 }
 
 // labelPod adds labels to a Pod so a Service can select it alone.
@@ -929,10 +963,7 @@ func deployScopedGateway(t *testing.T, h *Harness, ns, overlay, name string) *ht
 		_ = h.kubectl(ctx, "logs", "-n", ns, "-l", selector, "--tail=50")
 		t.Fatal(err)
 	}
-	pods := readyPods(t, h, ns, selector)
-	if len(pods) != 1 {
-		t.Fatalf("%d ready %s pods, want 1", len(pods), name)
-	}
+	pods := waitReadyPods(t, h, ns, selector, 1)
 	ports, stop, err := h.forward(ctx, ns, pods[0].Name, []string{"0:" + gatewayAPIPort})
 	if err != nil {
 		t.Fatal(err)

@@ -364,10 +364,7 @@ func deployTestAppScaled(t *testing.T, h *Harness, ns string, replicas int32) []
 	if err := h.kubectl(ctx, "rollout", "status", "deployment/"+testAppName, "-n", ns, "--timeout="+podTimeout.String()); err != nil {
 		t.Fatal(err)
 	}
-	pods := readyPods(t, h, ns, testAppLabel+"="+testAppName)
-	if len(pods) != int(replicas) {
-		t.Fatalf("%d ready test-app pods, want %d", len(pods), replicas)
-	}
+	pods := waitReadyPods(t, h, ns, testAppLabel+"="+testAppName, int(replicas))
 	waitTargets(t, h, ns, testAppName, podNames(pods))
 	return pods
 }
