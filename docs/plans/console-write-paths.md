@@ -606,7 +606,8 @@ git commit -m "feat(ui): decide the collection controls in one module"
   `internal/ui/scan_test.go`
 
 `urls.js` gains `collectionCancelURL(id)`, built the way `collectionURL` is,
-and `app.js` imports it and the nine functions of `collectionmodel.js`.
+and `app.js` imports the eight functions of `collectionmodel.js` it calls;
+`retryAfterSeconds` is reached through `startOutcome` and importing it would be dead code.
 
 **The page's transport reads and does not write.**
 `fetchJSON(url)` at `internal/ui/static/app.js:55-81` calls `fetch(url, {credentials: "same-origin"})`,
@@ -936,6 +937,17 @@ They do not: the gateway writes the header on `429 collection_in_progress` alone
 (`internal/httpapi/pgo_collections.go:703`), and this records that fact rather than changing it.
 A client reads the header when it is there and assumes a delay of its own when it is not,
 which is what the console already does.
+
+- [ ] **`docs/specs/ui.md` *Errors*, one hint**
+
+The `pgo_disabled` row words its hint as
+"the Collections view goes once `/v1/limits` has been refetched".
+That sentence cannot be written into `app.js`:
+*Rendering response values* forbids a string literal beginning with `/v1` there,
+and the scan enforces it, so the page says "once the limits have been refetched" instead.
+Two rules of one accepted document contradict each other, the narrower one wins,
+and the hint row is reworded to what the page can actually say.
+This is an amendment to an accepted spec and it goes in that document's *Amendments* table.
 
 - [ ] **`.agents/rules/500-validation-and-workflow.md` *Before a PR***
 
