@@ -42,6 +42,8 @@ var scenarios = [...]Scenario{
 	{Name: "auth-oidc-browser", NeedsPodReach: true},
 	{Name: "auth-basic", NeedsPodReach: true},
 	{Name: "auth-oidc-keycloak", NeedsPodReach: true},
+	{Name: "console-oidc", NeedsPodReach: true},
+	{Name: "console-basic", NeedsPodReach: true},
 }
 
 // Scenarios returns a copy of the complete, ordered scenario metadata.

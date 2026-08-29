@@ -260,8 +260,9 @@ func TestScenariosRegistry(t *testing.T) {
 	}
 
 	// Every authentication scenario pulls a profile through its own gateway,
-	// which completes a proxy to a test-app Pod.
-	for _, name := range []string{"auth-oidc-browser", "auth-basic", "auth-oidc-keycloak"} {
+	// which completes a proxy to a test-app Pod, and so does each console scenario,
+	// which ends at a profile a browser downloaded.
+	for _, name := range []string{"auth-oidc-browser", "auth-basic", "auth-oidc-keycloak", "console-oidc", "console-basic"} {
 		j := slices.IndexFunc(all, func(s Scenario) bool { return s.Name == name })
 		if j < 0 {
 			t.Fatalf("no scenario named %q", name)
@@ -270,7 +271,7 @@ func TestScenariosRegistry(t *testing.T) {
 			t.Fatalf("%q pulls a profile through the gateway, so it must declare NeedsPodReach", name)
 		}
 		if all[j].NeedsNetworkPolicy {
-			t.Fatalf("%q declares NeedsNetworkPolicy; authentication needs none, so every lane must run it", name)
+			t.Fatalf("%q declares NeedsNetworkPolicy; neither authentication nor the console needs one, so every lane must run it", name)
 		}
 	}
 
@@ -295,6 +296,7 @@ func TestScenarioSkips(t *testing.T) {
 				"port selection", "port selection refused",
 				"pgo-on-demand", "pgo-scheduled-slot", "pgo-cancel", "pgo-version-conflict", "pgo-reclaim",
 				"auth-oidc-browser", "auth-basic", "auth-oidc-keycloak",
+				"console-oidc", "console-basic",
 			},
 		},
 		{

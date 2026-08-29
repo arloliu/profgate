@@ -115,7 +115,10 @@ type dexServer struct {
 // mounted pair, the approval screen skipped, the password connector on so a
 // password grant mints an ID token, one public client with the gateway's
 // callback and the device flow's internal callback, and one static password.
-func dexConfig(issuer, clientRedirect, passwordHash string) string {
+// username is what the static user's name claim carries.
+// The email stays well formed whatever that claim holds,
+// so a login succeeds while the claim a gateway reads as the principal carries whatever a scenario needs.
+func dexConfig(issuer, clientRedirect, passwordHash, username string) string {
 	return fmt.Sprintf(`issuer: %s
 storage:
   type: memory
@@ -137,16 +140,19 @@ enablePasswordDB: true
 staticPasswords:
   - email: %s
     hash: %q
-    username: alice
+    username: %q
     userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
-`, issuer, dexPort, dexClientID, dexClientID, clientRedirect, deviceCallback, dexUser, passwordHash)
+`, issuer, dexPort, dexClientID, dexClientID, clientRedirect, deviceCallback, dexUser, passwordHash, username)
 }
 
 // deployDex writes Dex's configuration and certificate, applies dex.yaml into ns, and waits for the rollout.
 // nodeIP is the address the issuer is published at, which ca must certify;
-// clientRedirect is the callback Dex accepts; passwordHash is the bcrypt hash
-// of the static user's password.
-func (h *Harness) deployDex(ctx context.Context, ns string, ca authority, nodeIP, clientRedirect, passwordHash string) (*dexServer, error) {
+// clientRedirect is the callback Dex accepts;
+// passwordHash is the bcrypt hash of the static user's password;
+// username is what the name claim carries.
+func (h *Harness) deployDex(
+	ctx context.Context, ns string, ca authority, nodeIP, clientRedirect, passwordHash, username string,
+) (*dexServer, error) {
 	if err := h.applyNamedTLSSecret(ctx, ns, dexTLSSecret, ca.certPEM, ca.keyPEM); err != nil {
 		return nil, err
 	}
@@ -154,7 +160,7 @@ func (h *Harness) deployDex(ctx context.Context, ns string, ca authority, nodeIP
 	d.issuer = "https://" + d.addr
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: dexConfigMap, Namespace: ns},
-		Data:       map[string]string{"config.yaml": dexConfig(d.issuer, clientRedirect, passwordHash)},
+		Data:       map[string]string{"config.yaml": dexConfig(d.issuer, clientRedirect, passwordHash, username)},
 	}
 	if err := h.applyConfigMap(ctx, ns, cm); err != nil {
 		return nil, err
@@ -433,12 +439,20 @@ func tokenKID(t *testing.T, token string) string {
 // passwordGrant obtains an ID token from Dex's password connector.
 func passwordGrant(t *testing.T, c *http.Client, issuer, password string) string {
 	t.Helper()
+
+	return passwordGrantScoped(t, c, issuer, password, "openid email")
+}
+
+// passwordGrantScoped is passwordGrant for a caller that needs a claim another scope carries,
+// because which claims an issuer mints depends on the scopes the grant asked for.
+func passwordGrantScoped(t *testing.T, c *http.Client, issuer, password, scope string) string {
+	t.Helper()
 	form := url.Values{
 		"grant_type": {"password"},
 		"client_id":  {dexClientID},
 		"username":   {dexUser},
 		"password":   {password},
-		"scope":      {"openid email"},
+		"scope":      {scope},
 	}
 	var token string
 	var last error
@@ -531,7 +545,7 @@ func scenarioAuthOIDCBrowser(t *testing.T, h *Harness) {
 		t.Fatal(err)
 	}
 	dexCA := newAuthority(t, nodeIP)
-	dex, err := h.deployDex(ctx, ns, dexCA, nodeIP, callbackURL, bcryptHash(t, password))
+	dex, err := h.deployDex(ctx, ns, dexCA, nodeIP, callbackURL, bcryptHash(t, password), "alice")
 	if err != nil {
 		t.Fatal(err)
 	}

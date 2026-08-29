@@ -51,4 +51,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The console scenarios drive a browser, which is not a Go module and is not pinned by mise.toml.
+      # Installing one here is what makes the version the suite runs against a choice rather than
+      # whatever the runner image happens to carry; the runner refuses a major outside the range it accepts.
+      - name: install the pinned browser
+        env:
+          CHROME_VERSION: "152.0.7977.64"
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/chrome-linux64.zip \
+            "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"
+          unzip -q /tmp/chrome-linux64.zip -d /opt
+          test -x /opt/chrome-linux64/chrome
+          /opt/chrome-linux64/chrome --version
+          echo "PROFGATE_E2E_BROWSER=/opt/chrome-linux64/chrome" >> "$GITHUB_ENV"
       - run: mise run test:e2e
