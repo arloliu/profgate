@@ -266,8 +266,15 @@ func TestCachesCollectionsListsNewestFirst(t *testing.T) {
 	}
 	other := f.seedRecord("payment", "other-api", StateCompleted)
 
-	r.waitCache("three collections", func(c *Caches) bool { return len(c.Collections("payment", "payment-api")) == 3 })
-	got := r.caches.Collections("payment", "payment-api")
+	r.waitCache("three collections", func(c *Caches) bool {
+		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+
+		return len(views) == 3
+	})
+	got, more := r.caches.Collections("payment", "payment-api", CollectionQuery{})
+	if more {
+		t.Errorf("more = true, want false: the whole listing fits one page")
+	}
 
 	for i, view := range got {
 		if view.ID != want[i] {
@@ -282,25 +289,171 @@ func TestCachesCollectionsListsNewestFirst(t *testing.T) {
 	}
 }
 
-// TestCachesCollectionsCapsTheListing pins the ceiling of section "List
-// Collections": at most 100 entries and no pagination behind them.
-func TestCachesCollectionsCapsTheListing(t *testing.T) {
+// TestCachesCollectionsOrderIsTotal pins the order the Collection listing is read in:
+// createdAt descending,
+// and identifier descending where two records share an instant.
+// The identifier is random rather than time-ordered,
+// so that second key is what makes the order total,
+// and a cursor reads a page as the entries after a pair in exactly this order.
+func TestCachesCollectionsOrderIsTotal(t *testing.T) {
 	f := startPGO(t)
 	r := f.newReplica("a", replicaOpts{})
 	r.waitSynced()
 
-	for i := range maxListCollections + 5 {
-		id := f.seedRecord("payment", "payment-api", StateCompleted)
-		rec := f.record(id)
-		rec.CreatedAt = slotBase.Add(time.Duration(i) * time.Minute)
-		f.putJSON(f.jobs, jobKey(id), rec)
+	tie := slotBase.Add(time.Hour)
+	// The two that share an instant are seeded oldest identifier first, so an
+	// order that read the identifier ascending would return them as seeded.
+	for _, seed := range []struct {
+		id      string
+		created time.Time
+	}{
+		{"aaaaaaaaaaaaaaaaaaaa", tie},
+		{"zzzzzzzzzzzzzzzzzzzz", tie},
+		{"mmmmmmmmmmmmmmmmmmmm", slotBase},
+	} {
+		f.seedRecord("payment", "payment-api", StateCompleted, func(rec *Record) {
+			rec.ID = seed.id
+			rec.CreatedAt = seed.created
+		})
 	}
 
-	r.waitCache("every collection", func(c *Caches) bool {
-		return len(c.jobEntries()) == maxListCollections+5
+	r.waitCache("three collections", func(c *Caches) bool {
+		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+
+		return len(views) == 3
 	})
-	if got := len(r.caches.Collections("payment", "payment-api")); got != maxListCollections {
-		t.Errorf("listing length = %d, want %d", got, maxListCollections)
+
+	got, _ := r.caches.Collections("payment", "payment-api", CollectionQuery{})
+	want := []string{"zzzzzzzzzzzzzzzzzzzz", "aaaaaaaaaaaaaaaaaaaa", "mmmmmmmmmmmmmmmmmmmm"}
+	for i, view := range got {
+		if view.ID != want[i] {
+			t.Errorf("entry %d = %s, want %s", i, view.ID, want[i])
+		}
+	}
+}
+
+// TestCachesCollectionsPagesByValue covers what a cursor rests on:
+// a page is the entries sorting after a pair,
+// and nothing looks that pair's record up.
+// The record the position names is deleted between the two reads,
+// and the page after it is still the entries that sort after it, not the whole listing.
+func TestCachesCollectionsPagesByValue(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+
+	for i := range 3 {
+		f.seedRecord("payment", "payment-api", StateCompleted, func(rec *Record) {
+			rec.CreatedAt = slotBase.Add(time.Duration(i) * time.Minute)
+		})
+	}
+	r.waitCache("three collections", func(c *Caches) bool {
+		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+
+		return len(views) == 3
+	})
+
+	first, more := r.caches.Collections("payment", "payment-api", CollectionQuery{Limit: 2})
+	if len(first) != 2 || !more {
+		t.Fatalf("first page = %d entries, more %v, want 2 and true", len(first), more)
+	}
+	last := first[1]
+	after := CollectionPosition{CreatedAt: last.CreatedAt, ID: last.ID}
+
+	f.deleteKey(f.jobs, jobKey(last.ID))
+	r.waitCache("the deletion", func(c *Caches) bool {
+		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+
+		return len(views) == 2
+	})
+
+	rest, more := r.caches.Collections("payment", "payment-api", CollectionQuery{After: after})
+	if len(rest) != 1 || more {
+		t.Fatalf("page after a deleted position = %d entries, more %v, want 1 and false: %+v", len(rest), more, rest)
+	}
+	if rest[0].ID == first[0].ID {
+		t.Errorf("entry %s was on the first page, want only what sorts after the position", rest[0].ID)
+	}
+}
+
+// TestCachesCollectionsFilters keeps the records each filter names and drops
+// the rest, and the limit bounds what is left.
+func TestCachesCollectionsFilters(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+
+	running := f.seedRecord("payment", "payment-api", StateRunning, func(rec *Record) {
+		rec.CreatedAt = slotBase.Add(time.Hour)
+		rec.Origin = OriginAPI
+	})
+	f.seedRecord("payment", "payment-api", StateCompleted, func(rec *Record) {
+		rec.CreatedAt = slotBase
+	})
+	r.waitCache("both collections", func(c *Caches) bool {
+		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+
+		return len(views) == 2
+	})
+
+	for _, tc := range []struct {
+		name  string
+		query CollectionQuery
+		want  int
+	}{
+		{"one state", CollectionQuery{States: []State{StateRunning}}, 1},
+		{"two states", CollectionQuery{States: []State{StateRunning, StateCompleted}}, 2},
+		{"since the newer instant", CollectionQuery{Since: slotBase.Add(time.Hour)}, 1},
+		{"origin", CollectionQuery{Origin: OriginAPI}, 1},
+		{"an intersection that keeps nothing", CollectionQuery{
+			States: []State{StateCompleted}, Origin: OriginAPI}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := r.caches.Collections("payment", "payment-api", tc.query)
+			if len(got) != tc.want {
+				t.Fatalf("entries = %d, want %d: %+v", len(got), tc.want, got)
+			}
+			if tc.want == 1 && tc.name != "since the newer instant" && got[0].ID != running {
+				t.Errorf("entry = %s, want %s", got[0].ID, running)
+			}
+		})
+	}
+}
+
+// TestCachesCollectionsLimitsThePage bounds a page at the limit asked for and
+// at MaxListCollections, and reports that more entries stand behind it.
+func TestCachesCollectionsLimitsThePage(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+
+	for i := range MaxListCollections + 5 {
+		f.seedRecord("payment", "payment-api", StateCompleted, func(rec *Record) {
+			rec.CreatedAt = slotBase.Add(time.Duration(i) * time.Minute)
+		})
+	}
+	r.waitCache("every collection", func(c *Caches) bool {
+		return len(c.jobEntries()) == MaxListCollections+5
+	})
+
+	for _, tc := range []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{"no limit", 0, MaxListCollections},
+		{"a limit of its own", 10, 10},
+		{"a limit over the ceiling", MaxListCollections + 50, MaxListCollections},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, more := r.caches.Collections("payment", "payment-api", CollectionQuery{Limit: tc.limit})
+			if len(got) != tc.want {
+				t.Errorf("page = %d entries, want %d", len(got), tc.want)
+			}
+			if !more {
+				t.Errorf("more = false, want true: %d records stand behind the page", MaxListCollections+5-tc.want)
+			}
+		})
 	}
 }
 

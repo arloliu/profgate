@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"maps"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/arloliu/profgate/internal/natskv"
@@ -135,6 +137,242 @@ func mediaTypeFault(h http.Header) *requestError {
 	return nil
 }
 
+// The query parameters of the Collection listing, in the order they are validated,
+// which is name order.
+const (
+	cursorParam = "cursor"
+	limitParam  = "limit"
+	originParam = "origin"
+	sinceParam  = "since"
+	stateParam  = "state"
+)
+
+// The grammar each listing parameter is refused against.
+// One sentence serves as the envelope message and as the item's message,
+// and it names the grammar rather than the value the client sent.
+const (
+	cursorGrammar = "cursor must be a token a previous response carried, " +
+		"presented beside the filters it was minted under"
+	limitGrammar  = "limit must be a decimal integer between 1 and 100"
+	originGrammar = "origin must be schedule or api"
+	sinceGrammar  = "since must be an RFC 3339 timestamp"
+	stateGrammar  = "state must be one of initializing, pending, running, completed, failed, cancelled, expired"
+)
+
+// listFilters is what a cursor carries beside its position:
+// the filters of the listing that position is a place in.
+// States is canonical, deduplicated and sorted,
+// so a repeatable filter compares as a set rather than as a sequence.
+type listFilters struct {
+	States []pgo.State
+	Since  time.Time
+	Origin pgo.Origin
+}
+
+// equal reports whether two filter sets select the same records.
+func (f listFilters) equal(other listFilters) bool {
+	return slices.Equal(f.States, other.States) &&
+		f.Since.Equal(other.Since) &&
+		f.Origin == other.Origin
+}
+
+// filtersOf is the filter set one parsed query carries.
+func filtersOf(q pgo.CollectionQuery) listFilters {
+	return listFilters{States: q.States, Since: q.Since, Origin: q.Origin}
+}
+
+// collectionState reports whether a value is one of the record's states.
+func collectionState(s pgo.State) bool {
+	switch s {
+	case pgo.StateInitializing, pgo.StatePending, pgo.StateRunning,
+		pgo.StateCompleted, pgo.StateFailed, pgo.StateCancelled, pgo.StateExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+// cursorVersion is the first byte of every token this build writes,
+// and the only one it reads.
+// A token carrying another version is refused rather than guessed at.
+const cursorVersion = '1'
+
+// cursorFields is how many values a decoded token holds:
+// the position's two, and the three filters it was minted under.
+const cursorFields = 5
+
+// encodeCursor writes the position of the last entry a response carried,
+// together with the filters the request that produced it carried.
+// The token is self-contained and claims nothing about who minted it:
+// replicas share no signing material and no cursor state,
+// so a token one replica writes has to be readable by every other.
+// What it names is a position and a filter set,
+// which is what any client can reach by sending those filters and paging to that point.
+func encodeCursor(pos pgo.CollectionPosition, f listFilters) string {
+	states := make([]string, 0, len(f.States))
+	for _, s := range f.States {
+		states = append(states, string(s))
+	}
+	since := ""
+	if !f.Since.IsZero() {
+		since = f.Since.UTC().Format(time.RFC3339Nano)
+	}
+	payload := strings.Join([]string{
+		pos.CreatedAt.UTC().Format(time.RFC3339Nano),
+		pos.ID,
+		strings.Join(states, ","),
+		since,
+		string(f.Origin),
+	}, "\n")
+
+	return base64.RawURLEncoding.EncodeToString(append([]byte{cursorVersion}, payload...))
+}
+
+// decodeCursor reads a token back, and is false for one this build cannot read:
+// one that is not the encoding, one carrying a version it does not know,
+// and one decoding to a value outside its own grammar.
+// The decoding is strict and total, which is the whole of what a shared-nothing gateway can decide about a token.
+// The state set is canonicalized here rather than refused out of order,
+// because the filter it stands for is a set.
+func decodeCursor(token string) (pgo.CollectionPosition, listFilters, bool) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) == 0 || raw[0] != cursorVersion {
+		return pgo.CollectionPosition{}, listFilters{}, false
+	}
+	fields := strings.Split(string(raw[1:]), "\n")
+	if len(fields) != cursorFields {
+		return pgo.CollectionPosition{}, listFilters{}, false
+	}
+
+	createdAt, err := time.Parse(time.RFC3339Nano, fields[0])
+	if err != nil || !pgo.ValidID(fields[1]) {
+		return pgo.CollectionPosition{}, listFilters{}, false
+	}
+
+	var filters listFilters
+	if fields[2] != "" {
+		seen := make(map[pgo.State]struct{})
+		for _, name := range strings.Split(fields[2], ",") {
+			state := pgo.State(name)
+			if !collectionState(state) {
+				return pgo.CollectionPosition{}, listFilters{}, false
+			}
+			seen[state] = struct{}{}
+		}
+		filters.States = slices.Sorted(maps.Keys(seen))
+	}
+	if fields[3] != "" {
+		if filters.Since, err = time.Parse(time.RFC3339Nano, fields[3]); err != nil {
+			return pgo.CollectionPosition{}, listFilters{}, false
+		}
+	}
+	filters.Origin = pgo.Origin(fields[4])
+	if filters.Origin != "" && filters.Origin != pgo.OriginSchedule && filters.Origin != pgo.OriginAPI {
+		return pgo.CollectionPosition{}, listFilters{}, false
+	}
+
+	return pgo.CollectionPosition{CreatedAt: createdAt, ID: fields[1]}, filters, true
+}
+
+// parseStates reads the one repeatable filter as a set:
+// every value is a state of the record, and a value repeated does not make two filter sets differ.
+func parseStates(values []string) ([]pgo.State, *requestError) {
+	seen := make(map[pgo.State]struct{}, len(values))
+	for _, value := range values {
+		if perr := singleValue(stateParam, []string{value}); perr != nil {
+			return nil, perr
+		}
+		state := pgo.State(value)
+		if !collectionState(state) {
+			return nil, malformedParameter(stateParam, stateGrammar)
+		}
+		seen[state] = struct{}{}
+	}
+
+	return slices.Sorted(maps.Keys(seen)), nil
+}
+
+// parseCollectionList reads the query of GET .../collections in name order,
+// so a query with several faults reports the same one every time.
+// A query string that does not parse leaves no name at fault,
+// which is the one place malformed_parameter names none.
+// A cursor's own grammar is read at its place in that order,
+// while the comparison of its filters against the request's runs once every parameter has parsed,
+// because that comparison is between parsed values rather than between spellings.
+func parseCollectionList(rawQuery string) (pgo.CollectionQuery, *requestError) {
+	var query pgo.CollectionQuery
+	if rawQuery == "" {
+		return query, nil
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return query, invalidParameter("the query string is malformed",
+			paramFault(detailMalformedParameter, "", "the query string does not parse"))
+	}
+
+	var (
+		position pgo.CollectionPosition
+		minted   listFilters
+		paged    bool
+	)
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		vs := values[name]
+		if name == stateParam {
+			states, perr := parseStates(vs)
+			if perr != nil {
+				return pgo.CollectionQuery{}, perr
+			}
+			query.States = states
+
+			continue
+		}
+		if perr := singleValue(name, vs); perr != nil {
+			return pgo.CollectionQuery{}, perr
+		}
+		switch name {
+		case cursorParam:
+			var ok bool
+			if position, minted, ok = decodeCursor(vs[0]); !ok {
+				return pgo.CollectionQuery{}, malformedParameter(cursorParam, cursorGrammar)
+			}
+			paged = true
+		case limitParam:
+			limit, err := strconv.Atoi(vs[0])
+			if err != nil || limit < 1 || limit > pgo.MaxListCollections {
+				return pgo.CollectionQuery{}, malformedParameter(limitParam, limitGrammar)
+			}
+			query.Limit = limit
+		case originParam:
+			origin := pgo.Origin(vs[0])
+			if origin != pgo.OriginSchedule && origin != pgo.OriginAPI {
+				return pgo.CollectionQuery{}, malformedParameter(originParam, originGrammar)
+			}
+			query.Origin = origin
+		case sinceParam:
+			since, err := time.Parse(time.RFC3339, vs[0])
+			if err != nil {
+				return pgo.CollectionQuery{}, malformedParameter(sinceParam, sinceGrammar)
+			}
+			query.Since = since
+		default:
+			return pgo.CollectionQuery{}, unknownParameter(name)
+		}
+	}
+
+	// A position is a point in one filtered listing.
+	// Reading it against another would skip the records the second listing holds before that point
+	// and repeat none of them, which is a silent wrong answer
+	// where a refusal costs the client one corrected request.
+	if paged {
+		if !minted.equal(filtersOf(query)) {
+			return pgo.CollectionQuery{}, malformedParameter(cursorParam, cursorGrammar)
+		}
+		query.After = position
+	}
+
+	return query, nil
+}
+
 // collectionView is one entry of the Collection listing.
 type collectionView struct {
 	ID              string     `json:"id"`
@@ -148,10 +386,13 @@ type collectionView struct {
 }
 
 // collectionsBody is the Collection listing of one Service.
+// NextCursor is the token that continues the listing, and is absent from a
+// response that reached its end.
 type collectionsBody struct {
 	Namespace   string           `json:"namespace"`
 	Service     string           `json:"service"`
 	Collections []collectionView `json:"collections"`
+	NextCursor  string           `json:"nextCursor,omitempty"`
 }
 
 // acceptedBody is what a created Collection answers with, alongside its Location.
@@ -160,11 +401,16 @@ type acceptedBody struct {
 	State pgo.State `json:"state"`
 }
 
-// serveCollectionList answers one Service's Collections from the watched
-// cache, newest first, with no pagination behind it.
-func (s *server) serveCollectionList(w http.ResponseWriter, q *request, sess *pgo.Session) {
+// serveCollectionList answers one page of a Service's Collections from the watched cache, newest first:
+// the records the filters keep,
+// from the position the cursor names,
+// bounded by the limit.
+// A page with more entries behind it carries the token that continues it.
+func (s *server) serveCollectionList(
+	w http.ResponseWriter, q *request, sess *pgo.Session, query pgo.CollectionQuery,
+) {
 	rt := q.route
-	views := sess.Collections(rt.namespace, rt.service)
+	views, more := sess.Collections(rt.namespace, rt.service, query)
 	body := collectionsBody{Namespace: rt.namespace, Service: rt.service, Collections: make([]collectionView, 0, len(views))}
 	for _, v := range views {
 		body.Collections = append(body.Collections, collectionView{
@@ -177,6 +423,11 @@ func (s *server) serveCollectionList(w http.ResponseWriter, q *request, sess *pg
 			FinishedAt:      v.FinishedAt,
 			ExpiresAt:       v.ExpiresAt,
 		})
+	}
+	if more {
+		last := views[len(views)-1]
+		body.NextCursor = encodeCursor(
+			pgo.CollectionPosition{CreatedAt: last.CreatedAt, ID: last.ID}, filtersOf(query))
 	}
 
 	q.audit.status = http.StatusOK

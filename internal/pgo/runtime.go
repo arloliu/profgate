@@ -305,10 +305,11 @@ func (s *Session) CachedOverride(ns, svc string) (*PolicyOverride, uint64) {
 	return s.b.Caches.Override(ns, svc)
 }
 
-// Collections lists what the watched job cache holds for one Service, newest
-// first and at most maxListCollections entries.
-func (s *Session) Collections(ns, svc string) []CollectionView {
-	return s.b.Caches.Collections(ns, svc)
+// Collections lists what the watched job cache holds for one Service, newest first:
+// the page the query asks for,
+// and whether the listing holds more entries behind it.
+func (s *Session) Collections(ns, svc string, q CollectionQuery) ([]CollectionView, bool) {
+	return s.b.Caches.Collections(ns, svc, q)
 }
 
 // Live reports whether the caches already show the Service as holding a live
@@ -360,7 +361,8 @@ func (s *Session) OpenArtifact(ctx context.Context, object string) (io.ReadClose
 // and a store that cannot be read is reported rather than an older Collection:
 // a store the gateway cannot read says nothing about which artifact is newest.
 func (s *Session) LatestCompleted(ctx context.Context, ns, svc string) (StoredRecord, io.ReadCloser, error) {
-	for _, v := range s.b.Caches.Collections(ns, svc) {
+	candidates, _ := s.b.Caches.Collections(ns, svc, CollectionQuery{})
+	for _, v := range candidates {
 		if v.State != StateCompleted {
 			continue
 		}

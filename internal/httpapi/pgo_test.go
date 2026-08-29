@@ -340,7 +340,7 @@ func TestPGOBodiesAreBounded(t *testing.T) {
 	t.Run("query parameters are refused", func(t *testing.T) {
 		h := newPGOHarness(t, pgoOpts{})
 
-		got := h.doPGO(t, http.MethodGet, collectionsPath+"?state=completed", "", nil)
+		got := h.doPGO(t, http.MethodGet, pgoPath+"?state=completed", "", nil)
 
 		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
 	})
@@ -484,10 +484,23 @@ func TestPGOBodyFaultDetails(t *testing.T) {
 	t.Run("a query parameter on a pgo route names itself", func(t *testing.T) {
 		h := newPGOHarness(t, pgoOpts{})
 
-		got := h.doPGO(t, http.MethodGet, collectionsPath+"?state=completed", "", nil)
+		got := h.doPGO(t, http.MethodGet, pgoPath+"?state=completed", "", nil)
 
 		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
 		expectDetails(t, got, "invalid_parameter",
 			[]errorDetail{{Field: "state", Code: detailUnknownParameter}})
+	})
+
+	t.Run("a create takes no query parameter", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+
+		got := h.doPGO(t, http.MethodPost, collectionsPath+"?limit=1", "{}", jsonType())
+
+		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+		expectDetails(t, got, "invalid_parameter",
+			[]errorDetail{{Field: "limit", Code: detailUnknownParameter}})
+		if n := h.nats.jobs.countKeys(jobKeyPrefix); n != 0 {
+			t.Errorf("job keys = %d, want the create refused before any write", n)
+		}
 	})
 }

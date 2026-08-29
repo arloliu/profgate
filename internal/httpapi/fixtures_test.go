@@ -1621,7 +1621,8 @@ func (p *pgoHarness) seedRecord(t *testing.T, rec pgo.Record) pgo.Record {
 
 	p.nats.jobs.put(t, jobKeyPrefix+rec.ID, rec)
 	p.waitCache(t, "collection "+rec.ID, func() bool {
-		for _, v := range p.caches.Collections(rec.Namespace, rec.Service) {
+		views, _ := p.caches.Collections(rec.Namespace, rec.Service, pgo.CollectionQuery{})
+		for _, v := range views {
 			if v.ID == rec.ID {
 				return true
 			}
@@ -1631,6 +1632,15 @@ func (p *pgoHarness) seedRecord(t *testing.T, rec pgo.Record) pgo.Record {
 	})
 
 	return rec
+}
+
+// dropRecord deletes one Collection record from the authoritative bucket,
+// standing in for the sweeper, and waits for the cache to lose it.
+func (p *pgoHarness) dropRecord(t *testing.T, id string) {
+	t.Helper()
+
+	p.nats.jobs.remove(t, jobKeyPrefix+id)
+	p.waitCache(t, "collection "+id+" to go", func() bool { return p.cachedState(id) == "" })
 }
 
 // seedActive writes the active key of one Service, which is what a live
@@ -1661,7 +1671,8 @@ func (p *pgoHarness) seedOverride(t *testing.T, override *pgo.PolicyOverride) ui
 // cachedState is the state the watched job cache holds for one Collection,
 // and the empty state for one it does not hold.
 func (p *pgoHarness) cachedState(id string) pgo.State {
-	for _, v := range p.caches.Collections(fixtureNamespace, fixtureService) {
+	views, _ := p.caches.Collections(fixtureNamespace, fixtureService, pgo.CollectionQuery{})
+	for _, v := range views {
 		if v.ID == id {
 			return v.State
 		}

@@ -3,12 +3,16 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -454,6 +458,482 @@ func TestCollectionList(t *testing.T) {
 	}
 	if body.Collections[0].Origin != pgo.OriginAPI || body.Collections[1].ResolvedVersion != "1.41.0" {
 		t.Errorf("entries = %+v, want each record's own fields", body.Collections)
+	}
+}
+
+// listBody runs one listing request and reads the body it answered with.
+func (p *pgoHarness) listBody(t *testing.T, query string) collectionsBody {
+	t.Helper()
+
+	got := p.doPGO(t, http.MethodGet, collectionsPath+query, "", nil)
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+	}
+	var body collectionsBody
+	if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not readable: %v", got.Body.String(), err)
+	}
+
+	return body
+}
+
+// listIDs is the identifiers one page carried, in the order it carried them.
+func listIDs(body collectionsBody) []string {
+	out := make([]string, 0, len(body.Collections))
+	for _, v := range body.Collections {
+		out = append(out, v.ID)
+	}
+
+	return out
+}
+
+// listRefusal runs one listing request that is expected to be refused,
+// and checks the item it earned.
+func (p *pgoHarness) listRefusal(t *testing.T, query string, want errorDetail) {
+	t.Helper()
+
+	got := p.doPGO(t, http.MethodGet, collectionsPath+query, "", nil)
+	p.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+	expectDetails(t, got, "invalid_parameter", []errorDetail{want})
+}
+
+// listFixture is the four records the filter cases are read against:
+// two states, two origins, and two instants.
+func (p *pgoHarness) listFixture(t *testing.T) (running, completed, api, old pgo.Record) {
+	t.Helper()
+
+	running = p.seedRecord(t, p.newRecord(pgo.StateRunning, func(r *pgo.Record) {
+		r.CreatedAt = pgoFixtureNow.Add(3 * time.Minute)
+	}))
+	completed = p.seedRecord(t, p.newRecord(pgo.StateCompleted, func(r *pgo.Record) {
+		r.CreatedAt = pgoFixtureNow.Add(2 * time.Minute)
+	}))
+	api = p.seedRecord(t, p.newRecord(pgo.StatePending, func(r *pgo.Record) {
+		r.CreatedAt = pgoFixtureNow.Add(time.Minute)
+		r.Origin = pgo.OriginAPI
+	}))
+	old = p.seedRecord(t, p.newRecord(pgo.StatePending, func(r *pgo.Record) {
+		r.CreatedAt = pgoFixtureNow
+	}))
+
+	return running, completed, api, old
+}
+
+// TestCollectionListFilters keeps the records each filter names and drops the
+// rest, and several filters at once keep their intersection.
+func TestCollectionListFilters(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query func(running, completed, api, old pgo.Record) string
+		want  func(running, completed, api, old pgo.Record) []string
+	}{
+		{
+			name:  "no parameter at all",
+			query: func(_, _, _, _ pgo.Record) string { return "" },
+			want: func(running, completed, api, old pgo.Record) []string {
+				return []string{running.ID, completed.ID, api.ID, old.ID}
+			},
+		},
+		{
+			name:  "one state",
+			query: func(_, _, _, _ pgo.Record) string { return "?state=running" },
+			want:  func(running, _, _, _ pgo.Record) []string { return []string{running.ID} },
+		},
+		{
+			name:  "a state repeated",
+			query: func(_, _, _, _ pgo.Record) string { return "?state=running&state=running" },
+			want:  func(running, _, _, _ pgo.Record) []string { return []string{running.ID} },
+		},
+		{
+			name:  "two states",
+			query: func(_, _, _, _ pgo.Record) string { return "?state=running&state=completed" },
+			want: func(running, completed, _, _ pgo.Record) []string {
+				return []string{running.ID, completed.ID}
+			},
+		},
+		{
+			name: "since an instant",
+			query: func(_, _, _, _ pgo.Record) string {
+				return "?since=" + url.QueryEscape(pgoFixtureNow.Add(2*time.Minute).Format(time.RFC3339))
+			},
+			want: func(running, completed, _, _ pgo.Record) []string {
+				return []string{running.ID, completed.ID}
+			},
+		},
+		{
+			name:  "origin schedule",
+			query: func(_, _, _, _ pgo.Record) string { return "?origin=schedule" },
+			want: func(running, completed, _, old pgo.Record) []string {
+				return []string{running.ID, completed.ID, old.ID}
+			},
+		},
+		{
+			name:  "origin api",
+			query: func(_, _, _, _ pgo.Record) string { return "?origin=api" },
+			want:  func(_, _, api, _ pgo.Record) []string { return []string{api.ID} },
+		},
+		{
+			name:  "a limit",
+			query: func(_, _, _, _ pgo.Record) string { return "?limit=1" },
+			want:  func(running, _, _, _ pgo.Record) []string { return []string{running.ID} },
+		},
+		{
+			name: "several filters at once",
+			query: func(_, _, _, _ pgo.Record) string {
+				return "?origin=schedule&since=" +
+					url.QueryEscape(pgoFixtureNow.Add(time.Minute).Format(time.RFC3339)) +
+					"&state=completed&state=pending"
+			},
+			want: func(_, completed, _, _ pgo.Record) []string { return []string{completed.ID} },
+		},
+		{
+			name:  "an intersection that keeps nothing",
+			query: func(_, _, _, _ pgo.Record) string { return "?origin=api&state=running" },
+			want:  func(_, _, _, _ pgo.Record) []string { return nil },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPGOHarness(t, pgoOpts{})
+			running, completed, api, old := h.listFixture(t)
+
+			got := listIDs(h.listBody(t, tc.query(running, completed, api, old)))
+
+			if want := tc.want(running, completed, api, old); !slices.Equal(got, want) {
+				t.Errorf("collections = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestCollectionListEntriesGainNoField pins the shape of one entry:
+// the fields of the record's listing view and nothing else,
+// and no cursor key on a response that reached the end of the listing.
+func TestCollectionListEntriesGainNoField(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	finished := pgoFixtureNow.Add(time.Minute)
+	h.seedRecord(t, h.newRecord(pgo.StateCompleted, func(r *pgo.Record) {
+		r.ResolvedVersion = "1.42.3"
+		r.FinishedAt = &finished
+		r.ExpiresAt = &finished
+	}))
+
+	got := h.doPGO(t, http.MethodGet, collectionsPath, "", nil)
+
+	var body struct {
+		Collections []map[string]any `json:"collections"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not readable: %v", got.Body.String(), err)
+	}
+	if len(body.Collections) != 1 {
+		t.Fatalf("collections = %d, want 1", len(body.Collections))
+	}
+	want := []string{"attempt", "createdAt", "expiresAt", "finishedAt", "id", "origin", "resolvedVersion", "state"}
+	if fields := slices.Sorted(maps.Keys(body.Collections[0])); !slices.Equal(fields, want) {
+		t.Errorf("entry fields = %v, want %v", fields, want)
+	}
+	if strings.Contains(got.Body.String(), "nextCursor") {
+		t.Errorf("body %q carries a cursor, want none on the last page", got.Body.String())
+	}
+}
+
+// TestCollectionListRefusals gives each fault the item it earns,
+// and reports the first fault in name order for a query carrying several.
+func TestCollectionListRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  errorDetail
+	}{
+		{"an unknown name", "?bogus=1", errorDetail{Field: "bogus", Code: detailUnknownParameter}},
+		{"an empty value", "?state=", errorDetail{Field: "state", Code: detailEmptyParameter}},
+		{"an empty limit", "?limit=", errorDetail{Field: "limit", Code: detailEmptyParameter}},
+		{"states as one comma-separated value", "?state=running,pending",
+			errorDetail{Field: "state", Code: detailMalformedParameter}},
+		{"a state outside the set", "?state=nonsense", errorDetail{Field: "state", Code: detailMalformedParameter}},
+		{"an origin outside the set", "?origin=on-demand",
+			errorDetail{Field: "origin", Code: detailMalformedParameter}},
+		{"a since that is not a timestamp", "?since=yesterday",
+			errorDetail{Field: "since", Code: detailMalformedParameter}},
+		{"a limit below the floor", "?limit=0", errorDetail{Field: "limit", Code: detailMalformedParameter}},
+		{"a limit above the ceiling", "?limit=101", errorDetail{Field: "limit", Code: detailMalformedParameter}},
+		{"a limit that is not a number", "?limit=abc", errorDetail{Field: "limit", Code: detailMalformedParameter}},
+		{"a repeated limit", "?limit=1&limit=2", errorDetail{Field: "limit", Code: detailRepeatedParameter}},
+		{"a repeated since", "?since=" + pgoFixtureNow.Format(time.RFC3339) + "&since=" +
+			pgoFixtureNow.Format(time.RFC3339), errorDetail{Field: "since", Code: detailRepeatedParameter}},
+		{"a cursor that does not decode", "?cursor=notatoken",
+			errorDetail{Field: "cursor", Code: detailMalformedParameter}},
+		{"several faults, the unknown name first in name order", "?bogus=1&limit=0",
+			errorDetail{Field: "bogus", Code: detailUnknownParameter}},
+		{"the same faults sent the other way round", "?limit=0&bogus=1",
+			errorDetail{Field: "bogus", Code: detailUnknownParameter}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newPGOHarness(t, pgoOpts{}).listRefusal(t, tc.query, tc.want)
+		})
+	}
+}
+
+// TestCollectionListLimitCeiling holds the grammar sentence to the page the
+// cache builds, which is the ceiling the sentence names.
+func TestCollectionListLimitCeiling(t *testing.T) {
+	if !strings.Contains(limitGrammar, strconv.Itoa(pgo.MaxListCollections)) {
+		t.Errorf("limit grammar %q does not name the ceiling %d", limitGrammar, pgo.MaxListCollections)
+	}
+}
+
+// TestCollectionListCursorGrammar refuses a token this build cannot read: one
+// that is not the encoding, one carrying a version it does not know, and one
+// decoding to a value outside its own grammar.
+func TestCollectionListCursorGrammar(t *testing.T) {
+	position := pgo.CollectionPosition{CreatedAt: pgoFixtureNow, ID: newFixtureID()}
+	payload := func(version byte, body string) string {
+		return base64.RawURLEncoding.EncodeToString(append([]byte{version}, body...))
+	}
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{"not the encoding at all", "not a token"},
+		{"an empty token", ""},
+		{"a version this build does not know", payload('9',
+			pgoFixtureNow.Format(time.RFC3339Nano)+"\n"+position.ID+"\n\n\n")},
+		{"too few values", payload('1', pgoFixtureNow.Format(time.RFC3339Nano)+"\n"+position.ID)},
+		{"a createdAt that is not a timestamp", payload('1', "yesterday\n"+position.ID+"\n\n\n")},
+		{"an identifier outside its grammar", payload('1',
+			pgoFixtureNow.Format(time.RFC3339Nano)+"\nnot-an-id\n\n\n")},
+		{"a state outside the closed set", payload('1',
+			pgoFixtureNow.Format(time.RFC3339Nano)+"\n"+position.ID+"\nnonsense\n\n")},
+		{"an origin outside the closed set", payload('1',
+			pgoFixtureNow.Format(time.RFC3339Nano)+"\n"+position.ID+"\n\n\non-demand")},
+		{"a since that is not a timestamp", payload('1',
+			pgoFixtureNow.Format(time.RFC3339Nano)+"\n"+position.ID+"\n\nyesterday\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			query := "?cursor=" + url.QueryEscape(tc.token)
+			want := errorDetail{Field: "cursor", Code: detailMalformedParameter}
+			if tc.token == "" {
+				want.Code = detailEmptyParameter
+			}
+			newPGOHarness(t, pgoOpts{}).listRefusal(t, query, want)
+		})
+	}
+}
+
+// TestCollectionListCursorCarriesItsFilters holds a position to the listing it is a place in:
+// the same filters continue it, whatever their spelling,
+// and another filter set is refused rather than read against a listing the position does not belong to.
+func TestCollectionListCursorCarriesItsFilters(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	running, completed, _, _ := h.listFixture(t)
+
+	minted := "?state=pending&state=running&limit=1"
+	first := h.listBody(t, minted)
+	if got := listIDs(first); !slices.Equal(got, []string{running.ID}) {
+		t.Fatalf("first page = %v, want %v", got, []string{running.ID})
+	}
+	if first.NextCursor == "" {
+		t.Fatal("first page carries no cursor, want one: entries stand behind it")
+	}
+	cursor := "cursor=" + url.QueryEscape(first.NextCursor)
+
+	// The token is client-visible,
+	// so what it carries is read back as bytes and as values.
+	raw, err := base64.RawURLEncoding.DecodeString(first.NextCursor)
+	if err != nil {
+		t.Fatalf("the cursor is not the encoding: %v", err)
+	}
+	if strings.Contains(string(raw), fixtureIP) || strings.Contains(string(raw), strconv.Itoa(fixturePort)) {
+		t.Errorf("cursor payload %q names a Pod address", raw)
+	}
+	position, carried, ok := decodeCursor(first.NextCursor)
+	if !ok || position.ID != running.ID || !position.CreatedAt.Equal(running.CreatedAt) {
+		t.Errorf("cursor names %+v, want the last entry the page carried", position)
+	}
+	if !carried.equal(listFilters{States: []pgo.State{pgo.StatePending, pgo.StateRunning}}) {
+		t.Errorf("cursor filters = %+v, want the two states the request carried", carried)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"the filters it was minted under", "?state=pending&state=running&" + cursor},
+		{"the same filter set in another order", "?state=running&state=pending&" + cursor},
+		{"the same filter set with a value repeated", "?state=running&state=pending&state=running&" + cursor},
+		{"a different limit", "?state=pending&state=running&limit=2&" + cursor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := listIDs(h.listBody(t, tc.query))
+			if len(got) == 0 || got[0] == running.ID {
+				t.Errorf("page = %v, want the entries after the first one", got)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"one of the states alone", "?state=running&" + cursor},
+		{"another state set", "?state=completed&" + cursor},
+		{"no state at all", "?" + cursor},
+		{"a since the token does not carry", "?state=pending&state=running&since=" +
+			pgoFixtureNow.Format(time.RFC3339) + "&" + cursor},
+		{"an origin the token does not carry", "?state=pending&state=running&origin=schedule&" + cursor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A cursor whose filters differ is refused before any record is read,
+			// so the refusal needs no listing behind it.
+			newPGOHarness(t, pgoOpts{}).listRefusal(t, tc.query,
+				errorDetail{Field: "cursor", Code: detailMalformedParameter})
+		})
+	}
+
+	// A cursor minted under since and origin is read back under the same two.
+	filtered := "?origin=schedule&since=" + url.QueryEscape(pgoFixtureNow.Format(time.RFC3339)) + "&limit=1"
+	page := h.listBody(t, filtered)
+	if page.NextCursor == "" {
+		t.Fatal("the filtered page carries no cursor, want one")
+	}
+	got := listIDs(h.listBody(t, filtered+"&cursor="+url.QueryEscape(page.NextCursor)))
+	if len(got) == 0 || got[0] != completed.ID {
+		t.Errorf("page after the filtered cursor = %v, want it to start at %s", got, completed.ID)
+	}
+}
+
+// TestCollectionListCursorCrossesReplicas mints a token against one gateway
+// and consumes it on another.
+// Replicas share no signing material and no cursor state,
+// so a token one writes has to be readable by every other.
+func TestCollectionListCursorCrossesReplicas(t *testing.T) {
+	minter := newPGOHarness(t, pgoOpts{})
+	records := make([]pgo.Record, 0, 3)
+	for i := range 3 {
+		records = append(records, minter.newRecord(pgo.StateCompleted, func(r *pgo.Record) {
+			r.CreatedAt = pgoFixtureNow.Add(time.Duration(i) * time.Minute)
+		}))
+	}
+	for _, rec := range records {
+		minter.seedRecord(t, rec)
+	}
+
+	first := minter.listBody(t, "?limit=1")
+	if first.NextCursor == "" {
+		t.Fatal("first page carries no cursor, want one")
+	}
+
+	other := newPGOHarness(t, pgoOpts{})
+	for _, rec := range records {
+		other.seedRecord(t, rec)
+	}
+
+	got := listIDs(other.listBody(t, "?limit=1&cursor="+url.QueryEscape(first.NextCursor)))
+	want := []string{records[1].ID}
+	if !slices.Equal(got, want) {
+		t.Errorf("page from the other replica = %v, want %v", got, want)
+	}
+}
+
+// TestCollectionListPagesThroughEveryRecord walks a listing longer than one page,
+// including records that share an instant,
+// and sees each of them once.
+// The pairs are placed so that one of them straddles the first page's boundary,
+// which is the case the second sort key exists for.
+func TestCollectionListPagesThroughEveryRecord(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+
+	const records = 250
+	want := make(map[string]struct{}, records)
+	for i := range records {
+		rec := h.seedRecord(t, h.newRecord(pgo.StateCompleted, func(r *pgo.Record) {
+			// Instants shared in pairs,
+			// offset so a pair spans the boundary between the first page and the second.
+			r.CreatedAt = pgoFixtureNow.Add(time.Duration((i+1)/2) * time.Minute)
+		}))
+		want[rec.ID] = struct{}{}
+	}
+
+	seen := make(map[string]struct{}, records)
+	query := ""
+	pages := 0
+	for {
+		body := h.listBody(t, query)
+		pages++
+		for _, id := range listIDs(body) {
+			if _, twice := seen[id]; twice {
+				t.Fatalf("collection %s appears on two pages", id)
+			}
+			seen[id] = struct{}{}
+		}
+		if body.NextCursor == "" {
+			break
+		}
+		query = "?cursor=" + url.QueryEscape(body.NextCursor)
+		if pages > 5 {
+			t.Fatal("the walk does not end")
+		}
+	}
+
+	if pages != 3 {
+		t.Errorf("pages = %d, want 3 for %d records at a page of %d", pages, records, pgo.MaxListCollections)
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("collections seen = %d, want %d", len(seen), len(want))
+	}
+	for id := range want {
+		if _, ok := seen[id]; !ok {
+			t.Errorf("collection %s was skipped", id)
+		}
+	}
+}
+
+// TestCollectionListPageIsUndisturbedByAHeadInsertion continues a walk across
+// a record created between two pages.
+// The order promises stability over the records the listing already held, and
+// a newer record belongs at the head the client has already passed.
+func TestCollectionListPageIsUndisturbedByAHeadInsertion(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	running, completed, api, old := h.listFixture(t)
+
+	first := h.listBody(t, "?limit=2")
+	if got := listIDs(first); !slices.Equal(got, []string{running.ID, completed.ID}) {
+		t.Fatalf("first page = %v, want the two newest", got)
+	}
+
+	inserted := h.seedRecord(t, h.newRecord(pgo.StatePending, func(r *pgo.Record) {
+		r.CreatedAt = pgoFixtureNow.Add(time.Hour)
+	}))
+
+	got := listIDs(h.listBody(t, "?limit=2&cursor="+url.QueryEscape(first.NextCursor)))
+	if !slices.Equal(got, []string{api.ID, old.ID}) {
+		t.Errorf("second page = %v, want %v", got, []string{api.ID, old.ID})
+	}
+	if slices.Contains(got, inserted.ID) {
+		t.Errorf("second page carries %s, which was created after the walk started", inserted.ID)
+	}
+}
+
+// TestCollectionListPageAfterADeletedPosition pages on
+// across the records the sweeper took away between two reads,
+// the one the cursor itself names included.
+// The pair is the position and nothing looks its record up.
+func TestCollectionListPageAfterADeletedPosition(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	running, completed, api, old := h.listFixture(t)
+
+	first := h.listBody(t, "?limit=2")
+	if got := listIDs(first); !slices.Equal(got, []string{running.ID, completed.ID}) {
+		t.Fatalf("first page = %v, want the two newest", got)
+	}
+
+	// The record the cursor names, and one from the tail behind it.
+	h.dropRecord(t, completed.ID)
+	h.dropRecord(t, api.ID)
+
+	got := listIDs(h.listBody(t, "?limit=2&cursor="+url.QueryEscape(first.NextCursor)))
+	if !slices.Equal(got, []string{old.ID}) {
+		t.Errorf("second page = %v, want %v: the entries after the position", got, []string{old.ID})
 	}
 }
 

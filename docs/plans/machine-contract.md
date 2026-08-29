@@ -1752,11 +1752,11 @@ A response with more entries carries `nextCursor`; one that reached the end omit
 `Caches.Collections` gains the filters and the position and stops truncating at a constant of its own;
 `maxListCollections` becomes the `limit` ceiling, applied after filtering and paging.
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 Declare the parameter struct, the cursor encode and decode, and the widened cache method.
 
-- [ ] **Write the listing tests**
+- [x] **Write the listing tests**
 
 | Query | Answer |
 |---|---|
@@ -1783,11 +1783,11 @@ Declare the parameter struct, the cursor encode and decode, and the widened cach
 | every response | entries keep the shape they have today and gain no field |
 | every response, header, and entry | no Pod IP and no port |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the filters and the cursor**
+- [x] **Implement the filters and the cursor**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/ ./internal/pgo/

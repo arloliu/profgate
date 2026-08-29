@@ -66,7 +66,18 @@ var (
 func (s *server) servePGOService(
 	w http.ResponseWriter, r *http.Request, q *request, cfg *config.Config, sess *pgo.Session, principal string,
 ) {
-	if r.URL.RawQuery != "" {
+	// The Collection listing is the one Service-scoped route that takes query parameters;
+	// every other one refuses a query as it always has.
+	listing := q.route.kind == kindCollections && r.Method == http.MethodGet
+	var query pgo.CollectionQuery
+	if listing {
+		var perr *requestError
+		if query, perr = parseCollectionList(r.URL.RawQuery); perr != nil {
+			q.fail(w, perr)
+
+			return
+		}
+	} else if r.URL.RawQuery != "" {
 		q.fail(w, noParameters(r.URL.RawQuery))
 
 		return
@@ -81,8 +92,8 @@ func (s *server) servePGOService(
 		s.servePolicyDelete(w, r, q, cfg, sess)
 	case q.route.kind == kindCollectionLatest, q.route.kind == kindCollectionLatestProfile:
 		s.serveLatestCollection(w, r, q, sess)
-	case r.Method == http.MethodGet:
-		s.serveCollectionList(w, q, sess)
+	case listing:
+		s.serveCollectionList(w, q, sess, query)
 	default:
 		s.serveCollectionCreate(w, r, q, sess, principal)
 	}

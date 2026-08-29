@@ -596,15 +596,77 @@ type CollectionView struct {
 	ExpiresAt       *time.Time
 }
 
-// maxListCollections is the longest Collection listing one Service answers
-// with; there is no pagination behind it.
-const maxListCollections = 100
+// MaxListCollections is the longest page of a Collection listing, and the
+// ceiling of the limit a request may ask for.
+// A client that wants more asks again with the cursor the response carried.
+const MaxListCollections = 100
 
-// Collections lists one Service's Collections newest first, at most
-// maxListCollections of them.
+// CollectionPosition is one entry's place in the listing:
+// the createdAt and the identifier that together order it.
+// The zero value is the head of the listing.
+type CollectionPosition struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+// CollectionQuery selects one page of a Service's Collection listing.
+// States, Since, and Origin keep the records they name and drop the rest;
+// the zero value of each keeps every record.
+// After is the position the page continues from,
+// and Limit bounds it, at most MaxListCollections and defaulting to it.
+type CollectionQuery struct {
+	States []State
+	Since  time.Time
+	Origin Origin
+	After  CollectionPosition
+	Limit  int
+}
+
+// admits reports whether one record passes the query's filters.
+func (q CollectionQuery) admits(j cachedJob) bool {
+	if len(q.States) > 0 && !slices.Contains(q.States, j.State) {
+		return false
+	}
+	if !q.Since.IsZero() && j.CreatedAt.Before(q.Since) {
+		return false
+	}
+	if q.Origin != "" && q.Origin != j.Origin {
+		return false
+	}
+
+	return true
+}
+
+// compareListing orders two entries of the listing:
+// by createdAt descending, and by identifier descending where two share an instant.
+// The identifier is random rather than time-ordered,
+// so that second key is what makes the order total:
+// without it two records created in the same instant could swap places between two reads,
+// and a cursor would skip one or repeat it.
+func compareListing(a, b CollectionPosition) int {
+	if cmp := b.CreatedAt.Compare(a.CreatedAt); cmp != 0 {
+		return cmp
+	}
+
+	return strings.Compare(b.ID, a.ID)
+}
+
+// Collections lists one Service's Collections newest first:
+// the records the query's filters keep,
+// beginning after the position it names,
+// and at most its limit of them.
+// The second result reports whether the listing holds further entries behind the page,
+// which is what a response carries a cursor for.
+// The position is compared by value and nothing looks its record up,
+// so a position naming a record the sweeper has deleted still names a place in the order.
 // The cache is the listing's source, so a Collection appears once its watch
 // has delivered it and not before.
-func (c *Caches) Collections(ns, svc string) []CollectionView {
+func (c *Caches) Collections(ns, svc string, q CollectionQuery) ([]CollectionView, bool) {
+	limit := q.Limit
+	if limit <= 0 || limit > MaxListCollections {
+		limit = MaxListCollections
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -615,6 +677,13 @@ func (c *Caches) Collections(ns, svc string) []CollectionView {
 		}
 		id, ok := strings.CutPrefix(key, jobPrefix)
 		if !ok {
+			continue
+		}
+		if !q.admits(j) {
+			continue
+		}
+		// Only what sorts strictly after the position asked for.
+		if q.After.ID != "" && compareListing(CollectionPosition{CreatedAt: j.CreatedAt, ID: id}, q.After) <= 0 {
 			continue
 		}
 		out = append(out, CollectionView{
@@ -628,17 +697,17 @@ func (c *Caches) Collections(ns, svc string) []CollectionView {
 			ExpiresAt:       j.ExpiresAt,
 		})
 	}
-	// Newest first, and by identifier where two share an instant, so one
-	// listing does not reorder itself between two reads.
 	slices.SortFunc(out, func(a, b CollectionView) int {
-		if cmp := b.CreatedAt.Compare(a.CreatedAt); cmp != 0 {
-			return cmp
-		}
-
-		return strings.Compare(a.ID, b.ID)
+		return compareListing(
+			CollectionPosition{CreatedAt: a.CreatedAt, ID: a.ID},
+			CollectionPosition{CreatedAt: b.CreatedAt, ID: b.ID})
 	})
 
-	return out[:min(len(out), maxListCollections)]
+	if len(out) > limit {
+		return out[:limit], true
+	}
+
+	return out, false
 }
 
 // Override returns a Service's stored policy override and the revision it was

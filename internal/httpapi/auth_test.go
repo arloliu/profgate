@@ -557,6 +557,11 @@ func expectSessionDeleted(t *testing.T, rec *httptest.ResponseRecorder) {
 // structTagRE matches a struct tag key:"value" pair.
 var structTagRE = regexp.MustCompile(`\w+:"[^"]*"`)
 
+// paramNameRE matches the declaration of a query parameter's name.
+// A route's parameter is named by the client and answered with a 400,
+// which is a different vocabulary from the audit reasons this test closes.
+var paramNameRE = regexp.MustCompile(`(?m)^\s*\w+Param\s+=\s+"[^"]*"`)
+
 // TestReasonsClosedSet checks that this package names audit reasons only
 // through the constants of internal/auth, so no reason can exist that the
 // closed set does not hold.
@@ -574,8 +579,10 @@ func TestReasonsClosedSet(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// A struct tag such as json:"state" is not a reason.
+		// A struct tag such as json:"state" is not a reason,
+		// and neither is the name of a query parameter such as stateParam.
 		src := structTagRE.ReplaceAllString(string(raw), "")
+		src = paramNameRE.ReplaceAllString(src, "")
 		for _, reason := range auth.Reasons() {
 			if strings.Contains(src, `"`+reason+`"`) {
 				t.Errorf("%s names the reason %q as a literal; use auth.Reason* constants", name, reason)
