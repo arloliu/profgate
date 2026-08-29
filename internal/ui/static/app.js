@@ -259,11 +259,15 @@ class App extends Component {
     this.selection = 0;
     this.collectionsFor = -1;
     this.timers = [];
-    // armTimer and cancelTimer are the ten-second disarms of the two controls.
-    // A transition out of the armed state clears the one it owns,
-    // so the timer of an arming already over cannot disarm a later one.
-    this.armTimer = 0;
+    // startTimer, cancelTimer, and cancelRetryTimer hold the transitions the two controls schedule:
+    // the start control's ten-second disarm and the end of its cooling,
+    // the cancel control's ten-second disarm,
+    // and the second try of a cancel whose first was answered with a retry.
+    // Leaving the phase that scheduled a timer clears that timer,
+    // so a transition scheduled by a phase the control has left cannot act on the phase it is in now.
+    this.startTimer = 0;
     this.cancelTimer = 0;
+    this.cancelRetryTimer = 0;
     this.state = {
       phase: "booting",
       bootError: null,
@@ -529,13 +533,16 @@ class App extends Component {
     this.setState({ collection: body });
   };
 
-  // clearWriteControls tells the start control that the selection moved and drops an armed cancel,
-  // so a page left open holds no loaded button and no error about a Service it has left.
+  // clearWriteControls tells the start control that the selection moved,
+  // drops an armed cancel, and drops the second try of a cancel whose first was answered with a retry,
+  // so a page left open holds no loaded button,
+  // sends nothing more about the Service it has left, and shows no error about one.
   // An attempt no answer classified says as it goes that a Collection may already exist,
   // which is startNext's message: what it names is the Collections table of the Service being left.
   clearWriteControls() {
     this.startEvent({ kind: "selection" });
     this.onCancelKeep();
+    clearTimeout(this.cancelRetryTimer);
     this.clearError("start");
     this.clearError("cancel");
   }
@@ -585,6 +592,8 @@ class App extends Component {
   // and owns the timers the new phase needs:
   // the ten-second disarm belongs to the armed phase alone,
   // and a cooling phase ends with the timer event that leaves it.
+  // The control is in one phase at a time, so one handle holds whichever of the two is pending,
+  // and the phase that scheduled it takes it away on the way out.
   // It reports whether the phase moved,
   // which is how the page tells an applied outcome from one the model discarded because the operator had moved on.
   startEvent(event) {
@@ -594,13 +603,13 @@ class App extends Component {
     const moved = phase !== was;
     this.setState({ start: step.state, startMessage: step.message });
     if (moved) {
-      clearTimeout(this.armTimer);
+      clearTimeout(this.startTimer);
       if (phase === "armed") {
-        this.armTimer = this.later(() => this.startEvent({ kind: "timer", now: Date.now() }), armDelay);
+        this.startTimer = this.later(() => this.startEvent({ kind: "timer", now: Date.now() }), armDelay);
       }
       if (phase === "cooling") {
         const wait = Math.max(0, step.state.until - Date.now());
-        this.later(() => this.startEvent({ kind: "timer", now: Date.now() }), wait);
+        this.startTimer = this.later(() => this.startEvent({ kind: "timer", now: Date.now() }), wait);
       }
     }
 
@@ -686,7 +695,7 @@ class App extends Component {
     const answer = answerOf(res);
     const out = cancelOutcome(answer, tryNumber);
     if (out.retryAfterMs > 0) {
-      this.later(() => this.sendCancel(id, tryNumber + 1), out.retryAfterMs);
+      this.cancelRetryTimer = this.later(() => this.sendCancel(id, tryNumber + 1), out.retryAfterMs);
 
       return;
     }
