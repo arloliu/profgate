@@ -1521,3 +1521,102 @@ func TestPortResolution(t *testing.T) {
 		}
 	})
 }
+
+// expectMediaTypeRefusal is the answer a POST with no Content-Type earns on a
+// write route: 400 invalid_parameter naming the header under header_required,
+// with nothing of the store read or written.
+func expectMediaTypeRefusal(t *testing.T, h *pgoHarness, rec *httptest.ResponseRecorder, before int32) {
+	t.Helper()
+
+	h.expectPGOError(t, rec, http.StatusBadRequest, CodeInvalidParameter, CodeInvalidParameter)
+	expectDetails(t, rec, CodeInvalidParameter, []errorDetail{{Field: "Content-Type", Code: detailHeaderRequired}})
+	if after := h.storeCalls(); after != before {
+		t.Errorf("store calls = %d, want %d: the refusal reached the store", after, before)
+	}
+}
+
+// TestWriteRouteMediaTypeOrder places the media-type step in the request algorithm.
+// It runs after the method step and before readiness,
+// so it answers ahead of the PGO steps, of authentication, and of the realm,
+// and a request another origin could have produced dies before anything reads a credential.
+func TestWriteRouteMediaTypeOrder(t *testing.T) {
+	t.Run("before pgo_disabled", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		h.configure(func(cfg *config.Config) { cfg.PGO.Enabled = false })
+		before := h.storeCalls()
+
+		rec := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil)
+
+		expectMediaTypeRefusal(t, h, rec, before)
+	})
+
+	t.Run("before pgo_unavailable", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		h.nats.holdReplay()
+		before := h.storeCalls()
+
+		rec := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil)
+
+		expectMediaTypeRefusal(t, h, rec, before)
+	})
+
+	t.Run("before not_ready", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		h.ready = func() bool { return false }
+		before := h.storeCalls()
+
+		rec := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil)
+
+		expectMediaTypeRefusal(t, h, rec, before)
+	})
+
+	t.Run("before unauthenticated", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		h.configure(func(cfg *config.Config) {
+			cfg.Auth.Mode = "basic"
+			cfg.Auth.AnonymousRealm = ""
+		})
+		a := refuse(&auth.Failure{Status: http.StatusUnauthorized, Reason: auth.ReasonMissing})
+		h.auth = a
+		before := h.storeCalls()
+
+		rec := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil)
+
+		expectMediaTypeRefusal(t, h, rec, before)
+		if a.called() != 0 {
+			t.Errorf("authenticator calls = %d, want none: the refusal precedes the credential", a.called())
+		}
+	})
+
+	t.Run("before realm_denied", func(t *testing.T) {
+		denying := wideRealm()
+		denying.Services = []string{"other"}
+		h := newPGOHarness(t, pgoOpts{realm: &denying})
+		before := h.storeCalls()
+
+		rec := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil)
+
+		expectMediaTypeRefusal(t, h, rec, before)
+	})
+
+	t.Run("after the method step", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+
+		rec := h.doPGO(t, http.MethodDelete, collectionsPath, "", nil)
+
+		h.expectPGOError(t, rec, http.StatusMethodNotAllowed, CodeMethodNotAllowed, CodeMethodNotAllowed)
+		if got, want := rec.Header().Get("Allow"), "GET, POST"; got != want {
+			t.Errorf("Allow = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a policy write declares nothing", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+
+		rec := h.doPGO(t, http.MethodPut, pgoPath, `{"enabled":true}`, nil)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201 (body %q): the rule names the two POST routes", rec.Code, rec.Body.String())
+		}
+	})
+}

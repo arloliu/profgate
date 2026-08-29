@@ -67,7 +67,7 @@ func (p *pgoHarness) completedRecord(t *testing.T, mutate ...func(*pgo.Record)) 
 func TestCollectionCreate(t *testing.T) {
 	h := newPGOHarness(t, pgoOpts{})
 
-	got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"duration":"10s","rounds":1}}`, nil)
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"duration":"10s","rounds":1}}`, jsonType())
 
 	if got.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202 (body %q)", got.Code, got.Body.String())
@@ -111,7 +111,7 @@ func TestCollectionCreate(t *testing.T) {
 func TestCollectionCreateResolvesTheDefaultPort(t *testing.T) {
 	h := newPGOHarness(t, pgoOpts{})
 
-	got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"duration":"10s","rounds":1}}`, nil)
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"duration":"10s","rounds":1}}`, jsonType())
 	if got.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202 (body %q)", got.Code, got.Body.String())
 	}
@@ -129,7 +129,7 @@ func TestCollectionCreateCarriesTheStoredRevision(t *testing.T) {
 	rounds := 3
 	revision := h.seedOverride(t, &pgo.PolicyOverride{Sampling: &pgo.SamplingOverride{Rounds: &rounds}})
 
-	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil)
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, jsonType())
 
 	var body acceptedBody
 	if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil {
@@ -149,7 +149,7 @@ func TestCollectionCreateCarriesTheStoredRevision(t *testing.T) {
 func TestCollectionCreateRefusesAPolicyOverACeiling(t *testing.T) {
 	h := newPGOHarness(t, pgoOpts{})
 
-	got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"rounds":99}}`, nil)
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"rounds":99}}`, jsonType())
 
 	h.expectPGOError(t, got, http.StatusBadRequest, "limit_exceeded", "limit_exceeded")
 	if n := h.nats.jobs.countKeys(jobKeyPrefix); n != 0 {
@@ -169,7 +169,7 @@ func TestCollectionCreateTakesItsTokenFirst(t *testing.T) {
 	accepted, limited := 0, 0
 	for i := range services {
 		path := fmt.Sprintf("/v1/namespaces/%s/services/svc-%02d/collections", fixtureNamespace, i)
-		got := h.doPGO(t, http.MethodPost, path, `{}`, nil)
+		got := h.doPGO(t, http.MethodPost, path, `{}`, jsonType())
 		switch got.Code {
 		case http.StatusAccepted:
 			accepted++
@@ -203,17 +203,17 @@ func TestCollectionCreateRefillsItsBucket(t *testing.T) {
 	limits := testPGOLimits(func(l *config.PGOLimits) { l.OnDemandPerMinute = 1 })
 	h := newPGOHarness(t, pgoOpts{limits: limits})
 
-	if got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil); got.Code != http.StatusAccepted {
+	if got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, jsonType()); got.Code != http.StatusAccepted {
 		t.Fatalf("first status = %d, want 202", got.Code)
 	}
 	second := "/v1/namespaces/" + fixtureNamespace + "/services/other-api/collections"
-	if got := h.doPGO(t, http.MethodPost, second, `{}`, nil); got.Code != http.StatusTooManyRequests {
+	if got := h.doPGO(t, http.MethodPost, second, `{}`, jsonType()); got.Code != http.StatusTooManyRequests {
 		t.Fatalf("second status = %d, want 429", got.Code)
 	}
 
 	h.clock.advance(time.Minute)
 
-	if got := h.doPGO(t, http.MethodPost, second, `{}`, nil); got.Code != http.StatusAccepted {
+	if got := h.doPGO(t, http.MethodPost, second, `{}`, jsonType()); got.Code != http.StatusAccepted {
 		t.Errorf("status after a minute = %d, want 202", got.Code)
 	}
 }
@@ -242,7 +242,7 @@ func TestCollectionCreateResolvesTargetsBeforeWriting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newPGOHarness(t, pgoOpts{}, tc.targets...)
 
-			got := h.doPGO(t, http.MethodPost, collectionsPath, tc.body, nil)
+			got := h.doPGO(t, http.MethodPost, collectionsPath, tc.body, jsonType())
 
 			h.expectPGOError(t, got, http.StatusConflict, tc.code, tc.code)
 			for _, prefix := range []string{jobKeyPrefix, activeKeyPrefix, slotKeyPrefix} {
@@ -283,7 +283,7 @@ func TestVersionMissingSaysWhichCaseItIs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newPGOHarness(t, pgoOpts{}, tc.targets...)
 
-			got := h.doPGO(t, http.MethodPost, collectionsPath, tc.body, nil)
+			got := h.doPGO(t, http.MethodPost, collectionsPath, tc.body, jsonType())
 
 			code, message := errorBodyOf(t, got)
 			if code != "version_missing" {
@@ -317,7 +317,7 @@ func TestCollectionCreateAnswersDiscoveryAsTheGatewayDoes(t *testing.T) {
 			h := newPGOHarness(t, pgoOpts{})
 			h.disc.err = tc.err
 
-			got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil)
+			got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, jsonType())
 
 			h.expectPGOError(t, got, tc.status, tc.code, tc.code)
 			if n := h.nats.jobs.countKeys(jobKeyPrefix); n != 0 {
@@ -334,7 +334,7 @@ func TestCollectionCreateWhileOneIsLive(t *testing.T) {
 	rec := h.seedRecord(t, h.newRecord(pgo.StateRunning))
 	h.seedActive(t, fixtureNamespace, fixtureService, rec.ID)
 
-	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil)
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, jsonType())
 
 	h.expectPGOError(t, got, http.StatusTooManyRequests, "collection_in_progress", "collection_in_progress")
 	if n := h.nats.jobs.countKeys(jobKeyPrefix); n != 1 {
@@ -353,7 +353,7 @@ func TestCollectionCreateAtTheLiveCeiling(t *testing.T) {
 		h.seedActive(t, fixtureNamespace, service, rec.ID)
 	}
 
-	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, nil)
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, jsonType())
 
 	h.expectPGOError(t, got, http.StatusTooManyRequests, "capacity_exhausted", "capacity_exhausted")
 	if n := h.nats.jobs.countKeys(jobKeyPrefix); n != limits.MaxLiveCollections {
@@ -386,6 +386,7 @@ func TestConcurrentCollectionCreates(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, collectionsPath,
 				strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
 			handler.ServeHTTP(rec, req)
 			statuses[i] = rec.Code
 			var body struct {
@@ -751,7 +752,7 @@ func TestCollectionCancel(t *testing.T) {
 	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
 	h.seedActive(t, fixtureNamespace, fixtureService, rec.ID)
 
-	got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", nil)
+	got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", jsonType())
 
 	if got.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
@@ -791,7 +792,7 @@ func TestCollectionCancelKeepsAnotherCollectionsKey(t *testing.T) {
 	rec := h.seedRecord(t, h.newRecord(pgo.StateRunning))
 	h.seedActive(t, fixtureNamespace, fixtureService, "abcdefghjkmnpqrstv09")
 
-	if got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", nil); got.Code != http.StatusOK {
+	if got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", jsonType()); got.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", got.Code)
 	}
 
@@ -819,7 +820,7 @@ func TestCollectionCancelStates(t *testing.T) {
 			h := newPGOHarness(t, pgoOpts{})
 			rec := h.seedRecord(t, h.newRecord(tc.state))
 
-			got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", nil)
+			got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", jsonType())
 
 			h.expectPGOError(t, got, http.StatusConflict, tc.code, tc.code)
 			if state := h.nats.jobs.record(t, rec.ID).State; state != tc.state {
@@ -855,7 +856,7 @@ func TestCollectionCancelRetriesPastARenewal(t *testing.T) {
 		h.nats.jobs.put(t, jobKeyPrefix+rec.ID, renewed)
 	}
 
-	got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", nil)
+	got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", jsonType())
 
 	if got.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 on the retry (body %q)", got.Code, got.Body.String())
@@ -876,7 +877,7 @@ func TestCollectionCancelExhaustsItsAttempts(t *testing.T) {
 	rec := h.seedRecord(t, h.newRecord(pgo.StateRunning))
 	h.nats.jobs.updateMismatch = true
 
-	got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", nil)
+	got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", jsonType())
 
 	h.expectPGOError(t, got, http.StatusServiceUnavailable, "pgo_unavailable", codeCASContended)
 	// The bound is spelled out rather than read from the handler's own
@@ -896,10 +897,94 @@ func TestCollectionCancelUnavailable(t *testing.T) {
 	rec := h.seedRecord(t, h.newRecord(pgo.StateRunning))
 	h.nats.jobs.updateErr = natskv.ErrUnavailable
 
-	got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", nil)
+	got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), "", jsonType())
 
 	h.expectPGOError(t, got, http.StatusServiceUnavailable, "pgo_unavailable", "pgo_unavailable")
 	if attempts := h.nats.jobs.updates.Load(); attempts != 1 {
 		t.Errorf("Update calls = %d, want one: an unreachable store is not a lost race", attempts)
+	}
+}
+
+// writeRoute is one of the two routes a POST must declare a JSON media type on.
+type writeRoute struct {
+	name string
+	// path seeds whatever the route needs and answers with the path to post to.
+	path func(t *testing.T, h *pgoHarness) string
+	body string
+	// accepted is the status the route answers once the media type passes.
+	accepted int
+}
+
+// writeRoutes is both routes the media-type step covers, each with the request
+// that succeeds on it, so every media-type row is driven through both.
+func writeRoutes() []writeRoute {
+	return []writeRoute{
+		{
+			"create",
+			func(*testing.T, *pgoHarness) string { return collectionsPath },
+			`{}`, http.StatusAccepted,
+		},
+		{
+			"cancel",
+			func(t *testing.T, h *pgoHarness) string {
+				t.Helper()
+
+				return collectionPath(h.seedRecord(t, h.newRecord(pgo.StatePending)).ID, "/cancel")
+			},
+			"", http.StatusOK,
+		},
+	}
+}
+
+// TestWriteRouteMediaType is the media type the two write routes require.
+// The essence must be application/json,
+// every parameter the parse returns is accepted and ignored,
+// and a header that is absent, repeated, unparsable, or of another essence is refused,
+// with nothing read or written.
+func TestWriteRouteMediaType(t *testing.T) {
+	cases := []struct {
+		name   string
+		values []string
+		// detail is the item the refusal carries, empty for a header the route accepts.
+		detail string
+	}{
+		{"absent", nil, detailHeaderRequired},
+		{"text", []string{"text/plain"}, detailHeaderMalformed},
+		{"form", []string{"application/x-www-form-urlencoded"}, detailHeaderMalformed},
+		{"multipart", []string{"multipart/form-data; boundary=x"}, detailHeaderMalformed},
+		{"repeated", []string{"application/json", "application/json"}, detailHeaderMalformed},
+		{"unparsable", []string{"application/json; charset"}, detailHeaderMalformed},
+		{"json", []string{"application/json"}, ""},
+		{"json with a charset", []string{"application/json; charset=utf-8"}, ""},
+		{"json with another parameter", []string{"application/json; profile=x"}, ""},
+	}
+
+	for _, route := range writeRoutes() {
+		for _, tc := range cases {
+			t.Run(route.name+" with a "+tc.name+" media type", func(t *testing.T) {
+				h := newPGOHarness(t, pgoOpts{})
+				path := route.path(t, h)
+				var header http.Header
+				if tc.values != nil {
+					header = http.Header{"Content-Type": tc.values}
+				}
+				before := h.storeCalls()
+
+				got := h.doPGO(t, http.MethodPost, path, route.body, header)
+
+				if tc.detail == "" {
+					if got.Code != route.accepted {
+						t.Fatalf("status = %d, want %d (body %q)", got.Code, route.accepted, got.Body.String())
+					}
+
+					return
+				}
+				h.expectPGOError(t, got, http.StatusBadRequest, CodeInvalidParameter, CodeInvalidParameter)
+				expectDetails(t, got, CodeInvalidParameter, []errorDetail{{Field: "Content-Type", Code: tc.detail}})
+				if after := h.storeCalls(); after != before {
+					t.Errorf("store calls = %d, want %d: the refusal reached the store", after, before)
+				}
+			})
+		}
 	}
 }

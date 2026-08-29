@@ -166,6 +166,23 @@ func (k routeKind) isPGO() bool {
 	}
 }
 
+// isPGOWrite reports whether a POST to the route creates or ends a Collection,
+// which are the two routes that require a JSON media type.
+// The listing shares a declaration with the create, so the caller checks the
+// method as well: a GET of the same path declares nothing.
+func (k routeKind) isPGOWrite() bool {
+	switch k {
+	case kindCollections, kindCollectionCancel:
+		return true
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollection, kindCollectionProfile, kindNamespaces,
+		kindServices, kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout,
+		kindConsole:
+		return false
+	default:
+		return false
+	}
+}
+
 // isCollectionScoped reports whether the route names a Collection rather than a
 // Service, so its namespace, Service, and realm come from the stored record.
 func (k routeKind) isCollectionScoped() bool {
@@ -286,8 +303,8 @@ func (q *request) fail(w http.ResponseWriter, e *requestError) {
 }
 
 // ServeHTTP runs the request algorithm:
-// route, method, readiness, credential placement, authentication, realm, parameters, discovery,
-// filter and select, admit, confirm, proxy.
+// route, method, JSON media type, readiness, credential placement, authentication, realm, parameters,
+// discovery, filter and select, admit, confirm, proxy.
 // The first failing step answers.
 // The configuration is loaded once here and the request uses that snapshot throughout.
 // /v1/auth stops after readiness and answers without an authentication step.
@@ -360,6 +377,18 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		q.fail(w, methodNotAllowed(r.Method))
 
 		return
+	}
+
+	// The media type the two PGO write routes require.
+	// It answers alike for every caller,
+	// so a request another origin could have produced is refused here:
+	// before readiness, before the PGO steps, and before anything reads a credential.
+	if r.Method == http.MethodPost && rt.kind.isPGOWrite() {
+		if e := mediaTypeFault(r.Header); e != nil {
+			q.fail(w, e)
+
+			return
+		}
 	}
 
 	if !s.ready() {

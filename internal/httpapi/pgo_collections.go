@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"time"
 
@@ -56,6 +57,44 @@ var (
 		auditCode: codeCASContended,
 	}
 )
+
+// contentTypeHeader is the header a POST to a write route declares its media type in,
+// and jsonMediaType is the one essence those routes accept.
+const (
+	contentTypeHeader = "Content-Type"
+	jsonMediaType     = "application/json"
+)
+
+// mediaTypeFault reports why a write route refuses this request's Content-Type,
+// or nil when the header is one it accepts.
+// The essence must be application/json,
+// and every parameter mime.ParseMediaType returns is accepted and ignored, charset among them,
+// so no client is refused over a parameter the route does not read.
+// A header sent twice is refused rather than resolved:
+// which of the two values the route would act on is not the gateway's to pick.
+// The answer is decided by the request's own headers alone,
+// which is what lets the step run before readiness, before a credential is read, and before the realm.
+func mediaTypeFault(h http.Header) *requestError {
+	const message = "this route requires a json request media type"
+
+	values := h.Values(contentTypeHeader)
+	switch {
+	case len(values) == 0:
+		return invalidParameter(message,
+			headerFault(detailHeaderRequired, contentTypeHeader, "declare "+jsonMediaType))
+	case len(values) > 1:
+		return invalidParameter(message,
+			headerFault(detailHeaderMalformed, contentTypeHeader, "send this header once"))
+	}
+
+	essence, _, err := mime.ParseMediaType(values[0])
+	if err != nil || essence != jsonMediaType {
+		return invalidParameter(message,
+			headerFault(detailHeaderMalformed, contentTypeHeader, "the media type must be "+jsonMediaType))
+	}
+
+	return nil
+}
 
 // collectionView is one entry of the Collection listing.
 type collectionView struct {

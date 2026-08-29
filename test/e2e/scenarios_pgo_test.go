@@ -220,10 +220,13 @@ func waitPGOReady(t *testing.T, h *Harness, ns, service string) {
 	}
 }
 
+// jsonHeaders is the media type a POST to a write route declares.
+func jsonHeaders() http.Header { return http.Header{"Content-Type": {"application/json"}} }
+
 // createCollection posts an on-demand Collection and returns its identifier.
 func createCollection(t *testing.T, c *http.Client, ns, service, body string) string {
 	t.Helper()
-	resp := do(t, c, http.MethodPost, collectionsURL(ns, service), body, nil)
+	resp := do(t, c, http.MethodPost, collectionsURL(ns, service), body, jsonHeaders())
 	if resp.Status != http.StatusAccepted {
 		t.Fatalf("POST collections %s/%s: status %d: %s", ns, service, resp.Status, resp.Body)
 	}
@@ -495,7 +498,7 @@ func scenarioPGOCancel(t *testing.T, h *Harness) {
 		return r.Progress.SamplesOK > 0
 	})
 
-	resp := do(t, h.Gateways[1], http.MethodPost, collectionURL(id, "/cancel"), "", nil)
+	resp := do(t, h.Gateways[1], http.MethodPost, collectionURL(id, "/cancel"), "", jsonHeaders())
 	if resp.Status != http.StatusOK {
 		t.Fatalf("POST cancel: status %d: %s", resp.Status, resp.Body)
 	}
@@ -539,7 +542,7 @@ func scenarioPGOVersionConflict(t *testing.T, h *Harness) {
 
 	expectCode(t, "POST collections over two versions",
 		do(t, h.Gateways[0], http.MethodPost, collectionsURL(ns, app),
-			`{"sampling":{"duration":"2s","rounds":1,"roundInterval":"0s","replicas":"all"}}`, nil),
+			`{"sampling":{"duration":"2s","rounds":1,"roundInterval":"0s","replicas":"all"}}`, jsonHeaders()),
 		http.StatusConflict, "version_conflict")
 
 	id := createCollection(t, h.Gateways[0], ns, app,
@@ -683,7 +686,14 @@ func scenarioPGODisabled(t *testing.T, h *Harness) {
 		{http.MethodPost, collectionURL(id, "/cancel")},
 	}
 	for _, r := range routes {
-		expectCode(t, r.method+" "+r.url, do(t, c, r.method, r.url, "", nil), http.StatusNotImplemented, "pgo_disabled")
+		// A POST declares the media type the two write routes require,
+		// which is checked before this answer,
+		// so every row here reaches the PGO step.
+		var header http.Header
+		if r.method == http.MethodPost {
+			header = jsonHeaders()
+		}
+		expectCode(t, r.method+" "+r.url, do(t, c, r.method, r.url, "", header), http.StatusNotImplemented, "pgo_disabled")
 	}
 
 	// Every route has been answered; whatever the gateway would link, it would

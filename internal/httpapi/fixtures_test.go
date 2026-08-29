@@ -525,8 +525,22 @@ func (h *harness) logger() *slog.Logger { return slog.New(slog.NewJSONHandler(h.
 func (h *harness) do(t *testing.T, method, target string) *httptest.ResponseRecorder {
 	t.Helper()
 
+	return h.doHeaders(t, method, target, nil)
+}
+
+// doHeaders is do with the request headers a row sends.
+func (h *harness) doHeaders(t *testing.T, method, target string, header http.Header) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequestWithContext(context.Background(), method, target, nil)
+	for name, values := range header {
+		for _, v := range values {
+			req.Header.Add(name, v)
+		}
+	}
+
 	rec := httptest.NewRecorder()
-	h.handler().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), method, target, nil))
+	h.handler().ServeHTTP(rec, req)
 	assertNoLeak(t, rec)
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
@@ -807,6 +821,11 @@ type fakeKV struct {
 
 	updates atomic.Int32
 	creates atomic.Int32
+	// calls counts the reads and writes a caller makes through the seam.
+	// Keys and Watch are outside it:
+	// those are the caches' own replay,
+	// which runs in the background whether or not a handler reaches the store.
+	calls atomic.Int32
 }
 
 func newFakeKV(gen func() uint64) *fakeKV {
@@ -814,6 +833,7 @@ func newFakeKV(gen func() uint64) *fakeKV {
 }
 
 func (k *fakeKV) Get(_ context.Context, key string) (natskv.Entry, error) {
+	k.calls.Add(1)
 	k.mu.Lock()
 	getErr, after := k.getErr, k.afterGet
 	e, ok := k.entries[key]
@@ -835,6 +855,7 @@ func (k *fakeKV) Get(_ context.Context, key string) (natskv.Entry, error) {
 }
 
 func (k *fakeKV) Create(_ context.Context, key string, value []byte) (uint64, error) {
+	k.calls.Add(1)
 	k.creates.Add(1)
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -849,6 +870,7 @@ func (k *fakeKV) Create(_ context.Context, key string, value []byte) (uint64, er
 }
 
 func (k *fakeKV) Update(_ context.Context, key string, value []byte, expected uint64) (uint64, error) {
+	k.calls.Add(1)
 	k.updates.Add(1)
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -864,6 +886,7 @@ func (k *fakeKV) Update(_ context.Context, key string, value []byte, expected ui
 }
 
 func (k *fakeKV) Delete(_ context.Context, key string, expected uint64) error {
+	k.calls.Add(1)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	e, ok := k.entries[key]
@@ -1533,6 +1556,27 @@ func (p *pgoHarness) doPGO(t *testing.T, method, target, body string, header htt
 
 // ifMatch is the header one conditional policy write carries.
 func ifMatch(etag string) http.Header { return http.Header{"If-Match": []string{etag}} }
+
+// jsonType is the media type the two write routes require.
+func jsonType() http.Header { return http.Header{"Content-Type": []string{"application/json"}} }
+
+// clientHeaders is what an ordinary client sends for one method:
+// a POST declares the JSON media type the two write routes require,
+// and every other method declares no media type at all.
+func clientHeaders(method string) http.Header {
+	if method == http.MethodPost {
+		return jsonType()
+	}
+
+	return nil
+}
+
+// storeCalls is how many reads and writes the two buckets have been asked for.
+// A snapshot taken once a harness is up moves only when a handler reaches the store,
+// so a refusal that is meant to write nothing leaves it where it was.
+func (p *pgoHarness) storeCalls() int32 {
+	return p.nats.config.calls.Load() + p.nats.jobs.calls.Load()
+}
 
 // expectPGOError checks a PGO failure: status, the code the body carries, and
 // the code the audit record and the metrics row carry.

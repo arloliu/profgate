@@ -354,7 +354,7 @@ func TestLimitExceededDetails(t *testing.T) {
 	t.Run("a collection request answers the same way", func(t *testing.T) {
 		h := newPGOHarness(t, pgoOpts{})
 
-		got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"rounds":99}}`, nil)
+		got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"rounds":99}}`, jsonType())
 
 		h.expectPGOError(t, got, http.StatusBadRequest, "limit_exceeded", "limit_exceeded")
 		expectDetails(t, got, "limit_exceeded",

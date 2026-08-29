@@ -969,7 +969,7 @@ The refusal is the answer with `pgo.enabled` false, behind the replay barrier,
 with the caches unsynced, with no credential under `basic`, and for a realm-denied Service,
 and the fake store records no call in any of them.
 
-- [ ] **Write the media-type tests**
+- [x] **Write the media-type tests**
 
 | `Content-Type` on a `POST` to either write route | Answer |
 |---|---|
@@ -990,11 +990,11 @@ and the fake store records no call in any of them.
 | a method the route does not accept, with no `Content-Type` | `405`, because the method step is still first |
 | `PUT /pgo` with no `Content-Type` | unchanged from today |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the step**
+- [x] **Implement the step**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/

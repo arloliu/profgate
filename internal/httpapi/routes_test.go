@@ -226,8 +226,8 @@ func TestRouteTableAcceptedMethod(t *testing.T) {
 			t.Run(method+" "+d.Template, func(t *testing.T) {
 				h := newHarness(baseTarget())
 				h.ready = func() bool { return false }
-				rec := h.do(t, method, samplePath(t, d.Template))
-				// Readiness is the third step,
+				rec := h.doHeaders(t, method, samplePath(t, d.Template), clientHeaders(method))
+				// Readiness is the step after the media type the two write routes require,
 				// so reaching it proves the route matched and the method was accepted.
 				expectDeclarationError(t, h, rec, d, http.StatusServiceUnavailable, CodeNotReady)
 				h.expectMetric(t, endpointOf(d.Kind), profileLabelOf(d.Kind, sampleValues()[paramProfile]))
