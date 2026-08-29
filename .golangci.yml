@@ -1,4 +1,6 @@
 version: "2"
+run:
+  build-tags: [e2e]
 linters:
   default: standard
   enable: [bodyclose, errorlint, exhaustive, gosec, misspell, noctx, revive]
