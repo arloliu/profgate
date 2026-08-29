@@ -40,8 +40,8 @@ const (
 	// EndpointUI covers /ui/, every path under it, and /; profile is fixed to "none".
 	EndpointUI Endpoint = "ui"
 	// EndpointOpenAPI is the document route; profile is fixed to "none".
-	// Its codes are "ok", "not_ready", "route_unknown", "method_not_allowed",
-	// and "invalid_parameter", which is every answer the route has.
+	// Its codes are "ok", "not_ready", "method_not_allowed", and
+	// "invalid_parameter", which is every answer the route has.
 	EndpointOpenAPI Endpoint = "openapi"
 )
 
