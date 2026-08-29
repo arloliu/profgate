@@ -427,6 +427,19 @@ func TestOpenAPICheckFailsOnDrift(t *testing.T) {
 
 			return compareCodes(doc)
 		}},
+		{"a 304 whose 200 carries no entity tag", func(t *testing.T, doc map[string]any) error {
+			t.Helper()
+			delete(object(doc, "components", "responses", "ConsoleAsset", "headers"), "ETag")
+
+			return compareConditional(t, doc)
+		}},
+		{"an If-None-Match on an operation that answers no 304", func(t *testing.T, doc map[string]any) error {
+			t.Helper()
+			op := object(paths(doc), "/v1/whoami", "get")
+			op["parameters"] = []any{map[string]any{"$ref": "#/components/parameters/IfNoneMatch"}}
+
+			return compareConditional(t, doc)
+		}},
 		{"a renamed component", func(t *testing.T, doc map[string]any) error {
 			t.Helper()
 			headers := object(doc, "components", "headers")
@@ -753,5 +766,55 @@ func TestOpenAPIDocumentDoesNotVaryWithConfiguration(t *testing.T) {
 		if paths(doc)[template] != nil {
 			t.Errorf("the document describes %s, which the ops listener serves", template)
 		}
+	}
+}
+
+// compareConditional reports where the document's conditional answers do not hang together.
+// An operation that answers 304 has to say what a client compares against:
+// its 200 carries an entity tag, and the operation reads If-None-Match.
+// An operation whose 200 carries no tag cannot answer 304 at all,
+// which is the shell: it is no-store and has no entity to validate
+// (docs/specs/ui.md Headers).
+func compareConditional(t *testing.T, doc map[string]any) error {
+	t.Helper()
+
+	const (
+		etagHeader        = "ETag"
+		ifNoneMatchHeader = "If-None-Match"
+	)
+
+	var found []string
+	eachOperation(doc, func(pair string, op map[string]any) {
+		responses := object(op, "responses")
+		_, conditional := responses["304"]
+		ok, tagged := responses["200"]
+		if tagged {
+			tagged = object(resolveResponse(t, doc, ok), "headers", etagHeader) != nil
+		}
+		reads := slices.Contains(parametersOf(t, doc, op, "header"), ifNoneMatchHeader)
+
+		switch {
+		case conditional && !tagged:
+			found = append(found, fmt.Sprintf("%s answers 304 while its 200 carries no %s, "+
+				"so a client has nothing to send back", pair, etagHeader))
+		case conditional && !reads:
+			found = append(found, fmt.Sprintf("%s answers 304 without describing %s, "+
+				"which is the request that produces it", pair, ifNoneMatchHeader))
+		case !conditional && reads:
+			found = append(found, fmt.Sprintf("%s describes %s and answers no 304, "+
+				"so the header changes nothing", pair, ifNoneMatchHeader))
+		}
+	})
+	if len(found) != 0 {
+		return fmt.Errorf("conditional: %s", strings.Join(found, "; "))
+	}
+
+	return nil
+}
+
+func TestOpenAPIDocumentConditional(t *testing.T) {
+	_, doc := readDocument(t)
+	if err := compareConditional(t, doc); err != nil {
+		t.Error(err)
 	}
 }
