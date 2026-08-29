@@ -164,6 +164,42 @@ func TestScanPageUsesTargetModel(t *testing.T) {
 	}
 }
 
+// collectionModelImportRe matches app.js's import of the Collection-control model
+// and captures the names it binds.
+var collectionModelImportRe = regexp.MustCompile(`import\s*\{([^}]*)\}\s*from\s*["']\./collectionmodel\.js["']`)
+
+// TestScanPageUsesCollectionModel holds the page to the Collection-control model:
+// app.js imports the eight functions it calls from ./collectionmodel.js and calls each at least once,
+// so a page that decides whether a control exists, what a request carries,
+// what an answer does, or what the armed state holds by hand turns the suite red.
+// The ninth export, retryAfterSeconds, is not named here:
+// startOutcome is what reads Retry-After, and the page hands it the header rather than the delay.
+func TestScanPageUsesCollectionModel(t *testing.T) {
+	src := readSource(t, "app.js")
+	m := collectionModelImportRe.FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("app.js: no import from ./collectionmodel.js")
+	}
+	fns := []string{
+		"startOffered",
+		"cancelOffered",
+		"uuidFromBytes",
+		"startRequest",
+		"cancelRequest",
+		"startOutcome",
+		"cancelOutcome",
+		"startNext",
+	}
+	for _, fn := range fns {
+		if !regexp.MustCompile(`\b` + fn + `\b`).MatchString(m[1]) {
+			t.Errorf("app.js: the import from ./collectionmodel.js does not name %s: %q", fn, m[1])
+		}
+		if !strings.Contains(src, fn+"(") {
+			t.Errorf("app.js: never calls %s(", fn)
+		}
+	}
+}
+
 func TestScanNoInlineForms(t *testing.T) {
 	for _, name := range consoleSources() {
 		t.Run(name, func(t *testing.T) {

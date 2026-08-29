@@ -72,3 +72,24 @@ button.link {
   text-decoration: underline;
   font-family: monospace;
 }
+
+/* An armed control is one press away from sending a request, so it must not
+   look like the idle button it replaced. */
+button.armed {
+  background: var(--pico-del-color, #c62828);
+  border-color: var(--pico-del-color, #c62828);
+  color: var(--pico-primary-inverse, #fff);
+}
+
+/* The Collection row's controls sit side by side in their cell rather than
+   filling it, so an armed row shows both its buttons on one line. */
+.row-actions {
+  white-space: nowrap;
+}
+
+.row-actions button {
+  width: auto;
+  margin: 0 0.25rem 0 0;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85em;
+}
