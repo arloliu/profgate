@@ -21,7 +21,7 @@ const (
 	paramID        = "id"
 	// paramFile is the console's remainder under /ui/.
 	// It is the one parameter that spans separators,
-	// because the hashed asset tree is nested and the console resolves the whole remainder itself.
+	// because the vendored asset tree is nested and the console resolves the whole remainder itself.
 	paramFile = "file"
 )
 

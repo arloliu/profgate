@@ -198,9 +198,9 @@ func TestRequestIDSurfaces(t *testing.T) {
 	})
 
 	t.Run("a console file keeps its own cache policy", func(t *testing.T) {
-		const policy = "public, max-age=31536000, immutable"
+		const policy = "no-cache"
 		h := consoleHarness(&fakeConsole{status: http.StatusOK, body: "console-bytes", cacheControl: policy})
-		rec := h.send(t, http.MethodGet, "/ui/static/abc/app.js", clientID)
+		rec := h.send(t, http.MethodGet, "/ui/app.js", clientID)
 		if got := identifierOf(t, rec.Header()); got != clientID {
 			t.Errorf("X-Request-Id = %q, want %q", got, clientID)
 		}

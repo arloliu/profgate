@@ -1,17 +1,14 @@
 package ui
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"embed"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"mime"
 	"net/http"
 	"path"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -22,31 +19,37 @@ import (
 var static embed.FS
 
 const (
-	// Prefix is where the console lives; the shell is served at exactly this path.
+	// Prefix is where the console lives; the shell is served at exactly this path,
+	// and every other file of the tree at Prefix + its path under static/.
 	Prefix = "/ui/"
-	// assetPrefix is where the hashed tree is served: assetPrefix + hash + "/" + path.
-	assetPrefix = "/ui/static/"
-	// The two placeholders index.html carries, replaced by the hashed asset paths when the shell is rendered.
-	stylesheetPlaceholder = "__STYLESHEET__"
-	scriptPlaceholder     = "__SCRIPT__"
 
-	// indexName is the shell's template; it is hashed with the tree and has no asset route.
+	// indexName is the shell; it is served at Prefix and has no asset route of its own,
+	// because one file at two URLs is two answers to cache.
 	indexName = "index.html"
 
 	// contentSecurityPolicy lists by name every source the page needs, over a default of none.
 	contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; " +
 		"connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
 
-	cacheNoStore   = "no-store"
-	cacheImmutable = "public, max-age=31536000, immutable"
-	allowMethods   = "GET, HEAD"
+	cacheNoStore = "no-store"
+	cacheNoCache = "no-cache"
+	allowMethods = "GET, HEAD"
 )
 
-// Handler serves the console: the rendered shell at /ui/, the hashed tree under /ui/static/<hash>/, and the 302 from /.
+// asset is one regular file of the embedded tree, answered without reading or hashing anything per request.
+type asset struct {
+	data   []byte
+	ctype  string
+	length string
+	etag   string
+}
+
+// Handler serves the console: the shell at /ui/, every other file of the tree at its own path under /ui/,
+// and the 302 from /.
 type Handler struct {
-	hash  string
-	shell []byte
-	files fs.FS // rooted at the static directory
+	// assets holds every regular file of the tree, index.html included, keyed by its path under static/.
+	// It is built once and never written afterwards, so ServeHTTP reads it without a lock.
+	assets map[string]asset
 }
 
 // New builds the handler over the embedded tree.
@@ -61,25 +64,36 @@ func New() (*Handler, error) {
 
 // newFromFS builds the handler over any tree rooted like the static directory; tests hand it a modified copy.
 func newFromFS(fsys fs.FS) (*Handler, error) {
-	hash, err := treeHash(fsys)
+	assets := make(map[string]asset)
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		b, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", p, err)
+		}
+		sum := sha256.Sum256(b)
+		assets[p] = asset{
+			data:   b,
+			ctype:  contentType(p),
+			length: strconv.Itoa(len(b)),
+			etag:   `"` + hex.EncodeToString(sum[:]) + `"`,
+		}
+
+		return nil
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("walk static tree: %w", err)
 	}
-	index, err := fs.ReadFile(fsys, indexName)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", indexName, err)
-	}
-	shell, err := renderShell(index, hash)
-	if err != nil {
-		return nil, err
+	if _, ok := assets[indexName]; !ok {
+		return nil, fmt.Errorf("static tree holds no %s", indexName)
 	}
 
-	return &Handler{hash: hash, shell: shell, files: fsys}, nil
-}
-
-// Hash is the tree hash every asset is served under.
-func (h *Handler) Hash() string {
-	return h.hash
+	return &Handler{assets: assets}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +114,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "0")
 		w.WriteHeader(http.StatusFound)
 	case Prefix:
-		h.writeBytes(w, head, h.shell, contentType(indexName), cacheNoStore)
+		h.writeShell(w, head)
 	default:
 		name, ok := h.assetName(p)
 		if !ok {
@@ -108,44 +122,78 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			return
 		}
-		b, err := fs.ReadFile(h.files, name)
-		if err != nil {
-			h.writeError(w, head, http.StatusNotFound, httpapi.CodeRouteUnknown, "no such route")
-
-			return
-		}
-		h.writeBytes(w, head, b, contentType(name), cacheImmutable)
+		h.writeAsset(w, head, r.Header.Get("If-None-Match"), h.assets[name])
 	}
 }
 
-// assetName maps a request path under the hashed prefix to a regular file of the tree.
+// assetName maps a request path under /ui/ to a regular file of the tree.
 // It refuses an empty rest, a leading slash, a backslash, any "." or ".." segment,
-// the shell's template, and anything that is not a regular file.
+// the shell, and anything the table does not hold.
+// A directory name and a traversal are refused by these rules alone,
+// since neither is a key of a table built from regular files.
 func (h *Handler) assetName(p string) (string, bool) {
-	rest, ok := strings.CutPrefix(p, assetPrefix+h.hash+"/")
+	rest, ok := strings.CutPrefix(p, Prefix)
 	if !ok || rest == "" || strings.HasPrefix(rest, "/") || strings.ContainsRune(rest, '\\') {
 		return "", false
 	}
 	if !fs.ValidPath(rest) || rest == indexName {
 		return "", false
 	}
-	info, err := fs.Stat(h.files, rest)
-	if err != nil || !info.Mode().IsRegular() {
+	if _, ok := h.assets[rest]; !ok {
 		return "", false
 	}
 
 	return rest, true
 }
 
-// writeBytes answers a 200 with b, or its headers alone on HEAD.
-func (h *Handler) writeBytes(w http.ResponseWriter, head bool, b []byte, ctype, cache string) {
-	w.Header().Set("Content-Type", ctype)
-	w.Header().Set("Cache-Control", cache)
-	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+// writeShell answers /ui/ with index.html as it was written:
+// never stored, and with no entity tag, because the shell is the one file
+// whose content decides what the browser fetches next.
+func (h *Handler) writeShell(w http.ResponseWriter, head bool) {
+	a := h.assets[indexName]
+	w.Header().Set("Content-Type", a.ctype)
+	w.Header().Set("Cache-Control", cacheNoStore)
+	w.Header().Set("Content-Length", a.length)
 	w.WriteHeader(http.StatusOK)
 	if !head {
-		_, _ = w.Write(b) //nolint:gosec // G705: b is an embedded file or the rendered shell, never request input
+		_, _ = w.Write(a.data) //nolint:gosec // G705: an embedded file, never request input
 	}
+}
+
+// writeAsset answers one file of the tree, or the 304 an If-None-Match holding its tag earns.
+// A 304 carries the tag and the cache policy, no body, and no Content-Length.
+func (h *Handler) writeAsset(w http.ResponseWriter, head bool, condition string, a asset) {
+	w.Header().Set("Content-Type", a.ctype)
+	w.Header().Set("Cache-Control", cacheNoCache)
+	w.Header().Set("ETag", a.etag)
+	if tagMatches(condition, a.etag) {
+		w.WriteHeader(http.StatusNotModified)
+
+		return
+	}
+	w.Header().Set("Content-Length", a.length)
+	w.WriteHeader(http.StatusOK)
+	if !head {
+		_, _ = w.Write(a.data) //nolint:gosec // G705: an embedded file, never request input
+	}
+}
+
+// tagMatches reports whether an If-None-Match header value holds tag.
+// The value is a comma-separated list, and "*" matches any entity.
+// A leading "W/" is trimmed from each member so a proxy that weakened the tag still revalidates;
+// no response of this handler sets one.
+func tagMatches(condition, tag string) bool {
+	for member := range strings.SplitSeq(condition, ",") {
+		member = strings.TrimSpace(member)
+		if member == "*" {
+			return true
+		}
+		if strings.TrimPrefix(member, "W/") == tag {
+			return true
+		}
+	}
+
+	return false
 }
 
 // writeError answers the gateway's error envelope with its Content-Length,
@@ -161,59 +209,6 @@ func (h *Handler) writeError(w http.ResponseWriter, head bool, status int, code,
 	if !head {
 		_, _ = w.Write(body) //nolint:gosec // G705: a JSON-encoded envelope of gateway-chosen strings, never request input
 	}
-}
-
-// treeHash is SHA-256 over every regular file of the tree in path order, index.html and vendor/MANIFEST included,
-// truncated to 16 hex digits (Layout and embedding).
-// Each file is framed as: the path length as an 8-byte big-endian integer, the path bytes,
-// the content length as an 8-byte big-endian integer, the content bytes;
-// the framing keeps two trees whose path/content boundaries differ from concatenating to the same input.
-func treeHash(fsys fs.FS) (string, error) {
-	var paths []string
-	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.Type().IsRegular() {
-			paths = append(paths, p)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return "", fmt.Errorf("walk static tree: %w", err)
-	}
-	sort.Strings(paths)
-
-	sum := sha256.New()
-	var length [8]byte
-	for _, p := range paths {
-		b, err := fs.ReadFile(fsys, p)
-		if err != nil {
-			return "", fmt.Errorf("read %s: %w", p, err)
-		}
-		binary.BigEndian.PutUint64(length[:], uint64(len(p)))
-		sum.Write(length[:])
-		sum.Write([]byte(p))
-		binary.BigEndian.PutUint64(length[:], uint64(len(b)))
-		sum.Write(length[:])
-		sum.Write(b)
-	}
-
-	return hex.EncodeToString(sum.Sum(nil))[:16], nil
-}
-
-// renderShell replaces the two placeholders; a placeholder that is absent or repeated is an error.
-func renderShell(index []byte, hash string) ([]byte, error) {
-	out := index
-	for placeholder, file := range map[string]string{stylesheetPlaceholder: "app.css", scriptPlaceholder: "app.js"} {
-		if n := bytes.Count(out, []byte(placeholder)); n != 1 {
-			return nil, fmt.Errorf("%s: placeholder %s appears %d times, want exactly once", indexName, placeholder, n)
-		}
-		out = bytes.ReplaceAll(out, []byte(placeholder), []byte(assetPrefix+hash+"/"+file))
-	}
-
-	return out, nil
 }
 
 // contentType is the Content-Type of Headers: text/javascript, text/css, text/html, else mime.TypeByExtension, else application/octet-stream.

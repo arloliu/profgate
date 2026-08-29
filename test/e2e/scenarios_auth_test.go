@@ -755,7 +755,11 @@ func scenarioAuthOIDCBrowser(t *testing.T, h *Harness) {
 	}
 	for _, asset := range assetPaths(t, shell.Body) {
 		resp := send(t, client, http.MethodGet, gatewayOrigin+asset, nil, nil)
-		assertAsset(t, asset, resp)
+		tag := assertAsset(t, asset, resp)
+		// The browser holds the file under no-cache and asks again on every use,
+		// so the same request carrying that tag is what a second page load sends.
+		again := send(t, client, http.MethodGet, gatewayOrigin+asset, http.Header{"If-None-Match": {tag}}, nil)
+		assertNotModified(t, asset, again, tag)
 	}
 	if n := auditRecords(currentLogs(t, h, ns, pod)); n != recordsBefore {
 		t.Errorf("the shell and asset requests grew the audit log from %d to %d records; /ui/ writes none", recordsBefore, n)
@@ -2004,8 +2008,8 @@ const (
 // ipv4Re matches a dotted address; no listing body may carry one.
 var ipv4Re = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 
-// assetRe matches the two hashed paths the shell references.
-var assetRe = regexp.MustCompile(`(?:href|src)="(/ui/static/[0-9a-f]{16}/[^"]+)"`)
+// assetRe matches the paths the shell references, which carry no hash segment.
+var assetRe = regexp.MustCompile(`(?:href|src)="(/ui/[^"]+)"`)
 
 // consoleHeaders returns what every response under /ui/ carries, Cache-Control
 // and Content-Type aside.
@@ -2049,12 +2053,19 @@ func assertShell(t *testing.T, what string, resp response) {
 	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
 		t.Fatalf("%s: Cache-Control %q, want no-store", what, cc)
 	}
+	// The shell is never stored, so it has nothing to revalidate against.
+	if tag := resp.Header.Get("ETag"); tag != "" {
+		t.Fatalf("%s: ETag %q, want none", what, tag)
+	}
 	assertConsoleHeaders(t, what, resp)
 }
 
-// assertAsset checks a hashed asset response: the type its extension names,
-// immutable, with the policy headers.
-func assertAsset(t *testing.T, path string, resp response) {
+// tagRe matches the entity tag an asset carries: the whole SHA-256 of the file, quoted.
+var tagRe = regexp.MustCompile(`^"[0-9a-f]{64}"$`)
+
+// assertAsset checks an asset response: the type its extension names,
+// revalidated on every use, with the policy headers, and returns its entity tag.
+func assertAsset(t *testing.T, path string, resp response) string {
 	t.Helper()
 	if resp.Status != http.StatusOK {
 		t.Fatalf("GET %s: status %d, want 200: %s", path, resp.Status, resp.Body)
@@ -2066,31 +2077,56 @@ func assertAsset(t *testing.T, path string, resp response) {
 	if ct := resp.Header.Get("Content-Type"); ct != want {
 		t.Fatalf("GET %s: Content-Type %q, want %q", path, ct, want)
 	}
-	if cc := resp.Header.Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
-		t.Fatalf("GET %s: Cache-Control %q, want the immutable policy", path, cc)
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("GET %s: Cache-Control %q, want no-cache", path, cc)
+	}
+	tag := resp.Header.Get("ETag")
+	if !tagRe.MatchString(tag) {
+		t.Fatalf("GET %s: ETag %q, want the file's whole digest in quotes", path, tag)
 	}
 	if len(resp.Body) == 0 {
 		t.Fatalf("GET %s: empty body", path)
 	}
 	assertConsoleHeaders(t, "GET "+path, resp)
+
+	return tag
 }
 
-// assetPaths reads the hashed asset paths the shell references, plus one
-// vendored module under the same hash, which the shell reaches through an
-// import rather than a reference of its own.
-// The hash is this binary's and is never known in advance.
+// assertNotModified checks the answer to a request repeating an asset's tag:
+// the revalidation no-cache buys, which sends the bytes again only once they differ.
+func assertNotModified(t *testing.T, path string, resp response, tag string) {
+	t.Helper()
+	if resp.Status != http.StatusNotModified {
+		t.Fatalf("GET %s with If-None-Match %s: status %d, want 304: %s", path, tag, resp.Status, resp.Body)
+	}
+	if got := resp.Header.Get("ETag"); got != tag {
+		t.Fatalf("GET %s with If-None-Match %s: ETag %q, want the same tag", path, tag, got)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("GET %s with If-None-Match %s: Cache-Control %q, want no-cache", path, tag, cc)
+	}
+	if len(resp.Body) != 0 {
+		t.Fatalf("GET %s with If-None-Match %s: body of %d bytes, want none", path, tag, len(resp.Body))
+	}
+	assertConsoleHeaders(t, "GET "+path+" with If-None-Match", resp)
+}
+
+// assetPaths reads the asset paths the shell references,
+// plus one vendored module the shell reaches through an import rather than a reference of its own.
+// Every replica of one release serves the same paths, so they are known in advance
+// and the shell is checked against them rather than read for whatever it happens to name.
 func assetPaths(t *testing.T, shell []byte) []string {
 	t.Helper()
 	var paths []string
 	for _, m := range assetRe.FindAllSubmatch(shell, -1) {
 		paths = append(paths, string(m[1]))
 	}
-	if len(paths) != 2 {
-		t.Fatalf("the shell references %d hashed assets, want the stylesheet and the script:\n%s", len(paths), shell)
+	want := []string{"/ui/app.css", "/ui/app.js"}
+	if !slices.Equal(paths, want) {
+		t.Fatalf("the shell references %v, want %v:\n%s", paths, want, shell)
 	}
-	dir := paths[0][:strings.LastIndex(paths[0], "/")+1]
 
-	return append(paths, dir+"vendor/preact/preact.module.js")
+	return append(paths, "/ui/vendor/preact/preact.module.js")
 }
 
 // auditRecords counts the request records in a gateway log.
