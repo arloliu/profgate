@@ -1,6 +1,12 @@
 {
   "components": {
     "headers": {
+      "AssetTag": {
+        "description": "the quoted SHA-256 of the file's bytes, which the next request sends back as If-None-Match",
+        "schema": {
+          "type": "string"
+        }
+      },
       "ContentDisposition": {
         "description": "the file name the merged profile is offered under",
         "schema": {
@@ -135,6 +141,15 @@
           "maxLength": 128,
           "minLength": 1,
           "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        }
+      },
+      "IfNoneMatch": {
+        "description": "an entity tag the caller already holds, or *; a match is answered 304 with no body",
+        "in": "header",
+        "name": "If-None-Match",
+        "required": false,
+        "schema": {
           "type": "string"
         }
       },
@@ -453,6 +468,20 @@
         },
         "description": "one console file, under the content type its name says",
         "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/AssetTag"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "ConsoleAssetHead": {
+        "description": "the headers the same request would answer a GET with, and no body",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/AssetTag"
+          },
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
           }
@@ -529,6 +558,9 @@
       "NotModified": {
         "description": "the file the caller already holds has not changed",
         "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/AssetTag"
+          },
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
           }
@@ -1943,9 +1975,6 @@
           "200": {
             "$ref": "#/components/responses/ConsolePage"
           },
-          "304": {
-            "$ref": "#/components/responses/NotModified"
-          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
@@ -1958,9 +1987,6 @@
         "responses": {
           "200": {
             "$ref": "#/components/responses/ConsoleHead"
-          },
-          "304": {
-            "$ref": "#/components/responses/NotModified"
           },
           "default": {
             "$ref": "#/components/responses/Error"
@@ -1975,6 +2001,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/ConsoleFile"
+          },
+          {
+            "$ref": "#/components/parameters/IfNoneMatch"
           }
         ],
         "responses": {
@@ -1995,11 +2024,14 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/ConsoleFile"
+          },
+          {
+            "$ref": "#/components/parameters/IfNoneMatch"
           }
         ],
         "responses": {
           "200": {
-            "$ref": "#/components/responses/ConsoleHead"
+            "$ref": "#/components/responses/ConsoleAssetHead"
           },
           "304": {
             "$ref": "#/components/responses/NotModified"
