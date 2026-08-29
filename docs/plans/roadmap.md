@@ -13,8 +13,12 @@
 > a bullet phrased as behavior is ticked once the revision that settles that behavior is in the spec.
 > A bullet the item's named spec does not cover is ticked when the work itself is done,
 > because there is no revision a tick could record for it instead.
-> Whether a settled decision has also shipped is read from the item's plan under `docs/plans/`,
-> and from `CHANGELOG.md` once it ships.
+> Whether a settled decision has also shipped is the item's own `Shipped:` line,
+> which names the version that carries it, the pull request that landed it, or says it is not built yet.
+> A ticked item that has not shipped is an ordinary state rather than a contradiction:
+> the design is settled and the code is still to write.
+> That line is where the answer lives because a plan under `docs/plans/` is deleted once its work lands,
+> so a finished item leaves nothing there to read.
 
 **Goal:** turn what the gateway already does into something a person can install from a release,
 reach from a terminal under `oidc`, diagnose when a Service yields no target,
@@ -42,6 +46,7 @@ An item may be reordered only by editing this list, never by starting later work
   as the next minor version after `v0.3.0`.
 
 Spec: none.
+Shipped: `v0.4.0`.
 Why first: nothing under `Unreleased` reaches an operator who installs from the chart registry.
 
 ### 2. Chart templates every install needs
@@ -58,6 +63,8 @@ Why first: nothing under `Unreleased` reaches an operator who installs from the 
 
 Spec: the deployment section of `docs/specs/gateway.md` names the chart's shape;
 confirm it permits these templates before writing them, and revise it if it does not.
+Shipped: on `main` after `v0.4.0`, in `a6bbd27`;
+the templates are under `deploy/chart/profgate/templates/`.
 Tests: extend `deploy/chart_test.go` for each template's on and off rendering.
 
 ### 3. Client-selected port becomes default-deny
@@ -79,6 +86,7 @@ The console lets a browser type any port under that default.
 - [x] Write the implementation plan; migrate `docs/configuration.md`, the chart values, and the console's port control.
 
 Spec: `docs/specs/gateway.md` (revision required).
+Shipped: pull request #2, in `Unreleased`.
 Why here: it narrows what a compromised client can probe and shrinks the configuration surface,
 and the CLI in item 4 should be written against the final model.
 
@@ -97,6 +105,7 @@ and `docs/authentication.md` sends the user to another tool for one.
 
 Spec: new (`docs/specs/cli.md`), layered on `docs/specs/auth.md`,
 which already defers token acquisition to this document.
+Shipped: pull request #3, in `Unreleased`.
 
 ### 5. Target exclusion diagnostics
 
@@ -112,6 +121,7 @@ a named port no Pod declares, a terminating Pod, or a cache not yet synced.
 - [x] The CLI's `targets` prints them.
 
 Spec: `docs/specs/gateway.md` and `docs/specs/ui.md` (revisions required).
+Shipped: pull request #4, in `Unreleased`.
 
 ### 6. A machine contract automation can build on
 
@@ -129,6 +139,7 @@ Spec: `docs/specs/gateway.md` and `docs/specs/ui.md` (revisions required).
 - [x] An OpenAPI document generated from the routes, served at a fixed path, and checked in CI against the router.
 
 Spec: `docs/specs/gateway.md` and `docs/specs/pgo.md` (revisions required).
+Shipped: pull request #5, in `Unreleased`.
 
 ### 7. Console: write paths, browser tests, stable asset paths
 
@@ -143,6 +154,7 @@ Spec: `docs/specs/gateway.md` and `docs/specs/pgo.md` (revisions required).
   this removes the rolling-update failure `docs/console.md` documents.
 
 Spec: `docs/specs/ui.md` (revision required).
+Shipped: not yet; the design is settled and no code is written.
 
 ### 8. Small removals
 
@@ -162,6 +174,7 @@ Each is a refactor with no behavior change visible to a client, and each is one 
   `test/e2e/harness_test.go` has passed it, and no revisit is recorded.
 
 Spec: `docs/specs/pgo.md` for the identifier grammar; none otherwise.
+Shipped: not yet; no bullet here is settled in a spec either.
 
 ### 9. Superseded and finished documents leave the tree
 
@@ -178,6 +191,8 @@ They are deleted; git history is their record.
 
 Spec: none;
 the decision record changes `docs/README.md` and `.agents/rules/900-design-and-review-loops.md`.
+Shipped: on `main` after `v0.4.0`, in `66d713a`;
+the record is `docs/decisions/finished-documents-leave-the-tree.md`.
 
 ### 10. OIDC transport from a library — withdrawn
 
@@ -193,6 +208,8 @@ The dependency argument in `docs/specs/auth.md` stands; nothing changes.
 The comparison, function by function, is
 [`2026-08-28-oidc-library.md`](../investigations/2026-08-28-oidc-library.md).
 
+Shipped: nothing; the item is withdrawn.
+
 ### 11. PGO as an optional deployment with presets
 
 The scheduler, worker, sweeper, and their stores run in every gateway replica whenever `pgo.enabled` is set,
@@ -207,6 +224,7 @@ that an operator must carry into the Deployment by hand.
   if it does, the lease, claim, and orphan-sweep machinery can be removed with the multi-replica guarantee.
 
 Spec: `docs/specs/pgo.md` (revision required).
+Shipped: not yet; the design is settled and no code is written.
 Why last: it is the largest change, it is off by default, and every earlier item is useful without it.
 
 ## Not on This List
