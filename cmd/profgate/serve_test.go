@@ -1062,7 +1062,7 @@ func TestServe(t *testing.T) {
 			t.Fatalf("the shell carries no Content-Security-Policy header:\n%v", shell.header)
 		}
 
-		// The shell names the hashed asset it loads, and the gateway serves it:
+		// The shell names the asset it loads, and the gateway serves it:
 		// the two halves of the console reach the browser through one mount.
 		script := shellScript(t, shell.body)
 		asset := request(t, gw.apiAddr, script, nil, nil)
@@ -1127,16 +1127,18 @@ func TestServe(t *testing.T) {
 	})
 }
 
-// shellScript is the hashed app.js path the rendered shell names.
+// shellScript is the path the shell's module script names.
+// It is read out of the shell rather than spelled here,
+// so the fetch below asks for what the page would ask for.
 func shellScript(t *testing.T, shell string) string {
 	t.Helper()
 
-	path := regexp.MustCompile(`/ui/static/[0-9a-f]+/app\.js`).FindString(shell)
-	if path == "" {
-		t.Fatalf("the shell names no hashed app.js path:\n%s", shell)
+	m := regexp.MustCompile(`<script type="module" src="([^"]+)"`).FindStringSubmatch(shell)
+	if m == nil {
+		t.Fatalf("the shell names no module script:\n%s", shell)
 	}
 
-	return path
+	return m[1]
 }
 
 // emptyKV is a bucket holding nothing.

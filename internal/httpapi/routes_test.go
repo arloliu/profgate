@@ -24,7 +24,7 @@ func sampleValues() map[string]string {
 		paramService:   fixtureService,
 		paramProfile:   "heap",
 		paramID:        "abcdefghjkmnpqrstv01",
-		paramFile:      "static/0123456789abcdef/app.js",
+		paramFile:      "vendor/preact/preact.module.js",
 	}
 }
 

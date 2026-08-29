@@ -77,7 +77,7 @@ func (h *harness) expectNoAudit(t *testing.T) {
 func TestConsoleNil(t *testing.T) {
 	rows := []struct{ method, path string }{
 		{http.MethodGet, "/ui/"},
-		{http.MethodGet, "/ui/static/abc/app.js"},
+		{http.MethodGet, "/ui/app.js"},
 		{http.MethodHead, "/"},
 		{http.MethodGet, "/"},
 	}
@@ -136,7 +136,7 @@ func TestConsoleDispatch(t *testing.T) {
 	t.Run("deeper paths", func(t *testing.T) {
 		c := &fakeConsole{status: http.StatusOK}
 		h := consoleHarness(c)
-		h.do(t, http.MethodGet, "/ui/static/h/vendor/preact/preact.module.js")
+		h.do(t, http.MethodGet, "/ui/vendor/preact/preact.module.js")
 		if len(c.seen()) != 1 {
 			t.Errorf("console calls = %d, want 1", len(c.seen()))
 		}
@@ -201,13 +201,13 @@ func TestConsoleDispatch(t *testing.T) {
 	})
 
 	t.Run("cache-control", func(t *testing.T) {
-		const immutable = "public, max-age=31536000, immutable"
-		c := &fakeConsole{status: http.StatusOK, cacheControl: immutable}
+		const noCache = "no-cache"
+		c := &fakeConsole{status: http.StatusOK, cacheControl: noCache}
 		h := consoleHarness(c)
 		rec := httptest.NewRecorder()
-		h.handler().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/ui/static/h/app.js", nil))
-		if got := rec.Header().Get("Cache-Control"); got != immutable {
-			t.Errorf("Cache-Control = %q, want %q", got, immutable)
+		h.handler().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/ui/app.js", nil))
+		if got := rec.Header().Get("Cache-Control"); got != noCache {
+			t.Errorf("Cache-Control = %q, want %q", got, noCache)
 		}
 		h.expectUIMetric(t, codeOK)
 	})
