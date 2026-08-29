@@ -55,6 +55,8 @@ const specRecord = `{
   "progress": {"round": 1, "rounds": 2, "samplesOK": 5, "samplesFailed": 0},
   "manifest": null,
   "artifact": null,
+  "idempotencyKey": "3f0a1c7e-8b52-4d6a-9f11-2c4e6a8b0d31",
+  "snapshotHash": "9c1e5b0a4d7f2836a0b91c4e6d8f0a2b3c5d7e9f1a2b3c4d5e6f708192a3b4c5",
   "createdBy": "anonymous",
   "createdAt": "2026-08-23T12:03:12Z",
   "startedAt": "2026-08-23T12:03:13Z",
@@ -158,6 +160,7 @@ func maxRecord(n int) Record {
 	policy, _ := DefaultPolicy(testDefaults())
 	policy.Enabled = true
 	policy.Target.Version = label
+	idempotencyKey := strings.Repeat("g", 128) // the longest Idempotency-Key
 
 	return Record{
 		ID:              strings.Repeat("7", 20),
@@ -176,6 +179,8 @@ func maxRecord(n int) Record {
 		Reason:          reason,
 		ResolvedVersion: label,
 		Progress:        Progress{Round: math.MaxInt32, Rounds: math.MaxInt32, SamplesOK: n, SamplesFailed: n},
+		IdempotencyKey:  idempotencyKey,
+		SnapshotHash:    SnapshotHash(policy),
 		Manifest: &Manifest{
 			Collection:      strings.Repeat("7", 20),
 			Namespace:       label,
@@ -427,4 +432,118 @@ func TestRequiredGracePeriodCoversEveryDeadline(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReceiptKey pins the key one idempotency scope resolves to: the prefix,
+// the width, and the length prefixes that keep one field out of the next.
+func TestReceiptKey(t *testing.T) {
+	t.Run("the key is the prefix and 32 hexadecimal characters", func(t *testing.T) {
+		got := ReceiptKey("tester", "payment", "payment-api", "abc")
+		rest, ok := strings.CutPrefix(got, "idem.")
+		if !ok {
+			t.Fatalf("key %q does not start with idem.", got)
+		}
+		if len(rest) != 32 {
+			t.Fatalf("key %q carries %d characters after the prefix, want 32", got, len(rest))
+		}
+		for _, c := range rest {
+			if !strings.ContainsRune("0123456789abcdef", c) {
+				t.Fatalf("key %q carries %q, which is not lowercase hexadecimal", got, c)
+			}
+		}
+	})
+
+	t.Run("one scope resolves to one key, in this process and in the next", func(t *testing.T) {
+		// The value is pinned rather than recomputed:
+		// a receipt written by one build has to be found by the next,
+		// so the encoding is part of the contract and not an implementation detail.
+		const want = "idem.a0edf80b385dfeea4b988c2f8224f136"
+		for range 3 {
+			if got := ReceiptKey("tester", "payment", "payment-api", "abc"); got != want {
+				t.Fatalf("key is %q, want %q", got, want)
+			}
+		}
+	})
+
+	t.Run("a separator inside a principal cannot borrow another scope", func(t *testing.T) {
+		// The two scopes carry the same characters in the same order
+		// and differ only in where one field ends,
+		// which is exactly what a concatenation without length prefixes would read as one value.
+		first := ReceiptKey("a|b", "payment", "payment-api", "k")
+		second := ReceiptKey("a", "payment", "payment-api", "|bk")
+		if first == second {
+			t.Fatalf("two scopes resolve to one key %q", first)
+		}
+		third := ReceiptKey("a|", "payment", "payment-api", "bk")
+		if third == first || third == second {
+			t.Fatalf("a third scope resolves to a key it shares: %q, %q, %q", first, second, third)
+		}
+	})
+}
+
+// TestSnapshotHash proves the hash reads the policy struct and never the bytes a request carried,
+// which is what makes a replay comparison total.
+func TestSnapshotHash(t *testing.T) {
+	base, err := DefaultPolicy(testDefaults())
+	if err != nil {
+		t.Fatalf("DefaultPolicy: %v", err)
+	}
+	base.Enabled = true
+
+	t.Run("one policy encoded two ways hashes to one value", func(t *testing.T) {
+		canonical, err := json.Marshal(base)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		// The same document with its fields reordered and its whitespace changed,
+		// which is what two clients sending one request look like.
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(canonical, &fields); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		reordered, err := json.MarshalIndent(fields, "", "    ")
+		if err != nil {
+			t.Fatalf("marshal reordered: %v", err)
+		}
+		if string(reordered) == string(canonical) {
+			t.Fatal("the two encodings are identical, so the case proves nothing")
+		}
+
+		var first, second Policy
+		if err := json.Unmarshal(canonical, &first); err != nil {
+			t.Fatalf("unmarshal canonical: %v", err)
+		}
+		if err := json.Unmarshal(reordered, &second); err != nil {
+			t.Fatalf("unmarshal reordered: %v", err)
+		}
+		if SnapshotHash(first) != SnapshotHash(second) {
+			t.Fatalf("the two encodings hash to %q and %q", SnapshotHash(first), SnapshotHash(second))
+		}
+		if got := len(SnapshotHash(first)); got != 64 {
+			t.Fatalf("the hash is %d characters, want 64", got)
+		}
+	})
+
+	t.Run("a policy that differs in one field hashes differently", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			mutate func(*Policy)
+		}{
+			{"enabled", func(p *Policy) { p.Enabled = !p.Enabled }},
+			{"schedule.every", func(p *Policy) { p.Schedule.Every = Duration(p.Schedule.Every.Duration() + time.Minute) }},
+			{"sampling.rounds", func(p *Policy) { p.Sampling.Rounds++ }},
+			{"sampling.replicas", func(p *Policy) { p.Sampling.Replicas = ReplicaCount(3) }},
+			{"target.version", func(p *Policy) { p.Target.Version = "1.42.3" }},
+			{"artifact.retention", func(p *Policy) { p.Artifact.Retention = Duration(p.Artifact.Retention.Duration() + time.Hour) }},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				moved := base
+				tc.mutate(&moved)
+				if SnapshotHash(moved) == SnapshotHash(base) {
+					t.Fatalf("a policy that moved in %s hashes the same", tc.name)
+				}
+			})
+		}
+	})
 }

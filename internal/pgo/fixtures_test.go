@@ -268,10 +268,10 @@ func (f *pgoFixture) deleteKey(bucket jetstream.KeyValue, key string) {
 
 // seedRecord writes a Collection record straight into the bucket, standing in
 // for another replica's publication or for what a creator that died left.
-func (f *pgoFixture) seedRecord(ns, svc string, state State) string {
+func (f *pgoFixture) seedRecord(ns, svc string, state State, mutate ...func(*Record)) string {
 	f.t.Helper()
 	id := newID()
-	f.putJSON(f.jobs, jobKey(id), Record{
+	rec := Record{
 		ID:        id,
 		Namespace: ns,
 		Service:   svc,
@@ -281,9 +281,14 @@ func (f *pgoFixture) seedRecord(ns, svc string, state State) string {
 		ClaimBy:   slotBase.Add(time.Hour),
 		CreatedBy: createdBySchedule,
 		CreatedAt: slotBase,
-	})
+	}
+	rec.SnapshotHash = SnapshotHash(rec.Policy)
+	for _, m := range mutate {
+		m(&rec)
+	}
+	f.putJSON(f.jobs, jobKey(rec.ID), rec)
 
-	return id
+	return rec.ID
 }
 
 // seedClaimable writes a record a worker may claim, plus the active key that
@@ -426,13 +431,35 @@ func (f *pgoFixture) record(id string) Record {
 
 // seedLiveCollection writes a record in state plus the active key naming it,
 // which is what a Service with a live Collection looks like in the bucket.
-func (f *pgoFixture) seedLiveCollection(ns, svc string, state State) string {
+func (f *pgoFixture) seedLiveCollection(ns, svc string, state State, mutate ...func(*Record)) string {
 	f.t.Helper()
-	id := f.seedRecord(ns, svc, state)
+	id := f.seedRecord(ns, svc, state, mutate...)
 	f.putJSON(f.jobs, activeKey(ns, svc), activeValue{ID: id, CreatedAt: slotBase})
 
 	return id
 }
+
+// seedReceipt writes what one idempotency key created, standing in for a
+// publication another replica made or for one a sweep has not reached.
+func (f *pgoFixture) seedReceipt(principal, ns, svc, key string, r Receipt) string {
+	f.t.Helper()
+	name := ReceiptKey(principal, ns, svc, key)
+	f.putJSON(f.jobs, name, r)
+
+	return name
+}
+
+// receipt reads one receipt fresh from the authoritative bucket.
+func (f *pgoFixture) receipt(key string) Receipt {
+	f.t.Helper()
+	var r Receipt
+	f.getJSON(f.jobs, key, &r)
+
+	return r
+}
+
+// receiptKeys is every idempotency receipt in the bucket.
+func (f *pgoFixture) receiptKeys() []string { return f.keys(f.jobs, receiptPrefix) }
 
 // failRecord flips one record to failed and releases its active key, which is
 // what the worker scan commits for a Collection it gives up on.

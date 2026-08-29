@@ -2,6 +2,8 @@ package pgo
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -23,6 +25,7 @@ const (
 	jobPrefix      = "job."
 	activePrefix   = "active."
 	slotPrefix     = "schedule."
+	receiptPrefix  = "idem."
 )
 
 // overrideKey is the policy override of one Service in PROFGATE_CONFIG.
@@ -33,6 +36,22 @@ func jobKey(id string) string { return jobPrefix + id }
 
 // activeKey is the one-live-Collection-per-Service key in PROFGATE_JOBS.
 func activeKey(ns, svc string) string { return activePrefix + ns + "." + svc }
+
+// ReceiptKey is idem. followed by the first 32 hexadecimal characters of the SHA-256 of the scope.
+// The scope writes each field as its byte length, a colon, and its bytes —
+// the principal, the namespace, the service, and the client's key —
+// so no value can be read as part of the one beside it.
+// The scope is hashed because a principal is arbitrary text and a NATS subject token is not,
+// and because a bucket key is not the place to publish a caller's name.
+func ReceiptKey(principal, namespace, service, key string) string {
+	var b strings.Builder
+	for _, field := range [...]string{principal, namespace, service, key} {
+		fmt.Fprintf(&b, "%d:%s", len(field), field)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+
+	return receiptPrefix + hex.EncodeToString(sum[:])[:32]
+}
 
 // slotKey is the one-Collection-per-slot key in PROFGATE_JOBS.
 // The slot is its start as decimal Unix seconds in UTC, with no padding.

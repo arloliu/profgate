@@ -2,6 +2,9 @@ package pgo
 
 import (
 	"context"
+	"maps"
+	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -664,5 +667,388 @@ func (f *pgoFixture) deleteObject(r *replica, name string) {
 	defer cancel()
 	if err := stores.Artifacts.Delete(ctx, name); err != nil {
 		f.t.Fatalf("delete object %s: %v", name, err)
+	}
+}
+
+// receiptFixture is a terminal keyed record and the receipt its key resolves to,
+// which is the pair the record-retention rule removes in order.
+type receiptFixture struct {
+	principal string
+	key       string
+	name      string
+	record    Record
+}
+
+// seedRetiredReceipt writes a terminal record that carried an idempotency key,
+// plus the receipt binding that key to it.
+// The receipt is written as of the sweep's own clock, so the reconciliation has no claim on it
+// and the record-retention rule is the only rule under test.
+func seedRetiredReceipt(t *testing.T, f *pgoFixture, r *replica, createdAt time.Time) receiptFixture {
+	t.Helper()
+	const principal, key = "tester", "k-1"
+	rec := f.seedCompleted(r, "payment", "payment-api", func(rec *Record) {
+		rec.State = StateFailed
+		rec.Reason = ReasonNotClaimed
+		rec.Origin = OriginAPI
+		rec.Artifact = nil
+		rec.ExpiresAt = nil
+		rec.CreatedBy = principal
+		rec.IdempotencyKey = key
+	})
+	name := f.seedReceipt(principal, "payment", "payment-api", key, Receipt{
+		ID: rec.ID, SnapshotHash: rec.SnapshotHash, CreatedAt: createdAt,
+	})
+	r.waitCache("holds the retired record", func(c *Caches) bool { return c.hasJob(rec.ID) })
+
+	return receiptFixture{principal: principal, key: key, name: name, record: rec}
+}
+
+// TestSweeperReceiptFollowsItsRecord proves the order the pair is removed in:
+// the record goes first and its receipt second,
+// so no moment leaves a record whose key resolves to nothing.
+func TestSweeperReceiptFollowsItsRecord(t *testing.T) {
+	retention := testPGOConfig().JobRetention
+
+	t.Run("the record goes first and the receipt follows", func(t *testing.T) {
+		f := startPGO(t)
+		hook := &kvHook{}
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		past := slotBase.Add(retention + 2*skewMargin)
+		fx := seedRetiredReceipt(t, f, r, past)
+
+		hook.reset()
+		r.clock.Set(past)
+		sweepNow(t, r.newSweeper())
+
+		if f.hasKey(f.jobs, jobKey(fx.record.ID)) {
+			t.Fatal("the record survived its retention")
+		}
+		if f.hasKey(f.jobs, fx.name) {
+			t.Fatal("the receipt outlived the record it names")
+		}
+
+		recordGone, receiptGone := -1, -1
+		ops := hook.operations()
+		for i, c := range ops {
+			switch {
+			case c.Op == "delete" && c.Key == jobKey(fx.record.ID):
+				recordGone = i
+			case c.Op == "delete" && c.Key == fx.name:
+				receiptGone = i
+			}
+		}
+		if recordGone < 0 || receiptGone < 0 || recordGone > receiptGone {
+			t.Fatalf("the pass issued %v, want the record deleted before its receipt", ops)
+		}
+	})
+
+	t.Run("a receipt delete that says nothing leaves the receipt behind", func(t *testing.T) {
+		f := startPGO(t)
+		hook := &kvHook{}
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		past := slotBase.Add(retention + 2*skewMargin)
+		fx := seedRetiredReceipt(t, f, r, past)
+
+		hook.setBefore(func(op, key string) (error, bool) {
+			if op == "delete" && key == fx.name {
+				return natskv.ErrUnavailable, true
+			}
+
+			return nil, false
+		})
+		r.clock.Set(past)
+		sweepNow(t, r.newSweeper())
+
+		if f.hasKey(f.jobs, jobKey(fx.record.ID)) {
+			t.Fatal("the record survived its retention")
+		}
+		if !f.hasKey(f.jobs, fx.name) {
+			t.Fatal("the receipt is gone, but its delete said nothing: the reconciliation is what removes it")
+		}
+	})
+}
+
+// TestSweeperReceiptNamesTheRecordItDeletesFor proves the rule that keeps a successor's key bound:
+// a receipt is deleted only when the identifier it names is the record this pass deleted,
+// so a receipt written between the two steps survives.
+func TestSweeperReceiptNamesTheRecordItDeletesFor(t *testing.T) {
+	retention := testPGOConfig().JobRetention
+	tests := []struct {
+		name string
+		// successor is whether the receipt is replaced by one naming another
+		// Collection, rather than rewritten for the same one.
+		successor bool
+		wantGone  bool
+	}{
+		{name: "a receipt replaced by a live successor's survives", successor: true, wantGone: false},
+		{name: "a receipt rewritten for the same collection is deleted", successor: false, wantGone: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := startPGO(t)
+			hook := &kvHook{}
+			r := f.newReplica("replica", replicaOpts{
+				wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+			})
+			r.waitSynced()
+			past := slotBase.Add(retention + 2*skewMargin)
+			fx := seedRetiredReceipt(t, f, r, past)
+
+			// The Collection the replacement names:
+			// a live one for the successor case, and the retired one for the rewrite.
+			named := fx.record.ID
+			if tc.successor {
+				named = f.seedRecord("payment", "payment-api", StatePending, func(rec *Record) {
+					rec.Origin = OriginAPI
+					rec.CreatedBy = fx.principal
+					rec.IdempotencyKey = fx.key
+				})
+			}
+
+			// A request carrying this key finds the receipt stale and publishes under it,
+			// between the record's deletion and the sweeper's read of the receipt.
+			var replaced atomic.Bool
+			hook.setBefore(func(op, key string) (error, bool) {
+				if op == "get" && key == fx.name && replaced.CompareAndSwap(false, true) {
+					f.putJSON(f.jobs, fx.name, Receipt{ID: named, CreatedAt: past})
+				}
+
+				return nil, false
+			})
+
+			r.clock.Set(past)
+			sweepNow(t, r.newSweeper())
+
+			if !replaced.Load() {
+				t.Fatal("the sweeper never read the receipt, so the rule was never exercised")
+			}
+			if got := f.hasKey(f.jobs, fx.name); got == tc.wantGone {
+				t.Fatalf("the receipt is present=%v, want gone=%v", got, tc.wantGone)
+			}
+			if !tc.wantGone && f.receipt(fx.name).ID != named {
+				t.Fatalf("the surviving receipt names %q, want the successor %q", f.receipt(fx.name).ID, named)
+			}
+		})
+	}
+}
+
+// reconcileNow runs one receipt reconciliation,
+// which is the pass that reaches the receipts a record deletion did not.
+func reconcileNow(t *testing.T, r *replica, s *Sweeper) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+	defer cancel()
+	s.reconcileReceipts(ctx, r.loopJobsView(), r.clock.Now().UTC())
+}
+
+// TestSweeperReceiptReconciliation covers the pass that exists for the receipts a record deletion missed:
+// only one whose own age has passed and whose record a fresh read shows absent is removed.
+func TestSweeperReceiptReconciliation(t *testing.T) {
+	retention := testPGOConfig().JobRetention
+
+	t.Run("a receipt whose record is still there is left alone", func(t *testing.T) {
+		f := startPGO(t)
+		hook := &kvHook{}
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		id := f.seedRecord("payment", "payment-api", StatePending)
+		name := f.seedReceipt("tester", "payment", "payment-api", "k-1", Receipt{ID: id, CreatedAt: slotBase})
+
+		r.clock.Set(slotBase.Add(retention + 2*skewMargin))
+		reconcileNow(t, r, r.newSweeper())
+
+		if !f.hasKey(f.jobs, name) {
+			t.Fatal("a receipt whose record is still there was deleted")
+		}
+		if got := len(hook.callsFor("get", jobKey(id))); got != 1 {
+			t.Fatalf("the record was read %d times, want one fresh read", got)
+		}
+	})
+
+	t.Run("a young receipt is left alone with no record lookup", func(t *testing.T) {
+		f := startPGO(t)
+		hook := &kvHook{}
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		gone := newID()
+		name := f.seedReceipt("tester", "payment", "payment-api", "k-1", Receipt{ID: gone, CreatedAt: slotBase})
+
+		// Inside the margin past its own age,
+		// which is where two clocks that differ by that much still disagree about it.
+		r.clock.Set(slotBase.Add(retention + skewMargin/2))
+		reconcileNow(t, r, r.newSweeper())
+
+		if !f.hasKey(f.jobs, name) {
+			t.Fatal("a receipt inside its own age was deleted")
+		}
+		if got := hook.callsFor("get", jobKey(gone)); len(got) != 0 {
+			t.Fatalf("the pass read %v, want no record lookup for a young receipt", got)
+		}
+	})
+
+	t.Run("a receipt past its age whose record is absent is deleted", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+		gone := newID()
+		name := f.seedReceipt("tester", "payment", "payment-api", "k-1", Receipt{ID: gone, CreatedAt: slotBase})
+
+		r.clock.Set(slotBase.Add(retention + 2*skewMargin))
+		reconcileNow(t, r, r.newSweeper())
+
+		if f.hasKey(f.jobs, name) {
+			t.Fatal("a receipt past its age whose record is gone survived")
+		}
+	})
+
+	t.Run("a receipt that moved under the pass keeps its place", func(t *testing.T) {
+		f := startPGO(t)
+		hook := &kvHook{}
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		gone := newID()
+		name := f.seedReceipt("tester", "payment", "payment-api", "k-1", Receipt{ID: gone, CreatedAt: slotBase})
+
+		// A create writes a newer receipt after the pass read the old one,
+		// so the delete is against a revision the bucket has left behind.
+		var moved atomic.Bool
+		hook.setBefore(func(op, key string) (error, bool) {
+			if op == "get" && key == jobKey(gone) && moved.CompareAndSwap(false, true) {
+				f.putJSON(f.jobs, name, Receipt{ID: newID(), CreatedAt: slotBase.Add(retention)})
+			}
+
+			return nil, false
+		})
+
+		r.clock.Set(slotBase.Add(retention + 2*skewMargin))
+		reconcileNow(t, r, r.newSweeper())
+
+		if !moved.Load() {
+			t.Fatal("the pass never read the record, so nothing was raced")
+		}
+		if !f.hasKey(f.jobs, name) {
+			t.Fatal("a receipt written after the pass read the old one was deleted")
+		}
+	})
+}
+
+// TestSweeperReceiptReconciliationRuns proves the reconciliation is the one condition with no watched cache behind it,
+// and so runs on one sweep in sixty rather than on every one.
+func TestSweeperReceiptReconciliationRuns(t *testing.T) {
+	f := startPGO(t)
+	hook := &kvHook{}
+	r := f.newReplica("replica", replicaOpts{
+		wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+	})
+	r.waitSynced()
+	id := f.seedRecord("payment", "payment-api", StatePending)
+	name := f.seedReceipt("tester", "payment", "payment-api", "k-1", Receipt{ID: id, CreatedAt: slotBase})
+	r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+
+	hook.reset()
+	s := r.newSweeper()
+	for range 60 {
+		sweepNow(t, s)
+	}
+
+	if got := len(hook.callsFor("keys", receiptPrefix)); got != 1 {
+		t.Fatalf("sixty sweeps listed the receipt prefix %d times, want 1", got)
+	}
+	reads := 0
+	for _, c := range hook.operations() {
+		if strings.HasPrefix(c.Key, receiptPrefix) {
+			reads++
+		}
+	}
+	// One listing and one read of the one receipt:
+	// the other fifty-nine sweeps touch the prefix not at all.
+	if reads != 2 {
+		t.Fatalf("sixty sweeps touched the receipt prefix %d times, want 2", reads)
+	}
+	if !f.hasKey(f.jobs, name) {
+		t.Fatal("the receipt of a live record was deleted")
+	}
+}
+
+// TestReceiptKeyBelongsToNoOtherRule proves the prefix is nobody else's:
+// no watch delivers it, no cache counts it,
+// and no rule stated over job, active, or slot keys matches it.
+func TestReceiptKeyBelongsToNoOtherRule(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("replica", replicaOpts{})
+	r.waitSynced()
+
+	name := f.seedReceipt("tester", "payment", "payment-api", "k-1", Receipt{
+		ID: newID(), CreatedAt: slotBase,
+	})
+	// A record written after the receipt:
+	// once a watch has delivered it, the receipt has had every chance to be delivered too.
+	later := f.seedLiveCollection("other", "other-api", StateRunning)
+	r.waitCache("holds the later collection", func(c *Caches) bool {
+		id, ok := c.activeID("other", "other-api")
+
+		return c.hasJob(later) && ok && id == later
+	})
+
+	if r.caches.Live("payment", "payment-api") {
+		t.Error("a receipt makes its service look live")
+	}
+	if got := r.caches.cachedLive(); got != 1 {
+		t.Errorf("cachedLive is %d, want 1: only the record counts", got)
+	}
+	for what, keys := range map[string][]string{
+		"job":    slices.Collect(maps.Keys(r.caches.jobEntries())),
+		"active": nil,
+		"slot":   slices.Collect(maps.Keys(r.caches.slotEntries())),
+	} {
+		for _, key := range keys {
+			if strings.HasPrefix(key, receiptPrefix) {
+				t.Errorf("the %s cache holds %q", what, key)
+			}
+		}
+	}
+	if got := len(r.caches.activeEntries()); got != 1 {
+		t.Errorf("active entries are %d, want the one active key", got)
+	}
+
+	sweepNow(t, r.newSweeper())
+	if !f.hasKey(f.jobs, name) {
+		t.Fatal("a sweep deleted a receipt through a rule that is not its own")
+	}
+}
+
+// TestNoCacheIndexesAnIdempotencyKey scans the package's cache types:
+// every read of a receipt is authoritative, so nothing in memory may stand in for one.
+func TestNoCacheIndexesAnIdempotencyKey(t *testing.T) {
+	types := []reflect.Type{
+		reflect.TypeOf(Caches{}),
+		reflect.TypeOf(cachedJob{}),
+		reflect.TypeOf(cachedActive{}),
+		reflect.TypeOf(cachedSlot{}),
+		reflect.TypeOf(cachedOverride{}),
+	}
+	for _, ty := range types {
+		for i := range ty.NumField() {
+			field := ty.Field(i)
+			name := strings.ToLower(field.Name + " " + field.Type.String())
+			if strings.Contains(name, "idempotency") || strings.Contains(name, "receipt") {
+				t.Errorf("%s.%s is %s, which holds an idempotency key", ty.Name(), field.Name, field.Type)
+			}
+			if field.Type == reflect.TypeOf(Record{}) || field.Type == reflect.TypeOf(Receipt{}) {
+				t.Errorf("%s.%s carries a whole %s", ty.Name(), field.Name, field.Type)
+			}
+		}
 	}
 }

@@ -321,6 +321,28 @@ func readJob(ctx context.Context, jobs natskv.KV, id string) (Record, bool, erro
 	return rec, false, nil
 }
 
+// readReceipt reads idem.<hash> fresh, past every cache,
+// and reports the revision it was read at and whether the key is gone.
+// No watch is opened on the prefix and no cache holds it,
+// so every read of a receipt is the store's answer;
+// an error means the read said nothing at all,
+// and a caller that could not read a receipt deletes nothing.
+func readReceipt(ctx context.Context, jobs natskv.KV, key string) (Receipt, uint64, bool, error) {
+	e, err := jobs.Get(ctx, key)
+	if errors.Is(err, natskv.ErrKeyNotFound) {
+		return Receipt{}, 0, true, nil
+	}
+	if err != nil {
+		return Receipt{}, 0, false, err
+	}
+	var r Receipt
+	if err := json.Unmarshal(e.Value, &r); err != nil {
+		return Receipt{}, 0, false, fmt.Errorf("pgo: read receipt %s: %w", key, err)
+	}
+
+	return r, e.Revision, false, nil
+}
+
 // releaseActive frees the Service the moment its Collection ends: it deletes
 // the active key when it names this Collection.
 // It can never release a successor's claim, and a release that fails is not

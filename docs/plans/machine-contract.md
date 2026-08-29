@@ -1212,7 +1212,7 @@ and a successor's receipt names a record that exists.
 each of the three writers "act only on a receipt whose record a fresh `Get` shows absent" —
 and this is that rule applied to the writer that starts from the record rather than from the key.
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 Declare `ReceiptKey`, `Receipt`, `SnapshotHash`, the two record fields,
 and the **one** new `PublishInput` field, `IdempotencyKey` —
@@ -1221,7 +1221,7 @@ Give `Publisher` a no-op receipt step, and leave the existing constructions of `
 (`internal/pgo/scheduler.go` and `internal/httpapi/pgo_collections.go`) to default the new field to empty,
 so the tree builds before any assertion is written.
 
-- [ ] **Write the receipt tests**
+- [x] **Write the receipt tests**
 
 `internal/pgo`, over the in-process server, restating the receipt rows of *Unit*:
 
@@ -1259,11 +1259,11 @@ so the tree builds before any assertion is written.
 | a receipt key | matched by no `job.*`, `active.*`, or `schedule.*` rule, and counted by no `cachedLive` figure |
 | a scan of the package's cache types | no cache indexes an idempotency key |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the receipt, the record fields, and the sweep rules**
+- [x] **Implement the receipt, the record fields, and the sweep rules**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/pgo/ ./internal/httpapi/
