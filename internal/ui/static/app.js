@@ -11,6 +11,7 @@ import {
   targetsURL,
   collectionsURL,
   collectionURL,
+  collectionCancelURL,
   collectionProfileURL,
   isCollectionID,
   profileURL,
@@ -22,6 +23,16 @@ import {
 } from "./urls.js";
 import { deriveControl, applyInput } from "./portmodel.js";
 import { targetsQuery, retryWithoutExplain, targetSummary } from "./targetmodel.js";
+import {
+  startOffered,
+  cancelOffered,
+  uuidFromBytes,
+  startRequest,
+  cancelRequest,
+  startOutcome,
+  cancelOutcome,
+  startNext,
+} from "./collectionmodel.js";
 
 const html = htm.bind(h);
 
@@ -31,6 +42,13 @@ const upstreamSeconds = { cpu: 30, trace: 1 };
 
 // notReadyDelay is how often a not_ready answer is retried.
 const notReadyDelay = 2000;
+
+// armDelay is how long a control that has armed itself waits for the second press that sends the request.
+// It runs before the first request only:
+// submission cancels it,
+// and nothing restarts it while a request is in flight or after an outcome the page could not classify,
+// where disarming would drop the key that a repeat of the same attempt needs.
+const armDelay = 10000;
 
 // hints are the one-line hints for the codes a user can act on; every other
 // code is shown as is.
@@ -42,26 +60,59 @@ const hints = {
   port_not_allowed: "the value is outside the allowlist shown in the port control",
   seconds_exceeds_limit: "the limit the duration input was bounded by",
   discovery_unavailable: "the gateway could not read its cache or confirm the Pod; retry",
-  pgo_disabled: "PGO collection is disabled",
-  pgo_unavailable: "PGO collection is unavailable",
+  pgo_disabled: "PGO collection is off on this gateway; the Collections view goes once the limits have been refetched",
+  pgo_unavailable: "the gateway could not reach its store, so a start may or may not have taken; the same press can be repeated",
+  collector_unavailable:
+    "nothing is running Collections at the moment, and nothing was started; the press can be repeated once something is",
+  collection_in_progress: "a Collection is already running for this Service; the list shows it",
+  rate_limited: "the gateway is at its limit for now; the control returns after the delay",
+  capacity_exhausted: "the gateway is at its limit for now; the control returns after the delay",
+  collection_terminal: "the Collection ended before the cancel arrived; the list shows its final state",
+  collection_initializing: "the Collection is still being created; the cancel is retried once",
+  limit_exceeded: "the Collection's policy exceeds a configured ceiling; the message names the fields",
 };
 
-// fetchJSON runs one same-origin request and resolves to {status, headers, body, error}.
-// body is the decoded JSON when the Content-Type says JSON;
-// error is the envelope {error, code} when the body is one,
-// the string "HTTP <status> <statusText>" for any other failure,
-// and "request failed" with status 0 when fetch itself rejected.
+// fetchJSON runs one same-origin request and resolves to
+// {status, headers, body, bodyText, rejected, code, message, error}.
+// req, when given, is the request description a write control built:
+// its method, its headers, and its body, which is null for a request that carries none.
+// Without one the request is a GET, which is what every listing fetch is.
+// body is the decoded JSON when the Content-Type says JSON, and bodyText is the body as it arrived;
+// rejected says fetch itself never produced a response;
+// code and message are the error envelope's two fields when the body is one, and empty strings otherwise.
+// error composes those parts for the page's error surface:
+// the envelope, or the string "HTTP <status> <statusText>", or "request failed" with status 0.
+// The parts stay beside it because collectionmodel.js branches on the status and the code,
+// and a composed string cannot be branched on.
 // It decides nothing about 401: the caller does, because what a 401 means depends on the mode.
-async function fetchJSON(url) {
-  const out = { status: 0, headers: new Headers(), body: null, error: null };
+async function fetchJSON(url, req) {
+  const out = {
+    status: 0,
+    headers: new Headers(),
+    body: null,
+    bodyText: "",
+    rejected: false,
+    code: "",
+    message: "",
+    error: null,
+  };
   try {
-    const res = await fetch(url, { credentials: "same-origin" });
+    const init = { credentials: "same-origin" };
+    if (req) {
+      init.method = req.method;
+      init.headers = req.headers;
+      if (req.body !== null) {
+        init.body = req.body;
+      }
+    }
+    const res = await fetch(url, init);
     out.status = res.status;
     out.headers = res.headers;
+    out.bodyText = await res.text();
     const ctype = res.headers.get("content-type") || "";
     if (ctype.startsWith("application/json")) {
       try {
-        out.body = await res.json();
+        out.body = JSON.parse(out.bodyText);
       } catch {
         out.body = null;
       }
@@ -70,15 +121,47 @@ async function fetchJSON(url) {
       return out;
     }
     if (isEnvelope(out.body)) {
-      out.error = { error: out.body.error, code: out.body.code };
+      out.code = out.body.code;
+      out.message = out.body.error;
+      out.error = { error: out.message, code: out.code };
     } else {
       out.error = `HTTP ${res.status} ${res.statusText}`;
     }
     return out;
   } catch {
+    out.rejected = true;
     out.error = "request failed";
     return out;
   }
+}
+
+// answerOf is what collectionmodel.js reads from one transport result.
+// Every field stays apart: the model decides on the status and the code,
+// and reads the body as text only for a success whose id it cannot use.
+// id and record are the same response read two ways —
+// startOutcome selects by identifier, cancelOutcome replaces a row with the record.
+function answerOf(res) {
+  return {
+    rejected: res.rejected,
+    status: res.status,
+    code: res.code,
+    message: res.message,
+    id: res.body ? res.body.id : null,
+    record: res.body,
+    body: res.bodyText,
+    retryAfter: res.headers.get("retry-after"),
+  };
+}
+
+// newKey is one idempotency key per attempt series.
+// crypto.randomUUID is defined only in a secure context and this page can be served over plain HTTP,
+// so where the browser does not define it the key is sixteen random bytes formatted as a UUIDv4.
+function newKey() {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return uuidFromBytes(crypto.getRandomValues(new Uint8Array(16)));
 }
 
 // isEnvelope reports whether body is the gateway's error envelope.
@@ -175,6 +258,11 @@ class App extends Component {
     this.selection = 0;
     this.collectionsFor = -1;
     this.timers = [];
+    // armTimer and cancelTimer are the ten-second disarms of the two controls.
+    // A transition out of the armed state clears the one it owns,
+    // so the timer of an arming already over cannot disarm a later one.
+    this.armTimer = 0;
+    this.cancelTimer = 0;
     this.state = {
       phase: "booting",
       bootError: null,
@@ -198,6 +286,13 @@ class App extends Component {
       errors: {},
       signIn: {},
       copied: false,
+      // start is the start control's whole state, as startNext keeps it,
+      // and startMessage is what that model last asked the page to say.
+      start: { phase: "idle", key: null, route: null, token: 0, until: 0 },
+      startMessage: null,
+      // cancelArmed is the identifier of the row whose cancel is armed,
+      // and the empty string when none is: there is one place to press.
+      cancelArmed: "",
     };
   }
 
@@ -218,8 +313,12 @@ class App extends Component {
   }
 
   // later schedules fn and remembers the timer so unmount can clear it.
+  // It returns the handle, for a caller that must cancel the timer earlier than that.
   later(fn, ms) {
-    this.timers.push(setTimeout(fn, ms));
+    const id = setTimeout(fn, ms);
+    this.timers.push(id);
+
+    return id;
   }
 
   // signIn navigates to the browser login with the page's selection as the
@@ -429,6 +528,183 @@ class App extends Component {
     this.setState({ collection: body });
   };
 
+  // clearWriteControls tells the start control that the selection moved and drops an armed cancel,
+  // so a page left open holds no loaded button and no error about a Service it has left.
+  // An attempt no answer classified says as it goes that a Collection may already exist,
+  // which is startNext's message: what it names is the Collections table of the Service being left.
+  clearWriteControls() {
+    this.startEvent({ kind: "selection" });
+    this.onCancelKeep();
+    this.clearError("start");
+    this.clearError("cancel");
+  }
+
+  // reloadWhoami refetches the identity an answer says may have moved.
+  // It replaces the realm the controls are drawn from without running boot again,
+  // which would blank the page back to its loading state.
+  reloadWhoami = async () => {
+    const body = await this.request("whoami", whoamiURL(), this.reloadWhoami);
+    if (!body || !body.auth || !body.realm) {
+      return;
+    }
+    this.setState({ whoami: body });
+  };
+
+  // refetch runs the fetches an outcome asked for, under the names the model uses.
+  refetch(what) {
+    if (what === "collections") {
+      this.loadCollections();
+
+      return;
+    }
+    if (what === "whoami") {
+      this.reloadWhoami();
+
+      return;
+    }
+    if (what === "limits") {
+      this.loadLimits();
+    }
+  }
+
+  // showError records under key what a write control's outcome asks the page to show,
+  // as the envelope the hint table is keyed by when the answer carried a code,
+  // and clears the record when the outcome has nothing to say.
+  // The record offers no retry: a repeat of a write is a press, not a button the page adds.
+  showError(key, message, code) {
+    const shown = code ? { error: message, code: code } : message;
+    const record = message === null ? undefined : { error: shown, retry: null };
+    this.setState((s) => ({
+      errors: { ...s.errors, [key]: record },
+      signIn: { ...s.signIn, [key]: undefined },
+    }));
+  }
+
+  // startEvent hands one event to startNext, stores the state and message it decided,
+  // and owns the timers the new phase needs:
+  // the ten-second disarm belongs to the armed phase alone,
+  // and a cooling phase ends with the timer event that leaves it.
+  // It reports whether the phase moved,
+  // which is how the page tells an applied outcome from one the model discarded because the operator had moved on.
+  startEvent(event) {
+    const was = this.state.start.phase;
+    const step = startNext(this.state.start, event);
+    const phase = step.state.phase;
+    const moved = phase !== was;
+    this.setState({ start: step.state, startMessage: step.message });
+    if (moved) {
+      clearTimeout(this.armTimer);
+      if (phase === "armed") {
+        this.armTimer = this.later(() => this.startEvent({ kind: "timer", now: Date.now() }), armDelay);
+      }
+      if (phase === "cooling") {
+        const wait = Math.max(0, step.state.until - Date.now());
+        this.later(() => this.startEvent({ kind: "timer", now: Date.now() }), wait);
+      }
+    }
+
+    return { state: step.state, moved: moved };
+  }
+
+  // onStart is the start control's only press.
+  // Which of arming and submitting it is comes from the phase startNext holds,
+  // so a press while the control is cooling or a request is in flight sends nothing.
+  onStart = () => {
+    const { ns, svc } = this.state;
+    if (this.state.start.phase === "idle") {
+      this.startEvent({ kind: "arm", key: newKey(), route: collectionsURL(ns, svc).href });
+
+      return;
+    }
+    const step = this.startEvent({ kind: "submit" });
+    if (step.state.phase === "inflight" && step.moved) {
+      this.sendStart(step.state);
+    }
+  };
+
+  // onStartKeep abandons the attempt: before the first request it just disarms,
+  // and after one whose outcome went unclassified it drops the route and the key
+  // and says a Collection may already exist, which is startNext's message and not the page's.
+  onStartKeep = () => {
+    this.startEvent({ kind: "keep" });
+  };
+
+  // sendStart posts the start request and hands the answer to startOutcome.
+  // The attempt's token goes out with the request and comes back with the answer,
+  // so an answer to an attempt the operator has left moves no phase and acts on nothing.
+  async sendStart(attempt) {
+    const req = startRequest(attempt.route, attempt.key);
+    const res = await fetchJSON(req.url, req);
+    const answer = answerOf(res);
+    const out = startOutcome(answer);
+    const step = this.startEvent({
+      kind: "outcome",
+      token: attempt.token,
+      keep: out.keep,
+      disableSeconds: out.disableSeconds,
+      now: Date.now(),
+    });
+    if (!step.moved) {
+      return;
+    }
+    for (const what of out.refetch) {
+      this.refetch(what);
+    }
+    if (out.select) {
+      this.onSelectCollection(out.select);
+    }
+    this.showError("start", out.error, answer.code);
+  }
+
+  // onCancel is a row's cancel press: the first arms that row, the second sends.
+  // Arming a second row disarms the first, so one row is armed at a time.
+  onCancel = (id) => {
+    clearTimeout(this.cancelTimer);
+    if (this.state.cancelArmed !== id) {
+      this.setState({ cancelArmed: id });
+      this.cancelTimer = this.later(() => this.setState({ cancelArmed: "" }), armDelay);
+
+      return;
+    }
+    this.setState({ cancelArmed: "" });
+    this.sendCancel(id, 1);
+  };
+
+  onCancelKeep = () => {
+    clearTimeout(this.cancelTimer);
+    this.setState({ cancelArmed: "" });
+  };
+
+  // sendCancel posts one cancel and hands the answer to cancelOutcome.
+  // tryNumber is which press of this cancel the answer belongs to:
+  // a Collection still being published answers the first with a retry a second later,
+  // and the second answer is shown.
+  async sendCancel(id, tryNumber) {
+    const req = cancelRequest(collectionCancelURL(id).href);
+    const res = await fetchJSON(req.url, req);
+    const answer = answerOf(res);
+    const out = cancelOutcome(answer, tryNumber);
+    if (out.retryAfterMs > 0) {
+      this.later(() => this.sendCancel(id, tryNumber + 1), out.retryAfterMs);
+
+      return;
+    }
+    if (out.replace) {
+      this.replaceCollection(id, out.replace);
+    }
+    for (const what of out.refetch) {
+      this.refetch(what);
+    }
+    this.showError("cancel", out.error, answer.code);
+  }
+
+  // replaceCollection puts the record a cancel returned in the row it was pressed on.
+  replaceCollection(id, record) {
+    this.setState((s) => ({
+      collections: s.collections.map((c) => (c && c.id === id ? record : c)),
+    }));
+  }
+
   // afterServiceError refetches the Service list when a targets or
   // Collections fetch answered service_not_found.
   afterServiceError(key) {
@@ -464,6 +740,7 @@ class App extends Component {
         this.clearError("services");
         this.clearError("targets");
         this.clearError("collections");
+        this.clearWriteControls();
         if (ns) {
           this.loadServices();
         }
@@ -481,6 +758,7 @@ class App extends Component {
       () => {
         this.clearError("targets");
         this.clearError("collections");
+        this.clearWriteControls();
         if (svc) {
           this.loadTargets();
           this.maybeLoadCollections();
@@ -692,6 +970,7 @@ class App extends Component {
           <dt>Authentication</dt>
           <dd>${text(mode)}</dd>
         </dl>
+        ${this.panelError("whoami")}
         <footer>
           ${w.auth.logout ? html`<a href=${logoutURL().href}>Sign out</a>` : null}
           ${mode === "basic"
@@ -894,12 +1173,44 @@ class App extends Component {
     return html`<p><small>no target listed yet</small></p>`;
   }
 
+  // renderStart is the Start collection control.
+  // It exists only when startOffered says all four of its conditions hold,
+  // because a control whose every answer would be a refusal is a question the page does not ask.
+  // It confirms in place: the first press arms it and the second sends the request.
+  renderStart() {
+    const { start, limits, whoami, svc } = this.state;
+    if (!startOffered(limits, whoami, this.selectionListed() ? svc : "")) {
+      return null;
+    }
+    const phase = start.phase;
+    const armed = phase === "armed" || phase === "retained";
+    const waiting = phase === "cooling" ? Math.ceil(Math.max(0, start.until - Date.now()) / 1000) : 0;
+    return html`
+      <div class="actions">
+        ${armed
+          ? html`
+              <button type="button" class="armed" onClick=${this.onStart}>Confirm start</button>
+              <button type="button" class="secondary" onClick=${this.onStartKeep}>Keep</button>
+            `
+          : html`
+              <button type="button" onClick=${this.onStart} disabled=${phase !== "idle"}>
+                ${phase === "cooling" ? `Waiting ${waiting} seconds` : phase === "inflight" ? "Starting" : "Start collection"}
+              </button>
+            `}
+      </div>
+      ${this.panelError("start")}
+    `;
+  }
+
   renderCollections() {
-    const { svc, collections, collection } = this.state;
+    const { svc, collections, collection, startMessage } = this.state;
     return html`
       <article>
         <header><strong>Collections</strong></header>
         ${this.panelError("collections")}
+        ${this.renderStart()}
+        ${startMessage ? html`<p><small>${startMessage}</small></p>` : null}
+        ${this.panelError("cancel")}
         ${svc
           ? html`
               <div class="table">
@@ -914,6 +1225,7 @@ class App extends Component {
                       <th>createdAt</th>
                       <th>finishedAt</th>
                       <th>expiresAt</th>
+                      <th>cancel</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -938,6 +1250,7 @@ class App extends Component {
                           <td>${text(c.createdAt)}</td>
                           <td>${text(c.finishedAt)}</td>
                           <td>${text(c.expiresAt)}</td>
+                          <td class="row-actions">${this.renderCancel(c)}</td>
                         </tr>
                       `,
                       )}
@@ -950,6 +1263,23 @@ class App extends Component {
         ${this.panelError("collection")}
         ${collection ? this.renderCollectionDetail(collection) : null}
       </article>
+    `;
+  }
+
+  // renderCancel is a row's cancel control, offered on the states cancelOffered admits
+  // and only for an identifier a path can be built from,
+  // so no press turns into a request to a path built from a record the gateway never wrote.
+  // It confirms in place, the way the start control does.
+  renderCancel(c) {
+    if (!cancelOffered(c.state, this.state.whoami) || !isCollectionID(c.id)) {
+      return null;
+    }
+    if (this.state.cancelArmed !== c.id) {
+      return html`<button type="button" onClick=${() => this.onCancel(c.id)}>Cancel</button>`;
+    }
+    return html`
+      <button type="button" class="armed" onClick=${() => this.onCancel(c.id)}>Confirm cancel</button>
+      <button type="button" class="secondary" onClick=${this.onCancelKeep}>Keep</button>
     `;
   }
 

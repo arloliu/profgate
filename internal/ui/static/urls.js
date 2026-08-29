@@ -59,6 +59,16 @@ export function collectionURL(id) {
   return build("/v1", ["collections", id]);
 }
 
+// collectionCancelURL cancels one Collection;
+// it throws when id is outside the identifier grammar,
+// so no request is ever posted to a path built from a record the gateway never wrote.
+export function collectionCancelURL(id) {
+  if (!collectionIDRe.test(id)) {
+    throw new Error("collection id outside the identifier grammar");
+  }
+  return build("/v1", ["collections", id, "cancel"]);
+}
+
 export function collectionProfileURL(id) {
   if (!collectionIDRe.test(id)) {
     throw new Error("collection id outside the identifier grammar");
