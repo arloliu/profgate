@@ -361,3 +361,133 @@ func TestPGOMetricsLabels(t *testing.T) {
 		})
 	}
 }
+
+// TestPGOBodyFaultDetails reads the details array out of the encoded body of every body and header refusal,
+// so a client is told which field of its own request to change:
+// a pointer into the body, or the header by name.
+func TestPGOBodyFaultDetails(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		header http.Header
+		want   []errorDetail
+	}{
+		{
+			name: "an unknown top-level field", method: http.MethodPut, path: pgoPath,
+			body: `{"bogus":1}`,
+			want: []errorDetail{{Field: "/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "an unknown field in schedule", method: http.MethodPut, path: pgoPath,
+			body: `{"schedule":{"bogus":"1h"}}`,
+			want: []errorDetail{{Field: "/schedule/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "an unknown field in sampling", method: http.MethodPut, path: pgoPath,
+			body: `{"sampling":{"bogus":3}}`,
+			want: []errorDetail{{Field: "/sampling/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "an unknown field in target", method: http.MethodPut, path: pgoPath,
+			body: `{"target":{"bogus":"x"}}`,
+			want: []errorDetail{{Field: "/target/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "an unknown field in artifact", method: http.MethodPut, path: pgoPath,
+			body: `{"artifact":{"bogus":"1h"}}`,
+			want: []errorDetail{{Field: "/artifact/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "two unknown fields name the first", method: http.MethodPut, path: pgoPath,
+			body: `{"bogus":1,"other":2}`,
+			want: []errorDetail{{Field: "/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "document order decides, not name order", method: http.MethodPut, path: pgoPath,
+			body: `{"other":2,"bogus":1}`,
+			want: []errorDetail{{Field: "/other", Code: detailUnknownField}},
+		},
+		{
+			name: "a value of the wrong type is not an unknown field", method: http.MethodPut, path: pgoPath,
+			body: `{"sampling":{"rounds":"three"}}`,
+			want: []errorDetail{{Field: "", Code: detailBodyMalformed}},
+		},
+		{
+			name: "an object where a value decodes itself", method: http.MethodPut, path: pgoPath,
+			body: `{"sampling":{"replicas":{"bogus":1}}}`,
+			want: []errorDetail{{Field: "", Code: detailBodyMalformed}},
+		},
+		{
+			name: "a body that is not JSON", method: http.MethodPut, path: pgoPath,
+			body: `not json`,
+			want: []errorDetail{{Field: "", Code: detailBodyMalformed}},
+		},
+		{
+			name: "a body over the limit", method: http.MethodPut, path: pgoPath,
+			body: `{"enabled":true,"target":{"version":"` + strings.Repeat("v", maxBodyBytes) + `"}}`,
+			want: []errorDetail{{Field: "", Code: detailBodyMalformed}},
+		},
+		{
+			name: "a policy delete takes no body", method: http.MethodDelete, path: pgoPath,
+			body: `{"enabled":false}`,
+			want: []errorDetail{{Field: "", Code: detailBodyNotAllowed}},
+		},
+		{
+			name: "a create sets neither enabled nor schedule", method: http.MethodPost, path: collectionsPath,
+			body: `{"enabled":true,"schedule":{"every":"1h"}}`,
+			want: []errorDetail{
+				{Field: "/enabled", Code: detailFieldNotApplicable},
+				{Field: "/schedule", Code: detailFieldNotApplicable},
+			},
+		},
+		{
+			name: "a create sets enabled alone", method: http.MethodPost, path: collectionsPath,
+			body: `{"enabled":true}`,
+			want: []errorDetail{{Field: "/enabled", Code: detailFieldNotApplicable}},
+		},
+		{
+			name: "If-Match is a wildcard", method: http.MethodPut, path: pgoPath,
+			body: `{"enabled":true}`, header: ifMatch(`*`),
+			want: []errorDetail{{Field: "If-Match", Code: detailHeaderMalformed}},
+		},
+		{
+			name: "If-Match is unquoted", method: http.MethodPut, path: pgoPath,
+			body: `{"enabled":true}`, header: ifMatch(`42`),
+			want: []errorDetail{{Field: "If-Match", Code: detailHeaderMalformed}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPGOHarness(t, pgoOpts{})
+
+			got := h.doPGO(t, tc.method, tc.path, tc.body, tc.header)
+
+			h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+			expectDetails(t, got, "invalid_parameter", tc.want)
+		})
+	}
+
+	t.Run("cancel takes no body", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+		got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), `{"reason":"mine"}`, nil)
+
+		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+		expectDetails(t, got, "invalid_parameter",
+			[]errorDetail{{Field: "", Code: detailBodyNotAllowed}})
+	})
+
+	t.Run("a query parameter on a pgo route names itself", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+
+		got := h.doPGO(t, http.MethodGet, collectionsPath+"?state=completed", "", nil)
+
+		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+		expectDetails(t, got, "invalid_parameter",
+			[]errorDetail{{Field: "state", Code: detailUnknownParameter}})
+	})
+}

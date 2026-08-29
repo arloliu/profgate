@@ -709,12 +709,12 @@ converting `schedule.every` to `/schedule/every` there and nowhere else,
 keeping the violation's `Detail` as the item's `message` and its `Code` as the item's `code`.
 The envelope's own message keeps the text it writes today.
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 Add the constants, the three builders, `Violation.Code`, and the variadic parameter,
 then run `mise exec -- go build ./... && mise exec -- go vet ./...`.
 
-- [ ] **Write the refusal tests**
+- [x] **Write the refusal tests**
 
 `internal/httpapi` asserts against the **encoded body**, not the struct, restating the `details` row of *Layers*:
 
@@ -744,11 +744,11 @@ so a ceiling added later cannot ship without one.
 that `GET /pgo`'s `violations` keep the dotted field and gain the same `code`,
 and that a refusal with several violations carries one item apiece in the order `Validate` produced them.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the items**
+- [x] **Implement the items**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/ ./internal/pgo/

@@ -87,7 +87,7 @@ func (s *server) serveListing(
 	w http.ResponseWriter, r *http.Request, q *request, cfg *config.Config, p auth.Principal, realm config.Realm,
 ) {
 	if r.URL.RawQuery != "" {
-		q.fail(w, invalidParameter("this route takes no query parameter"))
+		q.fail(w, noParameters(r.URL.RawQuery))
 
 		return
 	}

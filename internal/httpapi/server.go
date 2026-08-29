@@ -452,7 +452,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// A token in the URL is refused before any credential is read, even when
 	// a valid one is also in the header: the URL form must never work.
 	if hasAccessToken(r.URL.RawQuery) {
-		q.fail(w, invalidParameter("access_token is not accepted as a query parameter"))
+		q.fail(w, invalidParameter("access_token is not accepted as a query parameter",
+			paramFault(detailUnknownParameter, accessTokenParam,
+				"access_token is not accepted as a query parameter")))
 
 		return
 	}
@@ -494,7 +496,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Parameters, then the allowlist, then discovery: a refused port never reaches Targets.
 	values, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
-		q.fail(w, invalidParameter("the query string is malformed"))
+		q.fail(w, invalidParameter("the query string is malformed",
+			paramFault(detailMalformedParameter, "", "the query string does not parse")))
 
 		return
 	}

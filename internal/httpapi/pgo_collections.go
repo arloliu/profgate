@@ -126,8 +126,19 @@ func (s *server) serveCollectionCreate(
 
 		return
 	}
-	if body.Enabled != nil || body.Schedule != nil {
-		q.fail(w, invalidParameter("a collection request sets neither enabled nor schedule"))
+	// The two fields a policy override may set and a Collection request may not,
+	// named in the order the policy declares them.
+	var notApplicable []errorDetail
+	if body.Enabled != nil {
+		notApplicable = append(notApplicable,
+			bodyFault(detailFieldNotApplicable, "/enabled", "a collection request does not set enabled"))
+	}
+	if body.Schedule != nil {
+		notApplicable = append(notApplicable,
+			bodyFault(detailFieldNotApplicable, "/schedule", "a collection request does not set schedule"))
+	}
+	if len(notApplicable) > 0 {
+		q.fail(w, invalidParameter("a collection request sets neither enabled nor schedule", notApplicable...))
 
 		return
 	}

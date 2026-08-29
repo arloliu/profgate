@@ -582,14 +582,7 @@ func (h *harness) expectError(t *testing.T, rec *httptest.ResponseRecorder, stat
 	if got, _ := errorBodyOf(t, rec); got != code {
 		t.Errorf("code = %q, want %q (body %q)", got, code, rec.Body.String())
 	}
-	// details is omitted, never null or empty, and only port_not_allowed carries it.
-	body := rec.Body.String()
-	if strings.Contains(body, `"details":null`) || strings.Contains(body, `"details":[]`) {
-		t.Errorf("body %q carries an empty details", body)
-	}
-	if strings.Contains(body, `"details"`) != (code == "port_not_allowed") {
-		t.Errorf("body %q: details must appear for port_not_allowed and no other code", body)
-	}
+	detailsOf(t, rec, code)
 	for name := range rec.Header() {
 		if strings.HasPrefix(name, "X-Pprof-Target-") {
 			t.Errorf("gateway error carries %s", name)
@@ -597,6 +590,65 @@ func (h *harness) expectError(t *testing.T, rec *httptest.ResponseRecorder, stat
 	}
 	h.expectAudit(t, status, code)
 	h.expectMetricCode(t, code)
+}
+
+// codesWithDetails are the envelope codes Errors and pgo.md Ceilings give a
+// details vocabulary; every other code carries no details key at all.
+var codesWithDetails = []string{"invalid_parameter", "limit_exceeded", "port_not_allowed"}
+
+// detailsOf decodes the details array of an error envelope and holds the rules every error body obeys:
+// at least one item for a code with a vocabulary,
+// no key at all for a code without one,
+// never null and never empty,
+// every item carrying a code,
+// and no item naming a Pod, an address, or a resolved port.
+func detailsOf(t *testing.T, rec *httptest.ResponseRecorder, code string) []errorDetail {
+	t.Helper()
+
+	body := rec.Body.String()
+	if strings.Contains(body, `"details":null`) || strings.Contains(body, `"details":[]`) {
+		t.Errorf("body %q carries an empty details", body)
+	}
+
+	var envelope struct {
+		Details []errorDetail `json:"details"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("body %q is not a JSON envelope: %v", body, err)
+	}
+	if want := slices.Contains(codesWithDetails, code); (len(envelope.Details) > 0) != want {
+		t.Errorf("body %q: details appear for %v and for no other code", body, codesWithDetails)
+	}
+	for _, item := range envelope.Details {
+		if item.Code == "" {
+			t.Errorf("details item %+v carries no code", item)
+		}
+		for _, leak := range []string{fixturePod, fixtureIP, strconv.Itoa(fixturePort)} {
+			if strings.Contains(item.Field, leak) || strings.Contains(item.Message, leak) {
+				t.Errorf("details item %+v names %q", item, leak)
+			}
+		}
+	}
+
+	return envelope.Details
+}
+
+// expectDetails checks the whole details array of one refusal, item by item.
+func expectDetails(t *testing.T, rec *httptest.ResponseRecorder, code string, want []errorDetail) {
+	t.Helper()
+
+	got := detailsOf(t, rec, code)
+	if len(got) != len(want) {
+		t.Fatalf("details = %+v, want %d item(s): %+v", got, len(want), want)
+	}
+	for i, w := range want {
+		if got[i].Field != w.Field || got[i].Code != w.Code {
+			t.Errorf("details[%d] = %+v, want field %q code %q", i, got[i], w.Field, w.Code)
+		}
+		if got[i].Message == "" {
+			t.Errorf("details[%d] = %+v, want a message", i, got[i])
+		}
+	}
 }
 
 // expectAudit checks that exactly one audit record was written with the spec's keys,
@@ -1479,6 +1531,7 @@ func (h *harness) expectPGOError(
 	if got, _ := errorBodyOf(t, rec); got != code {
 		t.Errorf("code = %q, want %q (body %q)", got, code, rec.Body.String())
 	}
+	detailsOf(t, rec, code)
 	h.expectPGOAudit(t, status, auditCode)
 	h.expectMetricCode(t, auditCode)
 }

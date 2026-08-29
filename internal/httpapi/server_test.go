@@ -1241,7 +1241,8 @@ func TestPortAllowlist(t *testing.T) {
 
 // TestPortNotAllowedDetails checks the encoded body of a refusal: exactly one
 // details item naming the parameter and the value the client sent, never the
-// number a name resolves to, and no details key on any other error.
+// number a name resolves to, and no details key on an error whose code has no
+// vocabulary.
 func TestPortNotAllowedDetails(t *testing.T) {
 	detailsOf := func(t *testing.T, rec *httptest.ResponseRecorder) string {
 		t.Helper()
@@ -1290,7 +1291,7 @@ func TestPortNotAllowedDetails(t *testing.T) {
 		}
 	})
 
-	t.Run("no other error carries details", func(t *testing.T) {
+	t.Run("a code with no vocabulary carries no details", func(t *testing.T) {
 		for _, tc := range []struct {
 			name      string
 			configure func(*harness)
@@ -1303,9 +1304,10 @@ func TestPortNotAllowedDetails(t *testing.T) {
 					cfg.Realms["developer"] = config.Realm{Namespaces: []string{"other"}, Services: []string{"*"}, Profiles: []string{"*"}}
 				})
 			}, profilePath + "heap?port=6061", http.StatusForbidden, "realm_denied"},
-			{"invalid parameter", func(*harness) {}, profilePath + "heap?port=abc", http.StatusBadRequest, "invalid_parameter"},
 			{"service not found", func(h *harness) { h.disc.err = k8s.ErrServiceNotFound }, profilePath + "heap", http.StatusNotFound, "service_not_found"},
 			{"no targets", func(h *harness) { h.disc.targets = nil }, profilePath + "heap", http.StatusServiceUnavailable, "no_targets"},
+			{"not ready", func(h *harness) { h.disc.synced = false }, profilePath + "heap", http.StatusServiceUnavailable, "not_ready"},
+			{"too many profiles", func(h *harness) { h.gate = admit.New(0) }, profilePath + "heap", http.StatusTooManyRequests, "too_many_profiles"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				h := newHarness(baseTarget())

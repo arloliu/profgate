@@ -3,6 +3,7 @@ package pgo
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -198,12 +199,14 @@ func TestValidateCeilings(t *testing.T) {
 		name    string
 		mutate  func(Policy) Policy
 		field   string
+		code    string
 		ceiling string
 	}{
 		{
 			name:    "every above maxEvery",
 			mutate:  func(p Policy) Policy { p.Schedule.Every = Duration(25 * time.Hour); return p },
 			field:   "schedule.every",
+			code:    codeAboveMaximum,
 			ceiling: "pgo.limits.maxEvery",
 		},
 		{
@@ -214,90 +217,105 @@ func TestValidateCeilings(t *testing.T) {
 				return p
 			},
 			field:   "schedule.every",
+			code:    codeBelowMinimum,
 			ceiling: "pgo.limits.minEvery",
 		},
 		{
 			name:    "jitter above half of every",
 			mutate:  func(p Policy) Policy { p.Schedule.Jitter = Duration(4 * time.Hour); return p },
 			field:   "schedule.jitter",
+			code:    codeOutOfRange,
 			ceiling: "schedule.every/2",
 		},
 		{
 			name:    "duration above maxDuration",
 			mutate:  func(p Policy) Policy { p.Sampling.Duration = Duration(61 * time.Second); return p },
 			field:   "sampling.duration",
+			code:    codeAboveMaximum,
 			ceiling: "pgo.limits.maxDuration",
 		},
 		{
 			name:    "duration below one second",
 			mutate:  func(p Policy) Policy { p.Sampling.Duration = 0; return p },
 			field:   "sampling.duration",
+			code:    codeBelowMinimum,
 			ceiling: "1s",
 		},
 		{
 			name:    "rounds above maxRounds",
 			mutate:  func(p Policy) Policy { p.Sampling.Rounds = 6; return p },
 			field:   "sampling.rounds",
+			code:    codeAboveMaximum,
 			ceiling: "pgo.limits.maxRounds",
 		},
 		{
 			name:    "rounds below one",
 			mutate:  func(p Policy) Policy { p.Sampling.Rounds = 0; return p },
 			field:   "sampling.rounds",
+			code:    codeBelowMinimum,
 			ceiling: "1",
 		},
 		{
 			name:    "roundInterval above ten minutes",
 			mutate:  func(p Policy) Policy { p.Sampling.RoundInterval = Duration(11 * time.Minute); return p },
 			field:   "sampling.roundInterval",
+			code:    codeOutOfRange,
 			ceiling: "10m",
 		},
 		{
 			name:    "replicas above maxTargetsPerRound",
 			mutate:  func(p Policy) Policy { p.Sampling.Replicas = ReplicaCount(33); return p },
 			field:   "sampling.replicas",
+			code:    codeAboveMaximum,
 			ceiling: "pgo.limits.maxTargetsPerRound",
 		},
 		{
 			name:    "replicas below one",
 			mutate:  func(p Policy) Policy { p.Sampling.Replicas = ReplicaCount(0); return p },
 			field:   "sampling.replicas",
+			code:    codeBelowMinimum,
 			ceiling: "1",
 		},
 		{
 			name:    "replicas unset",
 			mutate:  func(p Policy) Policy { p.Sampling.Replicas = Replicas{}; return p },
 			field:   "sampling.replicas",
+			code:    codeBelowMinimum,
 			ceiling: "1",
 		},
 		{
 			name:    "maxParallel above the ceiling",
 			mutate:  func(p Policy) Policy { p.Sampling.MaxParallel = 5; return p },
 			field:   "sampling.maxParallel",
+			code:    codeAboveMaximum,
 			ceiling: "pgo.limits.maxParallel",
 		},
 		{
 			name:    "maxParallel below one",
 			mutate:  func(p Policy) Policy { p.Sampling.MaxParallel = 0; return p },
 			field:   "sampling.maxParallel",
+			code:    codeBelowMinimum,
 			ceiling: "1",
 		},
 		{
 			name:    "versionPolicy is not strict",
 			mutate:  func(p Policy) Policy { p.Target.VersionPolicy = "loose"; return p },
 			field:   "target.versionPolicy",
+			code:    codeNotPermitted,
 			ceiling: "strict",
 		},
 		{
 			name:    "retention above maxRetention",
 			mutate:  func(p Policy) Policy { p.Artifact.Retention = Duration(25 * time.Hour); return p },
 			field:   "artifact.retention",
+			code:    codeAboveMaximum,
 			ceiling: "pgo.limits.maxRetention",
 		},
 		{
 			name:    "retention below one minute",
 			mutate:  func(p Policy) Policy { p.Artifact.Retention = Duration(30 * time.Second); return p },
 			field:   "artifact.retention",
+			code:    codeBelowMinimum,
 			ceiling: "1m",
 		},
 	}
@@ -310,6 +328,9 @@ func TestValidateCeilings(t *testing.T) {
 			}
 			if got[0].Field != tc.field || got[0].Ceiling != tc.ceiling {
 				t.Fatalf("violation = %+v, want field %q ceiling %q", got[0], tc.field, tc.ceiling)
+			}
+			if got[0].Code != tc.code {
+				t.Errorf("violation code = %q, want %q", got[0].Code, tc.code)
 			}
 			if got[0].Detail == "" {
 				t.Fatal("violation carries no detail")
@@ -479,4 +500,37 @@ func TestStoredOverrideRoundTrip(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	assertSameJSON(t, []byte(stored), b)
+}
+
+// TestValidateAlwaysCodesAViolation measures a policy that misses every bound
+// at once, so a ceiling added without a code fails here rather than shipping a
+// violation a client cannot read.
+func TestValidateAlwaysCodesAViolation(t *testing.T) {
+	p := basePolicy(t)
+	p.Schedule.Every = Duration(25 * time.Hour)
+	p.Schedule.Jitter = Duration(20 * time.Hour)
+	p.Sampling.Duration = Duration(61 * time.Second)
+	p.Sampling.Rounds = 6
+	p.Sampling.RoundInterval = Duration(11 * time.Minute)
+	p.Sampling.Replicas = ReplicaCount(33)
+	p.Sampling.MaxParallel = 5
+	p.Target.VersionPolicy = "loose"
+	p.Artifact.Retention = Duration(25 * time.Hour)
+
+	got := Validate(p, testLimits())
+
+	if len(got) != 9 {
+		t.Fatalf("violations = %+v, want one per policy field", got)
+	}
+	known := []string{codeAboveMaximum, codeBelowMinimum, codeOutOfRange, codeNotPermitted}
+	for _, v := range got {
+		if v.Code == "" {
+			t.Errorf("violation %+v carries no code", v)
+
+			continue
+		}
+		if !slices.Contains(known, v.Code) {
+			t.Errorf("violation %+v carries a code outside %v", v, known)
+		}
+	}
 }

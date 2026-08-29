@@ -108,3 +108,100 @@ func TestParseProfileParams(t *testing.T) {
 		})
 	}
 }
+
+// TestParameterFaultDetails drives every row of the targets and profile parameter tables through the handler,
+// and reads the details array out of the encoded body,
+// so a client can tell which parameter it has to change and how without reading the message.
+func TestParameterFaultDetails(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want []errorDetail
+		code string
+	}{
+		{"unknown parameter", profilePath + "heap?foo=1",
+			[]errorDetail{{Field: "foo", Code: detailUnknownParameter}}, "invalid_parameter"},
+		{"repeated parameter", profilePath + "cpu?seconds=1&seconds=2",
+			[]errorDetail{{Field: "seconds", Code: detailRepeatedParameter}}, "invalid_parameter"},
+		{"empty parameter", profilePath + "cpu?seconds=",
+			[]errorDetail{{Field: "seconds", Code: detailEmptyParameter}}, "invalid_parameter"},
+		{"bare key is empty", profilePath + "heap?pod",
+			[]errorDetail{{Field: "pod", Code: detailEmptyParameter}}, "invalid_parameter"},
+		{"repeated beats empty", profilePath + "heap?pod=&pod=",
+			[]errorDetail{{Field: "pod", Code: detailRepeatedParameter}}, "invalid_parameter"},
+		{"malformed seconds", profilePath + "cpu?seconds=abc",
+			[]errorDetail{{Field: "seconds", Code: detailMalformedParameter}}, "invalid_parameter"},
+		{"malformed pod", profilePath + "heap?pod=Bad_",
+			[]errorDetail{{Field: "pod", Code: detailMalformedParameter}}, "invalid_parameter"},
+		{"malformed strategy", profilePath + "heap?strategy=roundrobin",
+			[]errorDetail{{Field: "strategy", Code: detailMalformedParameter}}, "invalid_parameter"},
+		{"malformed port", profilePath + "heap?port=abc",
+			[]errorDetail{{Field: "port", Code: detailMalformedParameter}}, "invalid_parameter"},
+		{"malformed portName", profilePath + "heap?portName=BAD",
+			[]errorDetail{{Field: "portName", Code: detailMalformedParameter}}, "invalid_parameter"},
+		{"repeated port", profilePath + "heap?port=6060&port=6061",
+			[]errorDetail{{Field: "port", Code: detailRepeatedParameter}}, "invalid_parameter"},
+		{"empty portName", profilePath + "heap?portName=",
+			[]errorDetail{{Field: "portName", Code: detailEmptyParameter}}, "invalid_parameter"},
+		{"seconds on heap", profilePath + "heap?seconds=1",
+			[]errorDetail{{Field: "seconds", Code: detailParameterNotApplicable}}, "invalid_parameter"},
+		{"port with portName", profilePath + "heap?port=6060&portName=pprof", []errorDetail{
+			{Field: "port", Code: detailMutuallyExclusive},
+			{Field: "portName", Code: detailMutuallyExclusive},
+		}, "invalid_parameter"},
+		{"a refused selection", profilePath + "heap?port=7000",
+			[]errorDetail{{Field: "port", Code: detailNotAdmitted}}, "port_not_allowed"},
+		{"a refused name", profilePath + "heap?portName=pprof-alt",
+			[]errorDetail{{Field: "portName", Code: detailNotAdmitted}}, "port_not_allowed"},
+		{"access_token in the query", profilePath + "heap?access_token=x",
+			[]errorDetail{{Field: "access_token", Code: detailUnknownParameter}}, "invalid_parameter"},
+		{"a query string that does not parse", profilePath + "heap?%zz",
+			[]errorDetail{{Field: "", Code: detailMalformedParameter}}, "invalid_parameter"},
+
+		{"targets unknown parameter", targetsPath + "?foo=1",
+			[]errorDetail{{Field: "foo", Code: detailUnknownParameter}}, "invalid_parameter"},
+		{"targets malformed explain", targetsPath + "?explain=maybe",
+			[]errorDetail{{Field: "explain", Code: detailMalformedParameter}}, "invalid_parameter"},
+		{"targets empty explain", targetsPath + "?explain=",
+			[]errorDetail{{Field: "explain", Code: detailEmptyParameter}}, "invalid_parameter"},
+		{"targets repeated version", targetsPath + "?version=a&version=b",
+			[]errorDetail{{Field: "version", Code: detailRepeatedParameter}}, "invalid_parameter"},
+		{"targets malformed pod", targetsPath + "?pod=Bad_",
+			[]errorDetail{{Field: "pod", Code: detailMalformedParameter}}, "invalid_parameter"},
+		{"targets malformed portName", targetsPath + "?portName=BAD",
+			[]errorDetail{{Field: "portName", Code: detailMalformedParameter}}, "invalid_parameter"},
+		{"targets port with portName", targetsPath + "?port=6060&portName=pprof", []errorDetail{
+			{Field: "port", Code: detailMutuallyExclusive},
+			{Field: "portName", Code: detailMutuallyExclusive},
+		}, "invalid_parameter"},
+		{"targets refused selection", targetsPath + "?port=7000",
+			[]errorDetail{{Field: "port", Code: detailNotAdmitted}}, "port_not_allowed"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(baseTarget())
+
+			rec := h.do(t, http.MethodGet, tc.path)
+
+			h.expectError(t, rec, http.StatusBadRequest, tc.code)
+			expectDetails(t, rec, tc.code, tc.want)
+		})
+	}
+}
+
+// TestListingParameterFaultDetails proves what a route that takes no query parameter answers:
+// it names the one the caller sent rather than saying only that it took none.
+func TestListingParameterFaultDetails(t *testing.T) {
+	for _, path := range []string{"/v1/namespaces", "/v1/whoami", "/v1/limits"} {
+		t.Run(path, func(t *testing.T) {
+			h := newHarness(baseTarget())
+
+			rec := h.do(t, http.MethodGet, path+"?foo=1&bar=2")
+
+			h.expectError(t, rec, http.StatusBadRequest, "invalid_parameter")
+			expectDetails(t, rec, "invalid_parameter",
+				[]errorDetail{{Field: "bar", Code: detailUnknownParameter}})
+		})
+	}
+}

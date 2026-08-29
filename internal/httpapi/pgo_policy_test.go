@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"sync/atomic"
@@ -318,5 +319,70 @@ func TestPolicyStoreFailuresAreUnavailable(t *testing.T) {
 
 			h.expectPGOError(t, got, http.StatusServiceUnavailable, "pgo_unavailable", "pgo_unavailable")
 		})
+	}
+}
+
+// TestLimitExceededDetails pins the machine form of a ceiling refusal:
+// one item per violation, in the order validation produced them,
+// with the policy field written as a JSON pointer and the violation's own code beside it.
+func TestLimitExceededDetails(t *testing.T) {
+	t.Run("one field over its ceiling", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+
+		got := h.doPGO(t, http.MethodPut, pgoPath, `{"enabled":true,"sampling":{"rounds":99}}`, nil)
+
+		h.expectPGOError(t, got, http.StatusBadRequest, "limit_exceeded", "limit_exceeded")
+		expectDetails(t, got, "limit_exceeded",
+			[]errorDetail{{Field: "/sampling/rounds", Code: "above_maximum"}})
+	})
+
+	t.Run("several fields keep validation order", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		body := `{"enabled":true,"schedule":{"every":"48h"},"sampling":{"rounds":0},` +
+			`"target":{"versionPolicy":"loose"}}`
+
+		got := h.doPGO(t, http.MethodPut, pgoPath, body, nil)
+
+		h.expectPGOError(t, got, http.StatusBadRequest, "limit_exceeded", "limit_exceeded")
+		expectDetails(t, got, "limit_exceeded", []errorDetail{
+			{Field: "/schedule/every", Code: "above_maximum"},
+			{Field: "/sampling/rounds", Code: "below_minimum"},
+			{Field: "/target/versionPolicy", Code: "not_permitted"},
+		})
+	})
+
+	t.Run("a collection request answers the same way", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+
+		got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"rounds":99}}`, nil)
+
+		h.expectPGOError(t, got, http.StatusBadRequest, "limit_exceeded", "limit_exceeded")
+		expectDetails(t, got, "limit_exceeded",
+			[]errorDetail{{Field: "/sampling/rounds", Code: "above_maximum"}})
+	})
+}
+
+// TestPolicyViolationsCarryCode proves the two renderings of one vocabulary:
+// GET /pgo keeps the dotted field its clients already read,
+// and gains the same code the refusal's details item carries.
+func TestPolicyViolationsCarryCode(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{limits: testPGOLimits(func(l *config.PGOLimits) { l.MaxRounds = 2 })})
+	rounds := 5
+	h.seedOverride(t, &pgo.PolicyOverride{Sampling: &pgo.SamplingOverride{Rounds: &rounds}})
+
+	got := h.doPGO(t, http.MethodGet, pgoPath, "", nil)
+
+	body := decodePolicy(t, got.Body.Bytes())
+	if len(body.Violations) != 1 {
+		t.Fatalf("violations = %+v, want one", body.Violations)
+	}
+	if body.Violations[0].Field != "sampling.rounds" {
+		t.Errorf("field = %q, want the dotted form GET /pgo publishes", body.Violations[0].Field)
+	}
+	if body.Violations[0].Code != "above_maximum" {
+		t.Errorf("code = %q, want above_maximum", body.Violations[0].Code)
+	}
+	if !bytes.Contains(got.Body.Bytes(), []byte(`"code":"above_maximum"`)) {
+		t.Errorf("body %q does not publish the violation code", got.Body.String())
 	}
 }
