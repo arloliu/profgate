@@ -1654,3 +1654,68 @@ func TestConcurrentKeyedCreatesAnswerOneOfTwoWays(t *testing.T) {
 		t.Errorf("retry names %q, want the accepted collection %q", got, accepted)
 	}
 }
+
+// TestCollectionReplayOutrunsTheTokenBucket is where the lookup sits.
+// The bucket bounds requests that would create something, and a replay creates nothing,
+// so an empty bucket never withholds an identifier the caller already owns.
+// The test fails when the lookup moves behind the bucket:
+// the second request is then the one the bucket refuses.
+func TestCollectionReplayOutrunsTheTokenBucket(t *testing.T) {
+	limits := testPGOLimits(func(l *config.PGOLimits) { l.OnDemandPerMinute = 1 })
+	h := newPGOHarness(t, pgoOpts{limits: limits})
+
+	first := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d, want 202 (body %q)", first.Code, first.Body.String())
+	}
+
+	// The one token of the minute is gone,
+	// and the retry is the request whose answer was lost rather than a second creation.
+	second := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200 with the bucket empty (body %q)", second.Code, second.Body.String())
+	}
+	if got, want := acceptedBodyOf(t, second).ID, acceptedBodyOf(t, first).ID; got != want {
+		t.Errorf("replay names %q, want the first collection %q", got, want)
+	}
+}
+
+// TestCollectionReplayReReadsAReceiptItLost proves the delete of a stale receipt is guarded by the revision it read.
+// Another writer replaced the receipt in between,
+// so this request's delete loses and it reads the key once more,
+// which is where the Collection that now holds the key is answered from.
+func TestCollectionReplayReReadsAReceiptItLost(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	hash := fixtureSnapshotHash(t)
+	successor := h.boundRecord(t, pgo.StateRunning, "k", hash)
+	// The receipt this request reads names a record that reached its retention,
+	// which is the stale one it tries to delete.
+	receiptKey := fixtureReceiptKey("k")
+	h.nats.jobs.put(t, receiptKey,
+		pgo.Receipt{ID: newFixtureID(), SnapshotHash: hash, CreatedAt: pgoFixtureNow})
+
+	var reads atomic.Int32
+	h.nats.jobs.afterGet = func() {
+		if reads.Add(1) != 1 {
+			return
+		}
+		h.nats.jobs.put(t, receiptKey,
+			pgo.Receipt{ID: successor.ID, SnapshotHash: hash, CreatedAt: pgoFixtureNow})
+	}
+
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+	}
+	if id := acceptedBodyOf(t, got).ID; id != successor.ID {
+		t.Errorf("answer names %q, want the collection the key now holds, %q", id, successor.ID)
+	}
+	if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 1 {
+		t.Errorf("receipts = %d, want the successor's alone: a lost delete removes nothing", n)
+	}
+	if receipt := h.nats.jobs.receipt(t, receiptKey); receipt.ID != successor.ID {
+		t.Errorf("receipt names %q, want the successor %q", receipt.ID, successor.ID)
+	}
+}
