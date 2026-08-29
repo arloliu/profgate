@@ -1257,12 +1257,34 @@ func deployOwnGateway(t *testing.T, h *Harness, ns, cfg string) *http.Client {
 	}
 	t.Cleanup(stop)
 	local := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(ports[0])))
-	return &http.Client{Transport: &http.Transport{
+	c := &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, network, local)
 		},
 	}}
+	// The port-forward is open before a connection through it is usable,
+	// as it is for every other gateway a scenario deploys.
+	// A gateway with PGO on answers every PGO route 503 until its watches have replayed,
+	// which is later than the readiness its rollout waited for.
+	// The policy read settles both and changes nothing:
+	// a gateway with PGO off answers it before it would look at any store.
+	var last response
+	err = poll(ctx, barrierDeadline, func(ctx context.Context) (bool, error) {
+		resp, err := try(ctx, c, http.MethodGet, pgoURL(ns, testAppName), nil, nil)
+		if err != nil {
+			return false, nil //nolint:nilerr // the forward settles; the poll bounds the wait
+		}
+		last = resp
+
+		return resp.Status != http.StatusServiceUnavailable, nil
+	})
+	if err != nil {
+		t.Fatalf("the gateway in %s never answered past the replay barrier: %v (last %d %s)",
+			ns, err, last.Status, last.Body)
+	}
+
+	return c
 }
 
 // deleteOwnGateway removes a scenario's own gateway Deployment and waits for its
