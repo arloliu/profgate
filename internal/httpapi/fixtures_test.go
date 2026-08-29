@@ -541,6 +541,13 @@ func assertNoLeak(t *testing.T, rec *httptest.ResponseRecorder) {
 
 	for _, leak := range []string{fixtureIP, strconv.Itoa(fixturePort)} {
 		for name, values := range rec.Header() {
+			// The request identifier is 32 random hexadecimal characters when the gateway mints one,
+			// and the client's own text when it does not,
+			// so it names nothing of the cluster and a chance substring is not a leak.
+			// Its own rules are asserted in requestid_test.go.
+			if name == requestIDHeader {
+				continue
+			}
 			for _, v := range values {
 				if strings.Contains(v, leak) {
 					t.Errorf("header %s leaks %q: %q", name, leak, v)
@@ -563,6 +570,11 @@ func errorBodyOf(t *testing.T, rec *httptest.ResponseRecorder) (code, message st
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("body %q is not a JSON envelope: %v", rec.Body.String(), err)
+	}
+	// Every envelope the suite reads passes through here or through detailsOf,
+	// so between them a code no registry constant names is caught wherever it is written.
+	if !slices.Contains(EnvelopeCodes(), body.Code) {
+		t.Errorf("body %q carries code %q, which is not in the registry", rec.Body.String(), body.Code)
 	}
 
 	return body.Code, body.Error
@@ -597,6 +609,7 @@ func (h *harness) expectError(t *testing.T, rec *httptest.ResponseRecorder, stat
 var codesWithDetails = []string{"invalid_parameter", "limit_exceeded", "port_not_allowed"}
 
 // detailsOf decodes the details array of an error envelope and holds the rules every error body obeys:
+// a code the registry holds,
 // at least one item for a code with a vocabulary,
 // no key at all for a code without one,
 // never null and never empty,
@@ -611,10 +624,15 @@ func detailsOf(t *testing.T, rec *httptest.ResponseRecorder, code string) []erro
 	}
 
 	var envelope struct {
+		Code    string        `json:"code"`
 		Details []errorDetail `json:"details"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatalf("body %q is not a JSON envelope: %v", body, err)
+	}
+	// expectDetails reaches this without errorBodyOf, so the registry check runs here too.
+	if !slices.Contains(EnvelopeCodes(), envelope.Code) {
+		t.Errorf("body %q carries code %q, which is not in the registry", body, envelope.Code)
 	}
 	if want := slices.Contains(codesWithDetails, code); (len(envelope.Details) > 0) != want {
 		t.Errorf("body %q: details appear for %v and for no other code", body, codesWithDetails)

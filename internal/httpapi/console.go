@@ -1,17 +1,6 @@
 package httpapi
 
-import (
-	"net/http"
-	"strings"
-)
-
-// uiPrefix is where the console's shell and assets live; every path under it and "/" itself go to Console.
-const uiPrefix = "/ui/"
-
-// isConsolePath reports whether path is one the console answers: "/" or anything under /ui/.
-func isConsolePath(path string) bool {
-	return path == "/" || strings.HasPrefix(path, uiPrefix)
-}
+import "net/http"
 
 // statusWriter captures the status the console wrote so the metrics row can be derived from it.
 type statusWriter struct {
@@ -36,7 +25,7 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 }
 
 // consoleCode maps the status the console wrote to the closed set of ui codes:
-// 2xx and 3xx are "ok", 404 is "route_unknown", 405 is "method_not_allowed",
+// 2xx and 3xx are "ok", 404 and 405 are the envelope codes the console writes,
 // and every other status is "internal_error", so a console that fails is counted as a failure
 // and never as a route miss. No status reaches the label as a number.
 func consoleCode(status int) string {
@@ -44,11 +33,11 @@ func consoleCode(status int) string {
 	case status >= 200 && status < 400:
 		return codeOK
 	case status == http.StatusNotFound:
-		return "route_unknown"
+		return CodeRouteUnknown
 	case status == http.StatusMethodNotAllowed:
-		return "method_not_allowed"
+		return CodeMethodNotAllowed
 	default:
-		return "internal_error"
+		return codeInternalError
 	}
 }
 
@@ -57,7 +46,7 @@ func consoleCode(status int) string {
 func (s *server) serveConsole(w http.ResponseWriter, r *http.Request, q *request) {
 	q.console = true
 	if s.deps.Console == nil {
-		q.fail(w, &requestError{status: http.StatusNotFound, code: "route_unknown", message: "no such route"})
+		q.fail(w, errRouteUnknown)
 
 		return
 	}

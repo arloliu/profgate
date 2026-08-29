@@ -1034,15 +1034,15 @@ func TestChartPrometheusRule(t *testing.T) {
 			}
 		}
 		//nolint:gosec // the path is this repository's own source
-		server, err := os.ReadFile(filepath.Join("..", "internal", "httpapi", "server.go"))
+		codes, err := os.ReadFile(filepath.Join("..", "internal", "httpapi", "codes.go"))
 		if err != nil {
-			t.Fatalf("read the API server: %v", err)
+			t.Fatalf("read the error-code registry: %v", err)
 		}
 		// The label value is the error code the admission gate answers with;
 		// renaming that code would leave this alert matching no series.
 		if !strings.Contains(expr, `code="too_many_profiles"`) ||
-			!bytes.Contains(server, []byte(`"too_many_profiles"`)) {
-			t.Errorf("expr %q and internal/httpapi/server.go disagree on the admission refusal code", expr)
+			!bytes.Contains(codes, []byte(`"too_many_profiles"`)) {
+			t.Errorf("expr %q and internal/httpapi/codes.go disagree on the admission refusal code", expr)
 		}
 		// profgate_requests_total is labelled by endpoint and profile, so an
 		// unaggregated rate fires once per profile name a burst touched.

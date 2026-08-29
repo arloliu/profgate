@@ -312,7 +312,7 @@ func parseProfileParams(values url.Values, spec profileSpec, limits config.Limit
 		if params.seconds > limit {
 			return params, &requestError{
 				status:  http.StatusBadRequest,
-				code:    "seconds_exceeds_limit",
+				code:    CodeSecondsExceedsLimit,
 				message: fmt.Sprintf("effective duration %ds exceeds the %s limit of %ds", params.seconds, spec.name, limit),
 			}
 		}
@@ -358,7 +358,7 @@ func parsePort(s string) (int32, bool) {
 func portNotAllowed(field, sent string) *requestError {
 	return &requestError{
 		status:  http.StatusBadRequest,
-		code:    "port_not_allowed",
+		code:    CodePortNotAllowed,
 		message: fmt.Sprintf("port %q is not allowed by this gateway", sent),
 		details: []errorDetail{paramFault(detailNotAdmitted, field, sent+" is not an admitted selection")},
 	}
@@ -386,14 +386,14 @@ func selectTarget(targets []k8s.Target, params profileParams, choose func(n int)
 
 		return k8s.Target{}, &requestError{
 			status:  http.StatusNotFound,
-			code:    "pod_not_found",
+			code:    CodePodNotFound,
 			message: fmt.Sprintf("pod %s is not an eligible target", params.pod),
 		}
 	}
 	if len(remaining) == 0 {
 		return k8s.Target{}, &requestError{
 			status:  http.StatusServiceUnavailable,
-			code:    "no_targets",
+			code:    CodeNoTargets,
 			message: "service has no eligible targets",
 		}
 	}

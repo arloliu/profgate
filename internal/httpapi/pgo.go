@@ -41,7 +41,7 @@ var (
 	// not replayed under this generation, or a call reported ErrUnavailable.
 	errPGOUnavailable = &requestError{
 		status:  http.StatusServiceUnavailable,
-		code:    "pgo_unavailable",
+		code:    CodePGOUnavailable,
 		message: "pgo state is unavailable",
 	}
 	// errCollectionNotFound is the one answer for a Collection that does not
@@ -50,12 +50,12 @@ var (
 	// realm hides and telling them alike costs nothing.
 	errCollectionNotFound = &requestError{
 		status:  http.StatusNotFound,
-		code:    "collection_not_found",
+		code:    CodeCollectionNotFound,
 		message: "no such collection",
 	}
 	errArtifactGone = &requestError{
 		status:  http.StatusGone,
-		code:    "artifact_gone",
+		code:    CodeArtifactGone,
 		message: "the profile of this collection is no longer stored",
 	}
 )
@@ -124,8 +124,8 @@ func (s *server) servePGOCollection(
 		s.serveCollectionDownload(w, r, q, sess, stored)
 	case kindCollectionCancel:
 		s.serveCollectionCancel(w, r, q, sess, stored)
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections,
-		kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth:
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindNamespaces, kindServices,
+		kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
 		q.fail(w, errCollectionNotFound)
 	}
 }

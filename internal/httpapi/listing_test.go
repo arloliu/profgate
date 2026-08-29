@@ -675,26 +675,29 @@ func TestListingDisclosure(t *testing.T) {
 }
 
 func TestRouteKinds(t *testing.T) {
-	get := []string{http.MethodGet}
 	table := []struct {
-		kind                 routeKind
-		pgo, scoped, listing bool
-		methods              []string
+		kind                        routeKind
+		pgo, scoped, listing, authr bool
 	}{
-		{kindTargets, false, false, false, get},
-		{kindProfile, false, false, false, get},
-		{kindPGOPolicy, true, false, false, []string{http.MethodGet, http.MethodPut, http.MethodDelete}},
-		{kindCollections, true, false, false, []string{http.MethodGet, http.MethodPost}},
-		{kindCollection, true, true, false, get},
-		{kindCollectionProfile, true, true, false, get},
-		{kindCollectionCancel, true, true, false, []string{http.MethodPost}},
-		{kindNamespaces, false, false, true, get},
-		{kindServices, false, false, true, get},
-		{kindWhoami, false, false, true, get},
-		{kindLimits, false, false, true, get},
+		{kindTargets, false, false, false, false},
+		{kindProfile, false, false, false, false},
+		{kindPGOPolicy, true, false, false, false},
+		{kindCollections, true, false, false, false},
+		{kindCollection, true, true, false, false},
+		{kindCollectionProfile, true, true, false, false},
+		{kindCollectionCancel, true, true, false, false},
+		{kindNamespaces, false, false, true, false},
+		{kindServices, false, false, true, false},
+		{kindWhoami, false, false, true, false},
+		{kindLimits, false, false, true, false},
+		{kindAuth, false, false, false, false},
+		{kindAuthLogin, false, false, false, true},
+		{kindAuthCallback, false, false, false, true},
+		{kindAuthLogout, false, false, false, true},
+		{kindConsole, false, false, false, false},
 	}
-	if len(table) != int(kindLimits)+1 {
-		t.Fatalf("table has %d rows, want %d: a kind was added without a row", len(table), int(kindLimits)+1)
+	if len(table) != int(kindConsole)+1 {
+		t.Fatalf("table has %d rows, want %d: a kind was added without a row", len(table), int(kindConsole)+1)
 	}
 	for i, row := range table {
 		t.Run(fmt.Sprintf("kind %d", row.kind), func(t *testing.T) {
@@ -710,8 +713,8 @@ func TestRouteKinds(t *testing.T) {
 			if got := row.kind.isListing(); got != row.listing {
 				t.Errorf("kind %d isListing = %v, want %v", row.kind, got, row.listing)
 			}
-			if got := row.kind.methods(); !reflect.DeepEqual(got, row.methods) {
-				t.Errorf("kind %d methods = %v, want %v", row.kind, got, row.methods)
+			if got := row.kind.isAuthRoute(); got != row.authr {
+				t.Errorf("kind %d isAuthRoute = %v, want %v", row.kind, got, row.authr)
 			}
 		})
 	}

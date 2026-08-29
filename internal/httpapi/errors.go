@@ -52,6 +52,32 @@ const (
 	detailNotAdmitted = "not_admitted"
 )
 
+// The errors more than one route answers with, built from the registry.
+var (
+	// errRouteUnknown is a path no declaration of the route table matches.
+	errRouteUnknown = &requestError{
+		status:  http.StatusNotFound,
+		code:    CodeRouteUnknown,
+		message: "no such route",
+	}
+	// errNotReady is the readiness step before the caches have synced.
+	errNotReady = &requestError{
+		status:  http.StatusServiceUnavailable,
+		code:    CodeNotReady,
+		message: "the gateway is not ready",
+	}
+)
+
+// methodNotAllowed is 405 method_not_allowed;
+// the caller sets Allow from the methods the matched declaration lists.
+func methodNotAllowed(method string) *requestError {
+	return &requestError{
+		status:  http.StatusMethodNotAllowed,
+		code:    CodeMethodNotAllowed,
+		message: "method " + method + " not allowed",
+	}
+}
+
 // invalidParameter is 400 invalid_parameter with the items the refusal earns,
 // in the order the parameters were validated, which is name order.
 // A caller that has no item to give passes none, and the body then carries no
@@ -59,7 +85,7 @@ const (
 func invalidParameter(message string, items ...errorDetail) *requestError {
 	return &requestError{
 		status:  http.StatusBadRequest,
-		code:    "invalid_parameter",
+		code:    CodeInvalidParameter,
 		message: message,
 		details: items,
 	}

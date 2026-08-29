@@ -11,13 +11,10 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
-	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/arloliu/profgate/internal/admit"
 	"github.com/arloliu/profgate/internal/auth"
@@ -36,24 +33,14 @@ const (
 	codeOK = "ok"
 	// codeStreamFailed is the proxy outcome after which the connection is dropped.
 	codeStreamFailed = "upstream_stream_failed"
+	// codeInternalError is the console outcome for a status that is neither a
+	// success, a redirect, nor one of the two envelopes the console writes.
+	codeInternalError = "internal_error"
 	// labelNone is the metrics profile label when no profile applies.
 	labelNone = "none"
 	// labelCPU is the metrics profile label every Collection route carries:
 	// a Collection profiles CPU and nothing else.
 	labelCPU = "cpu"
-)
-
-var (
-	// serviceRouteRE matches the four Service-scoped /v1 routes;
-	// the namespace and Service segments are validated separately.
-	serviceRouteRE = regexp.MustCompile(
-		`^/v1/namespaces/([^/]+)/services/([^/]+)/(targets|pgo|collections|profiles/([^/]+))$`)
-	// listingRouteRE matches the Service listing route; the namespace is validated as a DNS-1123 label.
-	listingRouteRE = regexp.MustCompile(`^/v1/namespaces/([^/]+)/services$`)
-	// collectionRouteRE matches the three Collection-scoped routes;
-	// the identifier is validated against its own grammar, so a path carrying a
-	// separator or a traversal segment is never read as one.
-	collectionRouteRE = regexp.MustCompile(`^/v1/collections/([^/]+)(?:/(profile|cancel))?$`)
 )
 
 // Upstream is what the profile handler needs from internal/proxy.
@@ -125,7 +112,8 @@ func New(d Deps) http.Handler {
 type routeKind int
 
 // The routes the gateway serves: the two interactive ones, the five PGO ones, the four listing ones,
-// and the one authentication-discovery route, which runs no authentication step.
+// the one authentication-discovery route, which runs no authentication step,
+// the three browser-login routes, and the console.
 // Each classification below is an exhaustive switch that names every kind,
 // so declaration order carries no meaning and a kind added later is classified by name.
 const (
@@ -141,7 +129,28 @@ const (
 	kindWhoami
 	kindLimits
 	kindAuth
+	kindAuthLogin
+	kindAuthCallback
+	kindAuthLogout
+	// kindConsole is the three declarations the console answers: the shell, the
+	// asset remainder under it, and the redirect at the root.
+	// One kind serves all three because the console resolves the path itself.
+	kindConsole
 )
+
+// isAuthRoute reports whether the route is one of the three browser-login routes,
+// which take the shorter algorithm of serveAuthRoute.
+func (k routeKind) isAuthRoute() bool {
+	switch k {
+	case kindAuthLogin, kindAuthCallback, kindAuthLogout:
+		return true
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
+		kindCollectionCancel, kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth, kindConsole:
+		return false
+	default:
+		return false
+	}
+}
 
 // isPGO reports whether the route reads or writes PGO state, which is what the
 // pgo.enabled and replay-barrier steps of the request algorithm gate.
@@ -149,7 +158,8 @@ func (k routeKind) isPGO() bool {
 	switch k {
 	case kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel:
 		return true
-	case kindTargets, kindProfile, kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth:
+	case kindTargets, kindProfile, kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth,
+		kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
 		return false
 	default:
 		return false
@@ -162,7 +172,8 @@ func (k routeKind) isCollectionScoped() bool {
 	switch k {
 	case kindCollection, kindCollectionProfile, kindCollectionCancel:
 		return true
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth:
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindNamespaces, kindServices, kindWhoami,
+		kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
 		return false
 	default:
 		return false
@@ -175,94 +186,21 @@ func (k routeKind) isListing() bool {
 	switch k {
 	case kindNamespaces, kindServices, kindWhoami, kindLimits:
 		return true
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel, kindAuth:
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
+		kindCollectionCancel, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
 		return false
 	default:
 		return false
 	}
 }
 
-// methods lists what the route accepts, in the order the Allow header carries them.
-func (k routeKind) methods() []string {
-	switch k {
-	case kindPGOPolicy:
-		return []string{http.MethodGet, http.MethodPut, http.MethodDelete}
-	case kindCollections:
-		return []string{http.MethodGet, http.MethodPost}
-	case kindCollectionCancel:
-		return []string{http.MethodPost}
-	case kindTargets, kindProfile, kindCollection, kindCollectionProfile,
-		kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth:
-		return []string{http.MethodGet}
-	default:
-		return []string{http.MethodGet}
-	}
-}
-
-// route is a parsed /v1 path.
+// route is a path matched against a declaration, with the segments it captured.
 type route struct {
 	kind       routeKind
 	namespace  string
 	service    string
 	profile    string // empty for every route but the profile endpoint
 	collection string // set for the three Collection-scoped routes
-}
-
-// parseRoute matches path against the twelve routes,
-// validating the name segments as DNS-1123 labels and the identifier against its own grammar.
-func parseRoute(path string) (route, bool) {
-	switch path {
-	case "/v1/auth":
-		return route{kind: kindAuth}, true
-	case "/v1/namespaces":
-		return route{kind: kindNamespaces}, true
-	case "/v1/whoami":
-		return route{kind: kindWhoami}, true
-	case "/v1/limits":
-		return route{kind: kindLimits}, true
-	}
-	if m := listingRouteRE.FindStringSubmatch(path); m != nil {
-		if len(validation.IsDNS1123Label(m[1])) > 0 {
-			return route{}, false
-		}
-
-		return route{kind: kindServices, namespace: m[1]}, true
-	}
-	if m := serviceRouteRE.FindStringSubmatch(path); m != nil {
-		if len(validation.IsDNS1123Label(m[1])) > 0 || len(validation.IsDNS1123Label(m[2])) > 0 {
-			return route{}, false
-		}
-		rt := route{namespace: m[1], service: m[2]}
-		switch m[3] {
-		case "targets":
-			rt.kind = kindTargets
-		case "pgo":
-			rt.kind = kindPGOPolicy
-		case "collections":
-			rt.kind = kindCollections
-		default:
-			rt.kind = kindProfile
-			rt.profile = m[4]
-		}
-
-		return rt, true
-	}
-
-	m := collectionRouteRE.FindStringSubmatch(path)
-	if m == nil || !pgo.ValidID(m[1]) {
-		return route{}, false
-	}
-	rt := route{collection: m[1]}
-	switch m[2] {
-	case "profile":
-		rt.kind = kindCollectionProfile
-	case "cancel":
-		rt.kind = kindCollectionCancel
-	default:
-		rt.kind = kindCollection
-	}
-
-	return rt, true
 }
 
 // request is what one request accumulates for its audit record and its metrics labels.
@@ -311,8 +249,10 @@ func (q *request) labels() (metrics.Endpoint, string) {
 		return metrics.EndpointWhoami, labelNone
 	case kindLimits:
 		return metrics.EndpointLimits, labelNone
-	case kindAuth:
+	case kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout:
 		return metrics.EndpointAuth, labelNone
+	case kindConsole:
+		return metrics.EndpointUI, labelNone
 	case kindProfile:
 		if config.IsProfile(q.route.profile) {
 			return metrics.EndpointProfile, q.route.profile
@@ -351,6 +291,8 @@ func (q *request) fail(w http.ResponseWriter, e *requestError) {
 // The first failing step answers.
 // The configuration is loaded once here and the request uses that snapshot throughout.
 // /v1/auth stops after readiness and answers without an authentication step.
+// The path is matched once against the route table, and the declaration it matched
+// carries the methods the Allow header of a 405 lists.
 // A path under /auth/ is not a /v1 route and takes the shorter algorithm of serveAuthRoute;
 // a path under /ui/ or exactly / is handed to the console, which runs its own.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -373,24 +315,28 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if isConsolePath(r.URL.Path) {
+	rt, decl, ok := match(r.URL.Path)
+	if !ok {
+		q.fail(w, errRouteUnknown)
+
+		return
+	}
+
+	// The console and the three browser-login routes are dispatched straight off the match,
+	// before the /v1 algorithm and before the request counts as routed.
+	// The console serves files while the caches are still syncing,
+	// and an /auth/ route runs a readiness step of its own after its method check.
+	if rt.kind == kindConsole {
 		s.serveConsole(w, r, q)
 
 		return
 	}
-
-	if strings.HasPrefix(r.URL.Path, authPrefix) {
-		s.serveAuthRoute(w, r, q, cfg)
-
-		return
-	}
-
-	rt, ok := parseRoute(r.URL.Path)
-	if !ok {
-		q.fail(w, &requestError{status: http.StatusNotFound, code: "route_unknown", message: "no such route"})
+	if rt.kind.isAuthRoute() {
+		s.serveAuthRoute(w, r, q, cfg, decl)
 
 		return
 	}
+
 	q.routed = true
 	q.route = rt
 	q.audit.pgo = rt.kind.isPGO()
@@ -403,21 +349,21 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if rt.kind == kindProfile {
 		spec, ok = lookupProfile(rt.profile)
 		if !ok {
-			q.fail(w, &requestError{status: http.StatusNotFound, code: "profile_unknown", message: fmt.Sprintf("unknown profile %q", rt.profile)})
+			q.fail(w, &requestError{status: http.StatusNotFound, code: CodeProfileUnknown, message: fmt.Sprintf("unknown profile %q", rt.profile)})
 
 			return
 		}
 	}
 
-	if !slices.Contains(rt.kind.methods(), r.Method) {
-		w.Header().Set("Allow", strings.Join(rt.kind.methods(), ", "))
-		q.fail(w, &requestError{status: http.StatusMethodNotAllowed, code: "method_not_allowed", message: fmt.Sprintf("method %s not allowed", r.Method)})
+	if !slices.Contains(decl.Methods, r.Method) {
+		w.Header().Set("Allow", strings.Join(decl.Methods, ", "))
+		q.fail(w, methodNotAllowed(r.Method))
 
 		return
 	}
 
 	if !s.ready() {
-		q.fail(w, &requestError{status: http.StatusServiceUnavailable, code: "not_ready", message: "the gateway is not ready"})
+		q.fail(w, errNotReady)
 
 		return
 	}
@@ -437,7 +383,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var sess *pgo.Session
 	if rt.kind.isPGO() {
 		if !cfg.PGO.Enabled {
-			q.fail(w, &requestError{status: http.StatusNotImplemented, code: "pgo_disabled", message: "pgo collection is not enabled"})
+			q.fail(w, &requestError{status: http.StatusNotImplemented, code: CodePGODisabled, message: "pgo collection is not enabled"})
 
 			return
 		}
@@ -476,7 +422,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if !realmAllows(realm, rt, r.Method) {
 		// The denial names nothing: the same body whether or not the Service exists.
-		q.fail(w, &requestError{status: http.StatusForbidden, code: "realm_denied", message: "access denied by realm"})
+		q.fail(w, &requestError{status: http.StatusForbidden, code: CodeRealmDenied, message: "access denied by realm"})
 
 		return
 	}
@@ -574,19 +520,19 @@ func discoveryError(rt route, err error) *requestError {
 	case errors.Is(err, k8s.ErrServiceNotFound):
 		return &requestError{
 			status:  http.StatusNotFound,
-			code:    "service_not_found",
+			code:    CodeServiceNotFound,
 			message: fmt.Sprintf("service %s not found in namespace %s", rt.service, rt.namespace),
 		}
 	case errors.Is(err, k8s.ErrServiceSelectorless):
 		return &requestError{
 			status:  http.StatusUnprocessableEntity,
-			code:    "service_selectorless",
+			code:    CodeServiceSelectorless,
 			message: fmt.Sprintf("service %s in namespace %s has no selector", rt.service, rt.namespace),
 		}
 	default:
 		return &requestError{
 			status:  http.StatusServiceUnavailable,
-			code:    "discovery_unavailable",
+			code:    CodeDiscoveryUnavailable,
 			message: fmt.Sprintf("discovery cannot resolve service %s in namespace %s", rt.service, rt.namespace),
 		}
 	}
@@ -694,7 +640,7 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 	// Admission never waits: a slot is taken now or the request is refused now.
 	release, ok := s.deps.Gate.TryAcquire()
 	if !ok {
-		q.fail(w, &requestError{status: http.StatusTooManyRequests, code: "too_many_profiles", message: "too many profiles in flight"})
+		q.fail(w, &requestError{status: http.StatusTooManyRequests, code: CodeTooManyProfiles, message: "too many profiles in flight"})
 
 		return
 	}
@@ -711,7 +657,7 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 			s.deps.Recorder.Confirm("changed")
 			q.fail(w, &requestError{
 				status:  http.StatusServiceUnavailable,
-				code:    "target_changed",
+				code:    CodeTargetChanged,
 				message: fmt.Sprintf("pod %s changed since it was selected; retry", target.Pod),
 			})
 
@@ -721,7 +667,7 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 		s.deps.Recorder.Confirm("unavailable")
 		q.fail(w, &requestError{
 			status:  http.StatusServiceUnavailable,
-			code:    "discovery_unavailable",
+			code:    CodeDiscoveryUnavailable,
 			message: fmt.Sprintf("discovery cannot confirm pod %s", target.Pod),
 		})
 
@@ -760,9 +706,9 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 // it names the Pod and never its address.
 func upstreamMessage(code, pod string) string {
 	switch code {
-	case "upstream_timeout":
+	case CodeUpstreamTimeout:
 		return fmt.Sprintf("pod %s did not answer in time", pod)
-	case "upstream_redirect":
+	case CodeUpstreamRedirect:
 		return fmt.Sprintf("pod %s answered with a redirect", pod)
 	default:
 		return fmt.Sprintf("pod %s is unreachable", pod)

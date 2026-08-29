@@ -21,37 +21,37 @@ const cancelAttempts = 5
 var (
 	errCollectionInProgress = &requestError{
 		status:  http.StatusTooManyRequests,
-		code:    "collection_in_progress",
+		code:    CodeCollectionInProgress,
 		message: "the service already has a live collection",
 	}
 	errRateLimited = &requestError{
 		status:  http.StatusTooManyRequests,
-		code:    "rate_limited",
+		code:    CodeRateLimited,
 		message: "too many on-demand collections; retry shortly",
 	}
 	errCapacityExhausted = &requestError{
 		status:  http.StatusTooManyRequests,
-		code:    "capacity_exhausted",
+		code:    CodeCapacityExhausted,
 		message: "the gateway is running its limit of live collections",
 	}
 	errCollectionNotCompleted = &requestError{
 		status:  http.StatusConflict,
-		code:    "collection_not_completed",
+		code:    CodeCollectionNotCompleted,
 		message: "the collection has no stored profile",
 	}
 	errCollectionInitializing = &requestError{
 		status:  http.StatusConflict,
-		code:    "collection_initializing",
+		code:    CodeCollectionInitializing,
 		message: "the collection is still being published; retry shortly",
 	}
 	errCollectionTerminal = &requestError{
 		status:  http.StatusConflict,
-		code:    "collection_terminal",
+		code:    CodeCollectionTerminal,
 		message: "the collection has already finished",
 	}
 	errCASContended = &requestError{
 		status:    http.StatusServiceUnavailable,
-		code:      "pgo_unavailable",
+		code:      CodePGOUnavailable,
 		message:   "the collection is changing faster than it can be cancelled; retry",
 		auditCode: codeCASContended,
 	}
@@ -167,11 +167,7 @@ func (s *server) serveCollectionCreate(
 		return
 	}
 	if _, reason := pgo.ResolveVersion(targets, snapshot.Target.Version); reason != "" {
-		q.fail(w, &requestError{
-			status:  http.StatusConflict,
-			code:    reason,
-			message: versionMessage(reason, rt.namespace, rt.service, snapshot.Target.Version),
-		})
+		q.fail(w, versionRefusal(reason, rt.namespace, rt.service, snapshot.Target.Version))
 
 		return
 	}
@@ -216,25 +212,30 @@ func (s *server) serveCollectionCreate(
 	}
 }
 
-// versionMessage is the envelope text for an advisory version refusal;
-// it names the Service and never a Pod's address.
+// versionRefusal is the advisory version refusal a create earns,
+// one error per reason, each naming the Service and never a Pod's address.
 // One missing-version refusal covers two situations,
 // so the text says which one the caller is in:
 // no Pod carries a version label at all,
 // or none carries the version the effective policy pins.
 // A conflict never carries a pin,
 // since the pin filter leaves at most one version to disagree over.
-func versionMessage(reason, namespace, service, pin string) string {
+func versionRefusal(reason, namespace, service, pin string) *requestError {
 	where := " of service " + service + " in namespace " + namespace
 	if reason == pgo.ReasonVersionMissing {
+		message := "no pod" + where + " carries a version label"
 		if pin != "" {
-			return "no pod" + where + " carries version " + pin
+			message = "no pod" + where + " carries version " + pin
 		}
 
-		return "no pod" + where + " carries a version label"
+		return &requestError{status: http.StatusConflict, code: CodeVersionMissing, message: message}
 	}
 
-	return "the pods" + where + " carry more than one version"
+	return &requestError{
+		status:  http.StatusConflict,
+		code:    CodeVersionConflict,
+		message: "the pods" + where + " carry more than one version",
+	}
 }
 
 // serveCollectionRead answers the Collection record as the bucket holds it.

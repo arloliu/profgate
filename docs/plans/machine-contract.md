@@ -884,12 +884,12 @@ which are not registry constants and are documented as such beside the registry.
 the constants for those two are exported and it uses them,
 so the registry holds every code the gateway writes rather than every code this package writes.
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 Declare `declaration`, `declarations`, `match`, the constants, and `EnvelopeCodes`,
 with `match` delegating to `parseRoute` and the constants unused, so the tree builds before anything moves.
 
-- [ ] **Write the table and registry tests**
+- [x] **Write the table and registry tests**
 
 `routes_test.go` restates the route-table row of *Layers*:
 
@@ -919,11 +919,11 @@ with `match` delegating to `parseRoute` and the constants unused, so the tree bu
 The last registry row is what makes the document's check meaningful later:
 a code the gateway can write and the registry does not hold would pass a document comparison and still ship.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Move the dispatch and the codes**
+- [x] **Move the dispatch and the codes**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/ ./internal/ui/

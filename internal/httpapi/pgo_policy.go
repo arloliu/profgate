@@ -28,22 +28,22 @@ var ifMatchRE = regexp.MustCompile(`^"[0-9]+"$`)
 var (
 	errPreconditionFailed = &requestError{
 		status:  http.StatusPreconditionFailed,
-		code:    "precondition_failed",
+		code:    CodePreconditionFailed,
 		message: "the policy has moved since the revision If-Match names",
 	}
 	errPreconditionRequired = &requestError{
 		status:  http.StatusPreconditionRequired,
-		code:    "precondition_required",
+		code:    CodePreconditionRequired,
 		message: "the service already has a policy override; send If-Match with its ETag",
 	}
 	errOverrideNotFound = &requestError{
 		status:  http.StatusNotFound,
-		code:    "pgo_override_not_found",
+		code:    CodePGOOverrideNotFound,
 		message: "the service has no policy override",
 	}
 	errConfigAPIDisabled = &requestError{
 		status:  http.StatusForbidden,
-		code:    "config_api_disabled",
+		code:    CodeConfigAPIDisabled,
 		message: "the policy configuration api is disabled",
 	}
 )
@@ -329,7 +329,7 @@ func limitExceeded(violations []pgo.Violation) *requestError {
 
 	return &requestError{
 		status:  http.StatusBadRequest,
-		code:    "limit_exceeded",
+		code:    CodeLimitExceeded,
 		message: "the effective policy exceeds a limit: " + strings.Join(fields, ", "),
 		details: items,
 	}
