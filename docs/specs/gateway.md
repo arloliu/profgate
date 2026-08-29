@@ -1250,7 +1250,9 @@ A Go test in `internal/httpapi` compares the document with the code, never with 
 2. it compares the registry with the codes the document enumerates, and the two sets must be equal;
 3. it requires every `details` vocabulary of *Errors* to appear as an enumeration in the document;
 4. it re-encodes the parsed document and requires the file to equal that encoding,
-   so a hand edit cannot leave the file formatted one way and read another.
+   so a hand edit cannot leave the file formatted one way and read another;
+5. it collects every `$ref` the document holds and requires each to resolve inside it,
+   so a pointer at a component the document does not carry cannot ship.
 
 What the check does not catch is a code a constructor names and no route can answer with,
 which is a document that over-promises rather than one that lies.
@@ -1537,9 +1539,12 @@ with `profile` fixed to `none`;
 and its `code` is `ok` for a `200` or the `302`, `route_unknown`, `method_not_allowed`,
 or `internal_error` for any other status the console wrote.
 `openapi` is the endpoint value of the document route, with `profile` fixed to `none`;
-its `code` is `ok`, `not_ready`, `route_unknown`, `method_not_allowed`, or `invalid_parameter`,
+its `code` is `ok`, `not_ready`, `method_not_allowed`, or `invalid_parameter`,
 which is every answer it has (*The OpenAPI document*).
-`auth` is the endpoint value of `/v1/auth`, with the same `profile` and the same five codes,
+It carries no `route_unknown`:
+a path the table does not match fails before the request is routed,
+so that answer is recorded under `profile` rather than here.
+`auth` is the endpoint value of `/v1/auth`, with the same `profile` and those four codes beside `route_unknown`,
 which is every answer it has ([`cli.md`](cli.md) *Gateway discovery*).
 The client's port selection is not a label either;
 it is client-controlled and would add a series per value.
@@ -1731,7 +1736,7 @@ Because the overall request budget already includes confirmation, the drain boun
   and `200` with no credential under `basic` and under `oidc`, proving no authentication step runs.
   The check of *The OpenAPI document* is exercised against documents that differ from the code in exactly one way —
   a missing route, an extra route, a missing method, a missing code, an extra code, a missing vocabulary value,
-  and a file reindented by hand — and each must fail;
+  a renamed component that leaves a reference dangling, and a file reindented by hand — and each must fail;
   the shipped document must pass.
   The route table: every route the API listener serves has one declaration and the router reads no other source,
   asserted by driving one request per declaration and by a scan that finds no path matched outside it;
