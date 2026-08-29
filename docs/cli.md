@@ -297,8 +297,14 @@ each absent from the body when its flag is not given, so the Service's effective
 `--body <path>` sends a JSON file as the whole body instead and excludes the field flags.
 The PGO routes need `pgo.enabled` on the gateway and the realm's `pgo.collect` flag.
 
-Every `collect` sends a fresh `Idempotency-Key` header, and retries nothing.
-A transport failure or a `5xx` on the create is reported once and exits 1,
+Every `collect` mints one `Idempotency-Key` and sends it on every attempt of that invocation.
+The gateway binds the key to the Collection it creates,
+which is what lets a create whose result is unknown simply be sent again:
+no answer arrived, the gateway answered `5xx`, or an answer did not arrive whole.
+The retry waits a second, doubling to eight, for at most 30 seconds,
+and the answer it gets names the Collection the first attempt created rather than a second one.
+An answer that arrived whole is reported as it came, every `4xx` included.
+A create still unresolved when the 30 seconds run out is reported once and exits 1,
 saying that a Collection may already have been created
 and naming `profgate collections <ns>/<svc>` as the way to find out.
 `429 collection_in_progress` means another Collection holds the Service and exits 1 without waiting.

@@ -49,6 +49,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The HTTP API answers a program, not only a person.**
+  Every response of both listeners carries `X-Request-Id`:
+  the caller's own when the request sends one of 1 to 128 bytes drawn from `[A-Za-z0-9._-]`,
+  and 32 hexadecimal characters otherwise.
+  It is set before any routing decision, so a `404` on an unknown path carries one,
+  and every audit record names the same value under `requestId`.
+  Every refusal whose code has a vocabulary now carries a `details` array of `{field, code, message}` items:
+  `invalid_parameter` has twelve values, `limit_exceeded` five, and `port_not_allowed` its one.
+  A code with no vocabulary still carries no `details` key at all.
+  Every entry of `GET /pgo`'s `violations` carries a `code` from the `limit_exceeded` vocabulary.
+  `POST .../collections` takes an `Idempotency-Key` header of the same grammar:
+  a repeat under one key answers `200 {id, state}` with the same `Location` rather than creating a second Collection,
+  and a repeat asking for something else answers `409 idempotency_mismatch`.
+  `GET /v1/collections/{id}` takes `wait=`, a duration from `1s` to `60s`,
+  and holds the request open until the Collection's state moves,
+  the deadline passes, the replica drains, or the client leaves;
+  every answer to an accepted wait carries `X-Wait-Elapsed`.
+  `GET .../collections/latest` and `GET .../collections/latest/profile` answer for the newest Collection
+  whose merged profile is still stored,
+  so a build fetches that profile in one request without holding an identifier.
+  `GET .../collections` takes `state` (repeatable), `origin`, `since`,
+  `limit` (1 to 100, and 100 when absent), and `cursor`, and its body carries `nextCursor`;
+  the order is `createdAt` descending and then `id` descending,
+  and a cursor names a position by value, so it still pages after its own record has been swept away.
+  `GET /v1/openapi.json` serves a hand-maintained OpenAPI 3.1 document describing every route the listener serves,
+  whatever the configuration enables; the route itself runs no authentication and no realm step.
+  **BREAKING: the two Collection writes require `Content-Type: application/json`.**
+  `POST .../collections` and `POST /v1/collections/{id}/cancel` refuse anything else with `400 invalid_parameter`,
+  so a client that omitted the header declares it.
+  The `profgate` client retries a create whose result is unknown under the same key,
+  at one second doubling to eight for at most 30 seconds,
+  and reports every answer that arrived whole as it came.
+  No Kubernetes permission changed, no NATS store was added, and no Go module was added.
 - **The `profgate` binary is also a client.**
   `login`, `logout`, `whoami`, `limits`, `namespaces`, `services`, `targets`, `profile`,
   `collect`, `collections`, `collection get|cancel`, `download`, `pgo policy get|set|delete`,
@@ -61,9 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under `basic` it verifies a user name and a password it never stores;
   `profile --open` hands the fetched profile to `go tool pprof -http`.
   A credential travels only over `https://` or to a loopback address, and no flag skips certificate verification.
-  `collect` sends an `Idempotency-Key` on every create;
-  the gateway does not read the header yet,
-  so the client retries no create until it does and reports a lost response once.
+  `collect` sends an `Idempotency-Key` on every create and retries under it whenever the result is unknown.
   No Go module was added.
 - **`GET /v1/auth`, the one `/v1` route with no authentication step.**
   It reports `auth.mode` to an unauthenticated caller and, where `auth.oidc.cli` is configured,

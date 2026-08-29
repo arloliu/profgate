@@ -1,6 +1,8 @@
 # A Machine Contract
 
-**Status:** In Progress
+**Status:** Done
+**Outcome:** shipped by the commits from `9a87929` through `d3a32a7` on `feat/machine-contract`,
+with the guides and the changelog beside them.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -2018,7 +2020,7 @@ git commit -m "feat(httpapi): serve the openapi document"
 **Files:**
 - Modify: `docs/api.md`, `docs/pgo.md`, `docs/cli.md`, `CHANGELOG.md`, `docs/plans/machine-contract.md`
 
-- [ ] **Update the guides**
+- [x] **Update the guides**
 
 | File | Change |
 |---|---|
@@ -2042,7 +2044,7 @@ and `GET /v1/openapi.json`.
 It says plainly that no Kubernetes permission changed, no NATS store was added, and no Go module was added.
 Leave the released sections as they are.
 
-- [ ] **Confirm the invariant wording**
+- [x] **Confirm the invariant wording**
 
 Read `AGENTS.md`, `README.md`, and
 [`.agents/rules/800-security-invariant.md`](../../.agents/rules/800-security-invariant.md) beside each other:
@@ -2053,7 +2055,7 @@ Confirm [`.agents/rules/100-project-map.md`](../../.agents/rules/100-project-map
 it already names `internal/httpapi` as the second `go:embed` user
 and already lists `/v1/openapi.json` and the two `latest` routes, so it needs no edit — verify rather than assume.
 
-- [ ] **Finish the plan in the same commit**
+- [x] **Finish the plan in the same commit**
 
 Set line 3 of this file to `**Status:** Done`;
 insert `**Outcome:**` as line 4, naming the commits or the tag that shipped the change.
@@ -2066,7 +2068,7 @@ Item 6's bullets were already ticked when this plan was written,
 and under the legend the first task repaired, a tick records that the design is settled in the specs it names —
 which was true then and stays true now.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/api.md docs/pgo.md docs/cli.md CHANGELOG.md docs/plans/machine-contract.md

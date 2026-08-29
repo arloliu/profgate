@@ -143,8 +143,9 @@ There is nothing to trigger and no manual action needed.
 What you observe:
 
 - `GET /v1/namespaces/{ns}/services/{svc}/collections` shows at most one Collection per slot,
-  newest first, at most the newest 100 records, and no pagination —
-  a record that falls off the listing stays readable at `GET /v1/collections/{id}`
+  newest first, 100 records to a page,
+  with `state`, `origin`, and `since` to narrow it and `nextCursor` to page through the rest —
+  a record that falls off the page stays readable at `GET /v1/collections/{id}`
   until `pgo.jobRetention` expires it,
   so a client that needs a Collection later should keep the `id` (or the `Location` header) from creation;
   a record moves through `pending` and `running` to `completed` when all goes well,
@@ -175,6 +176,16 @@ Location: /v1/collections/7h2k9m4p6r8t0v1w3x5y
 An empty body `{}` runs the Service's effective policy;
 the body may override `sampling`, `target`, and `artifact` for this one Collection
 (never `enabled` or `schedule`).
+
+A script that can lose its answer sends an `Idempotency-Key` header with the create
+and retries under the same key.
+The gateway binds the key to the Collection it creates,
+so the retry answers `200` with that Collection's identifier and state instead of starting a second one,
+and a key that asks for something else than the first request did answers `409 idempotency_mismatch`.
+That is what turns a timed-out create from "a Collection may or may not be running,
+go and look" into a request the caller simply sends again.
+The `profgate` client does this on every `collect` ([`cli.md`](cli.md)).
+
 Poll the record until it is terminal:
 
 ```text
@@ -190,6 +201,20 @@ Download the merged profile and hand it to the Go toolchain:
 $ curl -sS -o default.pgo http://localhost:8080/v1/collections/7h2k9m4p6r8t0v1w3x5y/profile
 $ go build -pgo=default.pgo ./cmd/payment-api
 ```
+
+A build that just wants the freshest profile the Service has does not need an identifier at all:
+
+```text
+$ curl -sS -o default.pgo \
+    http://localhost:8080/v1/namespaces/payment/services/payment-api/collections/latest/profile
+```
+
+That route answers with the newest Collection whose artifact is still stored,
+and `.../collections/latest` beside it answers with that same Collection's record,
+so a pipeline can log which Collection and which version it built against.
+A Service with no stored artifact answers `404 collection_not_found`,
+whether it has never collected or its artifacts have all expired.
+Both routes need only the realm's `pgo.read` flag.
 
 Saving it as `default.pgo` in the main package's directory also works with no flag at all:
 `go build` picks that file up by convention (`-pgo=auto` is the default since Go 1.21).
