@@ -35,7 +35,7 @@ func authRouteName(kind routeKind) string {
 		return "auth_logout"
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
 		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindNamespaces, kindServices,
-		kindWhoami, kindLimits, kindAuth, kindConsole:
+		kindWhoami, kindLimits, kindAuth, kindOpenAPI, kindConsole:
 		return ""
 	default:
 		return ""

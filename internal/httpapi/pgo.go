@@ -156,7 +156,8 @@ func (s *server) servePGOCollection(
 		s.serveCollectionCancel(w, r, q, sess, stored)
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollectionLatest,
 		kindCollectionLatestProfile, kindNamespaces, kindServices,
-		kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
+		kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout,
+		kindOpenAPI, kindConsole:
 		q.fail(w, errCollectionNotFound)
 	}
 }

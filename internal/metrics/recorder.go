@@ -39,6 +39,10 @@ const (
 	EndpointLimits Endpoint = "limits"
 	// EndpointUI covers /ui/, every path under it, and /; profile is fixed to "none".
 	EndpointUI Endpoint = "ui"
+	// EndpointOpenAPI is the document route; profile is fixed to "none".
+	// Its codes are "ok", "not_ready", "route_unknown", "method_not_allowed",
+	// and "invalid_parameter", which is every answer the route has.
+	EndpointOpenAPI Endpoint = "openapi"
 )
 
 // CookieKey is one loaded cookie key as the info gauge reports it.
@@ -56,6 +60,7 @@ type Recorder interface {
 	// endpoint and profile come from the resolved route when there is one (method failures included):
 	// targets → ("targets","none"), a known profile route → ("profile", name),
 	// the listing routes → ("namespaces","none"), ("services","none"), ("whoami","none"), ("limits","none"),
+	// the document route → ("openapi","none"),
 	// and the console → ("ui","none").
 	// Requests that fail before a route resolves, or name an unknown profile, record ("profile","none").
 	Request(endpoint Endpoint, profile, code string, d time.Duration)

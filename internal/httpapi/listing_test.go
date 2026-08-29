@@ -696,6 +696,7 @@ func TestRouteKinds(t *testing.T) {
 		{kindAuthLogin, false, false, false, true},
 		{kindAuthCallback, false, false, false, true},
 		{kindAuthLogout, false, false, false, true},
+		{kindOpenAPI, false, false, false, false},
 		{kindConsole, false, false, false, false},
 	}
 	if len(table) != int(kindConsole)+1 {

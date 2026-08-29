@@ -119,7 +119,7 @@ type routeKind int
 
 // The routes the gateway serves: the two interactive ones, the seven PGO ones, the four listing ones,
 // the one authentication-discovery route, which runs no authentication step,
-// the three browser-login routes, and the console.
+// the three browser-login routes, the document route, and the console.
 // Each classification below is an exhaustive switch that names every kind,
 // so declaration order carries no meaning and a kind added later is classified by name.
 const (
@@ -142,6 +142,9 @@ const (
 	kindAuthLogin
 	kindAuthCallback
 	kindAuthLogout
+	// kindOpenAPI is the document route, which runs no authentication and no
+	// realm step: what it publishes is the route grammar.
+	kindOpenAPI
 	// kindConsole is the three declarations the console answers: the shell, the
 	// asset remainder under it, and the redirect at the root.
 	// One kind serves all three because the console resolves the path itself.
@@ -156,7 +159,7 @@ func (k routeKind) isAuthRoute() bool {
 		return true
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
 		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindNamespaces, kindServices,
-		kindWhoami, kindLimits, kindAuth, kindConsole:
+		kindWhoami, kindLimits, kindAuth, kindOpenAPI, kindConsole:
 		return false
 	default:
 		return false
@@ -171,7 +174,7 @@ func (k routeKind) isPGO() bool {
 		kindCollectionLatest, kindCollectionLatestProfile:
 		return true
 	case kindTargets, kindProfile, kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth,
-		kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
+		kindAuthLogin, kindAuthCallback, kindAuthLogout, kindOpenAPI, kindConsole:
 		return false
 	default:
 		return false
@@ -189,7 +192,7 @@ func (k routeKind) isPGOWrite() bool {
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollection, kindCollectionProfile,
 		kindCollectionLatest, kindCollectionLatestProfile, kindNamespaces,
 		kindServices, kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout,
-		kindConsole:
+		kindOpenAPI, kindConsole:
 		return false
 	default:
 		return false
@@ -204,7 +207,7 @@ func (k routeKind) isCollectionScoped() bool {
 		return true
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollectionLatest,
 		kindCollectionLatestProfile, kindNamespaces, kindServices, kindWhoami,
-		kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
+		kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindOpenAPI, kindConsole:
 		return false
 	default:
 		return false
@@ -219,7 +222,7 @@ func (k routeKind) isListing() bool {
 		return true
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
 		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindAuth, kindAuthLogin,
-		kindAuthCallback, kindAuthLogout, kindConsole:
+		kindAuthCallback, kindAuthLogout, kindOpenAPI, kindConsole:
 		return false
 	default:
 		return false
@@ -286,6 +289,8 @@ func (q *request) labels() (metrics.Endpoint, string) {
 		return metrics.EndpointLimits, labelNone
 	case kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout:
 		return metrics.EndpointAuth, labelNone
+	case kindOpenAPI:
+		return metrics.EndpointOpenAPI, labelNone
 	case kindConsole:
 		return metrics.EndpointUI, labelNone
 	case kindProfile:
@@ -415,11 +420,16 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The one /v1 route with no authentication step:
-	// it answers here, before the PGO and credential-placement steps,
-	// because it is what a client reads before it holds a credential.
+	// The two /v1 routes with no authentication step:
+	// they answer here, before the PGO and credential-placement steps,
+	// because each is what a client reads before it holds a credential.
 	if rt.kind == kindAuth {
 		s.serveAuthInfo(w, r, q, cfg)
+
+		return
+	}
+	if rt.kind == kindOpenAPI {
+		s.serveOpenAPI(w, r, q)
 
 		return
 	}

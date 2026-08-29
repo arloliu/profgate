@@ -1941,7 +1941,7 @@ the PGO routes are in it whether or not `pgo.enabled` is set — they answer `50
 and the console and `/auth/` routes are in it whether or not those are configured.
 The ops listener's three paths are not in it.
 
-- [ ] **Add the compile seams: a placeholder document, then the check**
+- [x] **Add the compile seams: a placeholder document, then the check**
 
 `go:embed openapi.json` with no such file is a compile error, not a failing assertion,
 so the file exists before the directive does.
@@ -1994,15 +1994,15 @@ so a route added later fails them the way it fails the four comparisons.
 | `/healthz`, `/readyz`, `/metrics` | absent from the document |
 | the metrics row | endpoint `openapi`, profile `none`, and one of its five codes |
 
-- [ ] **Run the check and watch it fail**
+- [x] **Run the check and watch it fail**
 
-- [ ] **Write the document until the check passes**
+- [x] **Write the document until the check passes**
 
 The check is what holds the file to the code; write the JSON against it,
 and against *The OpenAPI document* for everything the check does not read.
 Nothing generates it and no build step stands between the file and the response.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/ ./internal/metrics/

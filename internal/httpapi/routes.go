@@ -64,6 +64,7 @@ var routeTable = [...]declaration{
 	{"/v1/whoami", kindWhoami, []string{http.MethodGet}},
 	{"/v1/limits", kindLimits, []string{http.MethodGet}},
 	{"/v1/auth", kindAuth, []string{http.MethodGet}},
+	{"/v1/openapi.json", kindOpenAPI, []string{http.MethodGet}},
 	{"/auth/login", kindAuthLogin, []string{http.MethodGet}},
 	{"/auth/callback", kindAuthCallback, []string{http.MethodGet}},
 	{"/auth/logout", kindAuthLogout, []string{http.MethodGet}},

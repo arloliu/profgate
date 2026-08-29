@@ -91,6 +91,8 @@ func endpointOf(kind routeKind) metrics.Endpoint {
 		return metrics.EndpointLimits
 	case kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout:
 		return metrics.EndpointAuth
+	case kindOpenAPI:
+		return metrics.EndpointOpenAPI
 	case kindConsole:
 		return metrics.EndpointUI
 	default:

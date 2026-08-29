@@ -1,0 +1,2450 @@
+{
+  "components": {
+    "headers": {
+      "ContentDisposition": {
+        "description": "the file name the merged profile is offered under",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ETag": {
+        "description": "the stored policy revision, quoted, which the next write sends back as If-Match",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Location": {
+        "description": "the route the answer points at",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "PprofCollection": {
+        "description": "the Collection the profile came from",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "PprofTargetNode": {
+        "description": "the node that Pod runs on",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "PprofTargetPod": {
+        "description": "the Pod the profile came from",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "PprofTargetVersion": {
+        "description": "the version label of the profiled Pods",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "RequestId": {
+        "description": "the identifier of this request, the client's own when it sent one the gateway takes and a generated one otherwise. It is on every response of both listeners.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "RetryAfter": {
+        "description": "seconds to wait before retrying",
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "WaitElapsed": {
+        "description": "how long the request was held open, in decimal seconds with millisecond precision. It is on every answer to a request that carried a wait the gateway accepted.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "parameters": {
+      "AuthCode": {
+        "description": "the authorization code the issuer sent the browser back with",
+        "in": "query",
+        "name": "code",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "AuthError": {
+        "description": "the failure the issuer sent the browser back with instead of a code",
+        "in": "query",
+        "name": "error",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "AuthState": {
+        "description": "the value that ties the answer to the login this browser started",
+        "in": "query",
+        "name": "state",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "CollectionID": {
+        "description": "the Collection identifier, which is opaque",
+        "in": "path",
+        "name": "id",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ConsoleFile": {
+        "description": "the remainder of the path, separators included; the console resolves it",
+        "in": "path",
+        "name": "file",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Cursor": {
+        "description": "continue after the entry a previous response's nextCursor names. It is opaque, and it is refused beside a filter set other than the one it was minted under.",
+        "in": "query",
+        "name": "cursor",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Explain": {
+        "description": "ask for the counts that say why Pods were left out",
+        "in": "query",
+        "name": "explain",
+        "required": false,
+        "schema": {
+          "type": "boolean"
+        }
+      },
+      "IdempotencyKey": {
+        "description": "the key a create is retried under: 1 to 128 bytes drawn from [A-Za-z0-9._-]. It is optional, and it is scoped to the principal, the namespace, and the Service. A repeat carrying the same policy snapshot is answered with the Collection the first request created; one carrying a different snapshot is 409 idempotency_mismatch and creates nothing.",
+        "in": "header",
+        "name": "Idempotency-Key",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Limit": {
+        "description": "how many entries the page carries at most",
+        "in": "query",
+        "name": "limit",
+        "required": false,
+        "schema": {
+          "default": 100,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "Namespace": {
+        "description": "the namespace, a DNS-1123 label",
+        "in": "path",
+        "name": "namespace",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Origin": {
+        "description": "keep only Collections of that origin",
+        "in": "query",
+        "name": "origin",
+        "required": false,
+        "schema": {
+          "$ref": "#/components/schemas/CollectionOrigin"
+        }
+      },
+      "Pod": {
+        "description": "keep only this Pod, named as a DNS-1123 subdomain",
+        "in": "query",
+        "name": "pod",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Port": {
+        "description": "the pprof port to connect to; it excludes portName, and a value discovery.pprof.allowedSelections does not admit is refused",
+        "in": "query",
+        "name": "port",
+        "required": false,
+        "schema": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "PortName": {
+        "description": "the container port name to connect to; it excludes port, and a value discovery.pprof.allowedSelections does not admit is refused",
+        "in": "query",
+        "name": "portName",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Profile": {
+        "description": "the profile to fetch",
+        "in": "path",
+        "name": "profile",
+        "required": true,
+        "schema": {
+          "enum": [
+            "cpu",
+            "trace",
+            "heap",
+            "allocs",
+            "goroutine",
+            "mutex",
+            "block",
+            "threadcreate"
+          ],
+          "type": "string"
+        }
+      },
+      "Return": {
+        "description": "the path the browser is sent back to once the login completes",
+        "in": "query",
+        "name": "return",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Seconds": {
+        "description": "how long to profile for, on the profiles that take a duration. Absent means the profile's default; a value above the configured limit is refused.",
+        "in": "query",
+        "name": "seconds",
+        "required": false,
+        "schema": {
+          "maximum": 86400,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "Service": {
+        "description": "the Service, a DNS-1123 label",
+        "in": "path",
+        "name": "service",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Since": {
+        "description": "keep only Collections created at or after this instant",
+        "in": "query",
+        "name": "since",
+        "required": false,
+        "schema": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "State": {
+        "description": "keep Collections in any of the named states; absent keeps every state",
+        "explode": true,
+        "in": "query",
+        "name": "state",
+        "required": false,
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/CollectionState"
+          },
+          "type": "array"
+        },
+        "style": "form"
+      },
+      "Strategy": {
+        "description": "how one Pod is chosen from the eligible ones",
+        "in": "query",
+        "name": "strategy",
+        "required": false,
+        "schema": {
+          "enum": [
+            "random"
+          ],
+          "type": "string"
+        }
+      },
+      "Version": {
+        "description": "keep only Pods carrying this version label",
+        "in": "query",
+        "name": "version",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Wait": {
+        "description": "hold the request open until the record's state moves, or until the wait ends. A value outside the grammar is refused rather than clamped.",
+        "in": "query",
+        "name": "wait",
+        "required": false,
+        "schema": {
+          "description": "a duration such as 30s, 5m, or 1h",
+          "pattern": "^[0-9]+(ns|us|ms|s|m|h)([0-9]+(ns|us|ms|s|m|h))*$",
+          "type": "string"
+        }
+      }
+    },
+    "responses": {
+      "Artifact": {
+        "content": {
+          "application/octet-stream": {
+            "schema": {
+              "format": "binary",
+              "type": "string"
+            }
+          }
+        },
+        "description": "the merged profile, streamed from the store",
+        "headers": {
+          "Content-Disposition": {
+            "$ref": "#/components/headers/ContentDisposition"
+          },
+          "X-Pprof-Collection": {
+            "$ref": "#/components/headers/XPprofCollection"
+          },
+          "X-Pprof-Target-Version": {
+            "$ref": "#/components/headers/XPprofTargetVersion"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "AuthInfo": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AuthInfoResponse"
+            }
+          }
+        },
+        "description": "how to authenticate to this gateway",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "Collection": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CollectionRecord"
+            }
+          }
+        },
+        "description": "the Collection as stored",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "CollectionAccepted": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CollectionAck"
+            }
+          }
+        },
+        "description": "the Collection was accepted and Location names it",
+        "headers": {
+          "Location": {
+            "$ref": "#/components/headers/Location"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "CollectionMismatch": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "the key stands for a request whose policy snapshot differs from this one, and nothing was written. The body carries no details: the fault is in no one input.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "CollectionReplayed": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CollectionAck"
+            }
+          }
+        },
+        "description": "this key already names a Collection, and the answer reports it rather than accepting it again. Location names the same Collection the first answer carried.",
+        "headers": {
+          "Location": {
+            "$ref": "#/components/headers/Location"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "CollectionWaited": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CollectionRecord"
+            }
+          }
+        },
+        "description": "the Collection as stored, read after the wait ended",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "X-Wait-Elapsed": {
+            "$ref": "#/components/headers/XWaitElapsed"
+          }
+        }
+      },
+      "Collections": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CollectionsResponse"
+            }
+          }
+        },
+        "description": "one page of the Service's Collections",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "ConsoleAsset": {
+        "content": {
+          "*/*": {
+            "schema": {
+              "format": "binary",
+              "type": "string"
+            }
+          }
+        },
+        "description": "one console file, under the content type its name says",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "ConsoleHead": {
+        "description": "the headers the same request would answer a GET with, and no body",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "ConsolePage": {
+        "content": {
+          "text/html": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "the console shell",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "Error": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "an error the gateway wrote itself. A 405 carries Allow with the methods the route accepts, and a 429 may carry Retry-After.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "Limits": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/LimitsResponse"
+            }
+          }
+        },
+        "description": "the bounds this gateway serves under",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "Namespaces": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/NamespacesResponse"
+            }
+          }
+        },
+        "description": "the namespaces the realm admits",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "NotModified": {
+        "description": "the file the caller already holds has not changed",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "OpenAPI": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/OpenAPIDocument"
+            }
+          }
+        },
+        "description": "this document, served byte for byte from the binary",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "Policy": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PolicyResponse"
+            }
+          }
+        },
+        "description": "the Service's collection policy",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "PolicyCreated": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PolicyResponse"
+            }
+          }
+        },
+        "description": "the override was written for a Service that had none",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "PolicyDeleted": {
+        "description": "the override is gone and the Service is back on the defaults",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "Profile": {
+        "content": {
+          "application/octet-stream": {
+            "schema": {
+              "format": "binary",
+              "type": "string"
+            }
+          }
+        },
+        "description": "the profile bytes, streamed from the Pod that was profiled, under the status, body, and content type the application answered with",
+        "headers": {
+          "X-Pprof-Target-Node": {
+            "$ref": "#/components/headers/XPprofTargetNode"
+          },
+          "X-Pprof-Target-Pod": {
+            "$ref": "#/components/headers/XPprofTargetPod"
+          },
+          "X-Pprof-Target-Version": {
+            "$ref": "#/components/headers/XPprofTargetVersion"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "Redirect": {
+        "description": "the browser is sent on, and Location names where",
+        "headers": {
+          "Location": {
+            "$ref": "#/components/headers/Location"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "Services": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ServicesResponse"
+            }
+          }
+        },
+        "description": "the Services the realm admits in that namespace",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "Targets": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/TargetsResponse"
+            }
+          }
+        },
+        "description": "the Service's eligible backends",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "Whoami": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/WhoamiResponse"
+            }
+          }
+        },
+        "description": "the caller and the realm it was resolved to",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ArtifactRef": {
+        "description": "the stored merged profile.",
+        "properties": {
+          "bytes": {
+            "type": "integer"
+          },
+          "object": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "object",
+          "bytes"
+        ],
+        "type": "object"
+      },
+      "AuthInfoResponse": {
+        "description": "what a client reads before it holds a credential: the authentication mode, and the device login where one is configured.",
+        "properties": {
+          "mode": {
+            "type": "string"
+          },
+          "oidc": {
+            "properties": {
+              "clientID": {
+                "type": "string"
+              },
+              "issuer": {
+                "type": "string"
+              },
+              "pkce": {
+                "type": "boolean"
+              },
+              "scopes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tokenType": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "issuer",
+              "clientID",
+              "tokenType",
+              "scopes",
+              "pkce"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "CollectionAck": {
+        "description": "what a create answers with: the identifier to poll, and the state the record holds.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CollectionState"
+          }
+        },
+        "required": [
+          "id",
+          "state"
+        ],
+        "type": "object"
+      },
+      "CollectionOrigin": {
+        "description": "what created the Collection. Later work can add a value, so a client that switches on it needs a default arm.",
+        "enum": [
+          "schedule",
+          "api"
+        ],
+        "type": "string"
+      },
+      "CollectionRecord": {
+        "description": "the Collection as stored. It names namespaces, Services, Pods, and nodes, and never a Pod address or a pprof port.",
+        "properties": {
+          "artifact": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "claimBy": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "configRevision": {
+            "description": "the policy revision the snapshot was taken at, 0 when the Service had no override",
+            "type": "integer"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "deadline": {
+            "format": "date-time",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finishedAt": {
+            "format": "date-time",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "idempotencyKey": {
+            "description": "the key the creator sent, which is that caller's own text",
+            "type": "string"
+          },
+          "leaseUntil": {
+            "format": "date-time",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "manifest": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Manifest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/CollectionOrigin"
+          },
+          "owner": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Owner"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy": {
+            "$ref": "#/components/schemas/Policy"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/Progress"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "resolvedVersion": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "slot": {
+            "description": "the scheduled instant, absent for a Collection a client asked for",
+            "type": "string"
+          },
+          "snapshotHash": {
+            "description": "the hash of the canonical policy snapshot, which a retried create is compared against",
+            "type": "string"
+          },
+          "startedAt": {
+            "format": "date-time",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/CollectionState"
+          }
+        },
+        "required": [
+          "id",
+          "namespace",
+          "service",
+          "origin",
+          "state",
+          "policy",
+          "createdAt"
+        ],
+        "type": "object"
+      },
+      "CollectionRequest": {
+        "description": "what one Collection asks for, replacing the Service's effective policy field by field. Every field is optional and the empty object is valid. enabled and schedule are refused: a Collection runs once and schedules nothing.",
+        "properties": {
+          "artifact": {
+            "properties": {
+              "retention": {
+                "$ref": "#/components/schemas/Duration"
+              }
+            },
+            "type": "object"
+          },
+          "sampling": {
+            "properties": {
+              "duration": {
+                "$ref": "#/components/schemas/Duration"
+              },
+              "maxParallel": {
+                "type": "integer"
+              },
+              "replicas": {
+                "$ref": "#/components/schemas/Replicas"
+              },
+              "roundInterval": {
+                "$ref": "#/components/schemas/Duration"
+              },
+              "rounds": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "target": {
+            "properties": {
+              "version": {
+                "type": "string"
+              },
+              "versionPolicy": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "CollectionState": {
+        "description": "the state of a Collection. The set is closed for this release.",
+        "enum": [
+          "initializing",
+          "pending",
+          "running",
+          "completed",
+          "failed",
+          "cancelled",
+          "expired"
+        ],
+        "type": "string"
+      },
+      "CollectionSummary": {
+        "description": "one entry of a Collection listing.",
+        "properties": {
+          "attempt": {
+            "type": "integer"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "finishedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/CollectionOrigin"
+          },
+          "resolvedVersion": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CollectionState"
+          }
+        },
+        "required": [
+          "id",
+          "origin",
+          "state",
+          "attempt",
+          "createdAt"
+        ],
+        "type": "object"
+      },
+      "CollectionsResponse": {
+        "description": "one page of a Service's Collections, newest first. nextCursor is present only when the listing has more entries to give.",
+        "properties": {
+          "collections": {
+            "items": {
+              "$ref": "#/components/schemas/CollectionSummary"
+            },
+            "type": "array"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "nextCursor": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "service",
+          "collections"
+        ],
+        "type": "object"
+      },
+      "Duration": {
+        "description": "a duration such as 30s, 5m, or 1h",
+        "pattern": "^[0-9]+(ns|us|ms|s|m|h)([0-9]+(ns|us|ms|s|m|h))*$",
+        "type": "string"
+      },
+      "Error": {
+        "description": "the envelope every error the gateway writes itself carries. code is the stable contract; error is human-readable and may change.",
+        "properties": {
+          "code": {
+            "description": "the stable code of the failure",
+            "enum": [
+              "invalid_parameter",
+              "seconds_exceeds_limit",
+              "port_not_allowed",
+              "limit_exceeded",
+              "unauthenticated",
+              "realm_denied",
+              "config_api_disabled",
+              "route_unknown",
+              "service_not_found",
+              "pod_not_found",
+              "profile_unknown",
+              "collection_not_found",
+              "pgo_override_not_found",
+              "method_not_allowed",
+              "version_conflict",
+              "version_missing",
+              "collection_not_completed",
+              "collection_initializing",
+              "collection_terminal",
+              "idempotency_mismatch",
+              "artifact_gone",
+              "precondition_failed",
+              "service_selectorless",
+              "precondition_required",
+              "too_many_profiles",
+              "too_many_auth",
+              "collection_in_progress",
+              "rate_limited",
+              "capacity_exhausted",
+              "pgo_disabled",
+              "upstream_unreachable",
+              "upstream_redirect",
+              "not_ready",
+              "no_targets",
+              "target_changed",
+              "discovery_unavailable",
+              "auth_unavailable",
+              "pgo_unavailable",
+              "collector_unavailable",
+              "upstream_timeout"
+            ],
+            "type": "string"
+          },
+          "details": {
+            "description": "the inputs the caller has to change. The key is absent for a code with no vocabulary, and is never null and never empty.",
+            "items": {
+              "$ref": "#/components/schemas/ErrorDetail"
+            },
+            "type": "array"
+          },
+          "error": {
+            "description": "a human-readable message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "code"
+        ],
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "description": "one input the caller has to change.",
+        "properties": {
+          "code": {
+            "description": "which refusal this is, from the vocabulary of the envelope's own code",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InvalidParameterDetailCode"
+              },
+              {
+                "$ref": "#/components/schemas/LimitExceededDetailCode"
+              },
+              {
+                "$ref": "#/components/schemas/PortNotAllowedDetailCode"
+              }
+            ]
+          },
+          "field": {
+            "description": "the input at fault: a JSON pointer into the body, a query parameter name, a header name, or empty when no single input is at fault. The item's code says which of the four it is.",
+            "type": "string"
+          },
+          "message": {
+            "description": "free text, which may change",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "Exclusion": {
+        "description": "how many Pods one reason kept out of the target set.",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "count"
+        ],
+        "type": "object"
+      },
+      "InvalidParameterDetailCode": {
+        "description": "the vocabulary of invalid_parameter.",
+        "enum": [
+          "unknown_parameter",
+          "repeated_parameter",
+          "empty_parameter",
+          "malformed_parameter",
+          "parameter_not_applicable",
+          "mutually_exclusive",
+          "header_required",
+          "header_malformed",
+          "unknown_field",
+          "field_not_applicable",
+          "body_not_allowed",
+          "body_malformed"
+        ],
+        "type": "string"
+      },
+      "LimitExceededDetailCode": {
+        "description": "the vocabulary of limit_exceeded, one value per way an effective policy misses a bound.",
+        "enum": [
+          "above_maximum",
+          "below_minimum",
+          "out_of_range",
+          "not_permitted",
+          "retention_under_interval"
+        ],
+        "type": "string"
+      },
+      "LimitsResponse": {
+        "description": "the bounds and the selections this gateway serves under.",
+        "properties": {
+          "cpuSeconds": {
+            "type": "integer"
+          },
+          "pgo": {
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "type": "object"
+          },
+          "pprof": {
+            "properties": {
+              "allowedSelections": {
+                "items": {
+                  "$ref": "#/components/schemas/PortSelection"
+                },
+                "type": "array"
+              },
+              "default": {
+                "$ref": "#/components/schemas/PortSelection"
+              }
+            },
+            "required": [
+              "default",
+              "allowedSelections"
+            ],
+            "type": "object"
+          },
+          "profiles": {
+            "items": {
+              "enum": [
+                "cpu",
+                "trace",
+                "heap",
+                "allocs",
+                "goroutine",
+                "mutex",
+                "block",
+                "threadcreate"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "traceSeconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cpuSeconds",
+          "traceSeconds",
+          "profiles",
+          "pprof",
+          "pgo"
+        ],
+        "type": "object"
+      },
+      "Manifest": {
+        "description": "what the merged profile was built from.",
+        "properties": {
+          "attempt": {
+            "type": "integer"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "configRevision": {
+            "type": "integer"
+          },
+          "gateway": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "resolvedVersion": {
+            "type": "string"
+          },
+          "samples": {
+            "items": {
+              "$ref": "#/components/schemas/Sample"
+            },
+            "type": "array"
+          },
+          "sampling": {
+            "properties": {
+              "duration": {
+                "$ref": "#/components/schemas/Duration"
+              },
+              "maxParallel": {
+                "type": "integer"
+              },
+              "replicas": {
+                "$ref": "#/components/schemas/Replicas"
+              },
+              "roundInterval": {
+                "$ref": "#/components/schemas/Duration"
+              },
+              "rounds": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "service": {
+            "type": "string"
+          },
+          "truncated": {
+            "description": "a round had more eligible Pods than it sampled",
+            "type": "boolean"
+          },
+          "versionLabel": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "NamespacesResponse": {
+        "description": "the namespaces the caller's realm admits that hold a Service.",
+        "properties": {
+          "namespaces": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "namespaces"
+        ],
+        "type": "object"
+      },
+      "OpenAPIDocument": {
+        "description": "an OpenAPI 3.1 document: this one.",
+        "type": "object"
+      },
+      "Owner": {
+        "description": "the worker that holds the Collection's lease. It names no address.",
+        "properties": {
+          "instance": {
+            "type": "string"
+          },
+          "pod": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance",
+          "pod"
+        ],
+        "type": "object"
+      },
+      "Policy": {
+        "description": "an effective collection policy: every field filled, from the defaults and any override.",
+        "properties": {
+          "artifact": {
+            "properties": {
+              "retention": {
+                "$ref": "#/components/schemas/Duration"
+              }
+            },
+            "required": [
+              "retention"
+            ],
+            "type": "object"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sampling": {
+            "properties": {
+              "duration": {
+                "$ref": "#/components/schemas/Duration"
+              },
+              "maxParallel": {
+                "type": "integer"
+              },
+              "replicas": {
+                "$ref": "#/components/schemas/Replicas"
+              },
+              "roundInterval": {
+                "$ref": "#/components/schemas/Duration"
+              },
+              "rounds": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "duration",
+              "rounds",
+              "roundInterval",
+              "replicas",
+              "maxParallel"
+            ],
+            "type": "object"
+          },
+          "schedule": {
+            "properties": {
+              "every": {
+                "$ref": "#/components/schemas/Duration"
+              },
+              "jitter": {
+                "$ref": "#/components/schemas/Duration"
+              }
+            },
+            "required": [
+              "every",
+              "jitter"
+            ],
+            "type": "object"
+          },
+          "target": {
+            "properties": {
+              "version": {
+                "type": "string"
+              },
+              "versionPolicy": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "versionPolicy",
+              "version"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "enabled",
+          "schedule",
+          "sampling",
+          "target",
+          "artifact"
+        ],
+        "type": "object"
+      },
+      "PolicyOverride": {
+        "description": "the fields an override sets. Layering is one level deep per block, so a field absent from it falls back to the defaults.",
+        "properties": {
+          "artifact": {
+            "properties": {
+              "retention": {
+                "$ref": "#/components/schemas/Duration"
+              }
+            },
+            "type": "object"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sampling": {
+            "properties": {
+              "duration": {
+                "$ref": "#/components/schemas/Duration"
+              },
+              "maxParallel": {
+                "type": "integer"
+              },
+              "replicas": {
+                "$ref": "#/components/schemas/Replicas"
+              },
+              "roundInterval": {
+                "$ref": "#/components/schemas/Duration"
+              },
+              "rounds": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "schedule": {
+            "properties": {
+              "every": {
+                "$ref": "#/components/schemas/Duration"
+              },
+              "jitter": {
+                "$ref": "#/components/schemas/Duration"
+              }
+            },
+            "type": "object"
+          },
+          "target": {
+            "properties": {
+              "version": {
+                "type": "string"
+              },
+              "versionPolicy": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "PolicyResponse": {
+        "description": "the Service's stored override and the effective policy it produces.",
+        "properties": {
+          "effective": {
+            "$ref": "#/components/schemas/Policy"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "override": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PolicyOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "service": {
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "override",
+              "defaults"
+            ],
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedBy": {
+            "type": "string"
+          },
+          "violations": {
+            "items": {
+              "$ref": "#/components/schemas/Violation"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "namespace",
+          "service",
+          "source",
+          "override",
+          "effective",
+          "violations"
+        ],
+        "type": "object"
+      },
+      "PortNotAllowedDetailCode": {
+        "description": "the one value of port_not_allowed.",
+        "enum": [
+          "not_admitted"
+        ],
+        "type": "string"
+      },
+      "PortSelection": {
+        "description": "one admitted selection: a port number, a port name, or the wildcard in place of either.",
+        "maxProperties": 1,
+        "properties": {
+          "port": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "const": "*",
+                "type": "string"
+              }
+            ]
+          },
+          "portName": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Progress": {
+        "description": "the owner's last renewal snapshot, which is informational.",
+        "properties": {
+          "round": {
+            "type": "integer"
+          },
+          "rounds": {
+            "type": "integer"
+          },
+          "samplesFailed": {
+            "type": "integer"
+          },
+          "samplesOK": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "round",
+          "rounds",
+          "samplesOK",
+          "samplesFailed"
+        ],
+        "type": "object"
+      },
+      "Realm": {
+        "description": "what the caller's realm admits. A list entry is the wildcard or an exact name.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "namespaces": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pgo": {
+            "$ref": "#/components/schemas/RealmPGO"
+          },
+          "profiles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "namespaces",
+          "services",
+          "profiles",
+          "pgo"
+        ],
+        "type": "object"
+      },
+      "RealmPGO": {
+        "description": "the three collection permissions of a realm.",
+        "properties": {
+          "collect": {
+            "type": "boolean"
+          },
+          "configure": {
+            "type": "boolean"
+          },
+          "read": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "read",
+          "collect",
+          "configure"
+        ],
+        "type": "object"
+      },
+      "Replicas": {
+        "description": "how many Pods a round samples: a count, or \"all\" for every eligible Pod.",
+        "oneOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "const": "all",
+            "type": "string"
+          }
+        ]
+      },
+      "Sample": {
+        "description": "one profile the Collection took, and what came of it.",
+        "properties": {
+          "bytes": {
+            "type": "integer"
+          },
+          "node": {
+            "type": "string"
+          },
+          "pod": {
+            "type": "string"
+          },
+          "podUID": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          },
+          "round": {
+            "type": "integer"
+          },
+          "startedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "round",
+          "pod",
+          "podUID",
+          "node",
+          "startedAt",
+          "result",
+          "bytes"
+        ],
+        "type": "object"
+      },
+      "ServicesResponse": {
+        "description": "the Services of one namespace the caller's realm admits.",
+        "properties": {
+          "namespace": {
+            "type": "string"
+          },
+          "services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "namespace",
+          "services"
+        ],
+        "type": "object"
+      },
+      "Target": {
+        "description": "one backend Pod of a Service. It never carries an address or a resolved port.",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "pod": {
+            "type": "string"
+          },
+          "version": {
+            "description": "the Pod's version label, empty when it carries none",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pod",
+          "node",
+          "version"
+        ],
+        "type": "object"
+      },
+      "TargetsResponse": {
+        "description": "the eligible backends of a Service, sorted by Pod name. selectorMatched and excluded are present only for a request that asked to be told why.",
+        "properties": {
+          "excluded": {
+            "items": {
+              "$ref": "#/components/schemas/Exclusion"
+            },
+            "type": "array"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "selectorMatched": {
+            "description": "how many Pods the Service's selector matched",
+            "type": "integer"
+          },
+          "service": {
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/Target"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "namespace",
+          "service",
+          "targets"
+        ],
+        "type": "object"
+      },
+      "Violation": {
+        "description": "one policy field that misses a bound. field is the dotted policy field; the details array of a refusal writes the same field as a pointer.",
+        "properties": {
+          "ceiling": {
+            "description": "the configuration key that bounds the field",
+            "type": "string"
+          },
+          "code": {
+            "$ref": "#/components/schemas/LimitExceededDetailCode"
+          },
+          "detail": {
+            "description": "free text, which may change",
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "code",
+          "ceiling",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "WhoamiResponse": {
+        "description": "the caller as the gateway resolved it.",
+        "properties": {
+          "auth": {
+            "properties": {
+              "logout": {
+                "description": "the path a browser session ends at, absent where none is configured",
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "realm": {
+            "$ref": "#/components/schemas/Realm"
+          }
+        },
+        "required": [
+          "principal",
+          "realm",
+          "auth"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Profgate is a Kubernetes-aware pprof gateway. It resolves a Service to its backend Pods, proxies pprof profiles, and collects merged CPU profiles for profile-guided optimization. Every route below is served by the API listener, and this document describes all of them whatever the configuration enables. The ops listener's health and metrics paths are not in it. Every response carries X-Request-Id and Cache-Control: no-store.",
+    "title": "Profgate Gateway API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "description": "Sends the browser to the console.",
+        "parameters": [],
+        "responses": {
+          "302": {
+            "$ref": "#/components/responses/Redirect"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Reach the console from the root"
+      },
+      "head": {
+        "description": "The headers the same request would answer a GET with, and no body.",
+        "parameters": [],
+        "responses": {
+          "302": {
+            "$ref": "#/components/responses/Redirect"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Reach the console from the root, headers only"
+      }
+    },
+    "/auth/callback": {
+      "get": {
+        "description": "Reads the issuer's answer, sets the session cookie, and sends the browser where the login started.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AuthCode"
+          },
+          {
+            "$ref": "#/components/parameters/AuthError"
+          },
+          {
+            "$ref": "#/components/parameters/AuthState"
+          }
+        ],
+        "responses": {
+          "302": {
+            "$ref": "#/components/responses/Redirect"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Finish a browser login"
+      }
+    },
+    "/auth/login": {
+      "get": {
+        "description": "Sends the browser to the issuer and seals the transaction in a cookie.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Return"
+          }
+        ],
+        "responses": {
+          "302": {
+            "$ref": "#/components/responses/Redirect"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Start a browser login"
+      }
+    },
+    "/auth/logout": {
+      "get": {
+        "description": "Clears the session cookie and sends the browser on.",
+        "parameters": [],
+        "responses": {
+          "302": {
+            "$ref": "#/components/responses/Redirect"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "End a browser session"
+      }
+    },
+    "/ui/": {
+      "get": {
+        "description": "The operator console, which reads this API as any other client does and adds no permission.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ConsolePage"
+          },
+          "304": {
+            "$ref": "#/components/responses/NotModified"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Serve the console"
+      },
+      "head": {
+        "description": "The headers the same request would answer a GET with, and no body.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ConsoleHead"
+          },
+          "304": {
+            "$ref": "#/components/responses/NotModified"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Serve the console headers"
+      }
+    },
+    "/ui/{file}": {
+      "get": {
+        "description": "One file of the console tree, addressed by the remainder of the path.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ConsoleFile"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ConsoleAsset"
+          },
+          "304": {
+            "$ref": "#/components/responses/NotModified"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Serve one console file"
+      },
+      "head": {
+        "description": "The headers the same request would answer a GET with, and no body.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ConsoleFile"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ConsoleHead"
+          },
+          "304": {
+            "$ref": "#/components/responses/NotModified"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Serve one console file's headers"
+      }
+    },
+    "/v1/auth": {
+      "get": {
+        "description": "The authentication mode, and the device login where one is configured. The route runs no authentication step: it is what a client reads before it holds a credential.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/AuthInfo"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Describe how to authenticate"
+      }
+    },
+    "/v1/collections/{id}": {
+      "get": {
+        "description": "The record as stored. With a wait, the request is held open until the state moves, the wait ends, or the replica drains.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CollectionID"
+          },
+          {
+            "$ref": "#/components/parameters/Wait"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/CollectionWaited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Read one Collection"
+      }
+    },
+    "/v1/collections/{id}/cancel": {
+      "post": {
+        "description": "A Collection that has already finished answers 409 collection_terminal. No body is accepted.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CollectionID"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {}
+          },
+          "description": "the route reads no body and refuses one that carries bytes; the media type is declared all the same",
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Collection"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Cancel a Collection"
+      }
+    },
+    "/v1/collections/{id}/profile": {
+      "get": {
+        "description": "Streamed from the store. A Collection that has not completed answers 409, and one whose bytes are gone answers 410.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CollectionID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Artifact"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Download a Collection's merged profile"
+      }
+    },
+    "/v1/limits": {
+      "get": {
+        "description": "The duration ceilings, the profiles it serves, the port selections it admits, and whether collection is enabled.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Limits"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Describe the bounds this gateway serves under"
+      }
+    },
+    "/v1/namespaces": {
+      "get": {
+        "description": "The namespaces the caller's realm admits that hold at least one Service.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Namespaces"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List the namespaces the caller may reach"
+      }
+    },
+    "/v1/namespaces/{namespace}/services": {
+      "get": {
+        "description": "The Services of that namespace the caller's realm admits.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Services"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List the Services the caller may reach in one namespace"
+      }
+    },
+    "/v1/namespaces/{namespace}/services/{service}/collections": {
+      "get": {
+        "description": "Newest first, by creation instant and then by identifier. Filters apply first, then the cursor, then the page bound.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Service"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Origin"
+          },
+          {
+            "$ref": "#/components/parameters/Since"
+          },
+          {
+            "$ref": "#/components/parameters/State"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Collections"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List a Service's Collections"
+      },
+      "post": {
+        "description": "The Collection runs against the Service's effective policy with this body's fields replacing it. The answer names the Collection; the profile is fetched from the download route once it completes.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Service"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionRequest"
+              }
+            }
+          },
+          "description": "what this Collection asks for",
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/CollectionReplayed"
+          },
+          "202": {
+            "$ref": "#/components/responses/CollectionAccepted"
+          },
+          "409": {
+            "$ref": "#/components/responses/CollectionMismatch"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Start a Collection"
+      }
+    },
+    "/v1/namespaces/{namespace}/services/{service}/collections/latest": {
+      "get": {
+        "description": "The newest Collection whose merged profile is still stored. A Service with none answers 404 collection_not_found, which covers one that has never collected and one whose artifacts have all expired.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Service"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Collection"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Read the newest completed Collection of a Service"
+      }
+    },
+    "/v1/namespaces/{namespace}/services/{service}/collections/latest/profile": {
+      "get": {
+        "description": "The merged profile of the same Collection the record route answers with, so a build fetches the newest usable profile in one request.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Service"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Artifact"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Download the newest completed Collection's profile"
+      }
+    },
+    "/v1/namespaces/{namespace}/services/{service}/pgo": {
+      "delete": {
+        "description": "The Service returns to the operator defaults and stops being scheduled. If-Match is required over an existing override and names the revision the delete is made at.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Service"
+          }
+        ],
+        "responses": {
+          "204": {
+            "$ref": "#/components/responses/PolicyDeleted"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Delete a Service's policy override"
+      },
+      "get": {
+        "description": "The stored override, the effective policy it produces, and the fields of that policy which miss a current bound.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Service"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Policy"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Read a Service's collection policy"
+      },
+      "put": {
+        "description": "The body is the override, not the effective policy. If-Match is required over an existing override and names the revision the write is made at.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Service"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyOverride"
+              }
+            }
+          },
+          "description": "the override to store",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Policy"
+          },
+          "201": {
+            "$ref": "#/components/responses/PolicyCreated"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Write a Service's policy override"
+      }
+    },
+    "/v1/namespaces/{namespace}/services/{service}/profiles/{profile}": {
+      "get": {
+        "description": "The gateway picks one eligible Pod, confirms it, and streams the profile it answers with. A non-2xx answer from the application passes through with its own status, body, and content type.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Service"
+          },
+          {
+            "$ref": "#/components/parameters/Profile"
+          },
+          {
+            "$ref": "#/components/parameters/Pod"
+          },
+          {
+            "$ref": "#/components/parameters/Port"
+          },
+          {
+            "$ref": "#/components/parameters/PortName"
+          },
+          {
+            "$ref": "#/components/parameters/Seconds"
+          },
+          {
+            "$ref": "#/components/parameters/Strategy"
+          },
+          {
+            "$ref": "#/components/parameters/Version"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Profile"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Fetch one profile from one Pod of a Service"
+      }
+    },
+    "/v1/namespaces/{namespace}/services/{service}/targets": {
+      "get": {
+        "description": "The Pods the Service selects that the gateway would profile, sorted by Pod name. No entry carries a Pod address or a resolved port.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Service"
+          },
+          {
+            "$ref": "#/components/parameters/Explain"
+          },
+          {
+            "$ref": "#/components/parameters/Pod"
+          },
+          {
+            "$ref": "#/components/parameters/Port"
+          },
+          {
+            "$ref": "#/components/parameters/PortName"
+          },
+          {
+            "$ref": "#/components/parameters/Version"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Targets"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List the eligible backends of a Service"
+      }
+    },
+    "/v1/openapi.json": {
+      "get": {
+        "description": "The document describes every route the API listener serves, whatever the configuration enables. The route runs no authentication and no realm step: what it publishes is the route grammar.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OpenAPI"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Read this document"
+      }
+    },
+    "/v1/whoami": {
+      "get": {
+        "description": "The principal the credential resolved to, and what its realm admits.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Whoami"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Describe the caller"
+      }
+    }
+  }
+}

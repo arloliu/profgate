@@ -122,7 +122,7 @@ func (s *server) serveListing(
 		}
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
 		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindAuth, kindAuthLogin,
-		kindAuthCallback, kindAuthLogout, kindConsole:
+		kindAuthCallback, kindAuthLogout, kindOpenAPI, kindConsole:
 		// Not a listing route; ServeHTTP never dispatches one here.
 		q.fail(w, errRouteUnknown)
 
