@@ -1255,9 +1255,9 @@ Key `job.<id>` in `PROFGATE_JOBS`:
   "progress": {"round": 1, "rounds": 2, "samplesOK": 5, "samplesFailed": 0},
   "manifest": null,
   "artifact": null,
-  "idempotencyKey": "3f0a1c7e-8b52-4d6a-9f11-2c4e6a8b0d31",
+  "idempotencyKey": "",
   "snapshotHash": "9c1e5b0a4d7f2836a0b91c4e6d8f0a2b3c5d7e9f1a2b3c4d5e6f708192a3b4c5",
-  "createdBy": "anonymous",
+  "createdBy": "schedule",
   "createdAt": "2026-08-23T12:03:12Z",
   "startedAt": "2026-08-23T12:03:13Z",
   "finishedAt": null,
@@ -1782,7 +1782,11 @@ Every condition but the receipt reconciliation is evaluated against the watched 
 and one `List` of the artifact bucket;
 the NATS calls an ordinary sweep makes are that `List`,
 one `Get` per orphan candidate and per active key,
+one `Get` of each record crossing `pgo.jobRetention` and one of its receipt when it names a key,
 and one `Delete` per matching key or object.
+The two record-retention reads are forced:
+the receipt key is computed from the record's own `createdBy` and `idempotencyKey`,
+and nothing indexes an idempotency key.
 Orphan candidates are objects whose attempt lost or whose record is gone, a handful at most;
 and active keys are at most `publishers × maxLiveCollections` (section 7.2).
 The hourly reconciliation adds one `Keys("idem.")` and one `Get` per receipt in the bucket,
