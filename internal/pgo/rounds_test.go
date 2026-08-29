@@ -833,7 +833,8 @@ func TestRoundsSlotTimeout(t *testing.T) {
 func TestRoundsCancellationStoresNothing(t *testing.T) {
 	t.Run("between rounds", func(t *testing.T) {
 		pod := newPodServer(t, "pod-a", "1.42.3", fixtureProfile(t, "cpu-a.pprof"))
-		r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(pod.target)})
+		clock := newFakeClock(slotBase)
+		r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(pod.target), clock: clock})
 		in := newRunInput(t, func(rec *Record) {
 			rec.Policy.Sampling.Rounds = 2
 			rec.Policy.Sampling.RoundInterval = Duration(time.Minute)
@@ -843,7 +844,14 @@ func TestRoundsCancellationStoresNothing(t *testing.T) {
 		done := make(chan workResult, 1)
 		go func() { done <- r.run(ctx, in.input()) }()
 
-		waitFor(t, "the first round finished", func() bool { return pod.hits.Load() == 1 })
+		// The interval between rounds is the one timer this run arms,
+		// and it is armed only once the first round has recorded its sample.
+		// The Pod's hit count rises when the request arrives instead,
+		// which is before the profile answering it has been read,
+		// and cancelling there ends the Collection with no samples at all.
+		waitFor(t, "the run waiting out the interval between rounds", func() bool {
+			return clock.armedTimers() == 1
+		})
 		cancel()
 
 		res := <-done
@@ -1587,6 +1595,13 @@ func TestCollectionRenewalMismatchStopsSampling(t *testing.T) {
 
 	// One renewal tick is enough; the trap must never be dialed afterwards.
 	r.clock.Advance(testLeaseTTL / 3)
+	// Advancing the clock only fires the renewal timer.
+	// What stops the work is the renewal reading the moved record,
+	// and the owner logs the move it found only after cancelling,
+	// so a release before that line lands leaves the second round free to dial.
+	waitFor(t, "the owner observing that the record moved", func() bool {
+		return len(r.logs.with("pgo: collection moved under its owner")) > 0
+	})
 	close(release)
 	waitFor(t, "the owner loop stopped", func() bool { return w.activeSlots() == 0 })
 

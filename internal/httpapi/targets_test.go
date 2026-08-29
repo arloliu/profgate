@@ -409,13 +409,18 @@ func TestTargetsNonDisclosure(t *testing.T) {
 					t.Errorf("body leaks %q: %s", leak, rec.Body.String())
 				}
 				for name, values := range rec.Header() {
+					// The request id is random hex, or the caller's own value echoed back,
+					// so it discloses nothing and a bare number can land inside it by chance.
+					if http.CanonicalHeaderKey(name) == requestIDHeader {
+						continue
+					}
 					for _, v := range values {
 						if strings.Contains(name, leak) || strings.Contains(v, leak) {
 							t.Errorf("header %s leaks %q: %q", name, leak, v)
 						}
 					}
 				}
-				if logs := h.logs.String(); strings.Contains(logs, leak) {
+				if logs := h.logText(t); strings.Contains(logs, leak) {
 					t.Errorf("audit output leaks %q: %s", leak, logs)
 				}
 			}
