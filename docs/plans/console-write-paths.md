@@ -207,7 +207,9 @@ A mistyped path in that file is now caught by the test that fetches both, or by 
 **The table.**
 `newFromFS` walks the tree once and builds `map[string]asset`,
 where `asset` holds the bytes, the `Content-Type` `contentType` already computes, the length, and the tag.
-`index.html` is read into `shell` and left out of the table.
+`index.html` is in it like every other regular file, and the shell is answered from its entry;
+what refuses `/ui/index.html` is the route, which names that file
+(*The handler holds a table of every file, and routing is what hides one*).
 `treeHash`, `Hash`, `assetPrefix`, and `cacheImmutable` go;
 `encoding/binary`, `sort`, and `crypto/sha256`'s framing loop go with them,
 and `crypto/sha256` stays for the per-file digest.
@@ -486,7 +488,8 @@ and absent, empty, negative, fractional, non-numeric, and an HTTP-date each read
 `token` is the attempt's own number, raised on every `arm`;
 `app.js` sends it with the request and hands it back on the `outcome`,
 so an answer to an attempt the page has left is discarded instead of selecting a record of a Service nobody is looking at.
-`until` is when a `cooling` phase ends, in milliseconds, and is `0` in every other phase.
+`until` is when a `cooling` phase ends, on the same millisecond clock `timer` reports,
+and is `0` in every other phase.
 
 `event` is `{kind, …}` with `kind` one of
 `arm`, `submit`, `outcome`, `timer`, `keep`, and `selection`.
@@ -505,7 +508,7 @@ so an answer to an attempt the page has left is discarded instead of selecting a
 | `inflight` + `outcome` whose `token` is not the state's | `inflight`, unchanged: the answer is to an attempt already abandoned |
 | `inflight` + `outcome` whose `keep` is true | `retained`, holding the key and route |
 | `inflight` + `outcome` whose `keep` is false and `disableSeconds` is `0` | `idle`, dropping both |
-| `inflight` + `outcome` whose `keep` is false and `disableSeconds` is above `0` | `cooling` until `now + disableSeconds`, dropping the key |
+| `inflight` + `outcome` whose `keep` is false and `disableSeconds` is above `0` | `cooling` until `now + disableSeconds * 1000`, dropping the key |
 | `retained` + `timer` | `retained`, unchanged — the retained state survives an arbitrary wait |
 | `retained` + `submit` | `inflight`, sending the key it holds under the token it holds |
 | `retained` + `keep` | `idle`, dropping both, with the message that a Collection may already exist and names the Collections table |
@@ -514,6 +517,12 @@ so an answer to an attempt the page has left is discarded instead of selecting a
 | `cooling` + `arm` before `until` | `cooling`, unchanged |
 | `idle`, `armed`, or `cooling` + `selection` | `idle`, with no message |
 | `inflight` or `retained` + `selection` | `idle`, dropping the key and route, with the message that a Collection may already exist |
+| `idle` + `outcome` | `idle`, unchanged: the attempt it answers was abandoned by a `selection`, and the token counter is not rewound |
+| every other pair | the state is returned unchanged and the message is `null` |
+
+The last row is the function's shape, not a gap in the table:
+`startNext` is total, and a pair with no rule of its own is a pair where nothing should happen.
+A test drives every phase against every event so that "nothing should happen" is asserted rather than assumed.
 
 **Why `inflight` warns and `armed` does not.**
 *Two presses, never a dialog* says the armed state clears on any change of namespace or Service,
@@ -541,8 +550,9 @@ Four cases *Unit* names that a reader of the tables alone could miss:
   and different after any response that classified the attempt, `503 collector_unavailable` included —
   which is a sequence of `startOutcome` and `startNext` calls, not one row of either;
 - a press after a lost response sends the key the lost press sent;
-- the cooling phase refuses a press before `until`, including when `disableSeconds` came back `0`,
-  which is the `"0"` row of `retryAfterSeconds` reaching the phase table.
+- the cooling phase refuses a press before `until`,
+  while `disableSeconds` of `0` produces no cooling at all and returns the control to `idle`,
+  which is what separates the `"0"` row of `retryAfterSeconds` from the absent-header row's five seconds.
 
 - [ ] **Run the tests and watch them fail**
 - [ ] **Write the module**
@@ -706,12 +716,18 @@ type browser struct {
 The search order is `PROFGATE_E2E_BROWSER` when it names an executable,
 then, on `PATH`, `chromium`, `chromium-browser`, `google-chrome`, `google-chrome-stable`.
 `skip` names all five so a developer reads what was looked for.
-Discovery runs `--version`, logs the path and the string, and parses the major version out of it.
+Discovery runs `--version`, logs the path and the whole string, and reads the major version
+as the first run of digits in it — `Chromium 141.0.7390.54` and `Google Chrome 141.0.7390.54` both give `141`.
+A string with no such run is a failure, not a skip:
+an executable that answered `--version` with something unreadable is a broken pin, not an absent browser.
 
-The accepted range is a pair of constants beside the type.
-A major version below the floor **fails** the scenario rather than skipping it,
-because a browser too old for the page's `crypto`, `URL`, or module behavior is a red test and not a mystery.
-A missing executable skips; an unusable one does not.
+The accepted range is a pair of constants beside the type, a floor and a ceiling.
+A major version outside **either** bound fails the scenario rather than skipping it,
+because a browser too old for the page's `crypto`, `URL`, or module behavior is a red test and not a mystery,
+and one far newer than anything this suite has run against is a claim nobody checked.
+The floor is the oldest version the page's behavior is known to hold on;
+the ceiling moves with the version the workflow pins, in the same commit that moves the pin.
+A missing executable skips; an unusable or unpinned one does not.
 
 ### Reaching the gateway from a browser
 
@@ -757,8 +773,19 @@ Every piece exists and none of them is wired together today:
   `gatewayPermissions`, `h.NATS.ID.user`, `h.applyCredsSecret`,
   and the poll past the replay barrier, which a gateway with PGO on needs and a rollout does not wait for.
 
-`deployHTTPSGateway` gains a variadic `...patch` parameter, which its two existing callers pass nothing to,
-and the console runner passes `credsMountPatch`.
+`deployHTTPSGateway` gains a variadic `...patch` parameter, which its two existing callers pass nothing to.
+The console runner's setup is, in order:
+
+```text
+pub, sub := gatewayPermissions(h.root)         the account fragment the gateway is granted
+user     := h.NATS.ID.user("profgate", …)      a NATS user for this scenario alone
+h.applyCredsSecret(ctx, ns, user.Creds)        the credential the mount will carry
+cfg      := gatewayConfig(gatewayConfigOptions{
+                NATSURL: h.NATS.URL, RealmPGO: true,
+                TLSMount: tlsMountPath, AuthBlock: oidcAuthBlock(dex.issuer), UIEnabled: true})
+deployHTTPSGateway(t, h, ns, "oidc-gateway", …, gwCA, cfg, credsMountPatch(name))
+```
+
 The runner then polls the policy route past the replay barrier as `deployOwnGateway` does.
 A `403` or a `503` from the first Collections listing is that barrier, not a bug, and the poll is what absorbs it.
 
@@ -865,8 +892,14 @@ so a commit made without it is a commit of unrun code.
   `docs/plans/roadmap.md`, `docs/plans/console-write-paths.md`
 
 *Required by this revision and not yet made* in [`docs/specs/ui.md`](../specs/ui.md) is the list this task closes.
-Every row of it is below;
+Every row of it that no earlier task took is below;
 a row that lands leaves that table, and the table is empty when this task ends.
+
+The *Dependencies* rows are the exception and are already gone:
+that section says a module is recorded when the tests that need it land,
+so the interpreter's row moved with `collectionmodel.js` and chromedp's with the browser scenarios.
+The rows here describe behavior rather than modules,
+and they land together so that the spec's pending table empties in one place a reader can find.
 
 - [ ] **`docs/console.md`**
 
