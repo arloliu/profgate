@@ -270,12 +270,21 @@ func dialForward(ctx context.Context, d *net.Dialer, network, addr string) (net.
 // with its body read and closed.
 func send(t *testing.T, c *http.Client, method, rawURL string, headers http.Header, body io.Reader) response {
 	t.Helper()
-	resp, err := try(t.Context(), c, method, rawURL, headers, body)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, rawURL, err)
+	deadline := time.Now().Add(dialTimeout)
+	for {
+		resp, err := try(t.Context(), c, method, rawURL, headers, body)
+		if err == nil {
+			return resp
+		}
+		// A forward whose session the Pod ended answers a request in flight with EOF rather than refusing the dial,
+		// so dialForward's retry never sees it and the caller is left with no answer at all.
+		// Only a read with no answer is retried, and only for a method that carries no body,
+		// so a request the gateway did act on is never sent twice.
+		if body != nil || (method != http.MethodGet && method != http.MethodHead) || time.Now().After(deadline) {
+			t.Fatalf("%s %s: %v", method, rawURL, err)
+		}
+		time.Sleep(pollInterval)
 	}
-
-	return resp
 }
 
 // try is send for callers that poll and want the error instead of a failure.
@@ -652,9 +661,22 @@ func scenarioAuthOIDCBrowser(t *testing.T, h *Harness) {
 	if err := dex.restart(ctx); err != nil {
 		t.Fatal(err)
 	}
-	rotated := passwordGrant(t, client, dex.issuer, password)
-	if tokenKID(t, rotated) == tokenKID(t, idToken) {
-		t.Fatal("the restarted Dex signed with the same kid; the key was not rotated")
+	// The issuer is a NodePort,
+	// and the node's forwarding rules name the new Pod some time after the rollout reports the old one gone,
+	// so a grant taken the instant the rollout finishes can still be signed by the Pod that is leaving.
+	// The assertion is unchanged, the key must rotate;
+	// the wait only lets the routing catch up with the rollout.
+	var rotated string
+	kidDeadline := time.Now().Add(keyRotationDeadline)
+	for {
+		rotated = passwordGrant(t, client, dex.issuer, password)
+		if tokenKID(t, rotated) != tokenKID(t, idToken) {
+			break
+		}
+		if time.Now().After(kidDeadline) {
+			t.Fatal("the restarted Dex signed with the same kid; the key was not rotated")
+		}
+		time.Sleep(pollInterval)
 	}
 	rotatedBearer := http.Header{"Authorization": {"Bearer " + rotated}}
 	start := time.Now()
