@@ -42,6 +42,20 @@ const (
 	// searching PATH instead would run them against a browser nobody pinned.
 	browserEnv = "PROFGATE_E2E_BROWSER"
 
+	// browserDisabledFeatures is what the console sessions turn off in Chromium.
+	// The first three are chromedp's own default value, repeated because a second
+	// --disable-features replaces that value rather than adding to it;
+	// a chromedp upgrade that changes its default has to be carried across to here.
+	// NetworkTimeServiceQuerying is this suite's own, and it is what keeps the page loads whole.
+	// Chromium asks Google for the current time as it starts,
+	// and installing the answer, some tens of milliseconds later, replaces the certificate verifier;
+	// every verification in flight at that moment is abandoned with ERR_CERT_VERIFIER_CHANGED.
+	// The page opens several connections to the gateway at once for its modules,
+	// so a load that overlaps the replacement loses one or two of them,
+	// and app.js is left with imports that never resolve and a page that never runs.
+	// Ignoring certificate errors does not cover it: the verification was abandoned, not failed.
+	browserDisabledFeatures = "site-per-process,Translate,BlinkGenPropertyTrees,NetworkTimeServiceQuerying"
+
 	// browserDeadline bounds one browser action: a navigation, a click, or an evaluation.
 	browserDeadline = 60 * time.Second
 	// downloadDeadline bounds the wait for a started download to finish.
@@ -206,6 +220,7 @@ func newSession(t *testing.T, b browser, o sessionOptions) *session {
 		// while the forward is a loopback port: the browser has no dialer, so the resolver carries the mapping.
 		// The port is part of the rule because the name is reached on 443 and the forward is not.
 		chromedp.Flag("host-resolver-rules", "MAP "+tlsHost+":443 "+o.MapTo),
+		chromedp.Flag("disable-features", browserDisabledFeatures),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(t.Context(), opts...)
 	t.Cleanup(cancelAlloc)
