@@ -1874,7 +1874,7 @@
     }
   },
   "info": {
-    "description": "Profgate is a Kubernetes-aware pprof gateway. It resolves a Service to its backend Pods, proxies pprof profiles, and collects merged CPU profiles for profile-guided optimization. Every route below is served by the API listener, and this document describes all of them whatever the configuration enables. The ops listener's health and metrics paths are not in it. Every response carries X-Request-Id and Cache-Control: no-store.",
+    "description": "Profgate is a Kubernetes-aware pprof gateway. It resolves a Service to its backend Pods, proxies pprof profiles, and collects merged CPU profiles for profile-guided optimization. Every route below is served by the API listener, and this document describes all of them whatever the configuration enables. The ops listener's health and metrics paths are not in it. Every response carries X-Request-Id. Every response carries Cache-Control: no-store, except a console file under /ui/{file}, which carries Cache-Control: no-cache so a browser revalidates it against its ETag.",
     "title": "Profgate Gateway API",
     "version": "1.0.0"
   },
