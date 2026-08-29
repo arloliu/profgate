@@ -753,6 +753,36 @@ func (h *harness) audits(t *testing.T) []map[string]any {
 	return records
 }
 
+// logText is every captured log line flattened without its time and requestId fields.
+// slog writes the timestamp, and the request id is random hex or the caller's own,
+// so neither can carry what a fixture holds.
+// Leaving them in lets a sentinel that is a bare number match a nanosecond timestamp or a hex identifier,
+// reporting a leak that did not happen.
+func (h *harness) logText(t *testing.T) string {
+	t.Helper()
+
+	var b strings.Builder
+	for line := range strings.SplitSeq(strings.TrimSpace(h.logs.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line %q is not JSON: %v", line, err)
+		}
+		delete(rec, "time")
+		delete(rec, "requestId")
+		out, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatalf("re-encode %v: %v", rec, err)
+		}
+		b.Write(out)
+		b.WriteByte('\n')
+	}
+
+	return b.String()
+}
+
 // expectMetricCode checks that Recorder.Request was called exactly once with code.
 func (h *harness) expectMetricCode(t *testing.T, code string) requestCall {
 	t.Helper()

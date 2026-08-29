@@ -2206,7 +2206,13 @@ func TestServeAuth(t *testing.T) {
 		cs := fake.NewClientset(fixtureObjects()...)
 		gw := startGatewayWith(t, cs, defaultLimits(), gatewayOpts{authBlock: oidcBlock(t, is, false)})
 
-		if code := gw.exitCode(t, 3*time.Second+2*time.Second); code != 1 {
+		// Discovery spends its whole timeout before the gateway begins to exit.
+		// That cost and the exit's own budget are waited for separately,
+		// rather than sharing one number the retries have already spent most of.
+		waitFor(t, 3*time.Second+waitTimeout, "the issuer retries running out", func() bool {
+			return recordIndex(gw.records(t), "issuer discovery failed") >= 0
+		})
+		if code := gw.exitCode(t, waitTimeout); code != 1 {
 			t.Fatalf("exit code = %d, want 1: a gateway that cannot reach its issuer cannot authenticate anyone", code)
 		}
 		gw.record(t, "issuer discovery failed")

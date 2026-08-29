@@ -1021,6 +1021,21 @@ func (c *fakeClock) NewTicker(d time.Duration) Ticker {
 	return t
 }
 
+// armedTimers is how many timers are waiting for their deadline.
+// A timer that has fired or been stopped is not counted.
+func (c *fakeClock) armedTimers() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, t := range c.timers {
+		if t.active {
+			n++
+		}
+	}
+
+	return n
+}
+
 // tickerCount is how many tickers this clock has handed out.
 func (c *fakeClock) tickerCount() int {
 	c.mu.Lock()
