@@ -36,7 +36,7 @@ pgo:
     target:
       versionPolicy: strict
     artifact:
-      retention: 2h
+      retention: 24h
 realms:
   developer:
     namespaces: ["*"]

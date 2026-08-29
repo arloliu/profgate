@@ -1,0 +1,14 @@
+auth:
+  anonymousRealm: developer
+pgo:
+  enabled: false
+  defaults:
+    schedule:
+      every: 6h
+    artifact:
+      retention: 1h
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

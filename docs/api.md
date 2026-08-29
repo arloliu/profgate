@@ -503,7 +503,7 @@ Every response body has the same shape:
     "schedule": {"every": "6h", "jitter": "10m"},
     "sampling": {"duration": "30s", "rounds": 3, "roundInterval": "30s", "replicas": "all", "maxParallel": 4},
     "target": {"versionPolicy": "strict", "version": ""},
-    "artifact": {"retention": "2h"}
+    "artifact": {"retention": "24h"}
   },
   "violations": [],
   "updatedBy": "anonymous",

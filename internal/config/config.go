@@ -399,7 +399,7 @@ type PGOTargetDefaults struct {
 
 // PGOArtifactDefaults is how long a finished profile is kept by default.
 type PGOArtifactDefaults struct {
-	Retention time.Duration `yaml:"retention" default:"2h" validate:"min=1m"`
+	Retention time.Duration `yaml:"retention" default:"24h" validate:"min=1m"`
 }
 
 // UIConfig is the console block.
@@ -1232,6 +1232,12 @@ func validatePGODefaults(defaults *PGODefaults, limits PGOLimits) error {
 	if defaults.Artifact.Retention > limits.MaxRetention {
 		return fmt.Errorf("pgo.defaults.artifact.retention %v must be at most pgo.limits.maxRetention %v",
 			defaults.Artifact.Retention, limits.MaxRetention)
+	}
+	// A retention shorter than the interval that produces the artifact leaves
+	// the Service with no downloadable profile for the tail of every interval.
+	if defaults.Artifact.Retention < defaults.Schedule.Every {
+		return fmt.Errorf("pgo.defaults.artifact.retention %v must be at least pgo.defaults.schedule.every %v",
+			defaults.Artifact.Retention, defaults.Schedule.Every)
 	}
 	return nil
 }

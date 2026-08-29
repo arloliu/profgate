@@ -99,7 +99,7 @@ What each setting buys you in profile quality:
 | `sampling.replicas` | Pods sampled per round (`"all"` or a count); more Pods average out per-replica skew |
 | `sampling.maxParallel` | concurrent samples; affects throughput, not quality |
 | `target.version` | optional pin to one version label value; unset means "whatever the Pods agree on" |
-| `artifact.retention` | how long the merged profile stays downloadable (default `2h`) |
+| `artifact.retention` | how long the merged profile stays downloadable (default `24h`, and at least `schedule.every`) |
 
 Rounds spread over time are the point:
 one artifact merges several rounds across several Pods,

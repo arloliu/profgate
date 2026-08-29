@@ -1340,7 +1340,7 @@ func testPGODefaults() config.PGODefaults {
 			MaxParallel:   4,
 		},
 		Target:   config.PGOTargetDefaults{VersionPolicy: "strict"},
-		Artifact: config.PGOArtifactDefaults{Retention: 2 * time.Hour},
+		Artifact: config.PGOArtifactDefaults{Retention: 24 * time.Hour},
 	}
 }
 

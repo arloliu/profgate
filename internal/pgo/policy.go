@@ -322,6 +322,8 @@ const (
 	codeOutOfRange = "out_of_range"
 	// codeNotPermitted is a value outside the fixed set the field admits.
 	codeNotPermitted = "not_permitted"
+	// codeRetentionUnderInterval is an artifact.retention shorter than the schedule.every of the same policy.
+	codeRetentionUnderInterval = "retention_under_interval"
 )
 
 // Violation is one policy field that exceeds a bound.
@@ -406,6 +408,9 @@ func Validate(p Policy, lim config.PGOLimits) []Violation {
 		add("artifact.retention", codeAboveMaximum, "pgo.limits.maxRetention", "%v is more than %v", r, lim.MaxRetention)
 	case r < minRetention:
 		add("artifact.retention", codeBelowMinimum, Duration(minRetention).String(), "%v is less than %v", r, minRetention)
+	case r < p.Schedule.Every.Duration():
+		add("artifact.retention", codeRetentionUnderInterval, "schedule.every",
+			"%v is less than schedule.every %v", r, p.Schedule.Every)
 	}
 
 	return out

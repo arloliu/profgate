@@ -33,6 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `field` `port` or `portName` and `code` `not_admitted`, naming only the value the client sent.
   The console's port control is a menu of the configured default and every listed entry,
   with a free-form field only where the matching wildcard is configured.
+- **BREAKING: an artifact is kept for at least the interval that produces it.**
+  `pgo.defaults.artifact.retention` moves from `2h` to `24h`.
+  Every effective policy must now hold `artifact.retention` at least `schedule.every`:
+  a shorter retention leaves the Service with no downloadable profile for the tail of every interval.
+  `PUT /pgo` and `POST /collections` refuse a policy that breaks the rule with `400 limit_exceeded`,
+  whose `details` carries `code` `retention_under_interval` on `/artifact/retention`;
+  a stored override that breaks it makes the Service ineligible for scheduling
+  and is reported in `GET /pgo`'s `violations` with the same code.
+  A configuration file that pins `pgo.defaults.artifact.retention` under `pgo.defaults.schedule.every` no longer starts,
+  whether or not `pgo.enabled` is true, and the message names both keys.
+  Raise the retention, or lower the interval, to the point where one covers the other.
+  A `pgo.limits.maxRetention` lowered below `24h` now needs `pgo.defaults.artifact.retention` written out explicitly,
+  at or below that ceiling and at or above `pgo.defaults.schedule.every`.
 
 ### Added
 

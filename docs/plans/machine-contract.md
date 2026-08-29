@@ -1054,7 +1054,7 @@ it guarantees a long enough retention is available, which is a different claim.
 
 `internal/config/config_test.go:666` asserts `2h` and moves with the default.
 
-- [ ] **Write the rule tests**
+- [x] **Write the rule tests**
 
 `internal/pgo/policy_test.go`, restating the retention rows of [`docs/specs/pgo.md`](../specs/pgo.md) *Unit*:
 
@@ -1087,11 +1087,11 @@ a worker claiming a snapshot that breaks it fails the Collection `limit_exceeded
 **before any local slot is reserved**, the way a ceiling violation already does,
 and the test fails when the rule is checked only at write time.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Move the default and add the rule**
+- [x] **Move the default and add the rule**
 
-- [ ] **Update the two documents a client reads**
+- [x] **Update the two documents a client reads**
 
 | File | Change |
 |---|---|
@@ -1102,7 +1102,7 @@ and the test fails when the rule is checked only at write time.
 The changelog entry says plainly what an operator must do:
 a file that pins a retention under its interval no longer starts, and the message names both keys.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/configuration.md CHANGELOG.md

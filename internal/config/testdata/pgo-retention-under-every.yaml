@@ -1,0 +1,16 @@
+auth:
+  anonymousRealm: developer
+nats:
+  url: nats://nats.profgate.svc:4222
+pgo:
+  enabled: true
+  defaults:
+    schedule:
+      every: 6h
+    artifact:
+      retention: 1h
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

@@ -623,7 +623,7 @@ func TestLoadPGO(t *testing.T) {
 					MaxParallel:   4,
 				},
 				Target:   config.PGOTargetDefaults{VersionPolicy: "strict"},
-				Artifact: config.PGOArtifactDefaults{Retention: 2 * time.Hour},
+				Artifact: config.PGOArtifactDefaults{Retention: 24 * time.Hour},
 			},
 		}
 		if cfg.PGO != want {
@@ -662,8 +662,8 @@ func TestLoadPGO(t *testing.T) {
 		if sampling.Duration != 30*time.Second || sampling.Rounds != 2 || sampling.MaxParallel != 4 {
 			t.Fatalf("sampling = %+v, want duration 30s, rounds 2, maxParallel 4", sampling)
 		}
-		if got := cfg.PGO.Defaults.Artifact.Retention; got != 2*time.Hour {
-			t.Fatalf("retention = %v, want 2h", got)
+		if got := cfg.PGO.Defaults.Artifact.Retention; got != 24*time.Hour {
+			t.Fatalf("retention = %v, want 24h", got)
 		}
 	})
 
@@ -689,7 +689,7 @@ func TestLoadPGO(t *testing.T) {
 		t.Setenv("PROFGATE_PGO_LIMIT_MAX_PARALLEL", "5")
 		t.Setenv("PROFGATE_PGO_LIMIT_MIN_EVERY", "20m")
 		t.Setenv("PROFGATE_PGO_LIMIT_MAX_EVERY", "12h")
-		t.Setenv("PROFGATE_PGO_LIMIT_MAX_RETENTION", "10h")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_RETENTION", "48h")
 		t.Setenv("PROFGATE_PGO_LIMIT_MAX_SAMPLE_BYTES", "2097152")
 		t.Setenv("PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES", "4194304")
 		t.Setenv("PROFGATE_PGO_LIMIT_MAX_TARGETS_PER_ROUND", "16")
@@ -717,7 +717,7 @@ func TestLoadPGO(t *testing.T) {
 				MaxParallel:          5,
 				MinEvery:             20 * time.Minute,
 				MaxEvery:             12 * time.Hour,
-				MaxRetention:         10 * time.Hour,
+				MaxRetention:         48 * time.Hour,
 				MaxSampleBytes:       2097152,
 				MaxMergedBytes:       4194304,
 				MaxTargetsPerRound:   16,
@@ -822,6 +822,28 @@ func TestLoadPGO(t *testing.T) {
 	})
 	t.Run("limits contradict each other while disabled", func(t *testing.T) {
 		loadErr(t, fixture("pgo-disabled-bad-retention.yaml"), "pgo.jobRetention")
+	})
+
+	// The one default rule that judges the policy against itself rather than against a ceiling:
+	// an artifact kept for less than its own interval leaves no downloadable profile for the tail of each one.
+	// It names both keys, and it holds whether or not pgo.enabled.
+	t.Run("a default retention under the default interval", func(t *testing.T) {
+		const want = "pgo.defaults.artifact.retention 1h0m0s must be at least pgo.defaults.schedule.every 6h0m0s"
+		for _, tc := range []struct{ name, fixture string }{
+			{"while enabled", "pgo-retention-under-every.yaml"},
+			{"while disabled", "pgo-disabled-retention-under-every.yaml"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				loadErr(t, fixture(tc.fixture), want)
+			})
+		}
+	})
+
+	// The ceiling on the same key keeps its own message,
+	// which is what tells an operator to raise pgo.limits.maxRetention rather than pgo.defaults.schedule.every.
+	t.Run("a default retention above its ceiling", func(t *testing.T) {
+		loadErr(t, fixture("pgo-retention-above-max.yaml"),
+			"pgo.defaults.artifact.retention 25h0m0s must be at most pgo.limits.maxRetention 24h0m0s")
 	})
 
 	// The rules that measure the PGO ceilings against the interactive limits

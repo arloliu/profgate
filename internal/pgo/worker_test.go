@@ -268,6 +268,44 @@ func TestWorkerLimitExceeded(t *testing.T) {
 	}
 }
 
+// TestWorkerRetentionUnderInterval proves the claim measures a snapshot against the rule that judges a policy by itself,
+// as well as against the ceilings:
+// a Collection that would keep its artifact for less than its own interval
+// is failed before any local capacity is reserved.
+// The record is written straight into the store,
+// so a rule enforced only where a policy is written would let it reach the work body.
+func TestWorkerRetentionUnderInterval(t *testing.T) {
+	f := startPGO(t)
+	under := f.seedClaimable("payment", "retains-under-an-interval", func(rec *Record) {
+		rec.Policy.Schedule.Every = Duration(6 * time.Hour)
+		rec.Policy.Artifact.Retention = Duration(time.Hour)
+	})
+	fine := f.seedClaimable("payment", "retains-a-whole-interval")
+
+	r := f.newReplica("replica", replicaOpts{})
+	r.waitSynced()
+	r.waitCache("holds both records", func(c *Caches) bool { return c.hasJob(under) && c.hasJob(fine) })
+
+	stub := newRunStub(workResult{})
+	t.Cleanup(stub.release)
+	// One local slot, so a leaked reservation would starve the coherent record.
+	w := r.newWorker(stub.fn(), func(cfg *config.PGOConfig) {
+		cfg.Limits = limitsWith(func(l *config.PGOLimits) { l.MaxActiveCollections = 1 })
+	})
+	scanNow(t, w)
+
+	rec := f.record(under)
+	if rec.State != StateFailed || rec.Reason != ReasonLimitExceeded {
+		t.Fatalf("the incoherent record is %q %q, want failed %q", rec.State, rec.Reason, ReasonLimitExceeded)
+	}
+	if got := stub.waitStarted(t).Record.ID; got != fine {
+		t.Fatalf("the work body ran for %s, want the coherent record", got)
+	}
+	if stub.calls() != 1 {
+		t.Fatalf("the work body ran %d times, want once", stub.calls())
+	}
+}
+
 // TestWorkerAttemptsExhausted proves the claim that would exceed maxAttempts
 // fails the record instead, and gives its local slot straight back.
 func TestWorkerAttemptsExhausted(t *testing.T) {

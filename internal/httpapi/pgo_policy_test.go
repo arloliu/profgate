@@ -344,10 +344,14 @@ func TestLimitExceededDetails(t *testing.T) {
 		got := h.doPGO(t, http.MethodPut, pgoPath, body, nil)
 
 		h.expectPGOError(t, got, http.StatusBadRequest, "limit_exceeded", "limit_exceeded")
+		// An interval of 48h also outruns the default retention,
+		// so the policy misses a ceiling on three fields and the effective-policy rule on a fourth,
+		// each reported where the policy declares it.
 		expectDetails(t, got, "limit_exceeded", []errorDetail{
 			{Field: "/schedule/every", Code: "above_maximum"},
 			{Field: "/sampling/rounds", Code: "below_minimum"},
 			{Field: "/target/versionPolicy", Code: "not_permitted"},
+			{Field: "/artifact/retention", Code: "retention_under_interval"},
 		})
 	})
 
@@ -359,6 +363,32 @@ func TestLimitExceededDetails(t *testing.T) {
 		h.expectPGOError(t, got, http.StatusBadRequest, "limit_exceeded", "limit_exceeded")
 		expectDetails(t, got, "limit_exceeded",
 			[]errorDetail{{Field: "/sampling/rounds", Code: "above_maximum"}})
+	})
+
+	// A retention under the policy's own interval crosses no ceiling:
+	// it is the one rule that measures the effective policy against itself,
+	// and both writes refuse it in the same words as a ceiling.
+	t.Run("a retention under its own interval", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			method string
+			path   string
+			body   string
+			header http.Header
+		}{
+			{"an override", http.MethodPut, pgoPath, `{"enabled":true,"artifact":{"retention":"1h"}}`, nil},
+			{"a collection request", http.MethodPost, collectionsPath, `{"artifact":{"retention":"1h"}}`, jsonType()},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				h := newPGOHarness(t, pgoOpts{})
+
+				got := h.doPGO(t, tc.method, tc.path, tc.body, tc.header)
+
+				h.expectPGOError(t, got, http.StatusBadRequest, "limit_exceeded", "limit_exceeded")
+				expectDetails(t, got, "limit_exceeded",
+					[]errorDetail{{Field: "/artifact/retention", Code: "retention_under_interval"}})
+			})
+		}
 	})
 }
 
