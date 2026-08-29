@@ -449,13 +449,13 @@ type cancelResult struct {
 func TestCollectionModelCancelOutcome(t *testing.T) {
 	record := map[string]any{"id": collectionID, "state": "cancelled"}
 	cases := []struct {
-		name    string
-		answer  map[string]any
-		attempt int
-		replace any
-		refetch []string
-		wantErr *string
-		retryMs int
+		name      string
+		answer    map[string]any
+		tryNumber int
+		replace   any
+		refetch   []string
+		wantErr   *string
+		retryMs   int
 	}{
 		{"200 replaces the row and refetches the list",
 			with(answer(200, "", ""), "record", record), 1, record, []string{"collections"}, nil, 0},
@@ -483,7 +483,7 @@ func TestCollectionModelCancelOutcome(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			vm := loadCollectionModel(t)
-			got := callModel(t, vm, "cancelOutcome", tc.answer, tc.attempt)
+			got := callModel(t, vm, "cancelOutcome", tc.answer, tc.tryNumber)
 			if !got.Unchanged {
 				t.Errorf("cancelOutcome mutated an argument")
 			}

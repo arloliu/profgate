@@ -261,3 +261,43 @@ func TestScanFixturesPass(t *testing.T) {
 		t.Errorf("a literal on the right is not concatenation from a literal, got %v", bad)
 	}
 }
+
+// collectionIDReRe matches the identifier-grammar declaration both modules carry.
+var collectionIDReRe = regexp.MustCompile(`(?m)^const collectionIDRe = (/\^.*\$/);$`)
+
+// TestScanIdentifierGrammarAgrees holds together the two copies of the Collection identifier grammar.
+// urls.js refuses an identifier before it builds a path from one,
+// and collectionmodel.js refuses one before it selects a record;
+// collectionmodel.js imports nothing, so it cannot read the first and carries its own.
+// Two copies that drift would let the model select an identifier no path can be built for,
+// which is a page that names a record and then cannot fetch it.
+func TestScanIdentifierGrammarAgrees(t *testing.T) {
+	grammars := map[string]string{}
+	for _, name := range []string{"urls.js", "collectionmodel.js"} {
+		m := collectionIDReRe.FindStringSubmatch(readSource(t, name))
+		if m == nil {
+			t.Fatalf("%s declares no collectionIDRe the scan recognises", name)
+		}
+		grammars[name] = m[1]
+	}
+	if grammars["urls.js"] != grammars["collectionmodel.js"] {
+		t.Errorf("urls.js spells the identifier grammar %s and collectionmodel.js %s",
+			grammars["urls.js"], grammars["collectionmodel.js"])
+	}
+
+	// The grammar is the alphabet of internal/pgo's newID, which is where an identifier is made:
+	// the ten digits, and the twenty-two letters that cannot be confused with them,
+	// so i, l, o, and u are absent.
+	const alphabet = "0123456789abcdefghjkmnpqrstvwxyz"
+	re := regexp.MustCompile(strings.ReplaceAll(grammars["urls.js"], "/", ""))
+	for _, c := range alphabet {
+		if id := strings.Repeat(string(c), 20); !re.MatchString(id) {
+			t.Errorf("the grammar refuses %q, which is 20 of the alphabet's %q", id, c)
+		}
+	}
+	for _, c := range "ilou-_." {
+		if id := strings.Repeat(string(c), 20); re.MatchString(id) {
+			t.Errorf("the grammar admits %q, which the alphabet does not hold", id)
+		}
+	}
+}
