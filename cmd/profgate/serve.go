@@ -291,7 +291,14 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 
 	// errCh holds one result per Serve; both goroutines send exactly once and never block.
 	errCh := make(chan error, 2)
+	// serving counts the two Serve calls, which the drain waits for.
+	// Serve closes its listener as it returns,
+	// and a Serve the scheduler has not entered yet holds no listener for Shutdown to close.
+	// Without this wait serve returns while a socket still accepts connections.
+	var serving sync.WaitGroup
+	serving.Add(2)
 	go func() {
+		defer serving.Done()
 		// ServeTLS with no file names wraps the listener with the TLSConfig
 		// already set, which is where GetCertificate lives, and sets up ALPN
 		// the way a plain tls.NewListener would not.
@@ -302,7 +309,10 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		}
 		errCh <- apiServer.Serve(apiListener)
 	}()
-	go func() { errCh <- opsServer.Serve(opsListener) }()
+	go func() {
+		defer serving.Done()
+		errCh <- opsServer.Serve(opsListener)
+	}()
 
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
@@ -437,6 +447,10 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		opsCtx, cancelOps := context.WithTimeout(context.Background(), opsDrainTimeout)
 		defer cancelOps()
 		_ = opsServer.Shutdown(opsCtx)
+		// Shutdown closes the listeners its Serve has registered,
+		// and returns without waiting for Serve itself to return.
+		// This wait is what makes a returned serve mean both sockets refuse.
+		serving.Wait()
 
 		fields := []any{"elapsed", time.Since(start).Round(time.Millisecond).String(), "api", apiOutcome}
 		if worker != nil {
