@@ -38,6 +38,8 @@ const (
 	browserMajorCeiling = 152
 
 	// browserEnv names an executable explicitly, ahead of everything on PATH.
+	// A value that names nothing resolvable fails the console scenarios;
+	// searching PATH instead would run them against a browser nobody pinned.
 	browserEnv = "PROFGATE_E2E_BROWSER"
 
 	// browserDeadline bounds one browser action: a navigation, a click, or an evaluation.
@@ -71,9 +73,13 @@ type browser struct {
 func discoverBrowser(ctx context.Context, log *slog.Logger) browser {
 	path := ""
 	if named := os.Getenv(browserEnv); named != "" {
-		if found, err := exec.LookPath(named); err == nil {
-			path = found
+		found, err := exec.LookPath(named)
+		if err != nil {
+			// A name given explicitly and not resolvable is a broken pin, not a reason to search PATH:
+			// the version stays unread and the major stays zero, which fails the scenario rather than skipping it.
+			return browser{path: named, version: fmt.Sprintf("%s names %s, which does not resolve: %v", browserEnv, named, err)}
 		}
+		path = found
 	}
 	for _, name := range browserCandidates {
 		if path != "" {
