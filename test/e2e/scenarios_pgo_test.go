@@ -4,11 +4,13 @@ package e2e
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -39,6 +41,9 @@ const (
 	barrierDeadline = 90 * time.Second
 	// collectionDeadline bounds the wait for a Collection to reach a state.
 	collectionDeadline = 3 * time.Minute
+	// collectionWait is what a long poll asks the gateway to hold its read for,
+	// which is the ceiling the route allows.
+	collectionWait = 60 * time.Second
 	// slotDeadline bounds the wait for a scheduled slot to fire: one minEvery
 	// plus a scheduler tick, with room for a slot boundary just missed.
 	slotDeadline = 3 * time.Minute
@@ -223,10 +228,13 @@ func waitPGOReady(t *testing.T, h *Harness, ns, service string) {
 // jsonHeaders is the media type a POST to a write route declares.
 func jsonHeaders() http.Header { return http.Header{"Content-Type": {"application/json"}} }
 
-// createCollection posts an on-demand Collection and returns its identifier.
-func createCollection(t *testing.T, c *http.Client, ns, service, body string) string {
+// createCollection posts an on-demand Collection under the headers given,
+// and returns its identifier with the answer it read that identifier from.
+func createCollection(
+	t *testing.T, c *http.Client, ns, service, body string, header http.Header,
+) (string, response) {
 	t.Helper()
-	resp := do(t, c, http.MethodPost, collectionsURL(ns, service), body, jsonHeaders())
+	resp := do(t, c, http.MethodPost, collectionsURL(ns, service), body, header)
 	if resp.Status != http.StatusAccepted {
 		t.Fatalf("POST collections %s/%s: status %d: %s", ns, service, resp.Status, resp.Body)
 	}
@@ -240,7 +248,8 @@ func createCollection(t *testing.T, c *http.Client, ns, service, body string) st
 	if loc := resp.Header.Get("Location"); loc != "/v1/collections/"+accepted.ID {
 		t.Fatalf("Location %q, want /v1/collections/%s", loc, accepted.ID)
 	}
-	return accepted.ID
+
+	return accepted.ID, resp
 }
 
 // getCollection reads one record and fails unless the gateway answers 200.
@@ -363,19 +372,274 @@ func deployTestAppScaled(t *testing.T, h *Harness, ns string, replicas int32) []
 	return pods
 }
 
+// collectionListing is one page of a Service's Collections.
+// NextCursor continues the listing,
+// and a page that reached the end of it carries none.
+type collectionListing struct {
+	Namespace   string            `json:"namespace"`
+	Service     string            `json:"service"`
+	Collections []collectionEntry `json:"collections"`
+	NextCursor  string            `json:"nextCursor"`
+}
+
+// collectionEntry is one entry of that page.
+type collectionEntry struct {
+	ID        string    `json:"id"`
+	Origin    string    `json:"origin"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// postWithoutMediaType posts a body and declares no media type.
+// do cannot express that: it declares application/json for every body it sends,
+// which is what the route asks for and what this request withholds.
+func postWithoutMediaType(t *testing.T, c *http.Client, rawURL, body string) response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, rawURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request POST %s: %v", rawURL, err)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", rawURL, err)
+	}
+	payload, err := readBody(resp)
+	if err != nil {
+		t.Fatalf("read POST %s: %v", rawURL, err)
+	}
+
+	return response{Status: resp.StatusCode, Header: resp.Header, Body: payload}
+}
+
+// envelopeOf decodes the error envelope a refusal carries,
+// so a caller can read the items that name the inputs to change.
+func envelopeOf(t *testing.T, what string, resp response) errorResponse {
+	t.Helper()
+	var envelope errorResponse
+	if err := json.Unmarshal(resp.Body, &envelope); err != nil {
+		t.Fatalf("%s: body %q is not an error envelope: %v", what, resp.Body, err)
+	}
+
+	return envelope
+}
+
+// decodeListing reads one page of Collections and fails unless the gateway answered 200.
+func decodeListing(t *testing.T, what string, resp response) collectionListing {
+	t.Helper()
+	if resp.Status != http.StatusOK {
+		t.Fatalf("%s: status %d: %s", what, resp.Status, resp.Body)
+	}
+	var page collectionListing
+	if err := json.Unmarshal(resp.Body, &page); err != nil {
+		t.Fatalf("%s: body %q: %v", what, resp.Body, err)
+	}
+
+	return page
+}
+
+// requestIDPattern is the grammar of the identifier every response names its request with.
+var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// assertRequestID fails unless the response names its request exactly once.
+func assertRequestID(t *testing.T, what string, resp response) {
+	t.Helper()
+	values := resp.Header.Values("X-Request-Id")
+	if len(values) != 1 || !requestIDPattern.MatchString(values[0]) {
+		t.Fatalf("%s: X-Request-Id = %v, want one identifier", what, values)
+	}
+}
+
+// podIPs lists the addresses of pods, which no answer a caller reads may name.
+func podIPs(t *testing.T, pods []corev1.Pod) []string {
+	t.Helper()
+	out := make([]string, 0, len(pods))
+	for _, p := range pods {
+		if p.Status.PodIP == "" {
+			t.Fatalf("pod %s is ready and carries no address", p.Name)
+		}
+		out = append(out, p.Status.PodIP)
+	}
+	if len(out) == 0 {
+		t.Fatal("no Pod address to hold an answer against")
+	}
+
+	return out
+}
+
+// assertNoPodIP fails when an answer names a Pod address,
+// in a header or anywhere in its body.
+// An artifact is compressed, so the scan reads its decompressed bytes too.
+func assertNoPodIP(t *testing.T, what string, resp response, ips []string) {
+	t.Helper()
+	var text bytes.Buffer
+	for name, values := range resp.Header {
+		text.WriteString(name)
+		for _, v := range values {
+			text.WriteString(v)
+		}
+	}
+	text.Write(resp.Body)
+	if bytes.HasPrefix(resp.Body, []byte{0x1f, 0x8b}) {
+		zr, err := gzip.NewReader(bytes.NewReader(resp.Body))
+		if err != nil {
+			t.Fatalf("%s: the body announces gzip and does not decompress: %v", what, err)
+		}
+		if _, err := text.ReadFrom(zr); err != nil {
+			t.Fatalf("%s: the body announces gzip and does not decompress: %v", what, err)
+		}
+		if err := zr.Close(); err != nil {
+			t.Fatalf("%s: the decompressed body does not end: %v", what, err)
+		}
+	}
+	for _, ip := range ips {
+		if bytes.Contains(text.Bytes(), []byte(ip)) {
+			t.Fatalf("%s: the answer names the Pod address %s", what, ip)
+		}
+	}
+}
+
+// waitHeldPattern is the decimal seconds with millisecond precision a held answer names.
+var waitHeldPattern = regexp.MustCompile(`^[0-9]+\.[0-9]{3}$`)
+
+// waitHeld reads how long the gateway held its answer to a long poll.
+func waitHeld(t *testing.T, what string, resp response) float64 {
+	t.Helper()
+	raw := resp.Header.Get("X-Wait-Elapsed")
+	if !waitHeldPattern.MatchString(raw) {
+		t.Fatalf("%s: X-Wait-Elapsed %q, want decimal seconds with millisecond precision", what, raw)
+	}
+	held, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		t.Fatalf("%s: X-Wait-Elapsed %q: %v", what, raw, err)
+	}
+
+	return held
+}
+
+// awaitCompleted follows a Collection to completion with long-polling reads rather than a poll loop.
+// Every answer reports a state the answer before it did not,
+// arrives before the wait it asked for runs out,
+// and names how long the gateway held it.
+func awaitCompleted(
+	t *testing.T, c *http.Client, id string, check func(string, response) response,
+) collectionRecord {
+	t.Helper()
+	const what = "GET a collection with a wait"
+	deadline := time.Now().Add(collectionDeadline)
+	previous := ""
+	for {
+		resp := check(what, do(t, c, http.MethodGet, collectionURL(id, "?wait="+collectionWait.String()), "", nil))
+		if resp.Status != http.StatusOK {
+			t.Fatalf("%s %s: status %d: %s", what, id, resp.Status, resp.Body)
+		}
+		held := waitHeld(t, what, resp)
+		if held >= collectionWait.Seconds() {
+			t.Fatalf("collection %s: a wait ran its whole %s rather than answering on a move", id, collectionWait)
+		}
+		var rec collectionRecord
+		if err := json.Unmarshal(resp.Body, &rec); err != nil {
+			t.Fatalf("%s %s: body %q: %v", what, id, resp.Body, err)
+		}
+		if rec.State == previous {
+			t.Fatalf("collection %s: a wait answered %q again after %.3fs, reporting no move", id, rec.State, held)
+		}
+		if terminal(rec.State) {
+			if rec.State != "completed" {
+				t.Fatalf("collection %s ended %s (%s), want completed", id, rec.State, rec.Reason)
+			}
+
+			return rec
+		}
+		previous = rec.State
+		if time.Now().After(deadline) {
+			t.Fatalf("collection %s is still %s after %s", id, rec.State, collectionDeadline)
+		}
+	}
+}
+
 // scenarioPGOOnDemand proves an on-demand Collection runs end to end:
 // it completes, the artifact parses, the manifest holds one ok sample per Pod
 // per round over three distinct Pod UIDs, and both replicas answer with the
 // same record and the same bytes.
+// It also holds the Collection routes to the contract a program reads them by:
+// a repeated Idempotency-Key names the Collection the first create made,
+// a long poll answers when the state moves,
+// the latest route answers with that same record and the same bytes,
+// and the listing filters and pages.
 func scenarioPGOOnDemand(t *testing.T, h *Harness) {
 	ns := h.Namespace(t)
 	h.PurgeStores(t)
-	deployTestAppScaled(t, h, ns, 3)
+	pods := deployTestAppScaled(t, h, ns, 3)
 	waitPGOReady(t, h, ns, testAppName)
 
-	id := createCollection(t, h.Gateways[0], ns, testAppName,
-		`{"sampling":{"duration":"2s","rounds":2,"roundInterval":"1s","replicas":"all"}}`)
-	rec := waitCompleted(t, h.Gateways[0], id)
+	ips := podIPs(t, pods)
+	// contract holds every answer below to what a program reads it by:
+	// the answer names its request, and it names no Pod address.
+	contract := func(what string, resp response) response {
+		t.Helper()
+		assertRequestID(t, what, resp)
+		assertNoPodIP(t, what, resp, ips)
+
+		return resp
+	}
+
+	const sampling = `{"sampling":{"duration":"2s","rounds":2,"roundInterval":"1s","replicas":"all"}}`
+	keyed := jsonHeaders()
+	keyed.Set("Idempotency-Key", "e2e-on-demand-collection")
+
+	id, created := createCollection(t, h.Gateways[0], ns, testAppName, sampling, keyed)
+	contract("POST collections", created)
+	location := created.Header.Get("Location")
+
+	// The key and the body again, on the other replica:
+	// the answer names the Collection the first create made rather than a second one,
+	// which is what a caller whose first answer was lost retries for.
+	replay := contract("POST collections under the key again",
+		do(t, h.Gateways[1], http.MethodPost, collectionsURL(ns, testAppName), sampling, keyed))
+	if replay.Status != http.StatusOK {
+		t.Fatalf("a repeated key answers %d, want 200: %s", replay.Status, replay.Body)
+	}
+	var replayed acceptedCollection
+	if err := json.Unmarshal(replay.Body, &replayed); err != nil {
+		t.Fatalf("a repeated key answers body %q: %v", replay.Body, err)
+	}
+	if replayed.ID != id {
+		t.Fatalf("a repeated key names collection %q, want %q", replayed.ID, id)
+	}
+	if got := replay.Header.Get("Location"); got != location {
+		t.Fatalf("a repeated key answers Location %q, want %q", got, location)
+	}
+
+	// The same key under a request that means something else is refused,
+	// with no item to name: the whole request is what differs.
+	mismatch := contract("POST collections under the key with another body",
+		do(t, h.Gateways[1], http.MethodPost, collectionsURL(ns, testAppName),
+			`{"sampling":{"duration":"3s","rounds":2,"roundInterval":"1s","replicas":"all"}}`, keyed))
+	expectCode(t, "POST collections under the key with another body", mismatch, http.StatusConflict, "idempotency_mismatch")
+	if items := envelopeOf(t, "POST collections under the key with another body", mismatch).Details; len(items) != 0 {
+		t.Fatalf("idempotency_mismatch names %+v, want no details", items)
+	}
+
+	// A write route reads JSON, and names the header a request that declares none has to send.
+	bare := contract("POST collections with no media type",
+		postWithoutMediaType(t, h.Gateways[0], collectionsURL(ns, testAppName), sampling))
+	expectCode(t, "POST collections with no media type", bare, http.StatusBadRequest, "invalid_parameter")
+	items := envelopeOf(t, "POST collections with no media type", bare).Details
+	if len(items) != 1 || items[0].Field != "Content-Type" || items[0].Code != "header_required" {
+		t.Fatalf("a request with no media type names %+v, want the Content-Type header", items)
+	}
+
+	// One Collection exists: the replay created none, and neither refusal wrote anything.
+	only := decodeListing(t, "GET collections",
+		contract("GET collections", do(t, h.Gateways[0], http.MethodGet, collectionsURL(ns, testAppName), "", nil)))
+	if len(only.Collections) != 1 || only.Collections[0].ID != id {
+		t.Fatalf("the listing holds %+v, want the one collection %s", only.Collections, id)
+	}
+	if only.NextCursor != "" {
+		t.Fatalf("a listing that reached its end carries nextCursor %q", only.NextCursor)
+	}
+
+	rec := awaitCompleted(t, h.Gateways[0], id, contract)
 
 	ok, uids := sampleResults(t, rec)
 	if ok != 6 {
@@ -407,6 +671,71 @@ func scenarioPGOOnDemand(t *testing.T, h *Harness) {
 	if int64(len(bodies[0])) != rec.Artifact.Bytes {
 		t.Fatalf("the artifact is %d bytes, the record says %d", len(bodies[0]), rec.Artifact.Bytes)
 	}
+
+	// The latest completed Collection is this one,
+	// written exactly as the route that names an identifier writes it,
+	// and streamed from the bytes that route served.
+	_, byID := getCollection(t, h.Gateways[0], id)
+	latest := contract("GET the latest collection",
+		do(t, h.Gateways[1], http.MethodGet, collectionsURL(ns, testAppName)+"/latest", "", nil))
+	if latest.Status != http.StatusOK {
+		t.Fatalf("GET the latest collection: status %d: %s", latest.Status, latest.Body)
+	}
+	if !bytes.Equal(latest.Body, byID) {
+		t.Fatalf("the latest route answers another record:\n%s\n%s", latest.Body, byID)
+	}
+	latestProfile := contract("GET the latest profile",
+		do(t, h.Gateways[1], http.MethodGet, collectionsURL(ns, testAppName)+"/latest/profile", "", nil))
+	if latestProfile.Status != http.StatusOK {
+		t.Fatalf("GET the latest profile: status %d: %s", latestProfile.Status, latestProfile.Body)
+	}
+	if _, err := profile.ParseData(latestProfile.Body); err != nil {
+		t.Fatalf("the latest profile does not parse: %v", err)
+	}
+	if !bytes.Equal(latestProfile.Body, bodies[0]) {
+		t.Fatalf("the latest profile is %d bytes, the identifier route served %d",
+			len(latestProfile.Body), len(bodies[0]))
+	}
+	if got := latestProfile.Header.Get("X-Pprof-Collection"); got != id {
+		t.Fatalf("the latest profile names collection %q, want %q", got, id)
+	}
+
+	// A second Collection leaves the listing two entries in two states,
+	// which is what a filter and a page have to select from.
+	secondID, secondCreated := createCollection(t, h.Gateways[0], ns, testAppName, sampling, jsonHeaders())
+	contract("POST a second collection", secondCreated)
+
+	completed := decodeListing(t, "GET the completed collections",
+		contract("GET the completed collections",
+			do(t, h.Gateways[0], http.MethodGet, collectionsURL(ns, testAppName)+"?state=completed", "", nil)))
+	if len(completed.Collections) != 1 || completed.Collections[0].ID != id {
+		t.Fatalf("state=completed keeps %+v, want the completed collection %s", completed.Collections, id)
+	}
+
+	page := decodeListing(t, "GET one collection",
+		contract("GET one collection",
+			do(t, h.Gateways[0], http.MethodGet, collectionsURL(ns, testAppName)+"?limit=1", "", nil)))
+	if len(page.Collections) != 1 || page.Collections[0].ID != secondID {
+		t.Fatalf("the first page holds %+v, want the newest collection %s", page.Collections, secondID)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("a page with an entry behind it carries no nextCursor")
+	}
+
+	rest := decodeListing(t, "GET the page after the cursor",
+		contract("GET the page after the cursor",
+			do(t, h.Gateways[0], http.MethodGet,
+				collectionsURL(ns, testAppName)+"?limit=1&cursor="+url.QueryEscape(page.NextCursor), "", nil)))
+	if len(rest.Collections) != 1 || rest.Collections[0].ID != id {
+		t.Fatalf("the page after the cursor holds %+v, want %s", rest.Collections, id)
+	}
+	if rest.NextCursor != "" {
+		t.Fatalf("the last page carries nextCursor %q", rest.NextCursor)
+	}
+
+	// The second Collection finishes before the scenario returns,
+	// so no owner is still working when the next scenario empties the stores.
+	awaitCompleted(t, h.Gateways[0], secondID, contract)
 }
 
 // scenarioPGOScheduledSlot proves two gateways contending on one slot create
@@ -490,8 +819,8 @@ func scenarioPGOCancel(t *testing.T, h *Harness) {
 	deployTestAppScaled(t, h, ns, 2)
 	waitPGOReady(t, h, ns, testAppName)
 
-	id := createCollection(t, h.Gateways[0], ns, testAppName,
-		`{"sampling":{"duration":"2s","rounds":3,"roundInterval":"20s","replicas":"all"}}`)
+	id, _ := createCollection(t, h.Gateways[0], ns, testAppName,
+		`{"sampling":{"duration":"2s","rounds":3,"roundInterval":"20s","replicas":"all"}}`, jsonHeaders())
 	// The owner reports progress on each renewal, so a round that has ended is
 	// visible before the next one starts.
 	waitCollection(t, h.Gateways[0], id, collectionDeadline, "finished its first round", func(r collectionRecord) bool {
@@ -545,8 +874,9 @@ func scenarioPGOVersionConflict(t *testing.T, h *Harness) {
 			`{"sampling":{"duration":"2s","rounds":1,"roundInterval":"0s","replicas":"all"}}`, jsonHeaders()),
 		http.StatusConflict, "version_conflict")
 
-	id := createCollection(t, h.Gateways[0], ns, app,
-		`{"sampling":{"duration":"2s","rounds":1,"roundInterval":"0s","replicas":"all"},"target":{"version":"2.0.0"}}`)
+	id, _ := createCollection(t, h.Gateways[0], ns, app,
+		`{"sampling":{"duration":"2s","rounds":1,"roundInterval":"0s","replicas":"all"},"target":{"version":"2.0.0"}}`,
+		jsonHeaders())
 	rec := waitCompleted(t, h.Gateways[0], id)
 	if rec.ResolvedVersion != "2.0.0" {
 		t.Fatalf("resolvedVersion %q, want 2.0.0", rec.ResolvedVersion)
@@ -571,8 +901,8 @@ func scenarioPGOReclaim(t *testing.T, h *Harness) {
 	deployTestAppScaled(t, h, ns, 2)
 	waitPGOReady(t, h, ns, testAppName)
 
-	id := createCollection(t, h.Gateways[0], ns, testAppName,
-		`{"sampling":{"duration":"3s","rounds":3,"roundInterval":"15s","replicas":"all"}}`)
+	id, _ := createCollection(t, h.Gateways[0], ns, testAppName,
+		`{"sampling":{"duration":"3s","rounds":3,"roundInterval":"15s","replicas":"all"}}`, jsonHeaders())
 	claimed := waitCollection(t, h.Gateways[0], id, collectionDeadline, "was claimed", func(r collectionRecord) bool {
 		return r.State == "running" && r.Owner != nil && r.LeaseUntil != nil
 	})
@@ -642,8 +972,8 @@ func scenarioPGORealmFlags(t *testing.T, h *Harness) {
 	waitPGOReady(t, h, ns, testAppName)
 
 	// A record the restricted realm may not see, made by a realm that may.
-	id := createCollection(t, h.Gateways[0], ns, testAppName,
-		`{"sampling":{"duration":"1s","rounds":1,"roundInterval":"0s","replicas":1}}`)
+	id, _ := createCollection(t, h.Gateways[0], ns, testAppName,
+		`{"sampling":{"duration":"1s","rounds":1,"roundInterval":"0s","replicas":1}}`, jsonHeaders())
 	waitCollection(t, h.Gateways[0], id, collectionDeadline, "became terminal", func(r collectionRecord) bool {
 		return terminal(r.State)
 	})

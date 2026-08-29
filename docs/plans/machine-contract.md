@@ -1876,7 +1876,7 @@ git commit -m "feat(cli): retry a create whose answer was lost"
 `pgo-on-demand` at `test/e2e/registry.go:32` is that scenario and already provisions everything the assertions need;
 no scenario is added and `registry.go` is untouched.
 
-- [ ] **Extend the on-demand scenario**
+- [x] **Extend the on-demand scenario**
 
 | Assertion | Against |
 |---|---|
@@ -1889,13 +1889,13 @@ no scenario is added and `registry.go` is untouched.
 | `GET .../collections?state=completed` and `?limit=1` | the filter and the page, with `nextCursor` present only while entries remain |
 | every response above | `X-Request-Id` present, and the raw bytes hold no Pod IP |
 
-- [ ] **Run the suite on the current lane**
+- [x] **Run the suite on the current lane**
 
 ```bash
 mise run test:e2e
 ```
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise run lint && mise run test && mise run check
