@@ -2082,7 +2082,15 @@ no watch is opened on the prefix, nothing indexes it, and the read is the store'
 The receipt names an identifier, so the answer costs at most one further `Get` of `job.<id>`:
 
 - **A receipt whose record exists** is a replay when its `snapshotHash` equals this request's,
-  and `409 idempotency_mismatch` when it differs.
+  and `409 idempotency_mismatch` when it differs —
+  unless that record is `failed` with reason `not_published`,
+  which never became claimable and never ran.
+  A receipt is written before the `pending` update,
+  so a creator that dies in that window leaves a receipt naming an `initializing` record
+  that the scan then fails `not_published`.
+  Such a receipt is stale in the same sense as one whose record is gone:
+  the handler deletes it at the revision its own `Get` returned,
+  and then creates as a request with no history does.
 - **A receipt whose record is absent** is stale:
   the record reached its retention and was deleted before its receipt followed it.
   The handler deletes the receipt at the revision its own `Get` returned,
@@ -2104,10 +2112,10 @@ the loser's fallback below and the `not_published` scan both read that state as 
 and nothing claims it.
 A withdraw that loses its record `Delete` has been overtaken by the scan,
 which failed the record `not_published` first; the winner still deletes the active key and still answers `503`.
-The only records a reader can find without a receipt are therefore an `initializing` one
+The only records this window leaves behind are therefore an `initializing` one
 and a `failed` one whose reason is `not_published`,
 and neither ever ran: no worker claimed it and no sample was taken.
-Neither answers a replay, and a retry that finds no receipt creates anew,
+A retry that finds no receipt creates anew, and so does one whose receipt names the `not_published` record,
 which is a first Collection for that key rather than a duplicate.
 No `pending` or later non-terminal record carries a key its receipt does not bind.
 
@@ -2294,23 +2302,42 @@ The endpoint takes one parameter and no others:
 
 **Long polling.**
 Without `wait` the answer is the record as read, which is what a client on a timer already gets.
-With it the handler registers first and reads second:
+A wait turns on two reads of the record, made in this order:
+a Collection-scoped route has already read the record to evaluate the realm against its namespace and Service,
+and that read is the state a wait compares against.
+With `wait` the handler then registers first and reads second:
 it registers its channel under the record's identifier,
-then issues one authoritative `Get`,
-and answers at once when that record is terminal.
+issues one authoritative `Get`,
+and answers at once when that read is terminal
+or shows a `state` other than the one the realm read returned.
 Registering before the read is what closes the lost-wakeup window —
 a transition that lands between the two is delivered to a channel that already exists,
 where a handler that read first would park until its deadline over a change that had already happened.
+Comparing against the realm read is what keeps a transition inside that same window visible:
+against the handler's own first read it would not be,
+because that read has already absorbed it and the transition would show as the state the client already had.
 Otherwise it holds the request until the first of these:
 
-- an authoritative read after a pulse shows a `state` other than the one the first read returned:
+- an authoritative read after a pulse shows a `state` other than the one the realm read returned:
   a `pending` that became `running` answers, as does any terminal state;
 - that read finds the record gone,
   which answers `404 collection_not_found` exactly as a plain `GET` of a deleted record does;
-- `wait` elapses, and the record as last read is the answer;
+- `wait` elapses, which brings the handler back to one authoritative `Get` exactly as a pulse does,
+  and that read is the answer;
 - the client disconnects, and nothing is answered (audit `client_gone`);
 - the replica begins draining (below);
 - the connection generation moves, which ends the wait with `503 pgo_unavailable`.
+
+**Every move a wait reports comes from a read taken after it.**
+That is one rule and not two: a pulse ends the wait with a read, and so does the deadline,
+so the endings above and the pulse rules below say the same thing.
+A deadline answered from an earlier read would turn a dropped pulse into a wrong answer rather than a delay —
+a terminal transition whose pulse a full buffer coalesced away,
+or one that becomes ready in the same instant as the timer,
+would be reported as the state before it.
+The two endings that answer without a read are the two where a read cannot be taken:
+a draining replica answers with the record it last read (below),
+and a connection-generation move answers `503 pgo_unavailable`.
 
 Only a change of `state` ends a wait.
 An owner renews its lease every `leaseTTL / 3` and writes `progress` with it,
@@ -3325,7 +3352,10 @@ one server per subtest.
   because the read and not the pulse decides;
   a renewal that writes only `progress` does not answer, proven by a wait that outlives two renewals;
   a record deleted mid-wait answers `404 collection_not_found`;
-  a wait that expires answers the record as last read with an elapsed value at least the duration asked for;
+  a wait that expires answers the record its final read returned,
+  with an elapsed value at least the duration asked for;
+  a terminal transition whose pulse was dropped is answered terminal at the deadline,
+  rather than reported as the state before it;
   a client that disconnects mid-wait is audited `client_gone`,
   and after the handler returns no subscription remains registered;
   the generation moving mid-wait answers `503 pgo_unavailable`,

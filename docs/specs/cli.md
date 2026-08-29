@@ -792,8 +792,16 @@ reported with its envelope and exit 1.
 The key is generated once per invocation from `crypto/rand` with RFC 9562's version and variant bits set,
 which the standard library supplies (*Dependencies*),
 and the same key is reused for every retry of that invocation and never afterwards.
-`collect` retries the create with that key on a transport failure or a `5xx`,
+`collect` retries the create under that key whenever the result of the create is unknown,
 at one second doubling to eight, for at most 30 seconds.
+A result is unknown in three ways:
+no answer arrived at all, the gateway could not complete one (`5xx`),
+or an answer did not arrive whole —
+a `202` whose headers arrived and whose body was cut off before the identifier could be read out of it.
+The third is the one the header exists for and the one neither of the others covers:
+the response is obtained and its body read afterwards,
+so a truncated body is neither a transport failure nor a status the gateway chose.
+An answer that arrived whole and says something is not retried.
 `429 collection_in_progress` is reported and exits 1 without waiting,
 because it means a Collection this command did not create holds the Service.
 Any other `4xx` prints its envelope and stops.
@@ -1108,6 +1116,8 @@ The security and recovery cases come first: their absence is a defect rather tha
   `collect` and `collection cancel` each send `Content-Type: application/json`, the cancel with no body;
   two invocations generate different keys;
   a `5xx` is retried within the window and a `429 collection_in_progress` is not, exiting 1 with no poll;
+  an answer whose body is cut off before it decodes is retried under the same key,
+  and the retry's replay is what `--wait` polls;
   a `400` stops immediately;
   `--wait` issues no `GET` until an identifier exists;
   cancellation before an identifier names the `collections` command.

@@ -8,8 +8,13 @@
 > an item that changes behavior first revises the spec it names,
 > and only then gets a plan of its own under `docs/plans/`.
 > Items that change no behavior — a release, a chart template, a docs repair — need no spec and are executed directly.
-> Checkboxes track which items have started.
-> A ticked spec bullet means the revision is in the spec; the implementation plan and the code follow it.
+> A ticked bullet records that the design decision it carries is settled in the spec that item names,
+> whatever the bullet's wording:
+> a bullet phrased as behavior is ticked once the revision that settles that behavior is in the spec.
+> A bullet the item's named spec does not cover is ticked when the work itself is done,
+> because there is no revision a tick could record for it instead.
+> Whether a settled decision has also shipped is read from the item's plan under `docs/plans/`,
+> and from `CHANGELOG.md` once it ships.
 
 **Goal:** turn what the gateway already does into something a person can install from a release,
 reach from a terminal under `oidc`, diagnose when a Service yields no target,

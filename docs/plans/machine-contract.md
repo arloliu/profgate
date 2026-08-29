@@ -1,6 +1,6 @@
 # A Machine Contract
 
-**Status:** Approved
+**Status:** In Progress
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -385,7 +385,7 @@ or the meaning a glyph already carries.
 This task is first because four of the five repairs are the source the later tasks implement from,
 and a plan may not implement around a contradiction inside an accepted spec.
 
-- [ ] **Name the two reads a `wait` makes**
+- [x] **Name the two reads a `wait` makes**
 
 *Get a Collection* says the handler "registers first and reads second"
 and that a wait ends when an authoritative read "shows a `state` other than the one the first read returned".
@@ -403,7 +403,7 @@ and comparing against the earlier read is what keeps a transition inside that wi
 without it, that transition reads as the state the client already had.
 Leave the pulse rules, the clamp refusal, `X-Wait-Elapsed`, and the four other ways a wait ends as they are.
 
-- [ ] **Say what the deadline reads**
+- [x] **Say what the deadline reads**
 
 *Get a Collection* answers the same question twice and differently.
 The list of endings says "`wait` elapses, and the record as last read is the answer",
@@ -438,7 +438,7 @@ and add beside it the case the repair exists for:
 a terminal transition whose pulse was dropped is answered at the deadline, not reported as the state before it.
 A repair that changed the prose and left the row would leave the document arguing with itself in a new place.
 
-- [ ] **Say what a receipt whose Collection never ran answers**
+- [x] **Say what a receipt whose Collection never ran answers**
 
 *Create a Collection* gives two answers for a keyed record the scan failed `not_published`.
 Its lookup rule says "a receipt whose record exists is a replay when its `snapshotHash` equals this request's",
@@ -464,7 +464,7 @@ Correct the "without a receipt" sentence in the same place,
 so it says what is true of those two records — neither ever ran — rather than what is true of their receipts.
 Leave the guarantee as it is: it is about a Collection that was published, and this one was not.
 
-- [ ] **Widen the retry the command line promises**
+- [x] **Widen the retry the command line promises**
 
 *Collections* says `collect` "retries the create with that key on a transport failure or a `5xx`".
 Those two do not cover the failure the header exists for.
@@ -483,7 +483,7 @@ which keeps `429 collection_in_progress` and every other `4xx` exactly where the
 Add the third case to the *Testing* list beside the `5xx` row it already carries,
 so the spec asks for the test the command-line task writes.
 
-- [ ] **Say what a ticked bullet records**
+- [x] **Say what a ticked bullet records**
 
 [`docs/plans/roadmap.md`](roadmap.md) has one checkbox with two meanings and no statement of which applies where.
 `git show bfdad0f` ticked every bullet of five unimplemented items in one commit
@@ -513,7 +513,7 @@ and an item with no checkboxes at all (the withdrawn library comparison).
 No bullet is ticked or unticked by this task.
 Item 6's bullets stay as they are: their spec revisions are in the specs, which is what the tick now says.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 All three files keep the `Status:` line they have;
 `check_status` in `scripts/check-repo.py` verifies line 3 of each.
