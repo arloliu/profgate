@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Raise the retention, or lower the interval, to the point where one covers the other.
   A `pgo.limits.maxRetention` lowered below `24h` now needs `pgo.defaults.artifact.retention` written out explicitly,
   at or below that ceiling and at or above `pgo.defaults.schedule.every`.
+- **Upgrading invalidates every browser session.**
+  Session and transaction cookies now carry a JSON object where they carried length-prefixed fields,
+  so a cookie an older build sealed no longer opens, whatever key sealed it.
+  A browser holding a session is signed out once and logs in again;
+  a login in flight across the upgrade returns `401` with reason `state` and starts over.
+  No configuration, route, or response shape changed, and the cookie key file is unaffected.
 
 ### Added
 

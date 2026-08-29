@@ -226,18 +226,6 @@ func TestSessionEncoding(t *testing.T) {
 		}
 	})
 
-	t.Run("field bound", func(t *testing.T) {
-		// A field's length travels in two bytes, so 65536 bytes cannot be encoded.
-		// The verifier bounds the principal at 256 bytes;
-		// this documents what the prefix can carry.
-		defer func() {
-			if recover() == nil {
-				t.Fatal("encoding a 65536-byte field did not panic")
-			}
-		}()
-		session{Principal: strings.Repeat("a", 65536), Realm: "developer", Exp: exp}.encode()
-	})
-
 	t.Run("transaction round trip", func(t *testing.T) {
 		in := transaction{State: "s", Nonce: "n", Verifier: "v", Return: "/v1/x?seconds=5", Exp: exp}
 		got, ok := decodeTransaction(in.encode())

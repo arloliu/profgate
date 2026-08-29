@@ -7,8 +7,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,10 +30,6 @@ const (
 	// cookieKeySize is AES-256's key size; nonceSize is GCM's standard nonce.
 	cookieKeySize = 32
 	nonceSize     = 12
-	// maxFieldLen is what a two-byte length prefix can carry.
-	maxFieldLen = 1<<16 - 1
-	// expSize is the width of an encoded expiry: big-endian Unix seconds.
-	expSize = 8
 )
 
 // cookieKeys is one snapshot of the key file: current seals, both open.
@@ -195,82 +191,76 @@ type transaction struct {
 	Exp                            time.Time
 }
 
-// encode lays out the fields as two-byte big-endian length plus bytes, then
-// Exp as eight bytes of big-endian Unix seconds.
-func (s session) encode() []byte {
-	return encodeFields([]string{s.Principal, s.Realm}, s.Exp)
+// sessionWire is the sealed form of a session:
+// a JSON object whose exp is Unix seconds,
+// so an expiry costs a number rather than a timestamp string
+// and round-trips at the precision the session is judged on.
+type sessionWire struct {
+	Principal string `json:"principal"`
+	Realm     string `json:"realm"`
+	Exp       int64  `json:"exp"`
 }
 
-// decodeSession is the inverse of encode; false on any malformed layout,
-// including bytes left over after Exp.
+// transactionWire is the sealed form of a login in flight,
+// with the same expiry encoding as sessionWire.
+type transactionWire struct {
+	State    string `json:"state"`
+	Nonce    string `json:"nonce"`
+	Verifier string `json:"verifier"`
+	Return   string `json:"return"`
+	Exp      int64  `json:"exp"`
+}
+
+// encode marshals the session as its wire object.
+// The fields are bounded well under the cookie limit —
+// the verifier bounds the principal at 256 bytes and the realm is a DNS label —
+// so the result always fits a cookie.
+func (s session) encode() []byte {
+	b, err := json.Marshal(sessionWire{Principal: s.Principal, Realm: s.Realm, Exp: s.Exp.Unix()})
+	if err != nil {
+		// A struct of strings and an int64 has no unmarshalable value.
+		panic("auth: marshaling a session: " + err.Error())
+	}
+
+	return b
+}
+
+// decodeSession is the inverse of encode;
+// false on any plaintext that is not one well-formed session object,
+// including bytes left over after it.
 func decodeSession(b []byte) (session, bool) {
-	fields, exp, ok := decodeFields(b, 2)
-	if !ok {
+	var w sessionWire
+	if err := json.Unmarshal(b, &w); err != nil {
 		return session{}, false
 	}
 
-	return session{Principal: fields[0], Realm: fields[1], Exp: exp}, true
+	return session{Principal: w.Principal, Realm: w.Realm, Exp: time.Unix(w.Exp, 0)}, true
 }
 
-// encode lays out the fields as session.encode does.
+// encode marshals the transaction as session.encode does.
+// The three wire values are 43 bytes each and the return path is at most 1024,
+// so the result always fits a cookie.
 func (t transaction) encode() []byte {
-	return encodeFields([]string{t.State, t.Nonce, t.Verifier, t.Return}, t.Exp)
+	b, err := json.Marshal(transactionWire{
+		State: t.State, Nonce: t.Nonce, Verifier: t.Verifier, Return: t.Return, Exp: t.Exp.Unix(),
+	})
+	if err != nil {
+		// A struct of strings and an int64 has no unmarshalable value.
+		panic("auth: marshaling a transaction: " + err.Error())
+	}
+
+	return b
 }
 
-// decodeTransaction is the inverse of encode; false on any malformed layout.
+// decodeTransaction is the inverse of encode;
+// false on any plaintext that is not one well-formed transaction object.
 func decodeTransaction(b []byte) (transaction, bool) {
-	fields, exp, ok := decodeFields(b, 4)
-	if !ok {
+	var w transactionWire
+	if err := json.Unmarshal(b, &w); err != nil {
 		return transaction{}, false
 	}
 
-	return transaction{State: fields[0], Nonce: fields[1], Verifier: fields[2], Return: fields[3], Exp: exp}, true
-}
-
-// encodeFields writes each field as a two-byte big-endian length followed by
-// its bytes, then exp as eight bytes of big-endian Unix seconds.
-// A field over 65535 bytes cannot be represented and is a programming error:
-// the verifier bounds the principal at 256 bytes, the realm is a DNS label,
-// the wire values are 43 bytes, and the return path is at most 1024.
-func encodeFields(fields []string, exp time.Time) []byte {
-	size := expSize
-	for _, f := range fields {
-		size += 2 + len(f)
-	}
-	b := make([]byte, 0, size)
-	for _, f := range fields {
-		if len(f) > maxFieldLen {
-			panic(fmt.Sprintf("auth: cookie field of %d bytes exceeds the two-byte length prefix", len(f)))
-		}
-		b = binary.BigEndian.AppendUint16(b, uint16(len(f))) //nolint:gosec // bounded by the check above
-		b = append(b, f...)
-	}
-
-	return binary.BigEndian.AppendUint64(b, uint64(exp.Unix())) //nolint:gosec // an expiry is never negative
-}
-
-// decodeFields reads n length-prefixed fields and an expiry, refusing a
-// plaintext that runs short or has bytes left over.
-func decodeFields(b []byte, n int) ([]string, time.Time, bool) {
-	fields := make([]string, 0, n)
-	for range n {
-		if len(b) < 2 {
-			return nil, time.Time{}, false
-		}
-		size := int(binary.BigEndian.Uint16(b))
-		b = b[2:]
-		if len(b) < size {
-			return nil, time.Time{}, false
-		}
-		fields = append(fields, string(b[:size]))
-		b = b[size:]
-	}
-	if len(b) != expSize {
-		return nil, time.Time{}, false
-	}
-	exp := time.Unix(int64(binary.BigEndian.Uint64(b)), 0) //nolint:gosec // an expiry is never negative
-
-	return fields, exp, true
+	return transaction{State: w.State, Nonce: w.Nonce, Verifier: w.Verifier, Return: w.Return, Exp: time.Unix(w.Exp, 0)}, true
 }
 
 // setCookie writes name=value with the attributes every gateway cookie
