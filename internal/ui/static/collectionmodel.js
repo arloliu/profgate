@@ -209,9 +209,10 @@ function startOutcome(answer) {
 
 // cancelOutcome maps an answer to a cancel request onto what the page does next.
 // answer carries record, the Collection the gateway returned, where startOutcome reads id and body.
-// attempt is which press of this cancel produced the answer, 1 or 2;
-// it is named for the retry rather than for the Collection record's own attempt field.
-function cancelOutcome(answer, attempt) {
+// tryNumber is which press of this cancel produced the answer, 1 or 2.
+// It is not the record's own attempt field, which counts the Collection's rounds,
+// and it is not spelled try, which is a reserved word.
+function cancelOutcome(answer, tryNumber) {
   const a = answer || {};
   const status = count(a.status);
   const code = text(a.code);
@@ -227,7 +228,7 @@ function cancelOutcome(answer, attempt) {
       return result;
     }
     if (status === 409 && code === "collection_initializing") {
-      if (count(attempt) === 1) {
+      if (count(tryNumber) === 1) {
         result.retryAfterMs = initializingRetryMs;
         return result;
       }
