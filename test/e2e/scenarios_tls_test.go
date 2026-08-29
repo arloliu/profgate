@@ -274,7 +274,11 @@ func deployTLSGateway(t *testing.T, h *Harness, ns string, ca authority) (string
 // The Secret comes first on purpose: the overlay's volume is not optional, so a
 // Pod applied before it exists would wait at mount time until the rollout gave
 // up, which is a slower and less legible failure than a missing Secret.
-func deployHTTPSGateway(t *testing.T, h *Harness, ns, overlay, name string, ca authority, cfg string) (string, string) {
+// The patches are merged over the overlay beside the configuration one,
+// which is how a gateway whose configuration names a credentials file gains the mount that carries it.
+func deployHTTPSGateway(
+	t *testing.T, h *Harness, ns, overlay, name string, ca authority, cfg string, patches ...patch,
+) (string, string) {
 	t.Helper()
 	ctx := t.Context()
 	selector := testAppLabel + "=" + name
@@ -282,7 +286,7 @@ func deployHTTPSGateway(t *testing.T, h *Harness, ns, overlay, name string, ca a
 	if err := h.applyTLSSecret(ctx, ns, ca.certPEM, ca.keyPEM); err != nil {
 		t.Fatal(err)
 	}
-	h.Apply(t, ns, overlay, configPatch(name, cfg))
+	h.Apply(t, ns, overlay, append([]patch{configPatch(name, cfg)}, patches...)...)
 	t.Cleanup(func() {
 		// The namespace deletion takes the rest; the ClusterRoleBinding is cluster-scoped.
 		err := h.Client.RbacV1().ClusterRoleBindings().Delete(context.Background(), name, metav1.DeleteOptions{})

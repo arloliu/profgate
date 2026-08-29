@@ -2359,10 +2359,15 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
 | `golang.org/x/term` | reading a password without echo for `profgate auth hash` (only in `cmd/profgate`) |
 | `sigs.k8s.io/yaml` | tests only: golden ClusterRole and `versions.yaml` |
 | `github.com/dop251/goja` | tests only: evaluating the console's port-control, targets, and Collection-control models ([`ui.md`](ui.md) *What is not proven*) |
+| `github.com/chromedp/chromedp` | tests only: driving a headless Chromium through the console's page (only in `test/e2e`, behind the suite's build tag; [`ui.md`](ui.md) *End to end*) |
 
 Everything else is the standard library.
-The console adds no Go module to the binary and one to the tests, the interpreter above;
+The console adds no Go module to the binary and two to the tests,
+the interpreter that evaluates its models and the browser driver that executes its page;
 the browser code it vendors is listed in [`ui.md`](ui.md) *Dependencies*.
+chromedp also needs a Chromium executable, which is no Go module and no `mise.toml` pin:
+it is a property of the machine running the suite,
+which the workflow installs and the runner refuses outside the range it accepts.
 The command line adds no Go module either, for the reason in [`cli.md`](cli.md) *Dependencies*.
 
 ---

@@ -133,6 +133,7 @@ type Harness struct {
 	Client   kubernetes.Interface // tester kubeconfig
 	Gateways [2]*http.Client      // through standing port-forwards opened in TestMain
 	NATS     *natsServer          // the JetStream server the PGO scenarios run against
+	Browser  browser              // the Chromium the console scenarios drive, discovered once
 	scenario *Scenario            // set by TestScenarios before Run
 
 	stopGateways func() // closes the standing gateway forwards; RefreshGateways replaces them
@@ -176,6 +177,8 @@ func runners() map[string]func(t *testing.T, h *Harness) {
 		"auth-oidc-browser":              scenarioAuthOIDCBrowser,
 		"auth-basic":                     scenarioAuthBasic,
 		"auth-oidc-keycloak":             scenarioAuthOIDCKeycloak,
+		"console-oidc":                   scenarioConsoleOIDC,
+		"console-basic":                  scenarioConsoleBasic,
 	}
 }
 
@@ -275,6 +278,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		fail("port-forward gateways", err)
 	}
+	h.Browser = discoverBrowser(ctx, logger)
 
 	harness = h
 	code := m.Run()
