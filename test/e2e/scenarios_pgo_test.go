@@ -437,6 +437,31 @@ func decodeListing(t *testing.T, what string, resp response) collectionListing {
 	return page
 }
 
+// settledListing reads one page of Collections until it holds exactly want, in that order,
+// and returns the last page it read.
+// The listing answers from the watched cache, which applies a record the store already holds a moment later,
+// so a page read the instant a Collection was created or completed can be one the Service has already left behind.
+// It states nothing itself:
+// the caller's own check runs on the page this returns,
+// so a listing that never catches up is reported by that check with the entries it holds.
+func settledListing(
+	t *testing.T, c *http.Client, what, rawURL string, check func(string, response) response, want []string,
+) collectionListing {
+	t.Helper()
+	var page collectionListing
+	_ = poll(t.Context(), settleDeadline, func(_ context.Context) (bool, error) {
+		page = decodeListing(t, what, check(what, do(t, c, http.MethodGet, rawURL, "", nil)))
+		ids := make([]string, 0, len(page.Collections))
+		for _, e := range page.Collections {
+			ids = append(ids, e.ID)
+		}
+
+		return slices.Equal(ids, want), nil
+	})
+
+	return page
+}
+
 // requestIDPattern is the grammar of the identifier every response names its request with.
 var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
@@ -630,8 +655,7 @@ func scenarioPGOOnDemand(t *testing.T, h *Harness) {
 	}
 
 	// One Collection exists: the replay created none, and neither refusal wrote anything.
-	only := decodeListing(t, "GET collections",
-		contract("GET collections", do(t, h.Gateways[0], http.MethodGet, collectionsURL(ns, testAppName), "", nil)))
+	only := settledListing(t, h.Gateways[0], "GET collections", collectionsURL(ns, testAppName), contract, []string{id})
 	if len(only.Collections) != 1 || only.Collections[0].ID != id {
 		t.Fatalf("the listing holds %+v, want the one collection %s", only.Collections, id)
 	}
@@ -676,8 +700,15 @@ func scenarioPGOOnDemand(t *testing.T, h *Harness) {
 	// written exactly as the route that names an identifier writes it,
 	// and streamed from the bytes that route served.
 	_, byID := getCollection(t, h.Gateways[0], id)
-	latest := contract("GET the latest collection",
-		do(t, h.Gateways[1], http.MethodGet, collectionsURL(ns, testAppName)+"/latest", "", nil))
+	// The latest route takes its candidates from the watched cache and confirms each against the store,
+	// so the replica that did not run this Collection answers for it once its own watch has delivered the record.
+	var latest response
+	_ = poll(t.Context(), settleDeadline, func(_ context.Context) (bool, error) {
+		latest = contract("GET the latest collection",
+			do(t, h.Gateways[1], http.MethodGet, collectionsURL(ns, testAppName)+"/latest", "", nil))
+
+		return latest.Status == http.StatusOK, nil
+	})
 	if latest.Status != http.StatusOK {
 		t.Fatalf("GET the latest collection: status %d: %s", latest.Status, latest.Body)
 	}
@@ -705,16 +736,14 @@ func scenarioPGOOnDemand(t *testing.T, h *Harness) {
 	secondID, secondCreated := createCollection(t, h.Gateways[0], ns, testAppName, sampling, jsonHeaders())
 	contract("POST a second collection", secondCreated)
 
-	completed := decodeListing(t, "GET the completed collections",
-		contract("GET the completed collections",
-			do(t, h.Gateways[0], http.MethodGet, collectionsURL(ns, testAppName)+"?state=completed", "", nil)))
+	completed := settledListing(t, h.Gateways[0], "GET the completed collections",
+		collectionsURL(ns, testAppName)+"?state=completed", contract, []string{id})
 	if len(completed.Collections) != 1 || completed.Collections[0].ID != id {
 		t.Fatalf("state=completed keeps %+v, want the completed collection %s", completed.Collections, id)
 	}
 
-	page := decodeListing(t, "GET one collection",
-		contract("GET one collection",
-			do(t, h.Gateways[0], http.MethodGet, collectionsURL(ns, testAppName)+"?limit=1", "", nil)))
+	page := settledListing(t, h.Gateways[0], "GET one collection",
+		collectionsURL(ns, testAppName)+"?limit=1", contract, []string{secondID})
 	if len(page.Collections) != 1 || page.Collections[0].ID != secondID {
 		t.Fatalf("the first page holds %+v, want the newest collection %s", page.Collections, secondID)
 	}
