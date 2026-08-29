@@ -84,6 +84,9 @@ const (
 	sessionCookie = "__Host-profgate_session"
 	txnCookie     = "__Host-profgate_txn"
 
+	// logoutRoute is the value the audit record of a logout names its route with.
+	logoutRoute = "auth_logout"
+
 	// keyRotationDeadline bounds the wait for a token signed with a rotated
 	// key to verify: the gateway fetches keys on an unknown kid, at most once
 	// per jwksRefreshMin, which the scenario sets to a second.
@@ -382,6 +385,27 @@ func currentLogs(t *testing.T, h *Harness, ns, name string) string {
 	}
 
 	return string(out)
+}
+
+// logsWithAudit returns the Pod's log once it holds at least count records for the audit route named.
+// A request's audit record is written after the request has been answered,
+// so a log read the instant an answer arrives can be missing that answer's own record,
+// and a count taken from it is one a later read grows without the gateway having written anything since.
+// Waiting for the record of the last request answered is waiting for the log to hold the ones before it.
+func logsWithAudit(t *testing.T, h *Harness, ns, pod, route string, count int) string {
+	t.Helper()
+	want := fmt.Sprintf(`"route":%q`, route)
+	var logs string
+	err := poll(t.Context(), settleDeadline, func(context.Context) (bool, error) {
+		logs = currentLogs(t, h, ns, pod)
+
+		return strings.Count(logs, want) >= count, nil
+	})
+	if err != nil {
+		t.Fatalf("the gateway log never held %d %s records: %v\n%s", count, route, err, logs)
+	}
+
+	return logs
 }
 
 // tokenKID reads the kid of a JWT's header, which is what says which signing
@@ -716,7 +740,9 @@ func scenarioAuthOIDCBrowser(t *testing.T, h *Harness) {
 
 	// The console: the jar is empty, as a browser's is on its first visit.
 	// The shell and its assets need no session and write no audit record.
-	recordsBefore := auditRecords(currentLogs(t, h, ns, pod))
+	// The logout just answered is the last request that writes a record before this baseline,
+	// so the baseline is taken once the log holds it.
+	recordsBefore := auditRecords(logsWithAudit(t, h, ns, pod, logoutRoute, 1))
 	shell := send(t, client, http.MethodGet, gatewayOrigin+uiPath, navigationHeaders(), nil)
 	assertShell(t, "GET /ui/ without a cookie", shell)
 	if !strings.Contains(string(shell.Body), "<main") {
@@ -840,7 +866,9 @@ func scenarioAuthOIDCBrowser(t *testing.T, h *Harness) {
 
 	// Audit: the redirect, the refusal, the login, and each listing route are
 	// attributable; the Service list names its namespace.
-	logs = currentLogs(t, h, ns, pod)
+	// The second logout is the last request that writes a record,
+	// and the four listing records this counts were written before it.
+	logs = logsWithAudit(t, h, ns, pod, logoutRoute, 2)
 	for _, want := range []string{`"code":"auth_redirect"`, `"auth_reason":"csrf"`} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("the gateway log has no record with %s", want)
