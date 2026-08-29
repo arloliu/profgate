@@ -134,6 +134,8 @@ func expectDeclarationError(
 	switch {
 	case d.Kind == kindAuth:
 		h.expectRouteError(t, rec, status, code)
+	case d.Kind == kindOpenAPI:
+		h.expectUnnarratedError(t, rec, status, code)
 	case d.Kind.isPGO():
 		h.expectPGOError(t, rec, status, code, code)
 	default:

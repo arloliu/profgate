@@ -305,14 +305,19 @@ func (q *request) labels() (metrics.Endpoint, string) {
 }
 
 // narrated reports whether the request writes an audit record.
-// A console request and a /v1/auth request are counted, not narrated:
+// A console request, a /v1/auth request,
+// and a request for the OpenAPI document are counted, not narrated:
 // each carries no principal and names nothing a realm bounds.
 func (q *request) narrated() bool {
 	if q.console {
 		return false
 	}
 
-	return !q.routed || q.route.kind != kindAuth
+	if !q.routed {
+		return true
+	}
+
+	return q.route.kind != kindAuth && q.route.kind != kindOpenAPI
 }
 
 // fail writes a gateway-generated error and records it.

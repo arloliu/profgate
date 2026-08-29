@@ -674,14 +674,14 @@ func TestOpenAPIRoute(t *testing.T) {
 		}
 		h.expectMetric(t, metrics.EndpointOpenAPI, labelNone)
 		h.expectMetricCode(t, codeOK)
-		h.expectAudit(t, http.StatusOK, codeOK)
+		h.expectNoAudit(t)
 	})
 
 	t.Run("not ready", func(t *testing.T) {
 		h := newHarness(baseTarget())
 		h.ready = func() bool { return false }
 		rec := h.do(t, http.MethodGet, path)
-		h.expectError(t, rec, http.StatusServiceUnavailable, CodeNotReady)
+		h.expectUnnarratedError(t, rec, http.StatusServiceUnavailable, CodeNotReady)
 		h.expectMetric(t, metrics.EndpointOpenAPI, labelNone)
 	})
 
@@ -690,7 +690,7 @@ func TestOpenAPIRoute(t *testing.T) {
 			t.Run(query, func(t *testing.T) {
 				h := newHarness(baseTarget())
 				rec := h.do(t, http.MethodGet, path+query)
-				h.expectError(t, rec, http.StatusBadRequest, CodeInvalidParameter)
+				h.expectUnnarratedError(t, rec, http.StatusBadRequest, CodeInvalidParameter)
 				items := detailsOf(t, rec, CodeInvalidParameter)
 				if len(items) != 1 || items[0].Code != detailUnknownParameter {
 					t.Errorf("details = %+v, want one %s item", items, detailUnknownParameter)
@@ -706,7 +706,7 @@ func TestOpenAPIRoute(t *testing.T) {
 	t.Run("refuses every other method", func(t *testing.T) {
 		h := newHarness(baseTarget())
 		rec := h.do(t, http.MethodPost, path)
-		h.expectError(t, rec, http.StatusMethodNotAllowed, CodeMethodNotAllowed)
+		h.expectUnnarratedError(t, rec, http.StatusMethodNotAllowed, CodeMethodNotAllowed)
 		if got := rec.Header().Get("Allow"); got != http.MethodGet {
 			t.Errorf("Allow = %q, want %q", got, http.MethodGet)
 		}

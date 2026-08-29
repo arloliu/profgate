@@ -1454,7 +1454,10 @@ The `/auth/` routes write a line with no namespace or Service ([`auth.md`](auth.
 The four listing routes of [`ui.md`](ui.md) write the record with `namespace` set on the Service list only
 and `service`, `pod`, `profile`, `port`, and `seconds` empty;
 requests under `/ui/` and to `/` write no record — they carry no principal and name nothing a realm bounds.
-`/v1/auth` writes no record for the same reason ([`cli.md`](cli.md) *Gateway discovery*).
+`/v1/auth` writes no record for the same reason ([`cli.md`](cli.md) *Gateway discovery*),
+and neither does `/v1/openapi.json`:
+it runs no credential and no realm step,
+so a record of it would name a principal, a namespace, and a Service that are all empty (*The OpenAPI document*).
 
 `port` is the client's port selection as sent, a number or a name, empty when absent;
 for a numeric selection that is also the resolved port,

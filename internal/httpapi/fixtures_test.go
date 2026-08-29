@@ -604,6 +604,23 @@ func errorBodyOf(t *testing.T, rec *httptest.ResponseRecorder) (code, message st
 func (h *harness) expectError(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 
+	h.expectErrorBody(t, rec, status, code)
+	h.expectAudit(t, status, code)
+}
+
+// expectUnnarratedError is expectError for a route that writes no audit record:
+// it carries no principal and names nothing a realm bounds.
+func (h *harness) expectUnnarratedError(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+
+	h.expectErrorBody(t, rec, status, code)
+	h.expectNoAudit(t)
+}
+
+// expectErrorBody holds every rule a gateway error obeys but the audit record.
+func (h *harness) expectErrorBody(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+
 	if rec.Code != status {
 		t.Errorf("status = %d, want %d (body %q)", rec.Code, status, rec.Body.String())
 	}
@@ -619,7 +636,6 @@ func (h *harness) expectError(t *testing.T, rec *httptest.ResponseRecorder, stat
 			t.Errorf("gateway error carries %s", name)
 		}
 	}
-	h.expectAudit(t, status, code)
 	h.expectMetricCode(t, code)
 }
 
