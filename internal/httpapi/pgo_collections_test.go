@@ -988,3 +988,669 @@ func TestWriteRouteMediaType(t *testing.T) {
 		}
 	}
 }
+
+// fixtureReceiptKey is the receipt key of one idempotency key in the fixture
+// scope: the anonymous principal, the fixture namespace, and the fixture Service.
+func fixtureReceiptKey(key string) string {
+	return pgo.ReceiptKey("anonymous", fixtureNamespace, fixtureService, key)
+}
+
+// fixtureSnapshotHash is the hash of the effective policy an empty body produces,
+// with whatever a row needs moved in the operator's defaults.
+func fixtureSnapshotHash(t *testing.T, mutate ...func(*config.PGODefaults)) string {
+	t.Helper()
+
+	defaults := testPGODefaults()
+	for _, m := range mutate {
+		m(&defaults)
+	}
+	policy, err := pgo.DefaultPolicy(defaults)
+	if err != nil {
+		t.Fatalf("DefaultPolicy: %v", err)
+	}
+
+	return pgo.SnapshotHash(policy)
+}
+
+// seedReceipt writes one receipt into the authoritative bucket, standing in
+// for the create another request made.
+func (p *pgoHarness) seedReceipt(t *testing.T, key string, r pgo.Receipt) {
+	t.Helper()
+
+	p.nats.jobs.put(t, key, r)
+}
+
+// boundRecord is a Collection an api request created under one idempotency key,
+// in the given state, with the receipt that binds it.
+func (p *pgoHarness) boundRecord(
+	t *testing.T, state pgo.State, key, hash string, mutate ...func(*pgo.Record),
+) pgo.Record {
+	t.Helper()
+
+	fields := append([]func(*pgo.Record){func(r *pgo.Record) {
+		r.Origin = pgo.OriginAPI
+		r.CreatedBy = "anonymous"
+		r.IdempotencyKey = key
+		r.SnapshotHash = hash
+	}}, mutate...)
+	rec := p.seedRecord(t, p.newRecord(state, fields...))
+	p.seedReceipt(t, fixtureReceiptKey(key),
+		pgo.Receipt{ID: rec.ID, SnapshotHash: hash, CreatedAt: pgoFixtureNow})
+
+	return rec
+}
+
+// acceptedBodyOf decodes one create acknowledgement.
+func acceptedBodyOf(t *testing.T, rec *httptest.ResponseRecorder) acceptedBody {
+	t.Helper()
+
+	var body acceptedBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not readable: %v", rec.Body.String(), err)
+	}
+
+	return body
+}
+
+// TestCollectionCreateAcceptsTheKeyGrammar proves both ends of the header's range are keys the route reads.
+func TestCollectionCreateAcceptsTheKeyGrammar(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"one byte", "k"},
+		{"128 bytes", strings.Repeat("a", 128)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPGOHarness(t, pgoOpts{})
+
+			got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed(tc.key))
+
+			if got.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202 (body %q)", got.Code, got.Body.String())
+			}
+			body := acceptedBodyOf(t, got)
+			receipt := h.nats.jobs.receipt(t, fixtureReceiptKey(tc.key))
+			if receipt.ID != body.ID {
+				t.Errorf("receipt names %q, want the collection %q", receipt.ID, body.ID)
+			}
+			rec := h.nats.jobs.record(t, body.ID)
+			if rec.IdempotencyKey != tc.key {
+				t.Errorf("record key = %q, want the one the request sent", rec.IdempotencyKey)
+			}
+			if receipt.SnapshotHash != rec.SnapshotHash {
+				t.Errorf("receipt hash = %q, want the record's %q", receipt.SnapshotHash, rec.SnapshotHash)
+			}
+		})
+	}
+}
+
+// TestCollectionCreateRefusesAKeyItCannotRead proves a key outside the grammar is refused rather than replaced,
+// and that the refusal writes nothing.
+func TestCollectionCreateRefusesAKeyItCannotRead(t *testing.T) {
+	cases := []struct {
+		name   string
+		header http.Header
+	}{
+		{"empty", keyed("")},
+		{"129 bytes", keyed(strings.Repeat("a", 129))},
+		{"a byte outside the set", keyed("bad key")},
+		{"sent twice", http.Header{
+			"Content-Type":       []string{"application/json"},
+			idempotencyKeyHeader: []string{"one", "two"},
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPGOHarness(t, pgoOpts{})
+			before := h.storeCalls()
+
+			got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"rounds":1}}`, tc.header)
+
+			h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+			expectDetails(t, got, "invalid_parameter", []errorDetail{
+				{Field: idempotencyKeyHeader, Code: detailHeaderMalformed},
+			})
+			for _, prefix := range []string{jobKeyPrefix, activeKeyPrefix, idemKeyPrefix} {
+				if n := h.nats.jobs.countKeys(prefix); n != 0 {
+					t.Errorf("%s keys = %d, want none written", prefix, n)
+				}
+			}
+			if after := h.storeCalls(); after != before {
+				t.Errorf("store calls = %d, want the %d the refusal started with", after, before)
+			}
+		})
+	}
+}
+
+// TestCollectionCreateWithoutAKeyWritesNoReceipt is today's behavior: a create
+// that carries no key binds nothing.
+func TestCollectionCreateWithoutAKeyWritesNoReceipt(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, jsonType())
+
+	if got.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %q)", got.Code, got.Body.String())
+	}
+	if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 0 {
+		t.Errorf("receipts = %d, want none", n)
+	}
+	rec := h.nats.jobs.record(t, acceptedBodyOf(t, got).ID)
+	if rec.IdempotencyKey != "" {
+		t.Errorf("record key = %q, want none", rec.IdempotencyKey)
+	}
+	if rec.SnapshotHash == "" {
+		t.Error("record carries no snapshot hash, which every collection has")
+	}
+}
+
+// TestCollectionCreateReplaysTheSameKey is the guarantee: a retry of a create
+// whose answer was lost reads the identifier back and creates nothing.
+func TestCollectionCreateReplaysTheSameKey(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+
+	first := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d, want 202 (body %q)", first.Code, first.Body.String())
+	}
+	created := acceptedBodyOf(t, first)
+
+	second := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200 (body %q)", second.Code, second.Body.String())
+	}
+	replay := acceptedBodyOf(t, second)
+	if replay.ID != created.ID {
+		t.Errorf("replay names %q, want the first collection %q", replay.ID, created.ID)
+	}
+	if replay.State != pgo.StatePending {
+		t.Errorf("replay state = %q, want the record's %q", replay.State, pgo.StatePending)
+	}
+	if location := second.Header().Get("Location"); location != "/v1/collections/"+created.ID {
+		t.Errorf("Location = %q, want the collection's own path", location)
+	}
+	for prefix, want := range map[string]int{jobKeyPrefix: 1, activeKeyPrefix: 1, idemKeyPrefix: 1} {
+		if n := h.nats.jobs.countKeys(prefix); n != want {
+			t.Errorf("%s keys = %d, want %d", prefix, n, want)
+		}
+	}
+}
+
+// TestCollectionReplayReadsTheStateFromTheRecord proves the answer reports
+// where the Collection is now rather than where it was accepted.
+func TestCollectionReplayReadsTheStateFromTheRecord(t *testing.T) {
+	for _, state := range []pgo.State{pgo.StateInitializing, pgo.StateRunning, pgo.StateCompleted} {
+		t.Run(string(state), func(t *testing.T) {
+			h := newPGOHarness(t, pgoOpts{})
+			rec := h.boundRecord(t, state, "k", fixtureSnapshotHash(t))
+
+			got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+			if got.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+			}
+			body := acceptedBodyOf(t, got)
+			if body.ID != rec.ID || body.State != state {
+				t.Errorf("replay = %+v, want the record %q in state %q", body, rec.ID, state)
+			}
+			h.expectPGOAudit(t, http.StatusOK, codeOK)
+		})
+	}
+}
+
+// TestCollectionReplayCarriesTheAcknowledgementAlone proves the thin answer:
+// the identifier and the state, and no field of the record.
+// POST /collections is a pgo.collect route and reading a record is a pgo.read one,
+// so a full record here would hand a collect-only principal what its realm denies on the route that serves it.
+func TestCollectionReplayCarriesTheAcknowledgementAlone(t *testing.T) {
+	realm := wideRealm()
+	realm.PGO = config.RealmPGO{Collect: true}
+	h := newPGOHarness(t, pgoOpts{realm: &realm})
+	rec := h.boundRecord(t, pgo.StateCompleted, "k", fixtureSnapshotHash(t))
+
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(got.Body.Bytes(), &fields); err != nil {
+		t.Fatalf("body %q is not readable: %v", got.Body.String(), err)
+	}
+	if len(fields) != 2 || fields["id"] != rec.ID || fields["state"] != string(pgo.StateCompleted) {
+		t.Errorf("replay body = %v, want the identifier and the state alone", fields)
+	}
+
+	read := h.doPGO(t, http.MethodGet, collectionPath(rec.ID, ""), "", nil)
+	expectCode(t, read, http.StatusNotFound, "collection_not_found")
+}
+
+// TestCollectionReplayIsRefusedByTheRealmFirst proves the realm decides before the receipt is read:
+// a principal the realm no longer admits learns nothing about the Collection its key names.
+func TestCollectionReplayIsRefusedByTheRealmFirst(t *testing.T) {
+	realm := wideRealm()
+	realm.Services = []string{"other-*"}
+	h := newPGOHarness(t, pgoOpts{realm: &realm})
+	h.nats.jobs.put(t, fixtureReceiptKey("k"),
+		pgo.Receipt{ID: newFixtureID(), SnapshotHash: fixtureSnapshotHash(t), CreatedAt: pgoFixtureNow})
+	before := h.storeCalls()
+
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	h.expectPGOError(t, got, http.StatusForbidden, "realm_denied", "realm_denied")
+	if after := h.storeCalls(); after != before {
+		t.Errorf("store calls = %d, want the %d the refusal started with", after, before)
+	}
+}
+
+// TestCollectionCreateScopesItsKey proves one key names one Collection per principal and per Service,
+// and that neither scope tells a caller of the other.
+func TestCollectionCreateScopesItsKey(t *testing.T) {
+	t.Run("another principal", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		other := pgo.ReceiptKey("someone-else", fixtureNamespace, fixtureService, "k")
+		h.seedReceipt(t, other,
+			pgo.Receipt{ID: newFixtureID(), SnapshotHash: fixtureSnapshotHash(t), CreatedAt: pgoFixtureNow})
+
+		got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+		if got.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202 (body %q)", got.Code, got.Body.String())
+		}
+		if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 2 {
+			t.Errorf("receipts = %d, want one per principal", n)
+		}
+	})
+
+	t.Run("another service", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		first := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+		if first.Code != http.StatusAccepted {
+			t.Fatalf("first status = %d, want 202 (body %q)", first.Code, first.Body.String())
+		}
+
+		other := "/v1/namespaces/" + fixtureNamespace + "/services/other-api/collections"
+		second := h.doPGO(t, http.MethodPost, other, `{}`, keyed("k"))
+
+		if second.Code != http.StatusAccepted {
+			t.Fatalf("second status = %d, want 202 (body %q)", second.Code, second.Body.String())
+		}
+		if acceptedBodyOf(t, second).ID == acceptedBodyOf(t, first).ID {
+			t.Error("the two services share a collection, want one each")
+		}
+		if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 2 {
+			t.Errorf("receipts = %d, want one per service", n)
+		}
+	})
+}
+
+// TestCollectionCreateRefusesAKeyThatMeansSomethingElse proves the comparison is the effective policy
+// and never the request bytes:
+// identical JSON mismatches once the snapshot under it has moved.
+func TestCollectionCreateRefusesAKeyThatMeansSomethingElse(t *testing.T) {
+	t.Run("another body", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		rec := h.boundRecord(t, pgo.StateRunning, "k", fixtureSnapshotHash(t))
+
+		got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"rounds":1}}`, keyed("k"))
+
+		expectCode(t, got, http.StatusConflict, "idempotency_mismatch")
+		if n := h.nats.jobs.countKeys(jobKeyPrefix); n != 1 {
+			t.Errorf("job keys = %d, want only %s", n, rec.ID)
+		}
+		if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 1 {
+			t.Errorf("receipts = %d, want the one the key already had", n)
+		}
+	})
+
+	t.Run("the stored override moved", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		first := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+		if first.Code != http.StatusAccepted {
+			t.Fatalf("first status = %d, want 202 (body %q)", first.Code, first.Body.String())
+		}
+		rounds := 3
+		h.seedOverride(t, &pgo.PolicyOverride{Sampling: &pgo.SamplingOverride{Rounds: &rounds}})
+
+		got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+		expectCode(t, got, http.StatusConflict, "idempotency_mismatch")
+	})
+
+	t.Run("the operator defaults moved", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		// The receipt was written under defaults this replica no longer runs,
+		// so the same body produces a different snapshot and a different hash.
+		moved := fixtureSnapshotHash(t, func(d *config.PGODefaults) { d.Sampling.Rounds = 3 })
+		h.boundRecord(t, pgo.StateRunning, "k", moved)
+
+		got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+		expectCode(t, got, http.StatusConflict, "idempotency_mismatch")
+	})
+}
+
+// TestCollectionCreateWithANewKeyWhileOneIsLive proves a key binds a create
+// and decides nothing about another caller's Collection.
+func TestCollectionCreateWithANewKeyWhileOneIsLive(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StateRunning))
+	h.seedActive(t, fixtureNamespace, fixtureService, rec.ID)
+
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	h.expectPGOError(t, got, http.StatusTooManyRequests, "collection_in_progress", "collection_in_progress")
+	if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 0 {
+		t.Errorf("receipts = %d, want none: the request created nothing", n)
+	}
+}
+
+// TestCollectionCreateNeverReplaysARecordWithNoReceipt proves the receipt is the only thing a key is answered from:
+// a record carrying a key nothing bound is not a replay,
+// and a scheduled Collection carries no key at all.
+func TestCollectionCreateNeverReplaysARecordWithNoReceipt(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	h.seedRecord(t, h.newRecord(pgo.StateCompleted, func(r *pgo.Record) {
+		r.Origin = pgo.OriginAPI
+		r.CreatedBy = "anonymous"
+		r.IdempotencyKey = "k"
+		r.SnapshotHash = fixtureSnapshotHash(t)
+	}))
+	scheduled := h.seedRecord(t, h.newRecord(pgo.StateCompleted, func(r *pgo.Record) {
+		r.SnapshotHash = fixtureSnapshotHash(t)
+	}))
+	if scheduled.IdempotencyKey != "" {
+		t.Fatalf("a scheduled record carries key %q, want none", scheduled.IdempotencyKey)
+	}
+
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	if got.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %q)", got.Code, got.Body.String())
+	}
+	if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 1 {
+		t.Errorf("receipts = %d, want the one this create wrote", n)
+	}
+}
+
+// TestCollectionReplayReadsPastTheCaches proves the lookup is authoritative:
+// with every job the replica watches frozen since the first create,
+// the retry still answers with the identifier the key names.
+func TestCollectionReplayReadsPastTheCaches(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	first := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d, want 202 (body %q)", first.Code, first.Body.String())
+	}
+	h.nats.jobs.freeze(jobKeyPrefix)
+	h.nats.jobs.freeze(activeKeyPrefix)
+
+	second := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200 (body %q)", second.Code, second.Body.String())
+	}
+	if got, want := acceptedBodyOf(t, second).ID, acceptedBodyOf(t, first).ID; got != want {
+		t.Errorf("replay names %q, want the first collection %q", got, want)
+	}
+}
+
+// TestCollectionCreateReplacesAStaleReceipt proves what a receipt outliving
+// its record means: the record reached its retention, so the key names nothing
+// and the request creates.
+func TestCollectionCreateReplacesAStaleReceipt(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	gone := newFixtureID()
+	h.seedReceipt(t, fixtureReceiptKey("k"),
+		pgo.Receipt{ID: gone, SnapshotHash: fixtureSnapshotHash(t), CreatedAt: pgoFixtureNow})
+
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	if got.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %q)", got.Code, got.Body.String())
+	}
+	body := acceptedBodyOf(t, got)
+	if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 1 {
+		t.Fatalf("receipts = %d, want the stale one replaced", n)
+	}
+	if receipt := h.nats.jobs.receipt(t, fixtureReceiptKey("k")); receipt.ID != body.ID {
+		t.Errorf("receipt names %q, want the new collection %q", receipt.ID, body.ID)
+	}
+}
+
+// TestCollectionCreateAfterANotPublishedRecord proves the crash window the publication order opens is not a replay:
+// a record the scan failed not_published never became claimable and never ran,
+// so its key is free.
+func TestCollectionCreateAfterANotPublishedRecord(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	failed := h.boundRecord(t, pgo.StateFailed, "k", fixtureSnapshotHash(t),
+		func(r *pgo.Record) { r.Reason = pgo.ReasonNotPublished })
+
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	if got.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %q)", got.Code, got.Body.String())
+	}
+	body := acceptedBodyOf(t, got)
+	if body.ID == failed.ID {
+		t.Fatal("the answer names the record that never ran, want a new collection")
+	}
+	if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 1 {
+		t.Fatalf("receipts = %d, want exactly one", n)
+	}
+	if receipt := h.nats.jobs.receipt(t, fixtureReceiptKey("k")); receipt.ID != body.ID {
+		t.Errorf("receipt names %q, want the new collection %q", receipt.ID, body.ID)
+	}
+}
+
+// TestCollectionCreateWritesNoReceiptWhenRefused proves the two ceilings after the lookup leave the key free:
+// the request created nothing,
+// so a retry creates rather than reading back a Collection that does not exist.
+func TestCollectionCreateWritesNoReceiptWhenRefused(t *testing.T) {
+	t.Run("rate limited", func(t *testing.T) {
+		limits := testPGOLimits(func(l *config.PGOLimits) { l.OnDemandPerMinute = 1 })
+		h := newPGOHarness(t, pgoOpts{limits: limits})
+		other := "/v1/namespaces/" + fixtureNamespace + "/services/other-api/collections"
+		if got := h.doPGO(t, http.MethodPost, other, `{}`, jsonType()); got.Code != http.StatusAccepted {
+			t.Fatalf("first status = %d, want 202", got.Code)
+		}
+
+		refused := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+		expectCode(t, refused, http.StatusTooManyRequests, "rate_limited")
+		if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 0 {
+			t.Errorf("receipts = %d, want none: the request created nothing", n)
+		}
+
+		h.clock.advance(time.Minute)
+		retry := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+		if retry.Code != http.StatusAccepted {
+			t.Fatalf("retry status = %d, want 202 (body %q)", retry.Code, retry.Body.String())
+		}
+	})
+
+	t.Run("capacity exhausted", func(t *testing.T) {
+		limits := testPGOLimits(func(l *config.PGOLimits) { l.MaxLiveCollections = 1 })
+		h := newPGOHarness(t, pgoOpts{limits: limits})
+		busy := h.seedRecord(t, h.newRecord(pgo.StateRunning, func(r *pgo.Record) { r.Service = "other-api" }))
+		h.seedActive(t, fixtureNamespace, "other-api", busy.ID)
+
+		got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+		h.expectPGOError(t, got, http.StatusTooManyRequests, "capacity_exhausted", "capacity_exhausted")
+		if n := h.nats.jobs.countKeys(idemKeyPrefix); n != 0 {
+			t.Errorf("receipts = %d, want none: the request created nothing", n)
+		}
+	})
+}
+
+// TestConcurrentKeyedCreatesNameOneCollection releases the loser only once the winner's record is claimable,
+// which is the moment after which one key can only be answered from its receipt.
+func TestConcurrentKeyedCreatesNameOneCollection(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	h.nats.jobs.freeze(jobKeyPrefix)
+	h.nats.jobs.freeze(activeKeyPrefix)
+	handler := h.handler()
+
+	winner := httptest.NewRecorder()
+	published := make(chan struct{})
+	go func() {
+		defer close(published)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, collectionsPath,
+			strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(idempotencyKeyHeader, "k")
+		handler.ServeHTTP(winner, req)
+	}()
+	<-published
+
+	loser := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, collectionsPath,
+		strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(idempotencyKeyHeader, "k")
+	handler.ServeHTTP(loser, req)
+
+	if winner.Code != http.StatusAccepted {
+		t.Fatalf("winner status = %d, want 202 (body %q)", winner.Code, winner.Body.String())
+	}
+	if loser.Code != http.StatusOK {
+		t.Fatalf("loser status = %d, want 200 (body %q)", loser.Code, loser.Body.String())
+	}
+	if got, want := acceptedBodyOf(t, loser).ID, acceptedBodyOf(t, winner).ID; got != want {
+		t.Errorf("the two answers name %q and %q, want one collection", got, want)
+	}
+	for prefix, want := range map[string]int{jobKeyPrefix: 1, activeKeyPrefix: 1, idemKeyPrefix: 1} {
+		if n := h.nats.jobs.countKeys(prefix); n != want {
+			t.Errorf("%s keys = %d, want %d", prefix, n, want)
+		}
+	}
+	if rec := h.nats.jobs.record(t, acceptedBodyOf(t, winner).ID); rec.State != pgo.StatePending {
+		t.Errorf("record state = %q, want %q: no initializing record is left behind", rec.State, pgo.StatePending)
+	}
+}
+
+// TestKeyedLoserBeforeTheReceiptIsRefused holds the winner between its active create and its receipt create,
+// which is the window in which the winner can still withdraw.
+// The loser is refused rather than handed an identifier that may name nothing a moment later,
+// and its retry past the window reads the receipt.
+func TestKeyedLoserBeforeTheReceiptIsRefused(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	h.nats.jobs.freeze(jobKeyPrefix)
+	h.nats.jobs.freeze(activeKeyPrefix)
+	handler := h.handler()
+
+	var arrived, released sync.Once
+	held := make(chan struct{})
+	release := make(chan struct{})
+	lift := func() { released.Do(func() { close(release) }) }
+	defer lift()
+	receiptKey := fixtureReceiptKey("k")
+	h.nats.jobs.setBefore(func(op, key string) {
+		if op == "create" && key == receiptKey {
+			arrived.Do(func() { close(held) })
+			<-release
+		}
+	})
+
+	winner := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, collectionsPath,
+			strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(idempotencyKeyHeader, "k")
+		handler.ServeHTTP(winner, req)
+	}()
+	<-held
+
+	loser := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	expectCode(t, loser, http.StatusTooManyRequests, "collection_in_progress")
+	if got := loser.Header().Get("Retry-After"); got != "1" {
+		t.Errorf("Retry-After = %q, want 1", got)
+	}
+
+	lift()
+	<-done
+	if winner.Code != http.StatusAccepted {
+		t.Fatalf("winner status = %d, want 202 (body %q)", winner.Code, winner.Body.String())
+	}
+
+	retry := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	if retry.Code != http.StatusOK {
+		t.Fatalf("retry status = %d, want 200 (body %q)", retry.Code, retry.Body.String())
+	}
+	if got, want := acceptedBodyOf(t, retry).ID, acceptedBodyOf(t, winner).ID; got != want {
+		t.Errorf("retry names %q, want the winner's collection %q", got, want)
+	}
+	if n := h.nats.jobs.countKeys(jobKeyPrefix); n != 1 {
+		t.Errorf("job keys = %d, want the loser to have discarded its own record", n)
+	}
+}
+
+// TestConcurrentKeyedCreatesAnswerOneOfTwoWays states the disjunction the
+// release point decides: before the winner's receipt exists a loser can only
+// be refused, and after it a loser can only be answered from it.
+// The retry is the assertion that holds either way.
+func TestConcurrentKeyedCreatesAnswerOneOfTwoWays(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	h.nats.jobs.freeze(jobKeyPrefix)
+	h.nats.jobs.freeze(activeKeyPrefix)
+	handler := h.handler()
+
+	answers := make([]*httptest.ResponseRecorder, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range answers {
+		answers[i] = httptest.NewRecorder()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, collectionsPath,
+				strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(idempotencyKeyHeader, "k")
+			<-start
+			handler.ServeHTTP(answers[i], req)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	accepted := ""
+	for i, got := range answers {
+		switch got.Code {
+		case http.StatusAccepted:
+			accepted = acceptedBodyOf(t, got).ID
+		case http.StatusOK:
+		case http.StatusTooManyRequests:
+			expectCode(t, got, http.StatusTooManyRequests, "collection_in_progress")
+			if after := got.Header().Get("Retry-After"); after != "1" {
+				t.Errorf("Retry-After = %q, want 1", after)
+			}
+		default:
+			t.Fatalf("answer %d = %d (body %q), want 202, 200, or 429", i, got.Code, got.Body.String())
+		}
+	}
+	if accepted == "" {
+		t.Fatal("no request was accepted, want exactly one")
+	}
+
+	retry := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed("k"))
+
+	if retry.Code != http.StatusOK {
+		t.Fatalf("retry status = %d, want 200 (body %q)", retry.Code, retry.Body.String())
+	}
+	if got := acceptedBodyOf(t, retry).ID; got != accepted {
+		t.Errorf("retry names %q, want the accepted collection %q", got, accepted)
+	}
+}

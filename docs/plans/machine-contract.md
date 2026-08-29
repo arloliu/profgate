@@ -1348,12 +1348,12 @@ and answers `429 collection_in_progress` with `Retry-After: 1` whatever that rec
 an identifier handed out from an `initializing` record could name a Collection the winner deletes a moment later.
 Those two reads cover the publication window and never answer `200`.
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 Declare the two session methods, the `idempotency_mismatch` registry constant,
 and the header parse, then build and vet.
 
-- [ ] **Write the create tests**
+- [x] **Write the create tests**
 
 `internal/httpapi`, restating the `Idempotency-Key` rows of *Unit*:
 
@@ -1386,11 +1386,11 @@ and the header parse, then build and vet.
 | a scheduled Collection | no key, no receipt, no replay |
 | a keyed request refused `429 rate_limited` or `429 capacity_exhausted` on its first attempt | no receipt written, so a retry creates |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the lookup, the replay, and the mismatch**
+- [x] **Implement the lookup, the replay, and the mismatch**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/ ./internal/pgo/

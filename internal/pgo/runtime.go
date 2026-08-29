@@ -155,6 +155,34 @@ func (s *Session) WriteRecord(ctx context.Context, rec Record, revision uint64) 
 	return nil
 }
 
+// ReadReceipt reads idem.<hash> authoritatively, past every cache,
+// because a receipt decides whether a Collection is created.
+// It reports the revision the receipt was read at,
+// which is the one a stale receipt is deleted at,
+// and natskv.ErrKeyNotFound for a key with no history.
+func (s *Session) ReadReceipt(ctx context.Context, key string) (Receipt, uint64, error) {
+	r, revision, gone, err := readReceipt(ctx, s.store.Jobs, key)
+	switch {
+	case err != nil:
+		return Receipt{}, 0, err
+	case gone:
+		return Receipt{}, 0, fmt.Errorf("pgo: read receipt %s: %w", key, natskv.ErrKeyNotFound)
+	}
+
+	return r, revision, nil
+}
+
+// DeleteReceipt removes a stale receipt at the revision its read returned.
+// Losing the delete means another writer got there first, which is what makes
+// the revision the guard rather than the key's existence.
+func (s *Session) DeleteReceipt(ctx context.Context, key string, revision uint64) error {
+	if err := s.store.Jobs.Delete(ctx, key, revision); err != nil {
+		return fmt.Errorf("pgo: delete receipt %s: %w", key, err)
+	}
+
+	return nil
+}
+
 // ReadOverride reads a Service's stored policy override fresh, with the
 // revision that is its ETag.
 // It is natskv.ErrKeyNotFound when the Service has no override.

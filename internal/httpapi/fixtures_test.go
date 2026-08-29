@@ -780,6 +780,7 @@ const (
 	activeKeyPrefix   = "active."
 	slotKeyPrefix     = "schedule."
 	overrideKeyPrefix = "service."
+	idemKeyPrefix     = "idem."
 )
 
 // watchBuffer is how many entries one fake watch holds before a send would block.
@@ -818,6 +819,10 @@ type fakeKV struct {
 	// afterGet, when set, runs after a successful Get, so a test can move a key
 	// between a handler's read and the conditional write it makes at that revision.
 	afterGet func()
+	// beforeCall, when set, runs at the start of every operation,
+	// outside the bucket's lock,
+	// so a test can hold one write open while another request runs to completion.
+	beforeCall func(op, key string)
 
 	updates atomic.Int32
 	creates atomic.Int32
@@ -832,8 +837,26 @@ func newFakeKV(gen func() uint64) *fakeKV {
 	return &fakeKV{gen: gen, entries: make(map[string]natskv.Entry)}
 }
 
+// hold runs the test's intervention for one operation, outside the lock.
+func (k *fakeKV) hold(op, key string) {
+	k.mu.Lock()
+	before := k.beforeCall
+	k.mu.Unlock()
+	if before != nil {
+		before(op, key)
+	}
+}
+
+// setBefore installs the intervention every later operation runs first.
+func (k *fakeKV) setBefore(fn func(op, key string)) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.beforeCall = fn
+}
+
 func (k *fakeKV) Get(_ context.Context, key string) (natskv.Entry, error) {
 	k.calls.Add(1)
+	k.hold("get", key)
 	k.mu.Lock()
 	getErr, after := k.getErr, k.afterGet
 	e, ok := k.entries[key]
@@ -857,6 +880,7 @@ func (k *fakeKV) Get(_ context.Context, key string) (natskv.Entry, error) {
 func (k *fakeKV) Create(_ context.Context, key string, value []byte) (uint64, error) {
 	k.calls.Add(1)
 	k.creates.Add(1)
+	k.hold("create", key)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.createErr != nil {
@@ -872,6 +896,7 @@ func (k *fakeKV) Create(_ context.Context, key string, value []byte) (uint64, er
 func (k *fakeKV) Update(_ context.Context, key string, value []byte, expected uint64) (uint64, error) {
 	k.calls.Add(1)
 	k.updates.Add(1)
+	k.hold("update", key)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.updateErr != nil {
@@ -887,6 +912,7 @@ func (k *fakeKV) Update(_ context.Context, key string, value []byte, expected ui
 
 func (k *fakeKV) Delete(_ context.Context, key string, expected uint64) error {
 	k.calls.Add(1)
+	k.hold("delete", key)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	e, ok := k.entries[key]
@@ -1552,6 +1578,43 @@ func (p *pgoHarness) doPGO(t *testing.T, method, target, body string, header htt
 	}
 
 	return rec
+}
+
+// keyed is what a create that binds itself to one Collection sends:
+// the JSON media type the route requires and the idempotency key.
+func keyed(key string) http.Header {
+	return http.Header{"Content-Type": []string{jsonMediaType}, idempotencyKeyHeader: []string{key}}
+}
+
+// receipt reads one idempotency receipt straight from the authoritative bucket.
+func (k *fakeKV) receipt(t *testing.T, key string) pgo.Receipt {
+	t.Helper()
+
+	e, err := k.Get(context.Background(), key)
+	if err != nil {
+		t.Fatalf("receipt %s: %v", key, err)
+	}
+	var r pgo.Receipt
+	if err := json.Unmarshal(e.Value, &r); err != nil {
+		t.Fatalf("receipt %s is not readable: %v", key, err)
+	}
+
+	return r
+}
+
+// expectCode checks the status and the envelope code of one answer.
+// It is for a test that makes more than one request,
+// which is a test that cannot assert a single audit record.
+func expectCode(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+
+	if rec.Code != status {
+		t.Errorf("status = %d, want %d (body %q)", rec.Code, status, rec.Body.String())
+	}
+	if got, _ := errorBodyOf(t, rec); got != code {
+		t.Errorf("code = %q, want %q (body %q)", got, code, rec.Body.String())
+	}
+	detailsOf(t, rec, code)
 }
 
 // ifMatch is the header one conditional policy write carries.

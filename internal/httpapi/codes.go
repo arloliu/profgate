@@ -49,7 +49,7 @@ const (
 	// CodeCollectionTerminal is a Collection that has already finished.
 	CodeCollectionTerminal = "collection_terminal"
 	// CodeIdempotencyMismatch is an idempotency key that already stands for another request.
-	// No route answers it in this build.
+	// POST /collections is the one route that answers it.
 	CodeIdempotencyMismatch = "idempotency_mismatch"
 	// CodeArtifactGone is a Collection whose merged profile is no longer stored.
 	CodeArtifactGone = "artifact_gone"
