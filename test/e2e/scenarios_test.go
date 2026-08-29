@@ -1174,7 +1174,6 @@ func scenarioAPIOutage(t *testing.T, h *Harness) {
 	ns := h.Namespace(t)
 	pods := deployTestApp(t, h, ns)
 	app := h.ForwardTestApp(t, ns, pods[0].Name)
-	before := hits(t, app)
 	cached := targetNames(t, h.Gateways[0], ns, testAppName)
 
 	h.Apply(t, gatewayNamespace, "api-outage")
@@ -1193,18 +1192,29 @@ func scenarioAPIOutage(t *testing.T, h *Harness) {
 	}
 	t.Cleanup(deletePolicy)
 
-	// The policy takes effect in the data plane a moment after the object exists: wait
-	// until the first gateway's confirmation read fails before asserting on both.
+	// The policy takes effect in the data plane a moment after the object exists,
+	// and each replica feels the connection it lost for itself,
+	// so the wait is for every gateway rather than for the first one.
 	err := poll(t.Context(), settleDeadline, func(_ context.Context) (bool, error) {
-		resp := get(t, h.Gateways[0], gatewayURL(ns, testAppName, "profiles/heap"))
-		var e errorResponse
-		_ = json.Unmarshal(resp.Body, &e)
-		return resp.Status == http.StatusServiceUnavailable && e.Code == "discovery_unavailable", nil
+		for _, c := range h.Gateways {
+			resp := get(t, c, gatewayURL(ns, testAppName, "profiles/heap"))
+			var e errorResponse
+			_ = json.Unmarshal(resp.Body, &e)
+			if resp.Status != http.StatusServiceUnavailable || e.Code != "discovery_unavailable" {
+				return false, nil
+			}
+		}
+
+		return true, nil
 	})
 	if err != nil {
 		t.Fatalf("the gateway kept proxying after the API outage began: %v", err)
 	}
 	t.Logf("outage felt %s after the policy was applied", time.Since(applied).Round(time.Millisecond))
+	// The counter is read once the outage is felt.
+	// A request the wait above got an answer to was proxied while the outage was not yet in the data plane,
+	// which is before the outage rather than during it.
+	before := hits(t, app)
 	for i, c := range h.Gateways {
 		if resp := get(t, c, "http://gateway:9090/readyz"); resp.Status != http.StatusOK {
 			t.Fatalf("gateway %d /readyz during outage: %d %s", i, resp.Status, resp.Body)
