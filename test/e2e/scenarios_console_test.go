@@ -190,16 +190,17 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	}
 
 	// Start collection, pressed twice through its inline confirmation.
-	before := s.rowIDs(t)
 	s.run(t, "arm the start control", chromedp.Click(control("Start collection"), chromedp.BySearch))
 	s.run(t, "confirm the start", chromedp.Click(control("Confirm start"), chromedp.BySearch))
-	// A press queues the request; the assertion is on what the browser then sent,
-	// so the count is read once the outcome has landed and not while it is still in flight.
 	route := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/collections"
 	s.awaitRequest(t, http.MethodPost, route)
-	started := s.awaitNewRow(t, before)
+	// The page selects the Collection the start created, which is what names it in the detail,
+	// so the detail is where the answer being applied is read,
+	// and it is read before the test fetches anything of its own.
+	started := s.awaitStartedDetail(t, seeded)
 	assertStartRequest(t, s, route)
 	t.Logf("the browser started collection %s", started)
+	s.awaitRow(t, started, "the Collection the browser started")
 
 	// Cancel on that row, pressed twice the same way.
 	s.run(t, "arm the cancel control", chromedp.Click(control("Cancel"), chromedp.BySearch))
@@ -611,32 +612,32 @@ func (s *session) awaitRow(t *testing.T, id, what string) {
 	}
 }
 
-// awaitNewRow waits for the one identifier the Collections table gained since before,
-// and returns it.
-func (s *session) awaitNewRow(t *testing.T, before []string) string {
+// awaitStartedDetail waits until the detail names a Collection other than the one given, and returns its identifier.
+// Only the start attempt's own outcome selects the record it created,
+// so a detail naming an identifier no press of this scenario has opened is proof the page applied that outcome.
+// Nothing here fetches on the page's behalf:
+// a test that forced the list would find the row whether the answer was applied or discarded.
+func (s *session) awaitStartedDetail(t *testing.T, opened string) string {
 	t.Helper()
-	had := map[string]bool{}
-	for _, id := range before {
-		had[id] = true
-	}
-	var found string
+	const prefix = "Collection "
+	var started string
 	err := poll(s.ctx, settleDeadline, func(context.Context) (bool, error) {
-		for _, got := range s.rowIDs(t) {
-			if !had[got] {
-				found = got
-
-				return true, nil
-			}
+		named, ok := strings.CutPrefix(strings.TrimSpace(s.textOf(t, "details summary")), prefix)
+		if !ok {
+			return false, nil
 		}
-		s.refetchCollections(t)
+		if named = strings.TrimSpace(named); named == "" || named == opened {
+			return false, nil
+		}
+		started = named
 
-		return false, nil
+		return true, nil
 	})
 	if err != nil {
-		t.Fatalf("no row appeared for the Collection the browser started: %v\n%s", err, s.report())
+		t.Fatalf("the detail never named the Collection the browser started: %v\n%s", err, s.report())
 	}
 
-	return found
+	return started
 }
 
 // refetchCollections asks the page for the Collections list again by choosing the same Service,
