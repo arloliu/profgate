@@ -394,7 +394,7 @@ uuidFromBytes(bytes)                    sixteen bytes as a UUIDv4 string
 startRequest(route, key)                what the start POST carries
 cancelRequest(route)                    what the cancel POST carries
 startOutcome(answer)                    what an answer to a start does
-cancelOutcome(answer, try)              what an answer to a cancel does
+cancelOutcome(answer, tryNumber)        what an answer to a cancel does
 retryAfterSeconds(header)               the delay a 429 asks for
 startNext(state, event)                 the armed, in-flight, retained, and cooling states
 ```
@@ -463,17 +463,17 @@ and `disableSeconds` is `0` unless a `429` asked for a delay.
 The first row reads the whole `2xx` range and not `202` and `200`,
 so a later release that answers a replay with another success status still selects the record.
 
-`cancelOutcome(answer, try)` returns `{replace, refetch, error, retryAfterMs}`.
-`try` is which press of this cancel produced the answer, `1` or `2`,
-and is named for the retry rather than `attempt`,
-which is a field of the Collection record itself and would read as that one.
+`cancelOutcome(answer, tryNumber)` returns `{replace, refetch, error, retryAfterMs}`.
+`tryNumber` is which press of this cancel produced the answer, `1` or `2`.
+It is not `attempt`, which is a field of the Collection record itself and would read as that one,
+and not `try`, which cannot be an identifier.
 
 | Answer | Result |
 |---|---|
 | `200` | `replace` is the returned record; `refetch` is `collections` |
 | `409 collection_terminal` | `refetch` is `collections`; no error |
-| `409 collection_initializing`, `try` 1 | `retryAfterMs` is 1000; nothing else |
-| `409 collection_initializing`, `try` 2 | the code is shown; the row is left as it is |
+| `409 collection_initializing`, `tryNumber` 1 | `retryAfterMs` is 1000; nothing else |
+| `409 collection_initializing`, `tryNumber` 2 | the code is shown; the row is left as it is |
 | `404 collection_not_found` | `refetch` is `collections` and `whoami` |
 | a rejected `fetch`, or any other status | the error is shown; the row is left as it was |
 
@@ -494,7 +494,8 @@ and is `0` in every other phase.
 `event` is `{kind, …}` with `kind` one of
 `arm`, `submit`, `outcome`, `timer`, `keep`, and `selection`.
 `arm` carries `{key, route}`;
-`outcome` carries `{token, keep, disableSeconds}` and `timer` carries `{now}`;
+`outcome` carries `{token, keep, disableSeconds, now}` and `timer` carries `{now}`;
+an `outcome` carries the clock because it is what starts a cooldown;
 `keep` and `selection` carry nothing.
 `startNext` returns `{state, message}`, where `message` is `null` or the text the page shows.
 
@@ -605,7 +606,7 @@ git commit -m "feat(ui): decide the collection controls in one module"
   `internal/ui/scan_test.go`
 
 `urls.js` gains `collectionCancelURL(id)`, built the way `collectionURL` is,
-and `app.js` imports it and the eight functions of `collectionmodel.js`.
+and `app.js` imports it and the nine functions of `collectionmodel.js`.
 
 **The page's transport reads and does not write.**
 `fetchJSON(url)` at `internal/ui/static/app.js:55-81` calls `fetch(url, {credentials: "same-origin"})`,
