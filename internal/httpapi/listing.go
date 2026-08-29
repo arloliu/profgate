@@ -121,7 +121,8 @@ func (s *server) serveListing(
 			body = servicesBody{Namespace: q.route.namespace, Services: names}
 		}
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
-		kindCollectionCancel, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
+		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindAuth, kindAuthLogin,
+		kindAuthCallback, kindAuthLogout, kindConsole:
 		// Not a listing route; ServeHTTP never dispatches one here.
 		q.fail(w, errRouteUnknown)
 

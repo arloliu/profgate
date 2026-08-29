@@ -61,7 +61,7 @@ var (
 	}
 )
 
-// servePGOService dispatches the four Service-scoped PGO routes, past the
+// servePGOService dispatches the six Service-scoped PGO routes, past the
 // realm check their namespace and Service were evaluated against.
 func (s *server) servePGOService(
 	w http.ResponseWriter, r *http.Request, q *request, cfg *config.Config, sess *pgo.Session, principal string,
@@ -79,6 +79,8 @@ func (s *server) servePGOService(
 		s.servePolicyWrite(w, r, q, cfg, sess, principal)
 	case q.route.kind == kindPGOPolicy:
 		s.servePolicyDelete(w, r, q, cfg, sess)
+	case q.route.kind == kindCollectionLatest, q.route.kind == kindCollectionLatestProfile:
+		s.serveLatestCollection(w, r, q, sess)
 	case r.Method == http.MethodGet:
 		s.serveCollectionList(w, q, sess)
 	default:
@@ -141,7 +143,8 @@ func (s *server) servePGOCollection(
 		s.serveCollectionDownload(w, r, q, sess, stored)
 	case kindCollectionCancel:
 		s.serveCollectionCancel(w, r, q, sess, stored)
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindNamespaces, kindServices,
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollectionLatest,
+		kindCollectionLatestProfile, kindNamespaces, kindServices,
 		kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
 		q.fail(w, errCollectionNotFound)
 	}

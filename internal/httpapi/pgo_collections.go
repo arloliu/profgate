@@ -647,10 +647,41 @@ func writeCollection(w http.ResponseWriter, q *request, stored pgo.StoredRecord)
 	_, _ = w.Write([]byte("\n"))
 }
 
-// serveCollectionDownload streams the merged profile out of the Object Store.
-// The body is streamed rather than buffered, so the outcome after headers is
-// classified the way an upstream stream is: the connection is dropped and the
-// audit record carries what happened.
+// serveLatestCollection answers for the newest completed Collection of a Service
+// whose artifact is still in the store.
+// One walk both selects the record and opens its artifact,
+// so the record this route writes is the record whose bytes the profile route streams,
+// and neither answers artifact_gone while an intact artifact exists.
+// The record route closes the reader the walk opened at once,
+// which costs the one read a probe of the object would have cost anyway.
+func (s *server) serveLatestCollection(w http.ResponseWriter, r *http.Request, q *request, sess *pgo.Session) {
+	rt := q.route
+	stored, body, err := sess.LatestCompleted(r.Context(), rt.namespace, rt.service)
+	if err != nil {
+		if !errors.Is(err, natskv.ErrKeyNotFound) {
+			s.deps.Logger.Warn("pgo: the latest collection of a service is not readable",
+				"namespace", rt.namespace, "service", rt.service, "error", err)
+		}
+		q.fail(w, storeError(err))
+
+		return
+	}
+	// The audit record names the Collection that answered,
+	// so a reader sees which one a build took.
+	q.audit.collection = stored.Record.ID
+
+	if rt.kind == kindCollectionLatestProfile {
+		streamArtifact(w, r, q, stored.Record, body)
+
+		return
+	}
+	//nolint:errcheck // the record is the answer; closing releases the reader the walk confirmed
+	_ = body.Close()
+	s.serveCollectionRead(w, r, q, sess, stored, 0)
+}
+
+// serveCollectionDownload resolves the object one Collection names, opens it,
+// and streams it.
 func (s *server) serveCollectionDownload(
 	w http.ResponseWriter, r *http.Request, q *request, sess *pgo.Session, stored pgo.StoredRecord,
 ) {
@@ -698,6 +729,19 @@ func (s *server) serveCollectionDownload(
 
 		return
 	}
+
+	streamArtifact(w, r, q, rec, body)
+}
+
+// streamArtifact writes one already-open artifact as the response and releases it.
+// It takes the reader rather than the object's name because confirming an object is in
+// the store and opening it are one operation:
+// a second open could find the object swept away
+// while the completed Collection behind it still has its bytes.
+// The body is streamed rather than buffered, so the outcome after headers is
+// classified the way an upstream stream is: the connection is dropped and the
+// audit record carries what happened.
+func streamArtifact(w http.ResponseWriter, r *http.Request, q *request, rec pgo.Record, body io.ReadCloser) {
 	defer func() {
 		//nolint:errcheck // the read is over either way; closing releases it
 		_ = body.Close()

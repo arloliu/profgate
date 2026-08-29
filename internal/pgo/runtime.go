@@ -345,6 +345,79 @@ func (s *Session) OpenArtifact(ctx context.Context, object string) (io.ReadClose
 	return rc, nil
 }
 
+// LatestCompleted returns the newest Collection of a Service that is completed
+// and whose artifact is still in the store,
+// together with that artifact open for reading; the caller closes it.
+// The watched cache is a candidate filter and never the authority:
+// each candidate costs one authoritative Get,
+// a candidate whose fresh read is not completed is dropped,
+// and one whose object cannot be opened is flipped to expired
+// at the revision that read returned before the walk continues.
+// The open is the confirmation,
+// so the reader a caller streams is the one the walk confirmed
+// and no second open can find the object gone.
+// It is natskv.ErrKeyNotFound when no candidate survives,
+// and a store that cannot be read is reported rather than an older Collection:
+// a store the gateway cannot read says nothing about which artifact is newest.
+func (s *Session) LatestCompleted(ctx context.Context, ns, svc string) (StoredRecord, io.ReadCloser, error) {
+	for _, v := range s.b.Caches.Collections(ns, svc) {
+		if v.State != StateCompleted {
+			continue
+		}
+
+		stored, err := s.ReadRecord(ctx, v.ID)
+		switch {
+		case err == nil:
+		case errors.Is(err, natskv.ErrKeyNotFound):
+			// The record reached its retention while the cache still held it.
+			continue
+		default:
+			return StoredRecord{}, nil, err
+		}
+		if stored.Record.State != StateCompleted {
+			continue
+		}
+
+		object := ""
+		if stored.Record.Artifact != nil {
+			object = stored.Record.Artifact.Object
+		}
+		if object == "" {
+			s.expireGoneArtifact(ctx, stored)
+
+			continue
+		}
+
+		body, err := s.OpenArtifact(ctx, object)
+		switch {
+		case err == nil:
+			return stored, body, nil
+		case errors.Is(err, natskv.ErrObjectNotFound):
+			s.expireGoneArtifact(ctx, stored)
+		default:
+			return StoredRecord{}, nil, err
+		}
+	}
+
+	return StoredRecord{}, nil, fmt.Errorf("pgo: %s/%s has no completed collection with its artifact: %w",
+		ns, svc, natskv.ErrKeyNotFound)
+}
+
+// expireGoneArtifact flips a completed record whose object is no longer in the store.
+// The conditional update at the revision the fresh read returned is what decides:
+// the reader that wins it owns the transition's log record and its metric row,
+// exactly as the sweeper owns the same transition on its own path,
+// so one flip is never counted twice.
+// A lost update is another reader's flip and needs nothing from this one.
+func (s *Session) expireGoneArtifact(ctx context.Context, stored StoredRecord) {
+	rec := stored.Record
+	rec.State = StateExpired
+	if err := s.WriteRecord(ctx, rec, stored.Revision); err != nil {
+		return
+	}
+	s.RecordTransition(rec)
+}
+
 // ReleaseActive frees the Service the moment its Collection ends.
 func (s *Session) ReleaseActive(ctx context.Context, rec Record) {
 	releaseActive(ctx, s.store.Jobs, rec)

@@ -117,7 +117,7 @@ func New(d Deps) http.Handler {
 // routeKind is which of the /v1 routes a path matched.
 type routeKind int
 
-// The routes the gateway serves: the two interactive ones, the five PGO ones, the four listing ones,
+// The routes the gateway serves: the two interactive ones, the seven PGO ones, the four listing ones,
 // the one authentication-discovery route, which runs no authentication step,
 // the three browser-login routes, and the console.
 // Each classification below is an exhaustive switch that names every kind,
@@ -130,6 +130,10 @@ const (
 	kindCollection
 	kindCollectionProfile
 	kindCollectionCancel
+	// The two Service-scoped routes that answer for the newest completed
+	// Collection of a Service: its record, and its stored profile.
+	kindCollectionLatest
+	kindCollectionLatestProfile
 	kindNamespaces
 	kindServices
 	kindWhoami
@@ -151,7 +155,8 @@ func (k routeKind) isAuthRoute() bool {
 	case kindAuthLogin, kindAuthCallback, kindAuthLogout:
 		return true
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
-		kindCollectionCancel, kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth, kindConsole:
+		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindNamespaces, kindServices,
+		kindWhoami, kindLimits, kindAuth, kindConsole:
 		return false
 	default:
 		return false
@@ -162,7 +167,8 @@ func (k routeKind) isAuthRoute() bool {
 // pgo.enabled and replay-barrier steps of the request algorithm gate.
 func (k routeKind) isPGO() bool {
 	switch k {
-	case kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel:
+	case kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel,
+		kindCollectionLatest, kindCollectionLatestProfile:
 		return true
 	case kindTargets, kindProfile, kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth,
 		kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
@@ -180,7 +186,8 @@ func (k routeKind) isPGOWrite() bool {
 	switch k {
 	case kindCollections, kindCollectionCancel:
 		return true
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollection, kindCollectionProfile, kindNamespaces,
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollection, kindCollectionProfile,
+		kindCollectionLatest, kindCollectionLatestProfile, kindNamespaces,
 		kindServices, kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout,
 		kindConsole:
 		return false
@@ -195,7 +202,8 @@ func (k routeKind) isCollectionScoped() bool {
 	switch k {
 	case kindCollection, kindCollectionProfile, kindCollectionCancel:
 		return true
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindNamespaces, kindServices, kindWhoami,
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollectionLatest,
+		kindCollectionLatestProfile, kindNamespaces, kindServices, kindWhoami,
 		kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
 		return false
 	default:
@@ -210,7 +218,8 @@ func (k routeKind) isListing() bool {
 	case kindNamespaces, kindServices, kindWhoami, kindLimits:
 		return true
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
-		kindCollectionCancel, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindConsole:
+		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindAuth, kindAuthLogin,
+		kindAuthCallback, kindAuthLogout, kindConsole:
 		return false
 	default:
 		return false
@@ -258,9 +267,12 @@ func (q *request) labels() (metrics.Endpoint, string) {
 		return metrics.EndpointPGOPolicy, labelNone
 	case kindCollections:
 		return metrics.EndpointCollections, labelNone
-	case kindCollection:
+	// The two latest routes are counted under the two shapes they answer:
+	// they differ only in how the record was chosen,
+	// and a value per route would split a series to record a path the audit line already names.
+	case kindCollection, kindCollectionLatest:
 		return metrics.EndpointCollection, labelCPU
-	case kindCollectionProfile:
+	case kindCollectionProfile, kindCollectionLatestProfile:
 		return metrics.EndpointCollectionProfile, labelCPU
 	case kindCollectionCancel:
 		return metrics.EndpointCollectionCancel, labelCPU

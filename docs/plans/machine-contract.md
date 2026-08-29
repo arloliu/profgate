@@ -1641,12 +1641,12 @@ The audit record names in `collection` the identifier that answered, so a reader
 The candidate order is the listing's: `createdAt` descending, `id` descending on a tie
 (`internal/pgo/caches.go:551-557`, which already sorts that way).
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 Add the two declarations and their kinds, `LatestCompleted` returning `ErrKeyNotFound`,
 and the dispatch, so every assertion fails on content.
 
-- [ ] **Write the latest tests**
+- [x] **Write the latest tests**
 
 | Fixture | Answer |
 |---|---|
@@ -1669,11 +1669,11 @@ and the dispatch, so every assertion fails on content.
 | any answer | the audit record names the identifier that answered, and the metrics row is `collection` or `collection_profile` |
 | a walk that discards candidates | one authoritative `Get` per discarded candidate and no more |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the walk and the two routes**
+- [x] **Implement the walk and the two routes**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/ ./internal/pgo/

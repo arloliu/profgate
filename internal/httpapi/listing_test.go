@@ -686,6 +686,8 @@ func TestRouteKinds(t *testing.T) {
 		{kindCollection, true, true, false, false},
 		{kindCollectionProfile, true, true, false, false},
 		{kindCollectionCancel, true, true, false, false},
+		{kindCollectionLatest, true, false, false, false},
+		{kindCollectionLatestProfile, true, false, false, false},
 		{kindNamespaces, false, false, true, false},
 		{kindServices, false, false, true, false},
 		{kindWhoami, false, false, true, false},

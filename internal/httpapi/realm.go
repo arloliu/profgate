@@ -50,7 +50,7 @@ func pgoAllows(p config.RealmPGO, kind routeKind, method string) bool {
 		}
 
 		return p.Collect
-	case kindCollection, kindCollectionProfile:
+	case kindCollection, kindCollectionProfile, kindCollectionLatest, kindCollectionLatestProfile:
 		return p.Read
 	case kindCollectionCancel:
 		return p.Collect

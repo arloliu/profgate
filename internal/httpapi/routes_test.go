@@ -75,9 +75,9 @@ func endpointOf(kind routeKind) metrics.Endpoint {
 		return metrics.EndpointPGOPolicy
 	case kindCollections:
 		return metrics.EndpointCollections
-	case kindCollection:
+	case kindCollection, kindCollectionLatest:
 		return metrics.EndpointCollection
-	case kindCollectionProfile:
+	case kindCollectionProfile, kindCollectionLatestProfile:
 		return metrics.EndpointCollectionProfile
 	case kindCollectionCancel:
 		return metrics.EndpointCollectionCancel
@@ -106,13 +106,15 @@ func isV1(kind routeKind) bool {
 
 // profileLabelOf is the metrics profile label the kind carries:
 // the requested name on the profile endpoint,
-// cpu on the three Collection-scoped routes, which profile CPU and nothing else,
+// cpu on the five routes that answer for a Collection, which profile CPU and nothing else,
 // and none everywhere else.
 func profileLabelOf(kind routeKind, name string) string {
 	switch {
 	case kind == kindProfile:
 		return name
 	case kind.isCollectionScoped():
+		return labelCPU
+	case kind == kindCollectionLatest || kind == kindCollectionLatestProfile:
 		return labelCPU
 	default:
 		return labelNone
@@ -383,6 +385,7 @@ func TestRouteUnknown(t *testing.T) {
 		{"identifier is too short", "/v1/collections/abc"},
 		{"identifier carries a separator", "/v1/collections/abcdefghjkmnpqrstv01/../etc"},
 		{"unknown collection suffix", "/v1/collections/abcdefghjkmnpqrstv01/bogus"},
+		{"latest is a path segment and not an identifier", "/v1/collections/latest"},
 		{"profile carries a separator", "/v1/namespaces/x/services/y/profiles/heap/extra"},
 		{"unknown auth route", "/auth/bogus"},
 		{"auth root", "/auth/"},

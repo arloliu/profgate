@@ -52,6 +52,10 @@ var routeTable = [...]declaration{
 		http.MethodGet, http.MethodPut, http.MethodDelete}},
 	{"/v1/namespaces/{namespace}/services/{service}/collections", kindCollections, []string{
 		http.MethodGet, http.MethodPost}},
+	{"/v1/namespaces/{namespace}/services/{service}/collections/latest", kindCollectionLatest, []string{
+		http.MethodGet}},
+	{"/v1/namespaces/{namespace}/services/{service}/collections/latest/profile", kindCollectionLatestProfile,
+		[]string{http.MethodGet}},
 	{"/v1/collections/{id}", kindCollection, []string{http.MethodGet}},
 	{"/v1/collections/{id}/profile", kindCollectionProfile, []string{http.MethodGet}},
 	{"/v1/collections/{id}/cancel", kindCollectionCancel, []string{http.MethodPost}},

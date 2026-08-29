@@ -1110,6 +1110,14 @@ type fakeObjects struct {
 	// opened is the last reader handed out, so a test can see how far the
 	// stream got and whether it was released.
 	opened *fakeReader
+	// afterOpen, when set, runs after a reader has been handed out,
+	// outside the store's lock,
+	// so a test can take the object away from a request that already holds its bytes.
+	afterOpen func(name string)
+
+	// opens counts the readers handed out,
+	// which is how many times a request asked the store for an object.
+	opens atomic.Int32
 }
 
 func newFakeObjects() *fakeObjects { return &fakeObjects{objects: make(map[string][]byte)} }
@@ -1127,13 +1135,18 @@ func (o *fakeObjects) Put(_ context.Context, name string, r io.Reader) error {
 }
 
 func (o *fakeObjects) Get(ctx context.Context, name string) (io.ReadCloser, error) {
+	o.opens.Add(1)
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.openErr != nil {
-		return nil, o.openErr
+		err := o.openErr
+		o.mu.Unlock()
+
+		return nil, err
 	}
 	body, ok := o.objects[name]
 	if !ok {
+		o.mu.Unlock()
+
 		return nil, fmt.Errorf("get %q: %w", name, natskv.ErrObjectNotFound)
 	}
 
@@ -1145,8 +1158,16 @@ func (o *fakeObjects) Get(ctx context.Context, name string) (io.ReadCloser, erro
 		onRead:    o.onRead,
 		gate:      o.gate,
 	}
+	opened, after := o.opened, o.afterOpen
+	o.mu.Unlock()
 
-	return o.opened, nil
+	// The object may go now, which is what makes an open the confirmation:
+	// the reader already holds the bytes, and a second open would not find them.
+	if after != nil {
+		after(name)
+	}
+
+	return opened, nil
 }
 
 // reader is the last reader the store handed out.

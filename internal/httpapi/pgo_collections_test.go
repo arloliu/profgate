@@ -747,6 +747,404 @@ func waitForAudit(t *testing.T, h *harness, code string) {
 	}
 }
 
+// The two Service-scoped routes that answer for the newest completed Collection of a Service.
+const (
+	latestPath        = collectionsPath + "/latest"
+	latestProfilePath = collectionsPath + "/latest/profile"
+)
+
+// completedAt is a completed Collection with its artifact stored, created at one instant.
+// The instant is what orders the candidates a latest walk considers.
+func (p *pgoHarness) completedAt(t *testing.T, created time.Time) pgo.Record {
+	t.Helper()
+
+	return p.completedRecord(t, func(r *pgo.Record) { r.CreatedAt = created })
+}
+
+// dropArtifact removes one Collection's stored object,
+// leaving a completed record naming bytes the store no longer holds.
+func (p *pgoHarness) dropArtifact(t *testing.T, rec pgo.Record) {
+	t.Helper()
+
+	if err := p.nats.artifacts.Delete(context.Background(), rec.Artifact.Object); err != nil {
+		t.Fatalf("Delete %s: %v", rec.Artifact.Object, err)
+	}
+}
+
+// latestID is the identifier the record route answered with.
+func latestID(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	var stored pgo.Record
+	if err := json.Unmarshal(rec.Body.Bytes(), &stored); err != nil {
+		t.Fatalf("body %q is not readable: %v", rec.Body.String(), err)
+	}
+
+	return stored.ID
+}
+
+// TestLatestCollection answers for the newest completed Collection of a
+// Service, past the newer records that have no profile to give.
+func TestLatestCollection(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	h.completedAt(t, pgoFixtureNow)
+	newest := h.completedAt(t, pgoFixtureNow.Add(time.Minute))
+	for _, state := range []pgo.State{pgo.StateFailed, pgo.StateRunning, pgo.StateExpired} {
+		h.seedRecord(t, h.newRecord(state, func(r *pgo.Record) {
+			r.CreatedAt = pgoFixtureNow.Add(2 * time.Minute)
+		}))
+	}
+
+	got := h.doPGO(t, http.MethodGet, latestPath, "", nil)
+
+	if id := latestID(t, got); id != newest.ID {
+		t.Errorf("id = %q, want the newest completed collection %q", id, newest.ID)
+	}
+	audit := h.expectPGOAudit(t, http.StatusOK, codeOK)
+	if audit["collection"] != newest.ID {
+		t.Errorf("audit collection = %v, want %q", audit["collection"], newest.ID)
+	}
+	h.expectMetric(t, metrics.EndpointCollection, labelCPU)
+}
+
+// TestLatestCollectionWritesTheRecordAsStored proves the record route writes the record as stored,
+// exactly as GET /v1/collections/{id} writes it.
+func TestLatestCollectionWritesTheRecordAsStored(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.completedRecord(t)
+
+	latest := h.doPGO(t, http.MethodGet, latestPath, "", nil)
+	direct := h.doPGO(t, http.MethodGet, collectionPath(rec.ID, ""), "", nil)
+
+	if latest.Code != http.StatusOK || direct.Code != http.StatusOK {
+		t.Fatalf("statuses = %d and %d, want 200 (bodies %q and %q)",
+			latest.Code, direct.Code, latest.Body.String(), direct.Body.String())
+	}
+	if latest.Body.String() != direct.Body.String() {
+		t.Errorf("bodies differ:\nlatest %q\ndirect %q", latest.Body.String(), direct.Body.String())
+	}
+}
+
+// TestLatestProfileStreamsWhatTheIdentifierRouteStreams proves one thing:
+// the profile route answers the bytes and the headers of the download it stands for.
+func TestLatestProfileStreamsWhatTheIdentifierRouteStreams(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.completedRecord(t)
+
+	latest := h.doPGO(t, http.MethodGet, latestProfilePath, "", nil)
+	direct := h.doPGO(t, http.MethodGet, collectionPath(rec.ID, "/profile"), "", nil)
+
+	if latest.Code != http.StatusOK || direct.Code != http.StatusOK {
+		t.Fatalf("statuses = %d and %d, want 200", latest.Code, direct.Code)
+	}
+	if !bytes.Equal(latest.Body.Bytes(), artifactBytes) {
+		t.Errorf("body is %d bytes, want the stored object's %d", latest.Body.Len(), len(artifactBytes))
+	}
+	for _, name := range []string{"Content-Type", "Content-Disposition", "X-Pprof-Collection", "X-Pprof-Target-Version"} {
+		if got, want := latest.Header().Get(name), direct.Header().Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestLatestRoutesAnswerForOneCollection proves the two routes run one selection:
+// the record one answers with is the record whose bytes the other streams,
+// even when the newest completed record has lost its object.
+func TestLatestRoutesAnswerForOneCollection(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	older := h.completedAt(t, pgoFixtureNow)
+	newest := h.completedAt(t, pgoFixtureNow.Add(time.Minute))
+	h.dropArtifact(t, newest)
+
+	record := h.doPGO(t, http.MethodGet, latestPath, "", nil)
+	profile := h.doPGO(t, http.MethodGet, latestProfilePath, "", nil)
+
+	if profile.Code != http.StatusOK {
+		t.Fatalf("profile status = %d, want 200 (body %q)", profile.Code, profile.Body.String())
+	}
+	streamed := profile.Header().Get("X-Pprof-Collection")
+	if id := latestID(t, record); id != streamed || id != older.ID {
+		t.Errorf("record answered %q and the profile streamed %q, want %q for both", id, streamed, older.ID)
+	}
+}
+
+// TestLatestCollectionNotFound is the one answer for a Service with nothing to hand a build:
+// no records at all,
+// none completed,
+// and one whose only completed Collection has expired.
+func TestLatestCollectionNotFound(t *testing.T) {
+	fixtures := []struct {
+		name string
+		seed func(t *testing.T, h *pgoHarness)
+	}{
+		{"no records at all", func(*testing.T, *pgoHarness) {}},
+		{"no completed record", func(t *testing.T, h *pgoHarness) {
+			h.seedRecord(t, h.newRecord(pgo.StateFailed))
+			h.seedRecord(t, h.newRecord(pgo.StateRunning))
+		}},
+		{"the only completed record expired", func(t *testing.T, h *pgoHarness) {
+			h.seedRecord(t, h.newRecord(pgo.StateExpired))
+		}},
+	}
+	routes := map[string]string{"record": latestPath, "profile": latestProfilePath}
+
+	for _, f := range fixtures {
+		for route, path := range routes {
+			t.Run(f.name+" "+route, func(t *testing.T) {
+				h := newPGOHarness(t, pgoOpts{})
+				f.seed(t, h)
+
+				got := h.doPGO(t, http.MethodGet, path, "", nil)
+
+				h.expectPGOError(t, got, http.StatusNotFound, "collection_not_found", "collection_not_found")
+			})
+		}
+	}
+}
+
+// TestLatestCollectionWalksPastAGoneObject proves two things:
+// the selection confirms the object rather than trusting the newest cached entry,
+// and the reader that finds it gone owns the transition it commits.
+func TestLatestCollectionWalksPastAGoneObject(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	older := h.completedAt(t, pgoFixtureNow)
+	newest := h.completedAt(t, pgoFixtureNow.Add(time.Minute))
+	h.dropArtifact(t, newest)
+
+	got := h.doPGO(t, http.MethodGet, latestPath, "", nil)
+
+	if id := latestID(t, got); id != older.ID {
+		t.Errorf("id = %q, want the completed collection behind the gone one, %q", id, older.ID)
+	}
+	if state := h.nats.jobs.record(t, newest.ID).State; state != pgo.StateExpired {
+		t.Errorf("state of the gone collection = %q, want %q", state, pgo.StateExpired)
+	}
+	if rows := h.rec.collectionRows(); len(rows) != 1 || rows[0] != string(pgo.StateExpired) {
+		t.Errorf("Collection rows = %v, want exactly one expired", rows)
+	}
+	if records := h.transitions(t); len(records) != 1 {
+		t.Errorf("transition records = %d, want exactly one", len(records))
+	}
+}
+
+// TestLatestCollectionWalksPastTwoGoneObjects proves the walk keeps going:
+// it passes two newest completed records that have both lost their bytes,
+// and flips them both.
+func TestLatestCollectionWalksPastTwoGoneObjects(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	intact := h.completedAt(t, pgoFixtureNow)
+	first := h.completedAt(t, pgoFixtureNow.Add(time.Minute))
+	second := h.completedAt(t, pgoFixtureNow.Add(2*time.Minute))
+	h.dropArtifact(t, first)
+	h.dropArtifact(t, second)
+
+	got := h.doPGO(t, http.MethodGet, latestPath, "", nil)
+
+	if id := latestID(t, got); id != intact.ID {
+		t.Errorf("id = %q, want the collection behind both gone ones, %q", id, intact.ID)
+	}
+	for _, rec := range []pgo.Record{first, second} {
+		if state := h.nats.jobs.record(t, rec.ID).State; state != pgo.StateExpired {
+			t.Errorf("state of %s = %q, want %q", rec.ID, state, pgo.StateExpired)
+		}
+	}
+	if rows := h.rec.collectionRows(); len(rows) != 2 {
+		t.Errorf("Collection rows = %v, want one per flip", rows)
+	}
+}
+
+// TestLatestCollectionSkipsAStaleCandidate proves the watched cache is a candidate filter
+// and never the authority.
+// The cache stops moving while the bucket does not,
+// so its newest completed entry stands for a record that is no longer completed;
+// the fresh read is what decides,
+// and the walk answers with the Collection behind it.
+func TestLatestCollectionSkipsAStaleCandidate(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	older := h.completedAt(t, pgoFixtureNow)
+	newest := h.completedAt(t, pgoFixtureNow.Add(time.Minute))
+
+	h.nats.jobs.freeze(jobKeyPrefix)
+	expired := newest
+	expired.State = pgo.StateExpired
+	h.nats.jobs.put(t, jobKeyPrefix+newest.ID, expired)
+	if state := h.cachedState(newest.ID); state != pgo.StateCompleted {
+		t.Fatalf("the cache shows %q for the newest collection, want the stale %q", state, pgo.StateCompleted)
+	}
+
+	got := h.doPGO(t, http.MethodGet, latestPath, "", nil)
+
+	if id := latestID(t, got); id != older.ID {
+		t.Errorf("id = %q, want %q: the cached state is not the authority", id, older.ID)
+	}
+}
+
+// TestLatestCollectionCostsOneReadPerCandidate proves the walk reads each candidate once
+// and stops at the first that survives.
+// The cache holds three completed entries and the bucket holds one,
+// so the two it passes are the two the fresh reads discard.
+func TestLatestCollectionCostsOneReadPerCandidate(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	survivor := h.completedAt(t, pgoFixtureNow)
+	discarded := []pgo.Record{
+		h.completedAt(t, pgoFixtureNow.Add(time.Minute)),
+		h.completedAt(t, pgoFixtureNow.Add(2*time.Minute)),
+	}
+
+	h.nats.jobs.freeze(jobKeyPrefix)
+	for _, rec := range discarded {
+		rec.State = pgo.StateFailed
+		h.nats.jobs.put(t, jobKeyPrefix+rec.ID, rec)
+	}
+
+	before := h.storeCalls()
+	got := h.doPGO(t, http.MethodGet, latestPath, "", nil)
+	calls := h.storeCalls() - before
+
+	if id := latestID(t, got); id != survivor.ID {
+		t.Errorf("id = %q, want %q", id, survivor.ID)
+	}
+	if calls != 3 {
+		t.Errorf("store calls = %d, want one read per candidate the walk reached", calls)
+	}
+}
+
+// TestLatestCollectionStoreUnavailable proves what a store the gateway cannot read says:
+// nothing about which artifact is newest,
+// so the walk refuses rather than falling through to an older Collection.
+func TestLatestCollectionStoreUnavailable(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	h.completedAt(t, pgoFixtureNow)
+	h.completedAt(t, pgoFixtureNow.Add(time.Minute))
+	h.nats.jobs.setGetErr(natskv.ErrUnavailable)
+
+	got := h.doPGO(t, http.MethodGet, latestPath, "", nil)
+
+	h.expectPGOError(t, got, http.StatusServiceUnavailable, "pgo_unavailable", "pgo_unavailable")
+}
+
+// TestLatestCollectionReleasesTheReader proves the record route opens the object once,
+// which is what confirms it,
+// and closes it before it answers.
+func TestLatestCollectionReleasesTheReader(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.completedRecord(t)
+
+	got := h.doPGO(t, http.MethodGet, latestPath, "", nil)
+
+	if id := latestID(t, got); id != rec.ID {
+		t.Errorf("id = %q, want %q", id, rec.ID)
+	}
+	if opens := h.nats.artifacts.opens.Load(); opens != 1 {
+		t.Errorf("object opens = %d, want the one the walk's confirmation costs", opens)
+	}
+	if reader := h.nats.artifacts.reader(); reader == nil || !reader.closed.Load() {
+		t.Error("the reader the walk opened was not released")
+	}
+}
+
+// TestLatestProfileStreamsTheConfirmedReader proves the profile route streams
+// the reader the walk opened.
+// The object goes the moment it has been opened,
+// which a second open would answer 410 artifact_gone for
+// while the completed Collection behind it still has its bytes.
+func TestLatestProfileStreamsTheConfirmedReader(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.completedRecord(t)
+	h.nats.artifacts.afterOpen = func(name string) {
+		if err := h.nats.artifacts.Delete(context.Background(), name); err != nil {
+			t.Errorf("Delete %s: %v", name, err)
+		}
+	}
+
+	got := h.doPGO(t, http.MethodGet, latestProfilePath, "", nil)
+
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+	}
+	if !bytes.Equal(got.Body.Bytes(), artifactBytes) {
+		t.Errorf("body is %d bytes, want the stored object's %d", got.Body.Len(), len(artifactBytes))
+	}
+	if opens := h.nats.artifacts.opens.Load(); opens != 1 {
+		t.Errorf("object opens = %d, want the walk's one", opens)
+	}
+	if state := h.nats.jobs.record(t, rec.ID).State; state != pgo.StateCompleted {
+		t.Errorf("state = %q, want the record left completed", state)
+	}
+	audit := h.expectPGOAudit(t, http.StatusOK, codeOK)
+	if audit["collection"] != rec.ID {
+		t.Errorf("audit collection = %v, want %q", audit["collection"], rec.ID)
+	}
+}
+
+// TestLatestProfileFailingAfterHeaders is the ordinary truncation:
+// an object that goes away mid-stream is what any other download sees.
+func TestLatestProfileFailingAfterHeaders(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	h.completedRecord(t)
+	h.nats.artifacts.readErr = errors.New("the object expired mid-stream")
+	h.nats.artifacts.failAfter = chunkBytes
+
+	gateway := httptest.NewServer(h.handler())
+	t.Cleanup(gateway.Close)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, gateway.URL+latestProfilePath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := gateway.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200: the failure came after the headers", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("ReadAll() error = %v (body %q), want io.ErrUnexpectedEOF", err, body)
+	}
+	waitForAudit(t, h.harness, codeArtifactStreamFail)
+	h.expectMetricCode(t, codeArtifactStreamFail)
+}
+
+// TestLatestCollectionRealmDenied proves the realm decides first:
+// both routes are checked on namespace, Service, and pgo.read before anything is read.
+func TestLatestCollectionRealmDenied(t *testing.T) {
+	realms := map[string]func(*config.Realm){
+		"namespace": func(r *config.Realm) { r.Namespaces = []string{"billing"} },
+		"service":   func(r *config.Realm) { r.Services = []string{"other-api"} },
+		"pgo.read":  func(r *config.Realm) { r.PGO = config.RealmPGO{Collect: true, Configure: true} },
+	}
+	routes := map[string]string{"record": latestPath, "profile": latestProfilePath}
+
+	for denied, narrow := range realms {
+		for route, path := range routes {
+			t.Run(denied+" "+route, func(t *testing.T) {
+				realm := wideRealm()
+				narrow(&realm)
+				h := newPGOHarness(t, pgoOpts{realm: &realm})
+				h.completedRecord(t)
+				before := h.storeCalls()
+
+				got := h.doPGO(t, http.MethodGet, path, "", nil)
+
+				h.expectPGOError(t, got, http.StatusForbidden, "realm_denied", "realm_denied")
+				if calls := h.storeCalls() - before; calls != 0 {
+					t.Errorf("store calls = %d, want a denial that reads nothing", calls)
+				}
+				if opens := h.nats.artifacts.opens.Load(); opens != 0 {
+					t.Errorf("object opens = %d, want a denial that opens nothing", opens)
+				}
+			})
+		}
+	}
+}
+
 // TestCollectionCancel ends a live Collection, releases its Service, and
 // records the transition it committed exactly once.
 func TestCollectionCancel(t *testing.T) {
