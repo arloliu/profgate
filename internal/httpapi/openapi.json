@@ -132,6 +132,9 @@
         "name": "Idempotency-Key",
         "required": false,
         "schema": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
           "type": "string"
         }
       },
@@ -293,7 +296,7 @@
         "name": "wait",
         "required": false,
         "schema": {
-          "description": "a duration such as 30s, 5m, or 1h",
+          "description": "a duration between 1s and 60s, such as 1s, 30s, or 60s",
           "pattern": "^[0-9]+(ns|us|ms|s|m|h)([0-9]+(ns|us|ms|s|m|h))*$",
           "type": "string"
         }
@@ -315,10 +318,10 @@
             "$ref": "#/components/headers/ContentDisposition"
           },
           "X-Pprof-Collection": {
-            "$ref": "#/components/headers/XPprofCollection"
+            "$ref": "#/components/headers/PprofCollection"
           },
           "X-Pprof-Target-Version": {
-            "$ref": "#/components/headers/XPprofTargetVersion"
+            "$ref": "#/components/headers/PprofTargetVersion"
           },
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
@@ -420,7 +423,7 @@
             "$ref": "#/components/headers/RequestId"
           },
           "X-Wait-Elapsed": {
-            "$ref": "#/components/headers/XWaitElapsed"
+            "$ref": "#/components/headers/WaitElapsed"
           }
         }
       },
@@ -602,13 +605,13 @@
         "description": "the profile bytes, streamed from the Pod that was profiled, under the status, body, and content type the application answered with",
         "headers": {
           "X-Pprof-Target-Node": {
-            "$ref": "#/components/headers/XPprofTargetNode"
+            "$ref": "#/components/headers/PprofTargetNode"
           },
           "X-Pprof-Target-Pod": {
-            "$ref": "#/components/headers/XPprofTargetPod"
+            "$ref": "#/components/headers/PprofTargetPod"
           },
           "X-Pprof-Target-Version": {
-            "$ref": "#/components/headers/XPprofTargetVersion"
+            "$ref": "#/components/headers/PprofTargetVersion"
           },
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"

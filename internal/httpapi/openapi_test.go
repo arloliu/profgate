@@ -293,6 +293,64 @@ func compareEncoding(raw []byte) error {
 	return nil
 }
 
+// references is every reference the document holds, wherever it sits.
+func references(v any) []string {
+	var out []string
+	switch value := v.(type) {
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(value)) {
+			if key == "$ref" {
+				if ref, ok := value[key].(string); ok {
+					out = append(out, ref)
+				}
+
+				continue
+			}
+			out = append(out, references(value[key])...)
+		}
+	case []any:
+		for _, item := range value {
+			out = append(out, references(item)...)
+		}
+	}
+
+	return out
+}
+
+// resolves reports whether a reference names an object this document holds.
+// The document is served alone,
+// so a pointer into another file names nothing a client can follow and does not resolve here either.
+func resolves(doc map[string]any, ref string) bool {
+	pointer, found := strings.CutPrefix(ref, "#/")
+	if !found {
+		return false
+	}
+	keys := strings.Split(pointer, "/")
+	for i, key := range keys {
+		keys[i] = strings.ReplaceAll(strings.ReplaceAll(key, "~1", "/"), "~0", "~")
+	}
+
+	return object(doc, keys...) != nil
+}
+
+// compareReferences is the fifth comparison:
+// every reference of the document resolves within it.
+// It walks the whole document rather than the component kinds the other comparisons dereference,
+// so a component pointed at by a name it does not carry fails here.
+func compareReferences(doc map[string]any) error {
+	var dangling []string
+	for _, ref := range references(doc) {
+		if !resolves(doc, ref) && !slices.Contains(dangling, ref) {
+			dangling = append(dangling, ref)
+		}
+	}
+	if len(dangling) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf("references: the document points at %v, which it does not hold", dangling)
+}
+
 func TestOpenAPIDocumentRoutes(t *testing.T) {
 	_, doc := readDocument(t)
 	if err := compareRoutes(doc); err != nil {
@@ -317,6 +375,13 @@ func TestOpenAPIDocumentVocabularies(t *testing.T) {
 func TestOpenAPIDocumentEncoding(t *testing.T) {
 	raw, _ := readDocument(t)
 	if err := compareEncoding(raw); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestOpenAPIDocumentReferences(t *testing.T) {
+	_, doc := readDocument(t)
+	if err := compareReferences(doc); err != nil {
 		t.Error(err)
 	}
 }
@@ -361,6 +426,14 @@ func TestOpenAPICheckFailsOnDrift(t *testing.T) {
 			codes["enum"] = append(codes["enum"].([]any), "invented_code")
 
 			return compareCodes(doc)
+		}},
+		{"a renamed component", func(t *testing.T, doc map[string]any) error {
+			t.Helper()
+			headers := object(doc, "components", "headers")
+			headers["Renamed"] = headers["RequestId"]
+			delete(headers, "RequestId")
+
+			return compareReferences(doc)
 		}},
 		{"a missing vocabulary value", func(t *testing.T, doc map[string]any) error {
 			t.Helper()
