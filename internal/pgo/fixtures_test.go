@@ -1626,6 +1626,11 @@ func (d *fakeDiscovery) HasSynced() bool { return true }
 // Catalog is never called by PGO, which schedules against configured Services rather than a listing.
 func (d *fakeDiscovery) Catalog(context.Context, string) ([]k8s.ServiceRef, error) { return nil, nil }
 
+// Explain is never called by PGO, which selects targets rather than explaining an empty listing.
+func (d *fakeDiscovery) Explain(context.Context, string, string, k8s.PortSelection) (k8s.Explanation, error) {
+	return k8s.Explanation{}, nil
+}
+
 func (d *fakeDiscovery) Confirm(_ context.Context, t k8s.Target) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

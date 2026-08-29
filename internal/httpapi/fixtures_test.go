@@ -100,14 +100,20 @@ type fakeDiscovery struct {
 	catalog    []k8s.ServiceRef
 	catalogErr error
 
+	// explanation and explainErr answer Explain; explainSelections records the port selection of every call.
+	explanation k8s.Explanation
+	explainErr  error
+
 	targetsCalls atomic.Int32
 	confirmCalls atomic.Int32
 	catalogCalls atomic.Int32
+	explainCalls atomic.Int32
 
 	mu                sync.Mutex
 	confirmDeadline   time.Time
 	confirmTarget     k8s.Target
 	selections        []k8s.PortSelection // the port selection of every Targets call, in order
+	explainSelections []k8s.PortSelection // the port selection of every Explain call, in order
 	catalogNamespaces []string            // the namespace argument of every Catalog call, in order
 	// byName, when set, answers a portName selection from the map (nil for an
 	// absent name) instead of targets, the way a name resolves per Pod.
@@ -172,6 +178,26 @@ func (f *fakeDiscovery) Catalog(_ context.Context, namespace string) ([]k8s.Serv
 	}
 
 	return refs, nil
+}
+
+func (f *fakeDiscovery) Explain(_ context.Context, _, _ string, sel k8s.PortSelection) (k8s.Explanation, error) {
+	f.explainCalls.Add(1)
+	f.mu.Lock()
+	f.explainSelections = append(f.explainSelections, sel)
+	f.mu.Unlock()
+	if f.explainErr != nil {
+		return k8s.Explanation{}, f.explainErr
+	}
+
+	return f.explanation, nil
+}
+
+// explainSelectionsSeen is the port selection of every Explain call, in order.
+func (f *fakeDiscovery) explainSelectionsSeen() []k8s.PortSelection {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]k8s.PortSelection(nil), f.explainSelections...)
 }
 
 // catalogNamespacesSeen is the namespace argument of every Catalog call, in order.

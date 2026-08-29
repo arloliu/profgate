@@ -674,10 +674,14 @@ NAMESPACE
 orders
 payments
 
-$ profgate targets payments/checkout
+$ profgate targets payments/checkout --explain
 POD                              NODE       VERSION
 checkout-7c8f8c9b9-xabcd         worker-07  1.42.3
 checkout-7c8f8c9b9-ylmno         worker-03  1.42.3
+
+REASON                  COUNT
+pod_not_ready           2
+port_name_not_declared  1
 
 $ profgate whoami
 principal  alice
@@ -695,6 +699,14 @@ because the header is what tells a script the request succeeded.
 
 `targets` takes `--port` or `--port-name`,
 which the gateway needs in order to decide eligibility (gateway *List targets*).
+It also takes `--explain`, which sends `explain=true` and prints the `excluded` rows beside the list:
+one row per reason with its count, in the order the response holds them,
+after a blank line and under their own header,
+so the list keeps its shape for a script and the reasons read below it.
+Under `--output json` the body is copied through as it is for every other reading verb,
+`selectorMatched` and `excluded` included.
+The flag is the whole addition: the verb still issues one `GET`,
+and its positional argument does not change.
 
 ### 5.2 `profile`
 

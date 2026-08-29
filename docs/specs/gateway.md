@@ -527,8 +527,12 @@ A trusted endpoint is **eligible** when rules 5, 7, and 8 also hold for it and i
 Attribution runs per Pod, over that Pod's trusted endpoints as a group:
 
 - A Pod with at least one eligible trusted endpoint is a target,
-  unless two of its eligible trusted endpoints name different addresses it holds.
+  unless two of its trusted endpoints that each satisfy rules 5 and 7 name different addresses it holds.
   That is the conflict the deduplication above excludes, and it is counted as `endpoint_address_conflict`.
+  The conflict is decided over the Pod's trusted endpoints satisfying rules 5 and 7, not over its eligible ones,
+  so a Pod whose slices disagree about its address carries that reason whether or not a pprof port resolves for it.
+  This changes no target list — a portless Pod and a conflicted Pod are both excluded either way —
+  and decides only which reason a Pod that is both conflicted and portless carries.
 - Every other counted Pod is attributed to the first reason in this table that holds for it.
   A reason describing an endpoint holds when at least one of the Pod's trusted endpoints satisfies it;
   a reason describing the Pod holds from the Pod's own object.
@@ -561,7 +565,9 @@ because a terminating or unready Pod explains its own endpoint,
 while the endpoint explains nothing about the Pod.
 `endpoint_address_conflict` has a population of its own and needs no tie broken:
 an eligible endpoint requires a running, ready, not-terminating Pod,
-so a conflicted Pod satisfies none of the three Pod-state reasons.
+so a conflicted Pod satisfies none of the three Pod-state reasons,
+and a conflicted Pod with an eligible endpoint is reported as the conflict
+even when another of its endpoints is unready or mismatched.
 
 `endpoint_missing` covers a Pod no slice names,
 a Pod named by a stale UID (rule 3),
@@ -2535,15 +2541,14 @@ Target exclusion diagnostics —
 and the closed reason vocabulary they report —
 amend the following text.
 The first table lists the edits made in the same change as this block;
-the second lists the documents that describe shipped behavior and are updated when the implementation lands;
-the third names a document that reads this endpoint and is revised on its own.
+the second lists the documents that describe shipped behavior and are updated when the implementation lands.
 
 Amended now:
 
 | File | Section | Change |
 |---|---|---|
 | `docs/specs/gateway.md` | *The seam* | `Explain`, `Explanation`, and `Exclusion`: one cache pass over one captured Pod list, no request, no new RBAC tuple, and a failed Pod-cache read answered `503 discovery_unavailable` |
-| `docs/specs/gateway.md` | *Eligibility* | the trusted endpoint, the closed reason vocabulary and its order, the counted population, and the per-Pod rule that attributes each counted Pod to one reason |
+| `docs/specs/gateway.md` | *Eligibility* | the trusted endpoint, the closed reason vocabulary and its order, the counted population, and the per-Pod rule that attributes each counted Pod to one reason; the conflict among a Pod's trusted endpoints is decided over those satisfying rules 5 and 7, whether or not a pprof port resolves, so the attribution rule agrees with the reason table |
 | `docs/specs/gateway.md` | *Request algorithm* | the parameter step takes `version`, `pod`, and `explain` on the targets endpoint; the discovery step calls `Explain`; the filter step narrows the listing and answers an empty array for a `pod` no target carries |
 | `docs/specs/gateway.md` | *List targets* | the parameter table, the `explain=true` response, `selectorMatched`, `excluded`, the sum invariant, and where the two filter-derived reasons are counted |
 | `docs/specs/gateway.md` | *Non-disclosure* | a fifth observation: the counts state how many selected Pods are not targets, inside a realm that already admits the Service |
@@ -2553,6 +2558,7 @@ Amended now:
 | `docs/specs/gateway.md` | *What end-to-end proves* | the ineligible-Pods proof asserts the `pod_not_ready` count on both replicas; the error and version proofs say which endpoint each assertion is about |
 | `docs/specs/gateway.md` | *Failure Scenarios* | rows for an `explain` request, a selector matching no Pod, caches that have not synced, and an older replica refusing the parameter |
 | `docs/specs/ui.md` | *Targets, with reasons*, *Controls*, *Failure scenarios*, *Unit*, *What is not proven*, *Layout and embedding*, *Dependencies*, *Package layout* | the console sends `explain=true` on every targets fetch, retries once without it on `400 invalid_parameter`, and turns an empty list into counted reasons in fixed wording, through a `targetmodel.js` the tests execute |
+| `docs/specs/cli.md` | *Reading* | `targets --explain` sends `explain=true` and prints the `excluded` rows beside the list; `--output json` copies the body through unchanged |
 
 Updated with the implementation:
 
@@ -2560,12 +2566,6 @@ Updated with the implementation:
 |---|---|
 | `docs/api.md` | the targets section: `version`, `pod`, and `explain`, `selectorMatched`, the `excluded` array, and the reason table |
 | `docs/console.md` | the empty state showing counted reasons |
-
-Reads this endpoint and is revised on its own, not here:
-
-| File | Section | Change |
-|---|---|---|
-| `docs/specs/cli.md` | *`targets`* | `--explain` sends `explain=true` and prints the `excluded` rows beside the list; that document is `Draft` and its text is not edited by this change |
 
 Running PGO collection in its own process —
 the `profgate collector` subcommand, the collector Deployment the chart renders when `pgo.enabled`,

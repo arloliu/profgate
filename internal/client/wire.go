@@ -61,9 +61,19 @@ type ServicesResponse struct {
 	Services  []string `json:"services"`
 }
 
-// TargetsResponse is GET .../targets.
+// TargetsResponse is GET .../targets;
+// the last two fields are present only for a request that sent explain=true.
 type TargetsResponse struct {
-	Targets []Target `json:"targets"`
+	Targets         []Target    `json:"targets"`
+	SelectorMatched int         `json:"selectorMatched"`
+	Excluded        []Exclusion `json:"excluded"`
+}
+
+// Exclusion is one reason the gateway counted, and how many Pods it kept out.
+// The reason is kept as the text the gateway sent, so a reason this client does not know prints unchanged.
+type Exclusion struct {
+	Reason string `json:"reason"`
+	Count  int    `json:"count"`
 }
 
 // Target is one Pod the gateway would profile right now.

@@ -21,6 +21,7 @@ import {
   pageURL,
 } from "./urls.js";
 import { deriveControl, applyInput } from "./portmodel.js";
+import { targetsQuery, retryWithoutExplain, targetSummary } from "./targetmodel.js";
 
 const html = htm.bind(h);
 
@@ -184,6 +185,7 @@ class App extends Component {
       namespaces: [],
       services: [],
       targets: [],
+      targetSummary: null,
       collections: [],
       collection: null,
       profile: "",
@@ -273,8 +275,18 @@ class App extends Component {
   // disabled shows it as an error. not_ready is retried every 2 seconds.
   // It resolves to the body on 200 and null otherwise, after recording the
   // error under key.
-  async request(key, url, retry) {
-    const res = await fetchJSON(url);
+  // retryOnce, when given, is consulted once when the first attempt is not a 200:
+  // it takes the status and the envelope code and returns a URL to fetch instead, or null.
+  // The second answer is then handled exactly as a first one would be, and never consulted again.
+  async request(key, url, retry, retryOnce) {
+    let res = await fetchJSON(url);
+    if (retryOnce && res.status !== 200) {
+      const code = typeof res.error === "object" && res.error !== null ? res.error.code : undefined;
+      const again = retryOnce(res.status, code);
+      if (again) {
+        res = await fetchJSON(again);
+      }
+    }
     if (res.status === 200 && res.body !== null) {
       this.clearError(key);
       return res.body;
@@ -350,19 +362,29 @@ class App extends Component {
     });
   };
 
+  // loadTargets asks for the listing with explain=true and the port selection,
+  // and repeats the one fetch without explain when a gateway refuses the parameter.
   loadTargets = async () => {
     const { ns, svc } = this.state;
     const seq = ++this.seq;
-    const body = await this.request("targets", targetsURL(ns, svc, this.portChoice()), this.loadTargets);
+    const port = this.portChoice();
+    const retryOnce = (status, code) =>
+      retryWithoutExplain(status, code, true) ? targetsURL(ns, svc, targetsQuery(port, false)) : null;
+    const body = await this.request(
+      "targets",
+      targetsURL(ns, svc, targetsQuery(port, true)),
+      this.loadTargets,
+      retryOnce,
+    );
     if (seq !== this.seq) {
       return;
     }
     if (!body) {
-      this.setState({ targets: [] });
+      this.setState({ targets: [], targetSummary: null, pod: "", version: "" });
       this.afterServiceError("targets");
       return;
     }
-    this.setState({ targets: asList(body.targets) });
+    this.setState({ targets: asList(body.targets), targetSummary: targetSummary(body) });
   };
 
   // maybeLoadCollections fetches the Collections list once per selection,
@@ -427,7 +449,17 @@ class App extends Component {
     this.selection++;
     this.writeQuery(ns, "");
     this.setState(
-      { ns: ns, svc: "", services: [], targets: [], collections: [], collection: null, pod: "", version: "" },
+      {
+        ns: ns,
+        svc: "",
+        services: [],
+        targets: [],
+        targetSummary: null,
+        collections: [],
+        collection: null,
+        pod: "",
+        version: "",
+      },
       () => {
         this.clearError("services");
         this.clearError("targets");
@@ -444,14 +476,17 @@ class App extends Component {
     this.seq++;
     this.selection++;
     this.writeQuery(this.state.ns, svc);
-    this.setState({ svc: svc, targets: [], collections: [], collection: null, pod: "", version: "" }, () => {
-      this.clearError("targets");
-      this.clearError("collections");
-      if (svc) {
-        this.loadTargets();
-        this.maybeLoadCollections();
-      }
-    });
+    this.setState(
+      { svc: svc, targets: [], targetSummary: null, collections: [], collection: null, pod: "", version: "" },
+      () => {
+        this.clearError("targets");
+        this.clearError("collections");
+        if (svc) {
+          this.loadTargets();
+          this.maybeLoadCollections();
+        }
+      },
+    );
   };
 
   onProfile = (e) => {
@@ -480,7 +515,7 @@ class App extends Component {
 
   refetchTargets = () => {
     if (this.state.svc) {
-      this.setState({ pod: "", version: "", targets: [] }, this.loadTargets);
+      this.setState({ pod: "", version: "", targets: [], targetSummary: null }, this.loadTargets);
     }
   };
 
@@ -744,13 +779,15 @@ class App extends Component {
   }
 
   renderRequest() {
-    const { ns, svc, profile, seconds, pod, version, targets, limits, whoami, copied } = this.state;
+    const { ns, svc, profile, seconds, pod, version, targets, targetSummary: summary, limits, whoami, copied } = this.state;
     const profiles = this.offeredProfiles();
     const svcListed = this.selectionListed();
     const limit = this.secondsLimit(profile);
     const valid = this.secondsValid();
     const url = this.currentProfileURL();
-    const versions = [...new Set(targets.map((t) => t.version).filter((v) => typeof v === "string" && v !== ""))];
+    const pods = summary ? summary.pods : [];
+    const versions = summary ? summary.versions : [];
+    const empty = summary ? summary.empty : null;
     const canCopy = Boolean(navigator.clipboard && typeof navigator.clipboard.writeText === "function");
     const mode = whoami.auth.mode;
     const copyNote =
@@ -789,22 +826,26 @@ class App extends Component {
                   `
                 : null}
               ${this.renderPortControl()}
-              <label>
-                Pod
-                <select value=${pod} onChange=${this.onPod} disabled=${!svcListed}>
-                  <option value="">any</option>
-                  ${targets.map((t) => html`<option key=${t.pod} value=${t.pod}>${t.pod}</option>`)}
-                </select>
-              </label>
-              <label>
-                Version
-                <select value=${version} onChange=${this.onVersion} disabled=${!svcListed}>
-                  <option value="">any</option>
-                  ${versions.map((v) => html`<option key=${v} value=${v}>${v}</option>`)}
-                </select>
-              </label>
+              ${empty
+                ? this.renderEmptyTargets(empty)
+                : html`
+                    <label>
+                      Pod
+                      <select value=${pod} onChange=${this.onPod} disabled=${!svcListed}>
+                        <option value="">any</option>
+                        ${pods.map((p) => html`<option key=${p} value=${p}>${p}</option>`)}
+                      </select>
+                    </label>
+                    <label>
+                      Version
+                      <select value=${version} onChange=${this.onVersion} disabled=${!svcListed}>
+                        <option value="">any</option>
+                        ${versions.map((v) => html`<option key=${v} value=${v}>${v}</option>`)}
+                      </select>
+                    </label>
+                  `}
               ${this.panelError("targets")}
-              ${svcListed && !this.state.errors.targets && !this.state.signIn.targets && targets.length === 0
+              ${svcListed && !empty && !this.state.errors.targets && !this.state.signIn.targets && targets.length === 0
                 ? html`<p><small>no target listed yet</small></p>`
                 : null}
               <label>
@@ -823,6 +864,34 @@ class App extends Component {
           : null}
       </article>
     `;
+  }
+
+  // renderEmptyTargets stands where the Pod and version controls were when the listing is empty:
+  // the counted reasons in the gateway's order, the sentence for a selector matching no Pod,
+  // or the plain empty state.
+  // Every reason text and count reaches the template as a text node.
+  renderEmptyTargets(empty) {
+    if (empty.kind === "reasons") {
+      return html`
+        <p><small>no target: every selected Pod was excluded</small></p>
+        <table class="reasons">
+          <tbody>
+            ${empty.rows.map(
+              (r) => html`
+                <tr key=${r.reason}>
+                  <td>${r.count}</td>
+                  <td>${r.text}</td>
+                </tr>
+              `,
+            )}
+          </tbody>
+        </table>
+      `;
+    }
+    if (empty.kind === "noSelector") {
+      return html`<p><small>the Service's selector matches no Pod</small></p>`;
+    }
+    return html`<p><small>no target listed yet</small></p>`;
   }
 
   renderCollections() {

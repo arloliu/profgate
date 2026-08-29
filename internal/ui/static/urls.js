@@ -27,21 +27,6 @@ function build(base, segments, params) {
   return url;
 }
 
-// portParams turns the page's port choice into the query it sends:
-// {port} goes as port=, {portName} as portName=, null as nothing.
-function portParams(port) {
-  if (!port) {
-    return {};
-  }
-  if (port.port !== undefined && port.port !== null && port.port !== "") {
-    return { port: port.port };
-  }
-  if (port.portName) {
-    return { portName: port.portName };
-  }
-  return {};
-}
-
 export function namespacesURL() {
   return build("/v1", ["namespaces"]);
 }
@@ -50,9 +35,9 @@ export function servicesURL(ns) {
   return build("/v1", ["namespaces", ns, "services"]);
 }
 
-// targetsURL lists the Pods of a Service; port is {port}, {portName}, or null.
-export function targetsURL(ns, svc, port) {
-  return build("/v1", ["namespaces", ns, "services", svc, "targets"], portParams(port));
+// targetsURL lists the Pods of a Service; query is what targetmodel.js built.
+export function targetsURL(ns, svc, query) {
+  return build("/v1", ["namespaces", ns, "services", svc, "targets"], query);
 }
 
 export function collectionsURL(ns, svc) {

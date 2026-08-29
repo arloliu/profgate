@@ -2,11 +2,15 @@ package k8s
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	corelisters "k8s.io/client-go/listers/core/v1"
 )
 
 // cachePollInterval is how often waitCache re-evaluates its predicate.
@@ -56,4 +60,46 @@ func waitCache(t *testing.T, pred func() bool) {
 		}
 		time.Sleep(cachePollInterval)
 	}
+}
+
+// countingPods is a PodLister over the informer's that counts namespace-wide List calls
+// and per-name Get calls, so a test can assert which method paid for which read.
+// listErr, when set, fails every namespace-wide List the way a broken cache would.
+type countingPods struct {
+	corelisters.PodLister
+	lists   atomic.Int32
+	gets    atomic.Int32
+	listErr error
+}
+
+func (p *countingPods) Pods(namespace string) corelisters.PodNamespaceLister {
+	return countingNamespacePods{p: p, PodNamespaceLister: p.PodLister.Pods(namespace)}
+}
+
+type countingNamespacePods struct {
+	corelisters.PodNamespaceLister
+	p *countingPods
+}
+
+func (n countingNamespacePods) List(selector labels.Selector) ([]*corev1.Pod, error) {
+	n.p.lists.Add(1)
+	if n.p.listErr != nil {
+		return nil, n.p.listErr
+	}
+
+	return n.PodNamespaceLister.List(selector)
+}
+
+func (n countingNamespacePods) Get(name string) (*corev1.Pod, error) {
+	n.p.gets.Add(1)
+
+	return n.PodNamespaceLister.Get(name)
+}
+
+// countPodReads swaps a counting lister onto a started Cluster's Pod lister and returns it.
+func countPodReads(c *Cluster) *countingPods {
+	p := &countingPods{PodLister: c.pods}
+	c.pods = p
+
+	return p
 }

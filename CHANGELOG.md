@@ -75,6 +75,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The container ships `resources.requests.cpu: 100m`
   so a namespace whose quota counts CPU requests admits the gateway;
   `resources.requests` now merges with the shipped value and `resources.limits` still replaces the derived memory limit.
+- **`explain=true` on the targets endpoint, and the `version` and `pod` filters it now accepts.**
+  `GET .../targets?explain=true` keeps the plain listing and adds `selectorMatched`,
+  the number of Pods the Service's selector matches,
+  and `excluded`, one entry per exclusion reason with a non-zero count,
+  from the gateway's own ten-reason vocabulary in a fixed order.
+  `version` keeps only targets whose version label matches, and `pod` keeps only the target of that name;
+  a `pod` no target carries is `200` with an empty array, never `404`.
+  An accepted `explain=true` adds an `explain` field to the audit record.
+  The console asks for the diagnostic on every targets fetch and, when a Service has no target,
+  shows the counted reasons or the selector's own empty sentence in place of the Pod and version controls.
+  `profgate targets --explain` prints the same reasons as a second table beside the list.
+  No Kubernetes permission changed and no Go module was added.
 
 ## [0.4.0] - 2026-08-27
 

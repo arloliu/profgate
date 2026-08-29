@@ -303,7 +303,7 @@ func TestVendorRelativeImports(t *testing.T) {
 // stricter rule: no import statement and no dynamic import at all, where
 // app.js and urls.js may hold relative ones.
 func TestVendorImportFreeModels(t *testing.T) {
-	for _, name := range []string{"portmodel.js"} {
+	for _, name := range []string{"portmodel.js", "targetmodel.js"} {
 		t.Run(name, func(t *testing.T) {
 			src := readSource(t, name)
 			if bad := anyImports(src); len(bad) > 0 {
