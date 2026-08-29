@@ -1177,6 +1177,9 @@ class App extends Component {
   // It exists only when startOffered says all four of its conditions hold,
   // because a control whose every answer would be a refusal is a question the page does not ask.
   // It confirms in place: the first press arms it and the second sends the request.
+  // What an answer said sits outside it, beside the cancel's:
+  // a realm_denied refetches the identity that takes the control away,
+  // and an error drawn inside the control would go with it.
   renderStart() {
     const { start, limits, whoami, svc } = this.state;
     if (!startOffered(limits, whoami, this.selectionListed() ? svc : "")) {
@@ -1198,7 +1201,6 @@ class App extends Component {
               </button>
             `}
       </div>
-      ${this.panelError("start")}
     `;
   }
 
@@ -1210,6 +1212,7 @@ class App extends Component {
         ${this.panelError("collections")}
         ${this.renderStart()}
         ${startMessage ? html`<p><small>${startMessage}</small></p>` : null}
+        ${this.panelError("start")}
         ${this.panelError("cancel")}
         ${svc
           ? html`
