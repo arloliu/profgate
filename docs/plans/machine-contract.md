@@ -1833,7 +1833,7 @@ The key is generated once per invocation and reused for every retry of that invo
 which is already how `cmd/profgate/collect.go` is shaped.
 The stale comment goes with the change.
 
-- [ ] **Write the retry tests**
+- [x] **Write the retry tests**
 
 `internal/client/collect_test.go`, against an `httptest` gateway, restating *Testing*:
 
@@ -1852,11 +1852,11 @@ The stale comment goes with the change.
 | two invocations | different keys |
 | `--wait` under a realm denying the record route | the identifier printed, the denial reported, exit 1 |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the retry**
+- [x] **Implement the retry**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/client/ ./cmd/profgate/

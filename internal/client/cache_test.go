@@ -12,13 +12,16 @@ import (
 )
 
 // fakeClock is a clock a sleeper advances; nothing in these tests waits.
+// It keeps every duration it was asked to sleep, so a test can assert the schedule a caller paced itself on.
 type fakeClock struct {
-	now time.Time
+	now   time.Time
+	slept []time.Duration
 }
 
 func (c *fakeClock) Now() time.Time { return c.now }
 
 func (c *fakeClock) Sleep(_ context.Context, d time.Duration) error {
+	c.slept = append(c.slept, d)
 	c.now = c.now.Add(d)
 	return nil
 }

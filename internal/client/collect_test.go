@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -133,23 +135,215 @@ func TestCreate(t *testing.T) {
 			t.Fatalf("err = %v, want a StatusError 200", err)
 		}
 	})
-	t.Run("the envelope comes back as an APIError and nothing is retried", func(t *testing.T) {
-		calls := 0
-		c := serve(t, func(w http.ResponseWriter, _ *http.Request) {
-			calls++
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"error":"the store is unavailable","code":"pgo_unavailable"}`))
-		}, tokenCredential("tok"), nil)
+	t.Run("a refusal comes back as its envelope", func(t *testing.T) {
+		a := &answers{statuses: []int{http.StatusBadRequest}, bodies: []string{`{"error":"a collection request sets neither enabled nor schedule","code":"invalid_parameter"}`}}
+		c, _ := pollClient(t, a.ServeHTTP)
 		_, err := c.Create(context.Background(), "payments", "checkout", []byte(`{}`), "k")
 		var ae *APIError
-		if !errors.As(err, &ae) || ae.Code != "pgo_unavailable" {
-			t.Fatalf("err = %v, want the pgo_unavailable envelope", err)
-		}
-		if calls != 1 {
-			t.Fatalf("%d requests, want exactly one", calls)
+		if !errors.As(err, &ae) || ae.Code != "invalid_parameter" {
+			t.Fatalf("err = %v, want the invalid_parameter envelope", err)
 		}
 	})
+}
+
+// script serves one handler per request in order, repeating the last, and
+// records every request it saw so a test can compare their headers.
+type script struct {
+	steps    []http.HandlerFunc
+	requests []*http.Request
+}
+
+func (s *script) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	step := s.steps[min(len(s.requests), len(s.steps)-1)]
+	s.requests = append(s.requests, r)
+	step(w, r)
+}
+
+// keys is the Idempotency-Key of every request the script saw.
+func (s *script) keys() []string {
+	got := make([]string, 0, len(s.requests))
+	for _, r := range s.requests {
+		got = append(got, r.Header.Get("Idempotency-Key"))
+	}
+	return got
+}
+
+// sameKey reports whether every request carried key and there was at least one.
+func (s *script) sameKey(key string) bool {
+	if len(s.requests) == 0 {
+		return false
+	}
+	for _, got := range s.keys() {
+		if got != key {
+			return false
+		}
+	}
+	return true
+}
+
+// dropConnection answers nothing at all: the connection closes before any byte of a response is written.
+func dropConnection(w http.ResponseWriter, _ *http.Request) {
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		panic(err)
+	}
+	_ = conn.Close()
+}
+
+// cutBody writes a status and its headers, promises a longer body than it
+// writes, and stops: the answer's headers arrive and its body does not arrive whole.
+func cutBody(status int, prefix string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Location", "/v1/collections/7h2k9m4p6r8t0v1w3x5y")
+		w.Header().Set("Content-Length", strconv.Itoa(len(prefix)+32))
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(prefix))
+	}
+}
+
+// answerJSON writes one complete JSON answer.
+func answerJSON(status int, body string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Location", "/v1/collections/7h2k9m4p6r8t0v1w3x5y")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}
+}
+
+const (
+	acceptedJSON = `{"id":"7h2k9m4p6r8t0v1w3x5y","state":"pending"}`
+	replayJSON   = `{"id":"7h2k9m4p6r8t0v1w3x5y","state":"running"}`
+)
+
+func TestCreateRetriesAnUnknownResult(t *testing.T) {
+	const key = "3f0a1c7e-8b52-4d6a-9f11-2c4e6a8b0d31"
+	t.Run("a transport failure then a 202", func(t *testing.T) {
+		s := &script{steps: []http.HandlerFunc{dropConnection, answerJSON(http.StatusAccepted, acceptedJSON)}}
+		c, _ := pollClient(t, s.ServeHTTP)
+		created, err := c.Create(context.Background(), "payments", "checkout", []byte(`{}`), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if created.ID != "7h2k9m4p6r8t0v1w3x5y" || created.Status != http.StatusAccepted {
+			t.Fatalf("Created = %+v, want the 202's identifier", created)
+		}
+		if len(s.requests) != 2 {
+			t.Fatalf("%d requests, want the failure and the retry", len(s.requests))
+		}
+		if !s.sameKey(key) {
+			t.Fatalf("Idempotency-Key = %q, want the one key on both requests", s.keys())
+		}
+	})
+	t.Run("a 202 whose body is cut off then a 200 replay", func(t *testing.T) {
+		s := &script{steps: []http.HandlerFunc{
+			cutBody(http.StatusAccepted, `{"id":"7h2k9m4p`),
+			answerJSON(http.StatusOK, replayJSON),
+		}}
+		c, _ := pollClient(t, s.ServeHTTP)
+		created, err := c.Create(context.Background(), "payments", "checkout", []byte(`{}`), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if created.ID != "7h2k9m4p6r8t0v1w3x5y" || created.State != "running" || created.Status != http.StatusOK {
+			t.Fatalf("Created = %+v, want the replay's identifier and state", created)
+		}
+		if len(s.requests) != 2 {
+			t.Fatalf("%d requests, want the cut answer and the retry", len(s.requests))
+		}
+		if !s.sameKey(key) {
+			t.Fatalf("Idempotency-Key = %q, want the one key on both requests, so the retry replays rather than creating a second Collection", s.keys())
+		}
+	})
+	t.Run("a cut-off body is neither a transport failure nor a status", func(t *testing.T) {
+		s := &script{steps: []http.HandlerFunc{cutBody(http.StatusAccepted, `{"id":"7h2k9m4p`)}}
+		c, _ := pollClient(t, s.ServeHTTP)
+		_, err := c.Create(context.Background(), "payments", "checkout", []byte(`{}`), key)
+		if !errors.Is(err, errAnswerIncomplete) {
+			t.Fatalf("err = %v, want errAnswerIncomplete", err)
+		}
+		var te *TransportError
+		if errors.As(err, &te) {
+			t.Fatalf("err = %v is a TransportError: the answer's headers arrived, so a predicate over transport failures alone would miss it", err)
+		}
+		var se *StatusError
+		if errors.As(err, &se) {
+			t.Fatalf("err = %v is a StatusError: the gateway chose no refusing status", err)
+		}
+	})
+	t.Run("a 503 then a 200 replay", func(t *testing.T) {
+		s := &script{steps: []http.HandlerFunc{
+			answerJSON(http.StatusServiceUnavailable, `{"error":"the store is unavailable","code":"pgo_unavailable"}`),
+			answerJSON(http.StatusOK, replayJSON),
+		}}
+		c, clock := pollClient(t, s.ServeHTTP)
+		created, err := c.Create(context.Background(), "payments", "checkout", []byte(`{}`), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if created.ID != "7h2k9m4p6r8t0v1w3x5y" || created.Status != http.StatusOK {
+			t.Fatalf("Created = %+v, want the replay's identifier", created)
+		}
+		if len(clock.slept) != 1 || clock.slept[0] != time.Second {
+			t.Fatalf("slept %v, want one second before the retry", clock.slept)
+		}
+	})
+	t.Run("the schedule doubles from one second to eight inside the window", func(t *testing.T) {
+		s := &script{steps: []http.HandlerFunc{func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("<html>bad gateway</html>"))
+		}}}
+		c, clock := pollClient(t, s.ServeHTTP)
+		start := clock.Now()
+		_, err := c.Create(context.Background(), "payments", "checkout", []byte(`{}`), key)
+		var se *StatusError
+		if !errors.As(err, &se) || se.Status != http.StatusBadGateway {
+			t.Fatalf("err = %v, want the last 502 the window allowed", err)
+		}
+		want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 8 * time.Second, 7 * time.Second}
+		if !slices.Equal(clock.slept, want) {
+			t.Fatalf("slept %v, want %v: one second doubling to eight, the last wait cut to the window", clock.slept, want)
+		}
+		if got := clock.Now().Sub(start); got != createRetryWindow {
+			t.Fatalf("the clock advanced %s, want exactly %s", got, createRetryWindow)
+		}
+		if len(s.requests) != len(want)+1 {
+			t.Fatalf("%d requests, want one per wait and the first", len(s.requests))
+		}
+		if !s.sameKey(key) {
+			t.Fatalf("Idempotency-Key = %q, want the one key on every retry", s.keys())
+		}
+	})
+}
+
+func TestCreateDoesNotRetryAnAnswerThatArrivedWhole(t *testing.T) {
+	const key = "3f0a1c7e-8b52-4d6a-9f11-2c4e6a8b0d31"
+	tests := []struct {
+		name string
+		step http.HandlerFunc
+	}{
+		{name: "a 202 whose body is complete and does not decode", step: answerJSON(http.StatusAccepted, `<html>accepted</html>`)},
+		{name: "429 collection_in_progress", step: answerJSON(http.StatusTooManyRequests, `{"error":"the service already has a live collection","code":"collection_in_progress"}`)},
+		{name: "409 idempotency_mismatch", step: answerJSON(http.StatusConflict, `{"error":"the key names a different request","code":"idempotency_mismatch"}`)},
+		{name: "400 invalid_parameter", step: answerJSON(http.StatusBadRequest, `{"error":"a collection request sets neither enabled nor schedule","code":"invalid_parameter"}`)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &script{steps: []http.HandlerFunc{tc.step}}
+			c, clock := pollClient(t, s.ServeHTTP)
+			if _, err := c.Create(context.Background(), "payments", "checkout", []byte(`{}`), key); err == nil {
+				t.Fatal("no error from an answer that says something")
+			}
+			if len(s.requests) != 1 {
+				t.Fatalf("%d requests, want one: an answer that arrived whole is not retried", len(s.requests))
+			}
+			if len(clock.slept) != 0 {
+				t.Fatalf("slept %v, want nothing", clock.slept)
+			}
+		})
+	}
 }
 
 func TestIsCollectionID(t *testing.T) {
@@ -186,7 +380,7 @@ func TestCollectionPath(t *testing.T) {
 	}
 }
 
-// pollClient is a Client over handler on a fake clock, so a wait advances the clock instead of sleeping.
+// pollClient is a Client over handler on a fake clock, so a wait or a retry advances the clock instead of sleeping.
 func pollClient(t *testing.T, handler http.HandlerFunc) (*Client, *fakeClock) {
 	t.Helper()
 	srv := httptest.NewServer(handler)

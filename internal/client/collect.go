@@ -31,13 +31,27 @@ type createdBody struct {
 	State string `json:"state"`
 }
 
-// Create posts one Collection and returns the identifier and state the
-// answer carried.
-// It sends the key and retries nothing.
-// The gateway does not yet record the key,
-// so a retry it cannot recognize would meet 429 collection_in_progress
-// while the first Collection runs and start a second one once it has finished;
-// the caller reports the failure instead.
+// errAnswerIncomplete marks an answer whose headers arrived and whose body was cut off before it could be read.
+// The status says the gateway acted and the body that would have named what it did never arrived,
+// so this is neither a transport failure nor a status the gateway chose.
+// CreateIndeterminate is what a caller outside this package asks instead.
+var errAnswerIncomplete = errors.New("the answer did not arrive whole")
+
+// createRetryFirst, createRetryMax, and createRetryWindow pace the retry of a create whose result is unknown:
+// one second doubling to eight, for at most thirty seconds.
+const (
+	createRetryFirst  = time.Second
+	createRetryMax    = 8 * time.Second
+	createRetryWindow = 30 * time.Second
+)
+
+// Create posts one Collection under key and returns the identifier and state the answer carried.
+// The gateway records the key, so the same key posted again replays the
+// Collection it created rather than starting a second one.
+// Create therefore retries whenever the result of a create is unknown,
+// on the injected clock and sleeper, at one second doubling to eight for at most thirty seconds.
+// An answer that arrived whole and says something is returned as it came,
+// every 4xx included, and the caller decides what it means.
 func (c *Client) Create(ctx context.Context, ns, svc string, body []byte, key string) (Created, error) {
 	if body == nil {
 		body = []byte("{}")
@@ -52,14 +66,42 @@ func (c *Client) Create(ctx context.Context, ns, svc string, body []byte, key st
 			"Idempotency-Key": {key},
 		},
 	}
+	deadline := c.now().Add(createRetryWindow)
+	wait := createRetryFirst
+	for {
+		created, err := c.create(ctx, req)
+		if err == nil || !CreateIndeterminate(err) {
+			return created, err
+		}
+		remaining := deadline.Sub(c.now())
+		if remaining <= 0 {
+			return Created{}, err
+		}
+		// An interrupted sleep returns the attempt's own failure rather than
+		// the interruption, because that failure is what says whether a
+		// Collection may be running.
+		if c.sleep(ctx, min(wait, remaining)) != nil {
+			return Created{}, err
+		}
+		wait = min(wait*2, createRetryMax)
+	}
+}
+
+// create posts one Collection once.
+// The response is obtained first and its body read afterwards,
+// so a body that is cut off after the headers arrived is neither a transport failure nor a status the gateway chose.
+func (c *Client) create(ctx context.Context, req Request) (Created, error) {
 	resp, err := c.Do(ctx, req)
 	if err != nil {
 		return Created{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := readBounded(resp.Body)
-	if err != nil {
+	switch {
+	case errors.Is(err, errResponseTooLarge):
 		return Created{}, fmt.Errorf("%s: %w", c.settings.Origin, err)
+	case err != nil:
+		return Created{}, fmt.Errorf("%s: %w: %w", c.settings.Origin, errAnswerIncomplete, err)
 	}
 	var answer createdBody
 	if !json.Valid(raw) || decodeOne(raw, &answer) != nil || answer.ID == "" {
@@ -72,6 +114,28 @@ func (c *Client) Create(ctx context.Context, ns, svc string, body []byte, key st
 		Location: resp.Header.Get("Location"),
 		Body:     raw,
 	}, nil
+}
+
+// CreateIndeterminate reports a create whose result its failure does not settle,
+// which is what the same key is posted again for.
+// Three failures leave the result unknown:
+// no answer arrived at all, the gateway could not complete one, and an answer's body did not arrive whole.
+// Everything else arrived whole and says something: every 4xx, and a 2xx whose body this client would not read.
+func CreateIndeterminate(err error) bool {
+	var te *TransportError
+	var se *StatusError
+	var ae *APIError
+	switch {
+	case errors.Is(err, errAnswerIncomplete):
+		return true
+	case errors.As(err, &te):
+		return true
+	case errors.As(err, &se):
+		return se.Status >= http.StatusInternalServerError
+	case errors.As(err, &ae):
+		return ae.Status >= http.StatusInternalServerError
+	}
+	return false
 }
 
 // collectionIDAlphabet is Crockford base32 in lowercase, the alphabet of a
