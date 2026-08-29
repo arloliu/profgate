@@ -2015,6 +2015,17 @@ A Service that already has a live Collection answers `429 collection_in_progress
 the handler's `Create` of `active.<ns>.<svc>` loses (section 7.3),
 or the watched cache already shows the key and the write is skipped.
 
+**Which refusal carries `Retry-After`.**
+One does: the keyed create that loses the active key and finds no receipt yet,
+which is answered `429 collection_in_progress` with `Retry-After: 1`
+because a retry one second on reads the receipt or creates, as **How a loser resolves** below has it.
+`429 rate_limited` and `429 capacity_exhausted` carry no `Retry-After`,
+and neither does the `429 collection_in_progress` a replica writes
+when its watched cache already shows the Service live.
+A client reads the header where it is present and assumes a delay of its own where it is not:
+the console disables the control for five seconds
+([`ui.md`](ui.md) *Starting and cancelling a Collection*).
+
 Before creating the record the handler resolves targets once, as round 0 would, with the zero `PortSelection`,
 and answers `409 version_conflict` or `409 version_missing` on the spot;
 this is advisory — the round is authoritative — so a Collection can still fail for the same reason later.
@@ -2534,6 +2545,10 @@ Added to the gateway's table; same envelope, same rule that `code` is the contra
 | 429 | `collection_in_progress`, `rate_limited`, `capacity_exhausted` |
 | 501 | `pgo_disabled` |
 | 503 | `pgo_unavailable`, `collector_unavailable` |
+
+Of the codes in this table, only `429 collection_in_progress` ever carries `Retry-After`,
+and only on the one path section 10.2 names; every other code here carries none,
+`429 rate_limited`, `429 capacity_exhausted`, `503 pgo_unavailable`, and `503 collector_unavailable` included.
 
 `collector_unavailable` is a code of its own rather than a second meaning for `pgo_unavailable`,
 because the two say different things to a caller and to an alert:

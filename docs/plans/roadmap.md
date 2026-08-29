@@ -148,13 +148,12 @@ Shipped: pull request #5, in `Unreleased`.
 - [x] A small browser-driven test layer that executes `app.js`:
   the login-to-profile happy path, the `oidc` 401 redirect and return,
   Collection list and download, and hostile strings rendered as text only.
-  The spec records that no test runs `app.js` today.
 - [x] Replace the content-hashed asset tree (`internal/ui/ui.go`, `treeHash`) with stable paths,
   an `ETag`, and `Cache-Control: no-cache`;
   this removes the rolling-update failure `docs/console.md` documents.
 
 Spec: `docs/specs/ui.md` (revision required).
-Shipped: not yet; the design is settled and no code is written.
+Shipped: on `feat/console-write-paths`, in `Unreleased`.
 
 ### 8. Small removals
 

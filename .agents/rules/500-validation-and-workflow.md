@@ -45,10 +45,13 @@ Their unit tests run against an embedded server and never see a Pod restart.
 The browser login round trip, the users file and cookie key read from a mounted Secret,
 and a signing-key rotation at the issuer meet a real issuer only in the authentication scenarios;
 their unit tests drive fakes.
-The console's shell, hashed assets, headers, and login return meet a real gateway and issuer only in those same scenarios;
-the port-control model in `internal/ui/static/portmodel.js` runs under the goja interpreter in a Go test,
-and the rest of the page's JavaScript runs in none,
-so a change to `internal/ui/static/` outside `portmodel.js` also needs a check in a browser against a running gateway.
+The console meets a real gateway and issuer only in the authentication and console scenarios:
+its shell, its assets at their stable paths, their headers, and the login return.
+Its three model modules — `portmodel.js`, `targetmodel.js`, and `collectionmodel.js` —
+run under the goja interpreter in Go tests,
+and `app.js` itself runs in the two browser scenarios, `console-oidc` and `console-basic`,
+which drive a headless Chromium and skip by name on a machine that has none,
+so a change to `internal/ui/static/` needs the suite on a machine with a browser installed.
 The command-line client's device grant, refresh, and port-forward transport meet a real issuer only there too,
 which run the client as a separate process against Dex and Keycloak;
 its unit tests drive `httptest` servers.

@@ -927,7 +927,7 @@ plus a one-line hint for the codes a user can act on:
 | `port_not_allowed` | `allowedSelections` does not admit the value; the port control shows what it does admit |
 | `seconds_exceeds_limit` | the limit the duration input was bounded by |
 | `discovery_unavailable` | the gateway could not read its cache or confirm the Pod; retry |
-| `pgo_disabled` | PGO collection is off on this gateway; the Collections view goes once `/v1/limits` has been refetched |
+| `pgo_disabled` | PGO collection is off on this gateway; the Collections view goes once the limits have been refetched |
 | `pgo_unavailable` | the gateway could not reach its store, so a start may or may not have taken; the same press can be repeated |
 | `collector_unavailable` | nothing is running Collections at the moment, and nothing was started; the press can be repeated once something is |
 | `collection_in_progress` | a Collection is already running for this Service; the list shows it |
@@ -1794,30 +1794,17 @@ Updated with the implementation: `docs/api.md` (the listing endpoints), `docs/co
 
 ### 14.1 Required by this revision and not yet made
 
-The table above records edits that have been made.
-The rows below are edits this document now requires and has not made.
-What remains is the browser scenarios and the stable asset paths;
-the write controls' own contract, in [`pgo.md`](pgo.md) *Create a Collection* and *HTTP API*, now exists,
-and the rows that named it have left this table.
-Until the rest lands this document is ahead of the documents it names,
-which is stated here rather than left to be discovered.
-
-| File | Section | Change |
-|---|---|---|
-| `docs/specs/pgo.md` | *Create a Collection*, *Errors* | whether `429 rate_limited` and `429 capacity_exhausted` carry `Retry-After`; the console reads the header when it is there and assumes a fixed delay when it is not |
-| `docs/specs/gateway.md` | *Dependencies* | `github.com/chromedp/chromedp`, tests only, driving the console's browser scenarios; the interpreter's row names `collectionmodel.js` beside the other two models |
-| `docs/specs/gateway.md` | *Layers* | the `internal/ui` rows for entity tags and `304`, the `internal/httpapi` rows for the media-type step and the idempotency key, and the two browser scenarios in the end-to-end row |
-| `docs/specs/gateway.md` | *What end-to-end proves* | the two browser scenarios of [`ui.md`](ui.md) *End to end* |
-| `docs/specs/gateway.md` | *Failure Scenarios* | the rolling-update row: stable paths remove the `404` for an asset both builds carry; a release that adds or drops one, and the release that moves off hashed prefixes, still fail a load until the rollout converges, and a reload then recovers |
-| `docs/specs/auth.md` | *Testing* | the two authentication lanes gain the browser scenarios beside the wire proofs they already carry |
-| `docs/api.md` | *PGO collection* | the same header on the create example and on the bodyless cancel |
-| `.agents/rules/500-validation-and-workflow.md` | *Before a PR* | "hashed assets" becomes the stable paths, and "the page's own JavaScript runs in no test" becomes the two browser scenarios that run it |
-| `.github/workflows/e2e.yml` | the `e2e` job | a step that installs the pinned Chromium and asserts the executable exists, before `mise run test:e2e` |
-| `docs/console.md` | *Console* | the introduction, which describes a page for pulling a profile and a read-only Collections view, names the two controls that write |
-| `docs/console.md` | *What it shows* | the Collections bullet and its link stop calling the view read-only |
-| `docs/console.md` | *Collections, read-only* | the heading, the description, and "The console only reads Collections here" all change: the panel carries a **Start collection** control and a **Cancel** on a live row, both behind two presses and both under `pgo.collect` |
-| `docs/console.md` | *During a rolling update* | the corrected contract of [`ui.md`](ui.md) *Layout and embedding*, in a user's words |
-| `docs/console.md` | *What the console never does* | the **Write PGO state** bullet becomes editing a Service's policy, which is what the page still never does |
+Nothing.
+Every edit this revision required elsewhere has been made,
+and this document is no longer ahead of the documents it names:
+the write controls' contract in [`pgo.md`](pgo.md) *Create a Collection* and *HTTP API*,
+the entity tags, the browser scenarios, and the rolling-update rows in [`gateway.md`](gateway.md),
+the browser scenarios beside the wire proofs in [`auth.md`](auth.md) *Testing*,
+the media type on both write routes in [`docs/api.md`](../api.md),
+the Chromium the workflow installs before the suite runs,
+the console guide's own account of the two controls and of a rollout,
+and the end-to-end rule in
+[`.agents/rules/500-validation-and-workflow.md`](../../.agents/rules/500-validation-and-workflow.md).
 
 ---
 
@@ -1848,3 +1835,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Non-goals*, *Flow*, *Starting and cancelling a Collection*, *Errors*, *Layout and embedding*, *Failure scenarios*, *Unit*, *What is not proven*, *End to end*, *Dependencies*, *Changes to the accepted designs* | what stable paths guarantee is scoped to the assets both builds of a rollout carry, with the release that adds or drops a file and the release that moves off hashed prefixes named as the loads that still fail until the rollout converges; each PGO failure code carries one rule for the idempotency key, `503 pgo_unavailable` keeping it and `503 collector_unavailable` dropping it; the key's contract in [`pgo.md`](pgo.md) is relied on fact by fact instead of by reference alone, `409 idempotency_mismatch` included; the media-type check has a stated place in the two write routes' step order; the confirmation timer stops at the first request, and a retained attempt is abandoned only by **Keep** or a change of selection; a cancel after realm loss is the indistinguishable `404` that also refetches `/v1/whoami`; and each browser scenario is a registry entry of its own rather than a step inside an authentication scenario, provisioning and cleaning up its own gateway, enabling its Content Security Policy and exception observers before the first navigation, requiring its hostile issuer principal, and running a pinned, version-checked Chromium |
 | *Changes to the accepted designs* | the section carries a second table for the edits this document requires elsewhere and has not made |
 | *Starting and cancelling a Collection*, *Required by this revision and not yet made* | a replay is answered `200` with `{id, state}` and a `Location` rather than the stored record, because `pgo.collect` and `pgo.read` are independent flags and the record belongs to the second; a mismatch is decided on the effective policy snapshot, so identical JSON can produce `409 idempotency_mismatch` after the stored override or the operator defaults moved; the key resolves from an authoritative read for the record's whole life; and the rows naming the contract this page relies on have left the pending table, which now holds the browser scenarios and the stable asset paths alone |
+| *Errors*, *Required by this revision and not yet made* | the `pgo_disabled` hint says the Collections view goes once the limits have been refetched, naming no route: *Rendering response values* forbids `app.js` a string literal beginning with `/v1` and a scan enforces it, so the narrower rule decides what the hint can say; every edit this revision required elsewhere has been made and the pending table is empty |
