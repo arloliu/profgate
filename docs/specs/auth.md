@@ -610,9 +610,8 @@ The rule is stated in terms of the parsed form because browsers turn `/\evil.exa
 and a prefix check on the raw string would let it through.
 
 Both cookies omit `Domain`, so they bind to the exact host.
-Sealed plaintexts are length-prefixed: each field is a two-byte big-endian length followed by its bytes,
-except `exp`, which is eight bytes of big-endian Unix seconds,
-and the opener rejects a plaintext with bytes left over after the last field.
+Sealed plaintexts are JSON objects, with `exp` as a number of Unix seconds,
+and the opener rejects a plaintext that is not one well-formed object.
 The session fields are the principal (at most 256 bytes; section 4.3 already bounds the username claim and forbids NUL),
 the realm (a DNS-1123 label), and `exp`;
 the transaction fields are the three wire values, the return path, and `exp`.
