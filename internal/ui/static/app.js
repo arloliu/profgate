@@ -107,6 +107,7 @@ async function fetchJSON(url, req) {
     }
     const res = await fetch(url, init);
     out.status = res.status;
+    out.statusText = res.statusText;
     out.headers = res.headers;
     out.bodyText = await res.text();
     const ctype = res.headers.get("content-type") || "";

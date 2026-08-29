@@ -149,7 +149,14 @@ function errorText(answer) {
   if (answer.rejected === true) {
     return "request failed";
   }
-  return `HTTP ${count(answer.status)}`;
+  // An answer with no envelope shows its status and the reason phrase beside it,
+  // and nothing from the body, which may be an Ingress's own HTML.
+  // A protocol that sends no reason phrase leaves the status standing alone.
+  const statusText = text(answer.statusText);
+  if (statusText === "") {
+    return `HTTP ${count(answer.status)}`;
+  }
+  return `HTTP ${count(answer.status)} ${statusText}`;
 }
 
 // startAnswer is one arm of startOutcome.
