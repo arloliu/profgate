@@ -33,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `field` `port` or `portName` and `code` `not_admitted`, naming only the value the client sent.
   The console's port control is a menu of the configured default and every listed entry,
   with a free-form field only where the matching wildcard is configured.
+- **Console assets are served at stable paths.**
+  `/ui/app.js` is `/ui/app.js` on every replica running a release, and no asset URL carries a content hash.
+  Each asset now carries an `ETag` — the whole SHA-256 of that file, quoted — and `Cache-Control: no-cache`,
+  so a browser revalidates on every load and is answered `304` while its copy is current;
+  the shell keeps `no-store`, and `/ui/index.html` is still `404`, the shell being served at `/ui/`.
+  This removes the rolling-update failure the old hashed tree produced for every asset at once:
+  an asset both builds of a rollout carry is now served by whichever replica answers.
+  The release that carries this change is the one rollout where neither build serves what the other's page asks for,
+  so a console load can fail while replicas are still rolling;
+  a reload once the rollout has converged succeeds, and nothing else is affected —
+  no request a caller sends and no other route changed.
 - **BREAKING: an artifact is kept for at least the interval that produces it.**
   `pgo.defaults.artifact.retention` moves from `2h` to `24h`.
   Every effective policy must now hold `artifact.retention` at least `schedule.every`:
@@ -119,6 +130,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The container ships `resources.requests.cpu: 100m`
   so a namespace whose quota counts CPU requests admits the gateway;
   `resources.requests` now merges with the shipped value and `resources.limits` still replaces the derived memory limit.
+- **The console starts and cancels a Collection.**
+  A **Start collection** control above the Collections table, and a **Cancel** on every row that is
+  `pending` or `running`, appear when `pgo.enabled` is true and the caller's realm carries `pgo.collect`.
+  Each takes two presses in place — the second is **Confirm start** or **Confirm cancel**, beside a **Keep**
+  that puts the control back — and an armed control disarms itself after ten seconds.
+  The start sends one `Idempotency-Key` per attempt,
+  so a press repeating one whose answer was lost is answered with the Collection the first press created,
+  rather than starting a second one.
+  A `429` disables the control for the `Retry-After` it names, or for five seconds when it names none.
+  The page still edits no Service's PGO policy.
+  No Kubernetes permission changed, no NATS store was added, and no Go module was added.
+- **The end-to-end suite drives the console in a headless Chromium.**
+  Two scenarios, `console-oidc` and `console-basic`, execute the page's own JavaScript, which nothing else does:
+  the login round trip and its return, a profile download, the two Collection controls with their media type
+  and idempotency key read from the browser's network events,
+  the HTTP authentication challenge answered by the browser itself,
+  and hostile values from a query string and from an issuer claim rendered as text with no script run.
+  Both fail on a Content Security Policy violation or an uncaught exception.
+  They need a Chromium on the machine running the suite:
+  a machine with none skips both by name, a version outside the pinned range fails them,
+  and the end-to-end workflow installs the version it pins.
+  This adds `github.com/chromedp/chromedp` to the tests and nothing to the binary.
 - **`explain=true` on the targets endpoint, and the `version` and `pod` filters it now accepts.**
   `GET .../targets?explain=true` keeps the plain listing and adds `selectorMatched`,
   the number of Pods the Service's selector matches,

@@ -1,6 +1,9 @@
 # The Console Writes, Is Driven, and Serves Stable Paths
 
-**Status:** In Progress
+**Status:** Done
+**Outcome:** shipped by the commits from `350f74e` through `9673b3c` on `feat/console-write-paths`,
+and by this commit,
+which carries the guides, the changelog, and the specs those commits left behind.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -235,7 +238,7 @@ Anything else answers the file.
 `HEAD` answers the same headers as `GET` with no body, the `304` included.
 A method that is neither is `405` with `Allow: GET, HEAD`, as today.
 
-- [ ] **Write the tests**
+- [x] **Write the tests**
 
 | Case | Expect |
 |---|---|
@@ -260,8 +263,8 @@ the test reads the embedded tree and asserts the row above for each file it find
 so a vendored file added later is covered without an edit,
 and the four content types the old table spelled out stay as their own rows.
 
-- [ ] **Run the tests and watch them fail**
-- [ ] **Implement the table and the conditional answer**
+- [x] **Run the tests and watch them fail**
+- [x] **Implement the table and the conditional answer**
 **One assertion inverts rather than moves.**
 `checkCommonHeaders` in `internal/ui/ui_test.go:161-165` fails any response that carries an `ETag`,
 and nearly every test in the file calls it.
@@ -275,7 +278,7 @@ and every asset `200` and every `304` must carry one.
 and does not check the `<link href>` or the `<script src>` value.
 Once nothing rewrites the shell, a mistyped path in that file is caught only by the test this task adds.
 
-- [ ] **Repair what cited a hashed path**
+- [x] **Repair what cited a hashed path**
 
 Four files outside `internal/ui` spell the hashed shape or the cache policy that went with it:
 
@@ -289,7 +292,7 @@ Four files outside `internal/ui` spell the hashed shape or the cache policy that
 The first three become the stable path and `no-cache`;
 the deeper path stays, because the *vendored* tree is nested, which is what the comment should have said.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/ui/ ./internal/httpapi/ ./cmd/profgate/
@@ -326,9 +329,9 @@ Two repairs and one check:
   an operation that declares a `304` names a response whose `200` carries an entity-tag header,
   and one that declares no entity tag declares no `304`.
 
-- [ ] **Write the check and watch it fail against the document as it stands**
-- [ ] **Repair the document**
-- [ ] **Validate and commit**
+- [x] **Write the check and watch it fail against the document as it stands**
+- [x] **Repair the document**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/
@@ -353,7 +356,7 @@ The two wire proofs of *End to end* already run inside the authentication scenar
 and `assetPaths` at `:2082-2093` derives the vendored path by slicing the hash directory out of the first match.
 All three read a shape the task above deleted.
 
-- [ ] **Point the proofs at the stable paths**
+- [x] **Point the proofs at the stable paths**
 
 The regular expression matches `/ui/` followed by a path with no hash segment.
 Each asset the shell names is fetched and asserted `200` with `Cache-Control: no-cache` and an `ETag`;
@@ -534,7 +537,7 @@ An `inflight` one has sent a `POST` that commits before it answers,
 so leaving the Service silently is exactly the loss the message exists to prevent —
 and the token is what stops that request's late answer from acting on the Service the page moved to.
 
-- [ ] **Write the shape assertion and the table test**
+- [x] **Write the shape assertion and the table test**
 
 `internal/ui/collectionmodel_test.go` follows `internal/ui/targetmodel_test.go`:
 the same `loadModel` helper, the same shape assertion, one table per function.
@@ -555,9 +558,9 @@ Four cases *Unit* names that a reader of the tables alone could miss:
   while `disableSeconds` of `0` produces no cooling at all and returns the control to `idle`,
   which is what separates the `"0"` row of `retryAfterSeconds` from the absent-header row's five seconds.
 
-- [ ] **Run the tests and watch them fail**
-- [ ] **Write the module**
-- [ ] **Extend the source scan, and add the one it is missing**
+- [x] **Run the tests and watch them fail**
+- [x] **Write the module**
+- [x] **Extend the source scan, and add the one it is missing**
 
 `consoleSources()` at `internal/ui/scan_test.go:13-15` is a closed set,
 and `TestScanCoversEveryJSFile` asserts it equals the `.js` files of the tree,
@@ -579,7 +582,7 @@ and `TestScanPageUsesTargetModel` at `:132-146`,
 so a page that stops calling the model turns the suite red.
 It is written in the task that wires the page, because until then `app.js` calls nothing.
 
-- [ ] **Record the interpreter's third model**
+- [x] **Record the interpreter's third model**
 
 `docs/specs/gateway.md` *Dependencies* has one row for the interpreter,
 and it names the port-control model alone —
@@ -588,7 +591,7 @@ The row names all three.
 *Dependencies* says a module's row is written when the tests that need it land,
 which is here and not in the documentation task.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/ui/
@@ -649,8 +652,8 @@ which the page already tracks as `this.selection`.
 Every start response carries the token the page sent with it,
 so an answer that arrives after the operator has moved on is handed to `startNext` and discarded there.
 
-- [ ] **Wire the two controls**
-- [ ] **Keep the scan green, and add the model-usage scan**
+- [x] **Wire the two controls**
+- [x] **Keep the scan green, and add the model-usage scan**
 
 `app.js` still contains no `confirm(`, `alert(`, or `prompt(`,
 no string literal beginning with `/v1`, `/ui`, or `/auth`,
@@ -658,7 +661,7 @@ and none of the six markup interfaces.
 This task must not need to relax one of those.
 `TestScanPageUsesCollectionModel` is written here, now that the page calls the model.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/ui/
@@ -824,14 +827,14 @@ and that the sentinel is undefined after the load.
 
 ### The proofs
 
-- [ ] **Add the dependency, the discovery, and the registration**
+- [x] **Add the dependency, the discovery, and the registration**
 
 `go get github.com/chromedp/chromedp`, the `browser` type and its search, the two registry entries,
 the two runner entries, and the lane-test expectations that move with them.
 A run on a machine with no browser skips both scenarios and the rest of the lane is unaffected;
 a run on this one drives them.
 
-- [ ] **Write `console-oidc`**
+- [x] **Write `console-oidc`**
 
 | Step | Proof |
 |---|---|
@@ -849,7 +852,7 @@ a run on this one drives them.
 | the identity panel's principal, from the issuer claim carrying the same string | the same three assertions |
 | every load of the scenario | no Content Security Policy violation entry and no uncaught exception |
 
-- [ ] **Write `console-basic`**
+- [x] **Write `console-basic`**
 
 The first `fetch` is answered `401` with `WWW-Authenticate: Basic`,
 the `Fetch` domain delivers the challenge,
@@ -859,18 +862,18 @@ The challenge count is asserted to be one, which is what "without a second promp
 Whether Chromium drew a native dialog is not observed and is not claimed.
 It needs no NATS and no PGO: nothing in it reaches a Collection.
 
-- [ ] **Pin a Chromium in the workflow**
+- [x] **Pin a Chromium in the workflow**
 
 `.github/workflows/e2e.yml` gains a step before `mise run test:e2e` that installs a pinned Chromium,
 asserts the executable exists, and exports its path as `PROFGATE_E2E_BROWSER`,
 so the suite drives the version the workflow chose rather than whatever the runner image happens to carry.
 
-- [ ] **Record the dependency**
+- [x] **Record the dependency**
 
 `docs/specs/gateway.md` *Dependencies*: the chromedp row, and the sentence below the table
 that counts the console's test-only modules.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go vet -tags e2e ./test/e2e/
@@ -903,7 +906,7 @@ so the interpreter's row moved with `collectionmodel.js` and chromedp's with the
 The rows here describe behavior rather than modules,
 and they land together so that the spec's pending table empties in one place a reader can find.
 
-- [ ] **`docs/console.md`**
+- [x] **`docs/console.md`**
 
 *Collections, read-only* becomes the Collections section:
 the table it already describes, plus **Start collection** and **Cancel**,
@@ -914,7 +917,7 @@ the policy editor stays named as absent.
 *During a rolling update* is rewritten: an asset URL no longer depends on which replica answers,
 and what remains is a release that adds or drops a file, which a reload recovers from.
 
-- [ ] **`docs/specs/gateway.md`, three sections**
+- [x] **`docs/specs/gateway.md`, three sections**
 
 *Dependencies* was written by the two tasks that landed the modules, and nothing is left for it here.
 *Layers*: the `internal/ui` rows for entity tags and `304`,
@@ -926,11 +929,11 @@ stable paths remove the `404` for an asset both builds carry,
 a release that adds or drops one still fails a load until the rollout converges,
 and a reload then recovers.
 
-- [ ] **`docs/specs/auth.md` *Testing***
+- [x] **`docs/specs/auth.md` *Testing***
 
 The two authentication lanes gain the browser scenarios beside the wire proofs they already carry.
 
-- [ ] **`docs/specs/pgo.md` *Create a Collection* and *Errors***
+- [x] **`docs/specs/pgo.md` *Create a Collection* and *Errors***
 
 Whether `429 rate_limited` and `429 capacity_exhausted` carry `Retry-After`.
 They do not: the gateway writes the header on `429 collection_in_progress` alone
@@ -938,7 +941,7 @@ They do not: the gateway writes the header on `429 collection_in_progress` alone
 A client reads the header when it is there and assumes a delay of its own when it is not,
 which is what the console already does.
 
-- [ ] **`docs/specs/ui.md` *Errors*, one hint**
+- [x] **`docs/specs/ui.md` *Errors*, one hint**
 
 The `pgo_disabled` row words its hint as
 "the Collections view goes once `/v1/limits` has been refetched".
@@ -949,14 +952,14 @@ Two rules of one accepted document contradict each other, the narrower one wins,
 and the hint row is reworded to what the page can actually say.
 This is an amendment to an accepted spec and it goes in that document's *Amendments* table.
 
-- [ ] **`.agents/rules/500-validation-and-workflow.md` *Before a PR***
+- [x] **`.agents/rules/500-validation-and-workflow.md` *Before a PR***
 
 "hashed assets" becomes the stable paths,
 and the sentence saying the page's own JavaScript runs in no test becomes the two browser scenarios that run it.
 The same sentence names `portmodel.js` as the one model an interpreter drives,
 which has been wrong since `targetmodel.js` landed; it names all three.
 
-- [ ] **`CHANGELOG.md`**
+- [x] **`CHANGELOG.md`**
 
 Under `Unreleased`: the console starts and cancels a Collection;
 console assets serve at stable paths with an entity tag and `Cache-Control: no-cache`,
@@ -966,17 +969,17 @@ The asset entry says what an operator will see during the upgrade that carries i
 the release that moves off hashed prefixes is one where neither build serves what the other's shell names,
 so a console load can fail until the rollout converges, and a reload afterwards succeeds.
 
-- [ ] **`docs/plans/roadmap.md`**
+- [x] **`docs/plans/roadmap.md`**
 
 Item 7's `Shipped:` line names the pull request that lands this.
 
-- [ ] **Flip this plan**
+- [x] **Flip this plan**
 
 `Status:` becomes `Done` and line 4 becomes an `Outcome:` naming the commits that shipped it.
 The file is deleted by the next commit that touches it,
 per [Deleting a Finished Document](../../.agents/rules/900-design-and-review-loops.md#deleting-a-finished-document).
 
-- [ ] **Run the end-to-end suite**
+- [x] **Run the end-to-end suite**
 
 ```bash
 mise run test:e2e
@@ -985,7 +988,7 @@ mise run test:e2e
 `internal/ui` and `test/e2e` are both changed, so *Before a PR* requires it on the `current` lane.
 Report what ran and what was skipped in the pull request description.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise run lint && mise run test && mise run check

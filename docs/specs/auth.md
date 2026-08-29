@@ -1005,11 +1005,17 @@ End to end, under `//go:build e2e`:
   a login started from `/auth/login?return=/ui/?ns=x` lands back on that path,
   the four listing routes answer `200` with the cookie,
   and logout is `302` to `/` and `/` is `302` to `/ui/`.
+  Beside that wire proof, `console-oidc` walks the same round trip in a headless Chromium,
+  against a gateway it provisions itself,
+  and starts and cancels a Collection through the page ([`ui.md`](ui.md) *End to end*).
 - One lane runs `basic` mode over TLS and pulls a profile with `go tool pprof` and a userinfo URL.
   With `ui.enabled`, the same scenario also proves the console steps of [`ui.md`](ui.md) *End to end*:
   `/ui/` is `200` without a credential,
   `/v1/namespaces` is `401` with `WWW-Authenticate: Basic realm="profgate"` without one and `200` with one,
   and `/v1/limits` reports the lane's configured limits.
+  Beside that wire proof, `console-basic` answers the same challenge in a headless Chromium,
+  against a gateway it provisions itself,
+  which is where the browser's own challenge handling is exercised at all ([`ui.md`](ui.md) *End to end*).
 
 ---
 
@@ -1129,3 +1135,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Non-goals*, *What is redirected*, *The `/auth/` routes*, *Testing* | the console of [`ui.md`](ui.md): the UI non-goal points to that document; the `fetch` sentence names the console; logout's fallback `302` to `/` lands on `/ui/` when `ui.enabled`; the two end-to-end lanes gain the console steps of that document's *End to end* |
 | *Request algorithm*, *Testing* | the composed order gains a **JSON media type** step immediately after the method step, which the two PGO write routes run ([`pgo.md`](pgo.md) *Request media type*); the session's cross-site refusal is a second layer over it, because that runs at the authentication step; the numbered steps below the new one shift by one |
 | *Non-goals*, *Request algorithm*, *Failure responses*, *Configuration*, *Issuer notes* | the command line of [`cli.md`](cli.md): the token-acquisition non-goal points to that document; the composed order covers every `/v1` route except `/v1/auth`, which runs no credential-placement, authentication, or realm step and mints no `401`; the three `auth.oidc.cli` rows, the block that makes a device login discoverable, and the refusal of a browser client secret beside it under `tokenType: id`; the Keycloak note names the device-grant attribute and the Dex note the `offline_access` scope a refresh token needs |
+| *Testing* | the two authentication lanes carry the browser scenarios of [`ui.md`](ui.md) *End to end* beside the wire proofs they already had: `console-oidc` walks the login round trip and drives the two Collection controls, `console-basic` answers the HTTP authentication challenge, and each is a scenario of its own that provisions the gateway it drives |

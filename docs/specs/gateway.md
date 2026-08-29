@@ -1852,18 +1852,30 @@ Because the overall request budget already includes confirmation, the drain boun
 - A configuration test sets every `PROFGATE_*` variable and proves each lands on its field,
   guarding against a doubled prefix in a tag.
 - `internal/ui` against its embedded tree, per [`ui.md`](ui.md) *Unit*:
-  the tree hash, the shell and asset headers, the manifest hashes, relative imports only,
+  each file's entity tag, the whole SHA-256 quoted, identical across two constructions of the handler
+  and moving only for the file an edit touched;
+  the shell and asset headers, including `no-cache` beside the tag and `no-store` with none on the shell;
+  the `304` an `If-None-Match` carrying that tag earns, and the `200` any other tag earns;
+  every path under `/ui/` that is `404 route_unknown`, `index.html` and a traversal included;
+  the manifest hashes, relative imports only,
   no inline script or style, and the source scan of *Rendering response values*.
-- `internal/ui` against the console's port-control model, per [`ui.md`](ui.md) *Unit*:
-  a table over deriving the menu and the free-form fields from `pprof.default` and `allowedSelections`,
-  and over serializing the control's state,
-  evaluated in the ECMAScript interpreter section 11.1 lists.
+- `internal/ui` against the console's three model modules, per [`ui.md`](ui.md) *Unit*:
+  tables over the port control's menu and fields, the targets query, retry rule, and summary,
+  and the Collection controls' existence, request, armed state, and answers,
+  each evaluated in the ECMAScript interpreter section 11.1 lists.
 - The listing routes in `internal/httpapi`, per [`ui.md`](ui.md) *Unit*:
   the request algorithm table, realm filtering over the four combinations,
   `whoami` and `limits` contents — `limits` carrying `allowedSelections` as an array of one-key objects,
   `[]` when the list is empty and never `null` —
   no Pod IP or Pod-declared port in a list, hostile names,
   the `/ui/` and `/` dispatch, and the audit and metrics rows.
+- The two PGO write routes in `internal/httpapi`,
+  per [`ui.md`](ui.md) *Unit* and [`pgo.md`](pgo.md) *Unit*:
+  a `Content-Type` that is absent, is not `application/json`, does not parse, or is sent twice is refused
+  before readiness, before the credential is read, and before any store call,
+  with the fakes recording that none of those steps ran, while a `charset` parameter is accepted;
+  and the create's `Idempotency-Key` — a replay answered from the receipt,
+  a value outside the grammar refused, and a key whose effective policy moved answered `409 idempotency_mismatch`.
 - `Catalog` in `internal/k8s`, per [`ui.md`](ui.md) *Unit*:
   it reads only the Service lister and the recording transport sees nothing beyond the seven tuples;
   a selectorless Service is not listed.
@@ -1899,6 +1911,12 @@ and the two end-to-end lanes — `oidc` with the browser flow against Dex, and `
 are specified in [`auth.md`](auth.md).
 Both lanes gain the client steps of [`cli.md`](cli.md) *End to end*:
 `profgate login` against the lane's issuer, then a client command answered from the cached token.
+
+**Console**: the `internal/ui` and listing-route unit tests above,
+and two end-to-end scenarios that execute the page itself in a headless Chromium —
+`console-oidc` and `console-basic` — are specified in [`ui.md`](ui.md) *End to end*.
+Each provisions its own gateway rather than borrowing an authentication scenario's,
+and a machine with no browser skips both by name.
 
 ### 9.2 Cluster matrix
 
@@ -2057,6 +2075,23 @@ Why kind rather than k3s for the old versions:
     `/ui/` is `200` without a credential,
     `/v1/namespaces` is `401` with `WWW-Authenticate: Basic realm="profgate"` without one and `200` with one,
     and `/v1/limits` reports the lane's configured limits ([`ui.md`](ui.md) *End to end*).
+16. `console-oidc`, which executes `app.js` in a headless Chromium ([`ui.md`](ui.md) *End to end*):
+    a load with no session reaches the issuer's login form on its own and returns to `/ui/?ns=…&svc=…`;
+    **Download** saves the bytes the profile endpoint streams;
+    **Start collection** and then a row's **Cancel**, each pressed twice through its inline confirmation,
+    send one `POST` carrying `Content-Type: application/json` and one `Idempotency-Key`,
+    both read from the browser's own network events, and leave the Collection `cancelled`;
+    a hostile `ns` and `svc` in the page's own query, carried through the whole login round trip,
+    and a hostile principal claim from the issuer each render as text and run no script;
+    and no load of the scenario reported a Content Security Policy violation or an uncaught exception,
+    observed by the Log and Runtime domains enabled before the first navigation.
+17. `console-basic`, which drives a browser of its own:
+    the first `fetch` is answered `401` with `WWW-Authenticate: Basic`,
+    the browser's own challenge handling answers it,
+    and the page continues to the identity panel and to a profile download without a second prompt,
+    which is what no wire proof can reach.
+    Both scenarios skip by name on a machine with no browser, which is no property of a lane,
+    and fail on a browser whose version falls outside the range the suite pins.
 
 ### 9.5 Continuous integration
 
@@ -2430,7 +2465,9 @@ it is reachable only from `cmd/profgate` and imports no Kubernetes or NATS packa
 | Caches not synced when `explain=true` is sent | `503 not_ready` at the readiness step; no explain body is written, and no field of any body reports the condition |
 | Console sends `explain=true` to a replica older than this design, mid-rollout | `400 invalid_parameter`, the answer any unknown parameter gets; the console retries the fetch once without it ([`ui.md`](ui.md)) |
 | Service cache read fails on a listing route | `503 discovery_unavailable`; never an empty `200` ([`ui.md`](ui.md)) |
-| Rolling update with two console asset hashes | each request a page makes may reach either build; an asset the answering replica lacks is `404 route_unknown` and the page does not render until the rollout converges, after which a reload recovers ([`ui.md`](ui.md)) |
+| Rolling update, both builds carrying the console asset | the asset answers `200` from either replica, its path being the same on both; a load that takes its shell from one build and a module from the other runs unless those two files changed incompatibly in that release ([`ui.md`](ui.md)) |
+| Rolling update of a release that adds or drops a console asset | the build without the file answers `404 route_unknown` for it, so a load reaching that build fails until the rollout converges, and a reload then recovers ([`ui.md`](ui.md)) |
+| Rolling update from hashed console asset paths to stable ones | neither build serves what the other's shell names, so a load reaching the other build fails until the rollout converges; a reload then recovers, and this is the one release with that property ([`ui.md`](ui.md)) |
 | `ui.enabled` false | `/ui/` and `/` are `404 route_unknown`; the four listing routes still answer |
 | Client sends no `X-Request-Id`, or one the grammar refuses | one is generated; the request is answered as it would have been, and the response and the audit record carry the generated value |
 | Client sends a usable `X-Request-Id` | it is echoed unchanged and written to the audit record; nothing else reads it |

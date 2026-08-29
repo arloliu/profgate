@@ -2,7 +2,8 @@
 
 A browser page, served by the gateway itself, for pulling a profile without already knowing a namespace and a Service name by heart.
 This guide covers it from a user's view: turning it on, what it shows, signing in,
-downloading a profile or copying its URL, and the read-only Collections view.
+downloading a profile or copying its URL,
+and the Collections view, from which a Collection can also be started and cancelled.
 The full design lives in [specs/ui.md](specs/ui.md);
 the four routes it calls are documented in [api.md](api.md#listing-endpoints).
 
@@ -54,8 +55,9 @@ and, on the way, a namespace and a Service picker.
   A Service whose selector matches no Pod reads as its own sentence instead of a reason list.
   A fetch a mid-rollout replica refuses for `explain=true` is retried once without it,
   keeping the port selection, and the retry's answer is the plain listing with no reasons.
-- **Collections.** Shown only when PGO collection is enabled and your realm may read it;
-  see [Collections, read-only](#collections-read-only).
+- **Collections.** Shown only when PGO collection is enabled and your realm may read it,
+  with a **Start collection** control and a **Cancel** on a live row when your realm may collect as well;
+  see [Collections](#collections).
 
 The page keeps the chosen namespace and Service in its own URL (`/ui/?ns=&svc=`),
 so a reload, a bookmark, or a return from signing in lands back on the same selection.
@@ -102,7 +104,7 @@ The page always shows the URL in a plain, selectable text field —
 **Copy URL** only appears when the browser exposes a clipboard API to a secure context,
 which an HTTP page under `disabled`, or under `basic` with plaintext explicitly permitted, does not.
 
-## Collections, read-only
+## Collections
 
 The Collections panel appears once a Service is chosen, only when `pgo.enabled` is true on the gateway
 and your realm's `pgo.read` flag is true.
@@ -112,15 +114,35 @@ and picking a row shows the full record:
 `state`, `reason` on a failed or cancelled one, `progress`, `createdBy`, the four timestamps, and the stored artifact's size.
 A **Download profile** link appears only once a record's `state` is `completed` and it carries an artifact;
 every other state shows no link.
-The console only reads Collections here — it sends no request that starts, cancels, or configures one.
+**Start collection** sits above the table, and **Cancel** on every row whose state is `pending` or `running`,
+when your realm's `pgo.collect` flag is true as well;
+a realm that may read and not collect sees the table alone.
+Each control takes two presses: the first arms it and offers **Keep**,
+the second — **Confirm start** or **Confirm cancel** — sends the request.
+An armed control that is neither confirmed nor kept disarms itself after ten seconds,
+and **Keep** puts it back as it was.
+
+A start whose answer never arrives keeps the control armed, and pressing it again is the same attempt:
+the page sends the idempotency key the lost press sent,
+so the gateway answers with the Collection that press created rather than starting a second one.
+Changing the namespace or the Service abandons that attempt and says so,
+because the answer that never came belongs to the Service it was sent for.
+When the gateway is at its limit, the control comes back after the delay the answer names,
+or after five seconds when it names none.
+
 What a Collection is and how it runs is [pgo.md](pgo.md)'s subject.
 
 ## During a rolling update
 
 Each request the page makes — the shell, the script, the stylesheet, every asset — can land on either build during a rollout.
-A page can therefore fail to load, or fail again on reload, until every replica has rolled to the new version;
-a reload afterward recovers.
-This is a property of serving static files from more than one replica, not a bug the console works around.
+Every asset has the same URL on both, so an asset that both builds carry is served by whichever replica answers.
+Two things can still fail a load, and a reload once the rollout has converged recovers from both:
+a release that adds a file or drops one has a path the other build answers `404` for,
+and the release that moves the console off its old content-hashed asset URLs is the one rollout
+where neither build serves what the other's page asks for.
+A load can also take its shell from one build and a module from the other,
+which runs unless those two files changed incompatibly in that release.
+The gateway pins no browser to one replica and shares no asset store between them.
 
 ## What the console never does
 
@@ -130,6 +152,7 @@ This is a property of serving static files from more than one replica, not a bug
 - **Store anything.**
   The page keeps no state beyond the namespace and Service in its own URL;
   it holds no database, no cache, and no file.
-- **Write PGO state.**
-  It never starts, cancels, or configures a Collection —
-  those stay `curl` operations with request bodies and preconditions ([api.md](api.md#pgo-collection)).
+- **Edit a Service's PGO policy.**
+  It starts and cancels Collections, and it writes nothing else:
+  the stored override stays a `curl` operation with an `If-Match` precondition
+  ([api.md](api.md#policy-override)).
