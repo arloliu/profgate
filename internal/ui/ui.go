@@ -87,7 +87,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	head := r.Method == http.MethodHead
 	if r.Method != http.MethodGet && !head {
 		w.Header().Set("Allow", allowMethods)
-		h.writeError(w, head, http.StatusMethodNotAllowed, "method_not_allowed", "method "+r.Method+" not allowed")
+		h.writeError(w, head, http.StatusMethodNotAllowed, httpapi.CodeMethodNotAllowed,
+			"method "+r.Method+" not allowed")
 
 		return
 	}
@@ -103,13 +104,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		name, ok := h.assetName(p)
 		if !ok {
-			h.writeError(w, head, http.StatusNotFound, "route_unknown", "no such route")
+			h.writeError(w, head, http.StatusNotFound, httpapi.CodeRouteUnknown, "no such route")
 
 			return
 		}
 		b, err := fs.ReadFile(h.files, name)
 		if err != nil {
-			h.writeError(w, head, http.StatusNotFound, "route_unknown", "no such route")
+			h.writeError(w, head, http.StatusNotFound, httpapi.CodeRouteUnknown, "no such route")
 
 			return
 		}
@@ -149,6 +150,8 @@ func (h *Handler) writeBytes(w http.ResponseWriter, head bool, b []byte, ctype, 
 
 // writeError answers the gateway's error envelope with its Content-Length,
 // or on HEAD the same headers and status with no body.
+// The code is one of the gateway's registry constants, so the console and the
+// rest of the gateway cannot spell the same refusal two ways.
 func (h *Handler) writeError(w http.ResponseWriter, head bool, status int, code, message string) {
 	body := httpapi.ErrorEnvelope(code, message)
 	w.Header().Set("Content-Type", "application/json")

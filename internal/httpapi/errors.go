@@ -2,7 +2,10 @@ package httpapi
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
+	"net/url"
+	"slices"
 )
 
 // requestError is a gateway-generated failure: the status to write, the stable code,
@@ -16,7 +19,9 @@ type requestError struct {
 	// their own — cas_contended, artifact_stream_failed, client_gone — so the
 	// operator sees what happened while the client sees a status it can act on.
 	auditCode string
-	// details names the inputs the caller has to change; only port_not_allowed fills it.
+	// details names the inputs the caller has to change.
+	// A code with no vocabulary carries none, and the encoded body then has no
+	// details key at all.
 	details []errorDetail
 }
 
@@ -25,6 +30,99 @@ type errorDetail struct {
 	Field   string `json:"field"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// The details vocabulary of invalid_parameter, one value per refusal.
+// A value names which kind of input the item's field is,
+// so a client never has to tell a parameter name from a header name from a body pointer by its shape.
+const (
+	detailUnknownParameter       = "unknown_parameter"
+	detailRepeatedParameter      = "repeated_parameter"
+	detailEmptyParameter         = "empty_parameter"
+	detailMalformedParameter     = "malformed_parameter"
+	detailParameterNotApplicable = "parameter_not_applicable"
+	detailMutuallyExclusive      = "mutually_exclusive"
+	detailHeaderRequired         = "header_required"
+	detailHeaderMalformed        = "header_malformed"
+	detailUnknownField           = "unknown_field"
+	detailFieldNotApplicable     = "field_not_applicable"
+	detailBodyNotAllowed         = "body_not_allowed"
+	detailBodyMalformed          = "body_malformed"
+	// detailNotAdmitted is the one value of port_not_allowed.
+	detailNotAdmitted = "not_admitted"
+)
+
+// The errors more than one route answers with, built from the registry.
+var (
+	// errRouteUnknown is a path no declaration of the route table matches.
+	errRouteUnknown = &requestError{
+		status:  http.StatusNotFound,
+		code:    CodeRouteUnknown,
+		message: "no such route",
+	}
+	// errNotReady is the readiness step before the caches have synced.
+	errNotReady = &requestError{
+		status:  http.StatusServiceUnavailable,
+		code:    CodeNotReady,
+		message: "the gateway is not ready",
+	}
+)
+
+// methodNotAllowed is 405 method_not_allowed;
+// the caller sets Allow from the methods the matched declaration lists.
+func methodNotAllowed(method string) *requestError {
+	return &requestError{
+		status:  http.StatusMethodNotAllowed,
+		code:    CodeMethodNotAllowed,
+		message: "method " + method + " not allowed",
+	}
+}
+
+// invalidParameter is 400 invalid_parameter with the items the refusal earns,
+// in the order the parameters were validated, which is name order.
+// A caller that has no item to give passes none, and the body then carries no
+// details key at all.
+func invalidParameter(message string, items ...errorDetail) *requestError {
+	return &requestError{
+		status:  http.StatusBadRequest,
+		code:    CodeInvalidParameter,
+		message: message,
+		details: items,
+	}
+}
+
+// paramFault is one item about a query parameter, named as the client sent it.
+func paramFault(code, name, message string) errorDetail {
+	return errorDetail{Field: name, Code: code, Message: message}
+}
+
+// headerFault is one item about a request header, named as the route spells it.
+func headerFault(code, name, message string) errorDetail {
+	return errorDetail{Field: name, Code: code, Message: message}
+}
+
+// noParameters refuses a route that takes no query parameter,
+// naming the first one the request carried in name order.
+// A raw query string that does not parse leaves no name at fault,
+// which is the one place malformed_parameter names none.
+func noParameters(rawQuery string) *requestError {
+	const message = "this route takes no query parameter"
+
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil || len(values) == 0 {
+		return invalidParameter(message,
+			paramFault(detailMalformedParameter, "", "the query string does not parse"))
+	}
+
+	return invalidParameter(message,
+		paramFault(detailUnknownParameter, slices.Min(slices.Collect(maps.Keys(values))),
+			"this route takes no parameter of that name"))
+}
+
+// bodyFault is one item about the request body:
+// a JSON pointer to the field at fault, or empty where no single field is.
+func bodyFault(code, pointer, message string) errorDetail {
+	return errorDetail{Field: pointer, Code: code, Message: message}
 }
 
 // errorBody is the envelope every gateway-generated error is written as.

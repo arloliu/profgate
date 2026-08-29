@@ -435,11 +435,16 @@ Each value must obey the matching `pgo.limits` ceiling — the cross-key rules b
 | `sampling.replicas` | `all` | `all`, or a count from `1` to `maxTargetsPerRound` |
 | `sampling.maxParallel` | `4` | at least `1`; at most `pgo.limits.maxParallel` |
 | `target.versionPolicy` | `strict` | `strict` is the only value |
-| `artifact.retention` | `2h` | at least `1m`; at most `maxRetention` |
+| `artifact.retention` | `24h` | at least `1m`; at most `maxRetention`; at least `schedule.every` |
 
 `replicas: all` samples every eligible Pod, up to `maxTargetsPerRound` per round.
 `versionPolicy: strict` requires every sampled Pod to carry the same value of
 `discovery.versionLabel`, so a merged profile never mixes binary versions.
+`artifact.retention` covers `schedule.every` so that a finished profile stays downloadable
+until the next Collection replaces it;
+a shorter retention leaves the Service with nothing to download for the tail of every interval.
+The same rule judges every effective policy, not only the defaults:
+`PUT /pgo` and `POST /collections` refuse an override whose `artifact.retention` is under its `schedule.every`.
 
 ## `ui`
 
@@ -527,6 +532,7 @@ Always, whatever `pgo.enabled` says:
 - `pgo.limits.minEvery` must be at most `pgo.limits.maxEvery`.
 - `pgo.limits.maxSampleBytes` must be at most `pgo.limits.maxMergedBytes`.
 - Every `pgo.defaults` value must obey its ceiling, as the `pgo.defaults` table lists.
+- `pgo.defaults.artifact.retention` must be at least `pgo.defaults.schedule.every`.
 
 Only when `pgo.enabled` is true:
 
@@ -655,7 +661,7 @@ pgo:
     target:
       versionPolicy: strict
     artifact:
-      retention: 2h
+      retention: 24h
 realms:
   developer:
     namespaces: ["*"]

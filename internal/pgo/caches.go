@@ -2,6 +2,8 @@ package pgo
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -23,6 +25,7 @@ const (
 	jobPrefix      = "job."
 	activePrefix   = "active."
 	slotPrefix     = "schedule."
+	receiptPrefix  = "idem."
 )
 
 // overrideKey is the policy override of one Service in PROFGATE_CONFIG.
@@ -33,6 +36,22 @@ func jobKey(id string) string { return jobPrefix + id }
 
 // activeKey is the one-live-Collection-per-Service key in PROFGATE_JOBS.
 func activeKey(ns, svc string) string { return activePrefix + ns + "." + svc }
+
+// ReceiptKey is idem. followed by the first 32 hexadecimal characters of the SHA-256 of the scope.
+// The scope writes each field as its byte length, a colon, and its bytes —
+// the principal, the namespace, the service, and the client's key —
+// so no value can be read as part of the one beside it.
+// The scope is hashed because a principal is arbitrary text and a NATS subject token is not,
+// and because a bucket key is not the place to publish a caller's name.
+func ReceiptKey(principal, namespace, service, key string) string {
+	var b strings.Builder
+	for _, field := range [...]string{principal, namespace, service, key} {
+		fmt.Fprintf(&b, "%d:%s", len(field), field)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+
+	return receiptPrefix + hex.EncodeToString(sum[:])[:32]
+}
 
 // slotKey is the one-Collection-per-slot key in PROFGATE_JOBS.
 // The slot is its start as decimal Unix seconds in UTC, with no padding.
@@ -161,6 +180,15 @@ type Caches struct {
 	// one wake-up for whatever it missed.
 	jobPulse chan struct{}
 
+	// subscribers are the channels waiting on one Collection each,
+	// keyed by the identifier of the record their request named.
+	// They are the fan-out of the job.* watch this replica already holds,
+	// so a waiting request opens nothing of its own,
+	// and they outlive a generation change:
+	// a request bound to a generation that moved ends on the broadcast,
+	// not by losing the channel it registered.
+	subscribers map[string]map[chan struct{}]struct{}
+
 	// applyGate, when set, runs before every entry is applied.
 	// A test freezes one cache's delivery with it while the seam's own watch
 	// stays synced.
@@ -182,12 +210,62 @@ const (
 // NewCaches returns caches with nothing in them; Run fills them.
 func NewCaches(log *slog.Logger) *Caches {
 	return &Caches{
-		log:       log,
-		overrides: make(map[string]cachedOverride),
-		jobs:      make(map[string]cachedJob),
-		active:    make(map[serviceRef]cachedActive),
-		slots:     make(map[string]cachedSlot),
-		jobPulse:  make(chan struct{}, 1),
+		log:         log,
+		overrides:   make(map[string]cachedOverride),
+		jobs:        make(map[string]cachedJob),
+		active:      make(map[serviceRef]cachedActive),
+		slots:       make(map[string]cachedSlot),
+		jobPulse:    make(chan struct{}, 1),
+		subscribers: make(map[string]map[chan struct{}]struct{}),
+	}
+}
+
+// Subscribe registers a channel pulsed for every job.<id> entry applied for id.
+// The pulse is a hint and never an answer:
+// the caller re-reads the record and decides from that read alone,
+// so a pulse carries nothing
+// and a full buffer drops one rather than blocking apply.
+// The returned function removes the registration and is called when the request ends.
+func (c *Caches) Subscribe(id string) (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+
+	c.mu.Lock()
+	byID, ok := c.subscribers[id]
+	if !ok {
+		byID = make(map[chan struct{}]struct{})
+		c.subscribers[id] = byID
+	}
+	byID[ch] = struct{}{}
+	c.mu.Unlock()
+
+	return ch, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		byID, ok := c.subscribers[id]
+		if !ok {
+			return
+		}
+		delete(byID, ch)
+		if len(byID) == 0 {
+			delete(c.subscribers, id)
+		}
+	}
+}
+
+// pulseSubscribers wakes every request waiting on one record, called with c.mu held.
+// Each send is non-blocking,
+// so a subscriber nobody is reading holds the lock no longer than the others
+// and delays no entry.
+func (c *Caches) pulseSubscribers(key string) {
+	id, ok := strings.CutPrefix(key, jobPrefix)
+	if !ok {
+		return
+	}
+	for ch := range c.subscribers[id] {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -269,6 +347,10 @@ func (c *Caches) apply(kind cacheKind, e natskv.Entry) {
 		c.applyOverride(e)
 	case cacheJobs:
 		c.applyJob(e)
+		// The fan-out sits beside applyJob rather than inside it,
+		// because an entry that leaves no record still ends a wait on it:
+		// a deleted Collection is what a waiting request is answered 404 from.
+		c.pulseSubscribers(e.Key)
 		select {
 		case c.jobPulse <- struct{}{}:
 		default:
@@ -514,15 +596,77 @@ type CollectionView struct {
 	ExpiresAt       *time.Time
 }
 
-// maxListCollections is the longest Collection listing one Service answers
-// with; there is no pagination behind it.
-const maxListCollections = 100
+// MaxListCollections is the longest page of a Collection listing, and the
+// ceiling of the limit a request may ask for.
+// A client that wants more asks again with the cursor the response carried.
+const MaxListCollections = 100
 
-// Collections lists one Service's Collections newest first, at most
-// maxListCollections of them.
+// CollectionPosition is one entry's place in the listing:
+// the createdAt and the identifier that together order it.
+// The zero value is the head of the listing.
+type CollectionPosition struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+// CollectionQuery selects one page of a Service's Collection listing.
+// States, Since, and Origin keep the records they name and drop the rest;
+// the zero value of each keeps every record.
+// After is the position the page continues from,
+// and Limit bounds it, at most MaxListCollections and defaulting to it.
+type CollectionQuery struct {
+	States []State
+	Since  time.Time
+	Origin Origin
+	After  CollectionPosition
+	Limit  int
+}
+
+// admits reports whether one record passes the query's filters.
+func (q CollectionQuery) admits(j cachedJob) bool {
+	if len(q.States) > 0 && !slices.Contains(q.States, j.State) {
+		return false
+	}
+	if !q.Since.IsZero() && j.CreatedAt.Before(q.Since) {
+		return false
+	}
+	if q.Origin != "" && q.Origin != j.Origin {
+		return false
+	}
+
+	return true
+}
+
+// compareListing orders two entries of the listing:
+// by createdAt descending, and by identifier descending where two share an instant.
+// The identifier is random rather than time-ordered,
+// so that second key is what makes the order total:
+// without it two records created in the same instant could swap places between two reads,
+// and a cursor would skip one or repeat it.
+func compareListing(a, b CollectionPosition) int {
+	if cmp := b.CreatedAt.Compare(a.CreatedAt); cmp != 0 {
+		return cmp
+	}
+
+	return strings.Compare(b.ID, a.ID)
+}
+
+// Collections lists one Service's Collections newest first:
+// the records the query's filters keep,
+// beginning after the position it names,
+// and at most its limit of them.
+// The second result reports whether the listing holds further entries behind the page,
+// which is what a response carries a cursor for.
+// The position is compared by value and nothing looks its record up,
+// so a position naming a record the sweeper has deleted still names a place in the order.
 // The cache is the listing's source, so a Collection appears once its watch
 // has delivered it and not before.
-func (c *Caches) Collections(ns, svc string) []CollectionView {
+func (c *Caches) Collections(ns, svc string, q CollectionQuery) ([]CollectionView, bool) {
+	limit := q.Limit
+	if limit <= 0 || limit > MaxListCollections {
+		limit = MaxListCollections
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -533,6 +677,13 @@ func (c *Caches) Collections(ns, svc string) []CollectionView {
 		}
 		id, ok := strings.CutPrefix(key, jobPrefix)
 		if !ok {
+			continue
+		}
+		if !q.admits(j) {
+			continue
+		}
+		// Only what sorts strictly after the position asked for.
+		if q.After.ID != "" && compareListing(CollectionPosition{CreatedAt: j.CreatedAt, ID: id}, q.After) <= 0 {
 			continue
 		}
 		out = append(out, CollectionView{
@@ -546,17 +697,17 @@ func (c *Caches) Collections(ns, svc string) []CollectionView {
 			ExpiresAt:       j.ExpiresAt,
 		})
 	}
-	// Newest first, and by identifier where two share an instant, so one
-	// listing does not reorder itself between two reads.
 	slices.SortFunc(out, func(a, b CollectionView) int {
-		if cmp := b.CreatedAt.Compare(a.CreatedAt); cmp != 0 {
-			return cmp
-		}
-
-		return strings.Compare(a.ID, b.ID)
+		return compareListing(
+			CollectionPosition{CreatedAt: a.CreatedAt, ID: a.ID},
+			CollectionPosition{CreatedAt: b.CreatedAt, ID: b.ID})
 	})
 
-	return out[:min(len(out), maxListCollections)]
+	if len(out) > limit {
+		return out[:limit], true
+	}
+
+	return out, false
 }
 
 // Override returns a Service's stored policy override and the revision it was

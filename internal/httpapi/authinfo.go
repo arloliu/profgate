@@ -49,7 +49,7 @@ func authInfoView(cfg *config.Config) authInfoBody {
 // Any query parameter is refused, which is what answers a token in the URL here.
 func (s *server) serveAuthInfo(w http.ResponseWriter, r *http.Request, q *request, cfg *config.Config) {
 	if r.URL.RawQuery != "" {
-		q.fail(w, invalidParameter("this route takes no query parameter"))
+		q.fail(w, noParameters(r.URL.RawQuery))
 
 		return
 	}

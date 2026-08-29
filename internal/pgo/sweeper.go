@@ -19,6 +19,13 @@ import (
 // A constant, not configuration.
 const sweeperTick = 60 * time.Second
 
+// receiptReconcileEvery is how many sweeps pass between two receipt reconciliations.
+// Receipts are removed by the record-retention rule,
+// and the reconciliation exists only for the ones that rule did not reach,
+// at the cost of one read per receipt in the bucket.
+// A constant, not configuration.
+const receiptReconcileEvery = 60
+
 // orphanAge is how long an object or a preflight probe must have sat
 // unreferenced before a pass removes it.
 // It is what lets a slow Put finish before the completed update that names it.
@@ -60,6 +67,10 @@ type Sweeper struct {
 	recorder     metrics.Recorder
 	log          *slog.Logger
 	owner        Owner
+	// sweeps counts the passes this replica has completed behind the barrier,
+	// which is what puts the receipt reconciliation on one sweep in sixty.
+	// Run is the only caller, so the count needs no lock.
+	sweeps uint64
 }
 
 // NewSweeper returns the replica's sweeper.
@@ -113,6 +124,7 @@ func (s *Sweeper) sweep(ctx context.Context) {
 		return
 	}
 
+	s.sweeps++
 	now := s.clock.Now().UTC()
 	jobs := s.caches.jobEntries()
 
@@ -134,6 +146,9 @@ func (s *Sweeper) sweep(ctx context.Context) {
 	}
 	s.sweepActive(ctx, stores.Jobs)
 	s.sweepProbes(ctx, stores, objects, listed, now)
+	if s.sweeps%receiptReconcileEvery == 0 {
+		s.reconcileReceipts(ctx, stores.Jobs, now)
+	}
 }
 
 // expire turns a completed Collection whose retention has run out, or whose
@@ -257,10 +272,42 @@ func (s *Sweeper) retire(ctx context.Context, jobs natskv.KV, cached map[string]
 		if !job.FinishedAt.Add(s.jobRetention + skewMargin).Before(now) {
 			continue
 		}
+		// The receipt key is computed from the principal and the idempotency key the record carries.
+		// No cache holds either, because every read of a receipt is authoritative,
+		// so a record crossing its retention costs one fresh read,
+		// whether or not it turns out to have been created with a key.
+		id, ok := strings.CutPrefix(key, jobPrefix)
+		if !ok {
+			continue
+		}
+		rec, gone, err := readJob(ctx, jobs, id)
+		keyed := err == nil && !gone && rec.IdempotencyKey != ""
+
 		if err := jobs.Delete(ctx, key, job.Revision); err != nil {
 			continue
 		}
 		s.recorder.SweeperDelete(sweepRecord)
+		if keyed {
+			s.dropReceipt(ctx, jobs, rec)
+		}
+	}
+}
+
+// dropReceipt removes the receipt bound to a record this pass has just deleted,
+// so no moment leaves a record whose key resolves to nothing.
+// It deletes only after reading the receipt and finding it names that record:
+// a request carrying the same key can find the receipt stale
+// and publish a successor between the two steps,
+// and a delete at the revision just read would take the successor's binding with it.
+// A delete that says nothing leaves the receipt to the reconciliation.
+func (s *Sweeper) dropReceipt(ctx context.Context, jobs natskv.KV, rec Record) {
+	key := ReceiptKey(rec.CreatedBy, rec.Namespace, rec.Service, rec.IdempotencyKey)
+	receipt, rev, gone, err := readReceipt(ctx, jobs, key)
+	if err != nil || gone || receipt.ID != rec.ID {
+		return
+	}
+	if err := jobs.Delete(ctx, key, rev); err != nil {
+		s.log.Warn("pgo: deleting an idempotency receipt failed", "collection", rec.ID, "error", err)
 	}
 }
 
@@ -405,6 +452,37 @@ func (s *Sweeper) sweepProbes(
 			continue
 		}
 		s.recorder.SweeperDelete(sweepProbe)
+	}
+}
+
+// reconcileReceipts reaches the receipts the record-retention rule did not:
+// a delete that said nothing, or a process that stopped between the record and its receipt.
+// It is the one condition with no watched cache behind it, because no watch is opened on the prefix,
+// so it costs one listing and one read per receipt in the bucket, and runs on one sweep in sixty.
+// A receipt younger than a record's whole retention is left alone without a record lookup,
+// and one whose record a fresh read still finds is left alone too,
+// so a live binding is never removed.
+func (s *Sweeper) reconcileReceipts(ctx context.Context, jobs natskv.KV, now time.Time) {
+	keys, err := jobs.Keys(ctx, receiptPrefix)
+	if err != nil {
+		s.log.Warn("pgo: listing idempotency receipts failed", "error", err)
+
+		return
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		receipt, rev, gone, err := readReceipt(ctx, jobs, key)
+		if err != nil || gone {
+			continue
+		}
+		if !receipt.CreatedAt.Add(s.jobRetention + skewMargin).Before(now) {
+			continue
+		}
+		if _, recordGone, err := readJob(ctx, jobs, receipt.ID); err != nil || !recordGone {
+			continue
+		}
+		//nolint:errcheck // a lost delete means another pass or a request cleaned it
+		_ = jobs.Delete(ctx, key, rev)
 	}
 }
 

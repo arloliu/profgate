@@ -87,7 +87,7 @@ func (s *server) serveListing(
 	w http.ResponseWriter, r *http.Request, q *request, cfg *config.Config, p auth.Principal, realm config.Realm,
 ) {
 	if r.URL.RawQuery != "" {
-		q.fail(w, invalidParameter("this route takes no query parameter"))
+		q.fail(w, noParameters(r.URL.RawQuery))
 
 		return
 	}
@@ -103,7 +103,7 @@ func (s *server) serveListing(
 		if err != nil {
 			q.fail(w, &requestError{
 				status:  http.StatusServiceUnavailable,
-				code:    "discovery_unavailable",
+				code:    CodeDiscoveryUnavailable,
 				message: "discovery cannot list services",
 			})
 
@@ -120,13 +120,15 @@ func (s *server) serveListing(
 			slices.Sort(names)
 			body = servicesBody{Namespace: q.route.namespace, Services: names}
 		}
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel, kindAuth:
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
+		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindAuth, kindAuthLogin,
+		kindAuthCallback, kindAuthLogout, kindOpenAPI, kindConsole:
 		// Not a listing route; ServeHTTP never dispatches one here.
-		q.fail(w, &requestError{status: http.StatusNotFound, code: "route_unknown", message: "no such route"})
+		q.fail(w, errRouteUnknown)
 
 		return
 	default:
-		q.fail(w, &requestError{status: http.StatusNotFound, code: "route_unknown", message: "no such route"})
+		q.fail(w, errRouteUnknown)
 
 		return
 	}

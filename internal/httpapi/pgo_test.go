@@ -77,7 +77,7 @@ func TestPGORouteRealmFlags(t *testing.T) {
 				rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
 
 				allowed := realm == route.realm
-				got := h.doPGO(t, route.method, route.path(rec.ID), route.body, nil)
+				got := h.doPGO(t, route.method, route.path(rec.ID), route.body, clientHeaders(route.method))
 
 				collectionScoped := strings.HasPrefix(route.path(rec.ID), "/v1/collections/")
 				switch {
@@ -165,7 +165,7 @@ func TestPGODisabledAnswers501(t *testing.T) {
 			id := h.newRecord(pgo.StatePending).ID
 			h.configure(func(cfg *config.Config) { cfg.PGO.Enabled = false })
 
-			got := h.doPGO(t, route.method, route.path(id), route.body, nil)
+			got := h.doPGO(t, route.method, route.path(id), route.body, clientHeaders(route.method))
 
 			h.expectPGOError(t, got, http.StatusNotImplemented, "pgo_disabled", "pgo_disabled")
 		})
@@ -186,7 +186,7 @@ func TestPGOUnavailableWhileUnbound(t *testing.T) {
 				cfg.Realms["developer"] = wideRealm()
 			})
 
-			got := h.do(t, route.method, route.path("abcdefghjkmnpqrstv01"))
+			got := h.doHeaders(t, route.method, route.path("abcdefghjkmnpqrstv01"), clientHeaders(route.method))
 
 			h.expectPGOError(t, got, http.StatusServiceUnavailable, "pgo_unavailable", "pgo_unavailable")
 		})
@@ -226,7 +226,7 @@ func TestPGOUnavailableBehindTheBarrier(t *testing.T) {
 				rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
 				tc.hold(h)
 
-				got := h.doPGO(t, route.method, route.path(rec.ID), route.body, nil)
+				got := h.doPGO(t, route.method, route.path(rec.ID), route.body, clientHeaders(route.method))
 
 				h.expectPGOError(t, got, http.StatusServiceUnavailable, "pgo_unavailable", "pgo_unavailable")
 			})
@@ -294,7 +294,7 @@ func TestPGOBodiesAreBounded(t *testing.T) {
 	t.Run("an unknown field in a collection request is refused", func(t *testing.T) {
 		h := newPGOHarness(t, pgoOpts{})
 
-		got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"duration":"10s"},"slot":"now"}`, nil)
+		got := h.doPGO(t, http.MethodPost, collectionsPath, `{"sampling":{"duration":"10s"},"slot":"now"}`, jsonType())
 
 		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
 	})
@@ -303,7 +303,7 @@ func TestPGOBodiesAreBounded(t *testing.T) {
 		t.Run("a collection request may not carry "+body, func(t *testing.T) {
 			h := newPGOHarness(t, pgoOpts{})
 
-			got := h.doPGO(t, http.MethodPost, collectionsPath, body, nil)
+			got := h.doPGO(t, http.MethodPost, collectionsPath, body, jsonType())
 
 			h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
 			if got := h.nats.jobs.countKeys(jobKeyPrefix); got != 0 {
@@ -316,7 +316,7 @@ func TestPGOBodiesAreBounded(t *testing.T) {
 		h := newPGOHarness(t, pgoOpts{})
 		rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
 
-		got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), `{"reason":"mine"}`, nil)
+		got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), `{"reason":"mine"}`, jsonType())
 
 		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
 		if state := h.nats.jobs.record(t, rec.ID).State; state != pgo.StatePending {
@@ -340,7 +340,7 @@ func TestPGOBodiesAreBounded(t *testing.T) {
 	t.Run("query parameters are refused", func(t *testing.T) {
 		h := newPGOHarness(t, pgoOpts{})
 
-		got := h.doPGO(t, http.MethodGet, collectionsPath+"?state=completed", "", nil)
+		got := h.doPGO(t, http.MethodGet, pgoPath+"?state=completed", "", nil)
 
 		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
 	})
@@ -355,9 +355,152 @@ func TestPGOMetricsLabels(t *testing.T) {
 			h := newPGOHarness(t, pgoOpts{})
 			rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
 
-			h.doPGO(t, route.method, route.path(rec.ID), route.body, nil)
+			h.doPGO(t, route.method, route.path(rec.ID), route.body, clientHeaders(route.method))
 
 			h.expectMetric(t, route.endpoint, route.profile)
 		})
 	}
+}
+
+// TestPGOBodyFaultDetails reads the details array out of the encoded body of every body and header refusal,
+// so a client is told which field of its own request to change:
+// a pointer into the body, or the header by name.
+func TestPGOBodyFaultDetails(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		header http.Header
+		want   []errorDetail
+	}{
+		{
+			name: "an unknown top-level field", method: http.MethodPut, path: pgoPath,
+			body: `{"bogus":1}`,
+			want: []errorDetail{{Field: "/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "an unknown field in schedule", method: http.MethodPut, path: pgoPath,
+			body: `{"schedule":{"bogus":"1h"}}`,
+			want: []errorDetail{{Field: "/schedule/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "an unknown field in sampling", method: http.MethodPut, path: pgoPath,
+			body: `{"sampling":{"bogus":3}}`,
+			want: []errorDetail{{Field: "/sampling/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "an unknown field in target", method: http.MethodPut, path: pgoPath,
+			body: `{"target":{"bogus":"x"}}`,
+			want: []errorDetail{{Field: "/target/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "an unknown field in artifact", method: http.MethodPut, path: pgoPath,
+			body: `{"artifact":{"bogus":"1h"}}`,
+			want: []errorDetail{{Field: "/artifact/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "two unknown fields name the first", method: http.MethodPut, path: pgoPath,
+			body: `{"bogus":1,"other":2}`,
+			want: []errorDetail{{Field: "/bogus", Code: detailUnknownField}},
+		},
+		{
+			name: "document order decides, not name order", method: http.MethodPut, path: pgoPath,
+			body: `{"other":2,"bogus":1}`,
+			want: []errorDetail{{Field: "/other", Code: detailUnknownField}},
+		},
+		{
+			name: "a value of the wrong type is not an unknown field", method: http.MethodPut, path: pgoPath,
+			body: `{"sampling":{"rounds":"three"}}`,
+			want: []errorDetail{{Field: "", Code: detailBodyMalformed}},
+		},
+		{
+			name: "an object where a value decodes itself", method: http.MethodPut, path: pgoPath,
+			body: `{"sampling":{"replicas":{"bogus":1}}}`,
+			want: []errorDetail{{Field: "", Code: detailBodyMalformed}},
+		},
+		{
+			name: "a body that is not JSON", method: http.MethodPut, path: pgoPath,
+			body: `not json`,
+			want: []errorDetail{{Field: "", Code: detailBodyMalformed}},
+		},
+		{
+			name: "a body over the limit", method: http.MethodPut, path: pgoPath,
+			body: `{"enabled":true,"target":{"version":"` + strings.Repeat("v", maxBodyBytes) + `"}}`,
+			want: []errorDetail{{Field: "", Code: detailBodyMalformed}},
+		},
+		{
+			name: "a policy delete takes no body", method: http.MethodDelete, path: pgoPath,
+			body: `{"enabled":false}`,
+			want: []errorDetail{{Field: "", Code: detailBodyNotAllowed}},
+		},
+		{
+			name: "a create sets neither enabled nor schedule", method: http.MethodPost, path: collectionsPath,
+			body: `{"enabled":true,"schedule":{"every":"1h"}}`, header: jsonType(),
+			want: []errorDetail{
+				{Field: "/enabled", Code: detailFieldNotApplicable},
+				{Field: "/schedule", Code: detailFieldNotApplicable},
+			},
+		},
+		{
+			name: "a create sets enabled alone", method: http.MethodPost, path: collectionsPath,
+			body: `{"enabled":true}`, header: jsonType(),
+			want: []errorDetail{{Field: "/enabled", Code: detailFieldNotApplicable}},
+		},
+		{
+			name: "If-Match is a wildcard", method: http.MethodPut, path: pgoPath,
+			body: `{"enabled":true}`, header: ifMatch(`*`),
+			want: []errorDetail{{Field: "If-Match", Code: detailHeaderMalformed}},
+		},
+		{
+			name: "If-Match is unquoted", method: http.MethodPut, path: pgoPath,
+			body: `{"enabled":true}`, header: ifMatch(`42`),
+			want: []errorDetail{{Field: "If-Match", Code: detailHeaderMalformed}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPGOHarness(t, pgoOpts{})
+
+			got := h.doPGO(t, tc.method, tc.path, tc.body, tc.header)
+
+			h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+			expectDetails(t, got, "invalid_parameter", tc.want)
+		})
+	}
+
+	t.Run("cancel takes no body", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+		got := h.doPGO(t, http.MethodPost, collectionPath(rec.ID, "/cancel"), `{"reason":"mine"}`, jsonType())
+
+		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+		expectDetails(t, got, "invalid_parameter",
+			[]errorDetail{{Field: "", Code: detailBodyNotAllowed}})
+	})
+
+	t.Run("a query parameter on a pgo route names itself", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+
+		got := h.doPGO(t, http.MethodGet, pgoPath+"?state=completed", "", nil)
+
+		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+		expectDetails(t, got, "invalid_parameter",
+			[]errorDetail{{Field: "state", Code: detailUnknownParameter}})
+	})
+
+	t.Run("a create takes no query parameter", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+
+		got := h.doPGO(t, http.MethodPost, collectionsPath+"?limit=1", "{}", jsonType())
+
+		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
+		expectDetails(t, got, "invalid_parameter",
+			[]errorDetail{{Field: "limit", Code: detailUnknownParameter}})
+		if n := h.nats.jobs.countKeys(jobKeyPrefix); n != 0 {
+			t.Errorf("job keys = %d, want the create refused before any write", n)
+		}
+	})
 }

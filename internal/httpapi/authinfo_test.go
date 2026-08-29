@@ -195,6 +195,7 @@ func (h *harness) expectRouteError(t *testing.T, rec *httptest.ResponseRecorder,
 	if got, _ := errorBodyOf(t, rec); got != code {
 		t.Errorf("code = %q, want %q (body %q)", got, code, rec.Body.String())
 	}
+	detailsOf(t, rec, code)
 	h.expectNoAudit(t)
 	h.expectMetric(t, metrics.EndpointAuth, labelNone)
 	h.expectMetricCode(t, code)

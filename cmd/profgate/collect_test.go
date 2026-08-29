@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -170,45 +169,139 @@ func TestCollectBody(t *testing.T) {
 	})
 }
 
-func TestCollectDoesNotRetryTheCreate(t *testing.T) {
+// cutReader yields its prefix and then fails, as a body cut off after the
+// answer's headers had already arrived.
+type cutReader struct {
+	prefix string
+	read   int
+}
+
+func (c *cutReader) Read(p []byte) (int, error) {
+	if c.read < len(c.prefix) {
+		n := copy(p, c.prefix[c.read:])
+		c.read += n
+		return n, nil
+	}
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (c *cutReader) Close() error { return nil }
+
+// replayID is the identifier a retry's replay carries; it differs from the
+// one every other answer here carries, so a poll of it proves the replay decided what --wait reads.
+const replayID = "3g7hk2m9p4qr8s1tvw5x"
+
+// retryTransport answers each create with the next answer in order, repeating the last,
+// and every other request with a completed record for replayID.
+type retryTransport struct {
+	creates  []func() (*http.Response, error)
+	requests []*http.Request
+	served   int
+	polls    int
+}
+
+func (rt *retryTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.requests = append(rt.requests, r)
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/collections") {
+		answer := rt.creates[min(rt.served, len(rt.creates)-1)]
+		rt.served++
+		return answer()
+	}
+	rt.polls++
+	return jsonResponse(http.StatusOK, strings.ReplaceAll(waitRecord("completed", "", 1, 1, 1, 0), "7h2k9m4p6r8t0v1w3x5y", replayID)), nil
+}
+
+// keys is the Idempotency-Key of every create the transport saw.
+func (rt *retryTransport) keys() []string {
+	var got []string
+	for _, r := range rt.requests {
+		if r.Method == http.MethodPost {
+			got = append(got, r.Header.Get("Idempotency-Key"))
+		}
+	}
+	return got
+}
+
+// replay is the 200 a retry under a recorded key meets.
+func replay() (*http.Response, error) {
+	resp := jsonResponse(http.StatusOK, `{"id":"`+replayID+`","state":"running"}`)
+	resp.Header.Set("Location", "/v1/collections/"+replayID)
+	return resp, nil
+}
+
+func TestCollectRetriesAnUnknownResult(t *testing.T) {
 	tests := []struct {
 		name   string
 		answer func() (*http.Response, error)
 	}{
-		{name: "transport failure", answer: func() (*http.Response, error) { return nil, errors.New("connection reset by peer") }},
-		{name: "500", answer: func() (*http.Response, error) {
+		{name: "no answer at all", answer: func() (*http.Response, error) { return nil, errors.New("connection reset by peer") }},
+		{name: "500 with no envelope", answer: func() (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusInternalServerError, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
 		}},
 		{name: "503 pgo_unavailable", answer: func() (*http.Response, error) {
 			return jsonResponse(http.StatusServiceUnavailable, `{"error":"the store is unavailable","code":"pgo_unavailable"}`), nil
 		}},
+		{name: "a 202 whose body was cut off", answer: func() (*http.Response, error) {
+			resp := acceptedResponse()
+			resp.Body = &cutReader{prefix: `{"id":"7h2k9m4p`}
+			return resp, nil
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			te := newTestEnv(t)
-			// One request reads the clock twice, at its start and for the
-			// --verbose line; a retry schedule would read it again.
-			var reads atomic.Int64
-			fixed := te.env.now
-			te.env.now = func() time.Time { reads.Add(1); return fixed() }
-			ct := &createTransport{answer: tc.answer}
-			code := runCollect(te, ct, "payments/checkout")
-			if code != 1 {
-				t.Fatalf("code = %d, want 1 (stderr=%q)", code, te.stderr.String())
+			clock := onClock(te)
+			start := clock.Now()
+			rt := &retryTransport{creates: []func() (*http.Response, error){tc.answer, replay}}
+			code := runCollect(te, rt, "payments/checkout", "--wait")
+			if code != 0 {
+				t.Fatalf("code = %d, want 0 (stderr=%q)", code, te.stderr.String())
 			}
-			if len(ct.requests) != 1 {
-				t.Fatalf("%d requests, want exactly one: the create is not retried", len(ct.requests))
+			keys := rt.keys()
+			if len(keys) != 2 {
+				t.Fatalf("%d creates, want the failure and the retry", len(keys))
 			}
-			if reads.Load() > 2 {
-				t.Fatalf("the clock was read %d times, want at most the two of one request: nothing waits to retry", reads.Load())
+			if keys[0] == "" || keys[0] != keys[1] {
+				t.Fatalf("Idempotency-Key = %q, want the one key on both creates", keys)
 			}
-			if !strings.Contains(te.stderr.String(), "profgate collections payments/checkout") {
-				t.Fatalf("stderr = %q, want profgate collections payments/checkout named", te.stderr.String())
+			if rt.polls != 1 {
+				t.Fatalf("%d polls, want the one the replay's identifier earned", rt.polls)
 			}
-			if strings.Count(te.stderr.String(), "profgate:") != 1 {
-				t.Fatalf("stderr = %q, want the failure reported once", te.stderr.String())
+			if got := rt.requests[len(rt.requests)-1].URL.Path; got != "/v1/collections/"+replayID {
+				t.Fatalf("the poll read %s, want the replay's record", got)
+			}
+			if got := clock.Now().Sub(start); got != time.Second {
+				t.Fatalf("the clock advanced %s, want the one second before the retry", got)
 			}
 		})
+	}
+}
+
+func TestCollectStopsWhenTheRetryWindowCloses(t *testing.T) {
+	te := newTestEnv(t)
+	clock := onClock(te)
+	start := clock.Now()
+	rt := &retryTransport{creates: []func() (*http.Response, error){
+		func() (*http.Response, error) { return nil, errors.New("connection reset by peer") },
+	}}
+	code := runCollect(te, rt, "payments/checkout", "--wait")
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (stderr=%q)", code, te.stderr.String())
+	}
+	if got := clock.Now().Sub(start); got != 30*time.Second {
+		t.Fatalf("the clock advanced %s, want the thirty-second window", got)
+	}
+	if len(rt.keys()) != 7 {
+		t.Fatalf("%d creates, want the first and one per wait of the window", len(rt.keys()))
+	}
+	if rt.polls != 0 {
+		t.Fatalf("%d polls, want none: no answer ever carried an identifier", rt.polls)
+	}
+	if !strings.Contains(te.stderr.String(), "profgate collections payments/checkout") {
+		t.Fatalf("stderr = %q, want profgate collections payments/checkout named", te.stderr.String())
+	}
+	if strings.Count(te.stderr.String(), "profgate:") != 1 {
+		t.Fatalf("stderr = %q, want the failure reported once", te.stderr.String())
 	}
 }
 
@@ -252,6 +345,8 @@ func TestCollectGatewayRefusals(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			te := newTestEnv(t)
+			clock := onClock(te)
+			start := clock.Now()
 			ct := &createTransport{answer: func() (*http.Response, error) { return jsonResponse(tc.status, tc.body), nil }}
 			code := runCollect(te, ct, "payments/checkout", "--wait")
 			if code != 1 {
@@ -259,6 +354,9 @@ func TestCollectGatewayRefusals(t *testing.T) {
 			}
 			if len(ct.requests) != 1 {
 				t.Fatalf("%d requests, want exactly one: no retry and no poll", len(ct.requests))
+			}
+			if !clock.Now().Equal(start) {
+				t.Fatalf("the clock advanced %s, want nothing: an answer that arrived whole is not waited on", clock.Now().Sub(start))
 			}
 			if !strings.Contains(te.stderr.String(), tc.want) {
 				t.Fatalf("stderr = %q, want the envelope %q", te.stderr.String(), tc.want)
@@ -339,7 +437,7 @@ func TestCollectCancelledBeforeAnyResponse(t *testing.T) {
 func TestCollectWaitIssuesNoGetWithoutAnIdentifier(t *testing.T) {
 	te := newTestEnv(t)
 	ct := &createTransport{answer: func() (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusBadGateway, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
+		return jsonResponse(http.StatusBadRequest, `{"error":"a collection request sets neither enabled nor schedule","code":"invalid_parameter"}`), nil
 	}}
 	code := runCollect(te, ct, "payments/checkout", "--wait")
 	if code != 1 {

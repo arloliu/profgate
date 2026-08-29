@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -183,13 +182,12 @@ func positiveInt(flag, value string) (int, error) {
 	return n, nil
 }
 
-// collect runs the verb: the body, the key, the one create, and the
-// identifier and state it answered; under --wait, the poll of that record
+// collect runs the verb: the body, the key, the create under it, and the
+// identifier and state the answer carried; under --wait, the poll of that record
 // until it ends, which begins only once an answer has carried an identifier.
-// A transport failure or a 5xx is reported once:
-// the gateway does not yet record the key,
-// so nothing retries the create, and the message says a
-// Collection may already exist and how to find out.
+// The client retries the create under the same key while its result is unknown.
+// A result still unknown when that window closes is reported once,
+// and the message says a Collection may already exist and how to find out.
 func (env *cmdEnv) collect(ctx context.Context, in *invocation, f collectFlags) error {
 	if err := f.checkWaitFlags(); err != nil {
 		return err
@@ -212,7 +210,7 @@ func (env *cmdEnv) collect(ctx context.Context, in *invocation, f collectFlags) 
 	}
 	created, err := gw.Create(ctx, ns, svc, body, key)
 	if err != nil {
-		if createIndeterminate(err) {
+		if client.CreateIndeterminate(err) {
 			return fmt.Errorf("%w; a Collection may already have been created: run profgate collections %s/%s to find out", err, ns, svc)
 		}
 		return err
@@ -371,23 +369,6 @@ func renderCollection(env *cmdEnv, body []byte) error {
 		rows = append(rows, []string{"reason", rec.Reason})
 	}
 	return writeTable(env.stdout, env.terminal, nil, rows)
-}
-
-// createIndeterminate reports a create whose outcome the answer does not settle:
-// no answer at all, or a 5xx, after either of which the gateway may hold a Collection this command has no identifier for.
-func createIndeterminate(err error) bool {
-	var te *client.TransportError
-	var se *client.StatusError
-	var ae *client.APIError
-	switch {
-	case errors.As(err, &te):
-		return true
-	case errors.As(err, &se):
-		return se.Status >= http.StatusInternalServerError
-	case errors.As(err, &ae):
-		return ae.Status >= http.StatusInternalServerError
-	}
-	return false
 }
 
 // downloadVerb is GET /v1/collections/{id}/profile: the artifact streamed to

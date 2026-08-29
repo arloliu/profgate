@@ -1,6 +1,8 @@
 package pgo
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,11 +93,44 @@ type Record struct {
 	Manifest        *Manifest    `json:"manifest"`
 	Artifact        *ArtifactRef `json:"artifact"` // set only by the completed update
 
+	// IdempotencyKey is the Idempotency-Key the creating request sent,
+	// empty for a scheduled Collection and for a request that sent none.
+	IdempotencyKey string `json:"idempotencyKey"`
+	// SnapshotHash is the canonical hash of Policy, which an idempotent replay compares.
+	// Every Collection carries it, whatever created it.
+	SnapshotHash string `json:"snapshotHash"`
+
 	CreatedBy  string     `json:"createdBy"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	StartedAt  *time.Time `json:"startedAt"`
 	FinishedAt *time.Time `json:"finishedAt"`
 	ExpiresAt  *time.Time `json:"expiresAt"` // finishedAt + retention, for completed
+}
+
+// Receipt is what one idempotency key created:
+// the value at idem.<hash> in PROFGATE_JOBS,
+// and the only thing a later request carrying that key reads.
+// It names an identifier, so answering a replay costs at most one further read of the record.
+type Receipt struct {
+	ID           string    `json:"id"`
+	SnapshotHash string    `json:"snapshotHash"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+// SnapshotHash is SHA-256, as 64 lowercase hexadecimal characters,
+// of the canonical encoding of a policy snapshot:
+// json.Marshal of the Policy value, whose field order is the struct's.
+// It is never computed from request bytes, so whitespace and field order in a body decide nothing;
+// a snapshot that moved under a stored override or the operator defaults hashes differently from identical JSON.
+// Every field of a Policy encodes without error, so the encoding is total.
+func SnapshotHash(p Policy) string {
+	b, err := json.Marshal(p)
+	if err != nil {
+		panic("pgo: a policy snapshot must encode: " + err.Error())
+	}
+	sum := sha256.Sum256(b)
+
+	return hex.EncodeToString(sum[:])
 }
 
 // Owner is the claiming replica.

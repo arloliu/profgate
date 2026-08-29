@@ -46,7 +46,11 @@ type PublishInput struct {
 	// Policy is the effective policy snapshot the Collection runs with.
 	Policy Policy
 	// CreatedBy is the requesting principal, or createdBySchedule.
+	// It is also the principal the receipt is scoped to.
 	CreatedBy string
+	// IdempotencyKey is the Idempotency-Key the request carried,
+	// and empty for a scheduled Collection, which writes no receipt.
+	IdempotencyKey string
 }
 
 // Reservation is one replica's claim on a slot of the live-Collection ceiling,
@@ -221,11 +225,14 @@ func (p *Publisher) resolved(ctx context.Context, jobs natskv.KV, id string, ref
 	return v.ID != id
 }
 
-// Publish performs the three writes of one publication in the order that
-// closes the publication race: Create job.<id> as initializing, Create
-// active.<ns>.<svc>, then Update the record to pending.
-// The active key therefore never exists without its record, so a sweeper that
-// reads the job an active key names finds initializing or later, never nothing.
+// Publish performs the writes of one publication in the order that closes the publication race:
+// Create job.<id> as initializing, Create active.<ns>.<svc>,
+// Create the idempotency receipt when the request carried a key,
+// then Update the record to pending.
+// The active key therefore never exists without its record,
+// so a sweeper that reads the job an active key names finds initializing or later, never nothing.
+// A keyed record becomes claimable only after the store has acknowledged the receipt that binds it,
+// so no Collection a caller can poll is unbound.
 // The caller holds res, and Publish gives it back only where nothing can exist.
 //
 // OutcomeBusy means the Service already had a live Collection.
@@ -262,7 +269,7 @@ func (p *Publisher) Publish(
 	}
 	logTransition(p.log, p.instance, rec, slog.String("trigger", string(rec.Origin)))
 
-	activeErr := p.createActive(ctx, jobs, id, now, in)
+	activeRev, activeErr := p.createActive(ctx, jobs, id, now, in)
 	if errors.Is(activeErr, natskv.ErrKeyExists) {
 		p.discardLostRecord(ctx, jobs, res, id, rev)
 
@@ -274,6 +281,14 @@ func (p *Publisher) Publish(
 	res.Track(id)
 	if activeErr != nil {
 		return id, "", fmt.Errorf("pgo: create active key for %s/%s: %w", in.Namespace, in.Service, activeErr)
+	}
+
+	if in.IdempotencyKey != "" {
+		if rerr := p.createReceipt(ctx, jobs, id, now, rec.SnapshotHash, in); rerr != nil {
+			p.withdraw(ctx, jobs, id, rev, activeRev, in)
+
+			return id, "", rerr
+		}
 	}
 
 	rec.State = StatePending
@@ -302,6 +317,8 @@ func (p *Publisher) record(id string, now time.Time, in PublishInput) Record {
 		ClaimBy:        in.ClaimBy.UTC(),
 		CreatedBy:      in.CreatedBy,
 		CreatedAt:      now,
+		IdempotencyKey: in.IdempotencyKey,
+		SnapshotHash:   SnapshotHash(in.Policy),
 	}
 	if !in.Slot.IsZero() {
 		rec.Slot = in.Slot.UTC().Format(time.RFC3339)
@@ -310,15 +327,17 @@ func (p *Publisher) record(id string, now time.Time, in PublishInput) Record {
 	return rec
 }
 
-// createActive writes active.<ns>.<svc> naming this Collection.
-func (p *Publisher) createActive(ctx context.Context, jobs natskv.KV, id string, now time.Time, in PublishInput) error {
+// createActive writes active.<ns>.<svc> naming this Collection and returns the
+// revision it was created at, which is the revision a withdraw deletes it at.
+func (p *Publisher) createActive(
+	ctx context.Context, jobs natskv.KV, id string, now time.Time, in PublishInput,
+) (uint64, error) {
 	value, err := json.Marshal(activeValue{ID: id, CreatedAt: now})
 	if err != nil {
-		return fmt.Errorf("serialize active key: %w", err)
+		return 0, fmt.Errorf("serialize active key: %w", err)
 	}
-	_, err = jobs.Create(ctx, activeKey(in.Namespace, in.Service), value)
 
-	return err
+	return jobs.Create(ctx, activeKey(in.Namespace, in.Service), value)
 }
 
 // discardLostRecord deletes the initializing record of a publication whose
@@ -341,4 +360,70 @@ func (p *Publisher) discardLostRecord(
 		p.log.Warn("pgo: discard of a lost collection record failed", "collection", id, "error", err)
 	}
 	res.Release()
+}
+
+// createReceipt writes idem.<hash> naming this Collection,
+// which is the write that releases a keyed publication:
+// the record becomes claimable only after the store has acknowledged it.
+// ErrUnavailable is retried once behind the same generation.
+// A key already holding this identifier is the earlier attempt having landed, and counts as success.
+// A key holding a receipt whose record a fresh read shows absent is stale:
+// it is deleted at the revision that read returned, after which the receipt is written again.
+// Anything else leaves the caller to withdraw.
+func (p *Publisher) createReceipt(
+	ctx context.Context, jobs natskv.KV, id string, now time.Time, hash string, in PublishInput,
+) error {
+	key := ReceiptKey(in.CreatedBy, in.Namespace, in.Service, in.IdempotencyKey)
+	value, err := json.Marshal(Receipt{ID: id, SnapshotHash: hash, CreatedAt: now})
+	if err != nil {
+		return fmt.Errorf("pgo: serialize receipt for %s: %w", id, err)
+	}
+
+	_, err = jobs.Create(ctx, key, value)
+	if errors.Is(err, natskv.ErrUnavailable) {
+		_, err = jobs.Create(ctx, key, value)
+	}
+	if !errors.Is(err, natskv.ErrKeyExists) {
+		if err != nil {
+			return fmt.Errorf("pgo: create receipt for %s: %w", id, err)
+		}
+
+		return nil
+	}
+
+	existing, rev, gone, readErr := readReceipt(ctx, jobs, key)
+	switch {
+	case readErr != nil || gone:
+		return fmt.Errorf("pgo: create receipt for %s: %w", id, err)
+	case existing.ID == id:
+		// The earlier attempt landed and lost its acknowledgement.
+		return nil
+	}
+	if _, recordGone, recordErr := readJob(ctx, jobs, existing.ID); recordErr != nil || !recordGone {
+		return fmt.Errorf("pgo: create receipt for %s: %w", id, err)
+	}
+	if delErr := jobs.Delete(ctx, key, rev); delErr != nil {
+		return fmt.Errorf("pgo: delete a stale receipt for %s: %w", id, delErr)
+	}
+	if _, err := jobs.Create(ctx, key, value); err != nil {
+		return fmt.Errorf("pgo: create receipt for %s: %w", id, err)
+	}
+
+	return nil
+}
+
+// withdraw undoes a keyed publication whose receipt never landed,
+// so nothing keyed ever becomes claimable without the receipt that binds it.
+// Both deletes are attempted whatever the first returns:
+// a record delete lost to the scan, which failed the record not_published first,
+// still leaves an active key to release.
+func (p *Publisher) withdraw(
+	ctx context.Context, jobs natskv.KV, id string, rev, activeRev uint64, in PublishInput,
+) {
+	//nolint:errcheck // the scan and the sweeper clear whatever a lost delete leaves
+	_ = jobs.Delete(ctx, jobKey(id), rev)
+	//nolint:errcheck // the sweeper releases an active key this delete could not
+	_ = jobs.Delete(ctx, activeKey(in.Namespace, in.Service), activeRev)
+	p.log.Warn("pgo: withdrew a collection whose idempotency receipt did not land",
+		"namespace", in.Namespace, "service", in.Service, "collection", id)
 }

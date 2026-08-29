@@ -488,12 +488,16 @@ since the chart does not render it and cannot follow it.
 Every `/v1` request emits one JSON log record named `request` at info level on completion.
 Requests under `/ui/` and to `/` write no audit line:
 they carry no principal and name nothing a realm bounds, and one page load is several of them.
-An interactive request carries
+Every record opens with `requestId`, the value the response's `X-Request-Id` header carried,
+which is what joins a client's report of a request to the gateway's record of it.
+An interactive request then carries
 `principal`, `namespace`, `service`, `pod`, `profile`, `seconds`, `port`, `status`, `code`, and `duration_ms`;
 a PGO request carries
 `principal`, `namespace`, `service`, `collection`, `method`, `status`, `code`, and `duration_ms`.
 `port` is the client's port selection as sent, a number or a name, empty when absent;
 for a name it is never the number the name resolved to.
+A targets request that asked for the exclusion counts adds `explain`,
+and a Collection read whose wait the gateway accepted adds `wait`, the duration it asked to be held open for.
 The record names the selected Pod or Collection and never the Pod's IP address.
 
 An authentication failure adds `auth_reason` — one of the reasons in

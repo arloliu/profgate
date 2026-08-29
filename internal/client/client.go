@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -212,6 +213,11 @@ func (c *Client) logRequest(r *http.Request, status int, start time.Time) {
 	_, _ = fmt.Fprintf(c.verbose, "%s %s %d %s\n", r.Method, r.URL, status, c.now().Sub(start))
 }
 
+// errResponseTooLarge marks a body that filled the bound.
+// Those bytes arrived and this client refuses to read them,
+// so the same request would meet the same body again.
+var errResponseTooLarge = errors.New("response exceeds the bound")
+
 // readBounded reads at most maxResponseBytes and refuses a body that fills
 // the bound rather than returning a prefix of it.
 func readBounded(body io.Reader) ([]byte, error) {
@@ -220,7 +226,7 @@ func readBounded(body io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if len(data) > maxResponseBytes {
-		return nil, fmt.Errorf("response exceeds %d bytes", maxResponseBytes)
+		return nil, fmt.Errorf("%w of %d bytes", errResponseTooLarge, maxResponseBytes)
 	}
 	return data, nil
 }

@@ -50,11 +50,39 @@ type Bundle struct {
 // reports the runtime unavailable and the routes answer 503 pgo_unavailable.
 type Runtime struct {
 	bundle atomic.Pointer[Bundle]
+
+	mu sync.Mutex
+	// moved is closed when the connection generation it belongs to is left behind,
+	// and replaced by the channel of the generation that follows.
+	// It exists from construction,
+	// because the connection can drop before the preflight that binds the runtime has passed.
+	moved chan struct{}
 }
 
 // NewRuntime returns an unbound runtime: every session it hands out until Bind
 // is natskv.ErrUnavailable.
-func NewRuntime() *Runtime { return &Runtime{} }
+func NewRuntime() *Runtime { return &Runtime{moved: make(chan struct{})} }
+
+// MoveGeneration reports that the connection generation has moved.
+// It closes the channel of the generation being left behind,
+// which is what ends a request waiting under it,
+// and installs the channel of the next one.
+// The connection's disconnect callback moves its generation before it reports,
+// so a receiver always sees a generation that has already moved.
+func (r *Runtime) MoveGeneration() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	close(r.moved)
+	r.moved = make(chan struct{})
+}
+
+// generationMoved is the channel of the generation current now.
+func (r *Runtime) generationMoved() <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.moved
+}
 
 // Bind publishes the dependencies the routes serve from.
 // It is called exactly once, after natskv.Preflight succeeds.
@@ -71,6 +99,9 @@ func (r *Runtime) bound() bool { return r.bundle.Load() != nil }
 type Session struct {
 	b     *Bundle
 	store natskv.Stores
+	// moved is the connection-generation broadcast this session captured when it was taken,
+	// and never a lookup made later.
+	moved <-chan struct{}
 }
 
 // Session returns the view this request works from.
@@ -83,6 +114,12 @@ func (r *Runtime) Session() (*Session, error) {
 	if b == nil {
 		return nil, fmt.Errorf("pgo: runtime is not bound: %w", natskv.ErrUnavailable)
 	}
+
+	// The broadcast is captured before the generation is read,
+	// so a move between the two closes the channel this session holds.
+	// The cost of that order is a session refusing a generation still current,
+	// which is the direction that cannot leave a request parked over an outage.
+	moved := r.generationMoved()
 
 	gen := b.Client.Generation()
 	// Both halves of the barrier: the seam marks a watch synced when it
@@ -97,8 +134,26 @@ func (r *Runtime) Session() (*Session, error) {
 		return nil, fmt.Errorf("pgo: view of generation %d: %w", gen, err)
 	}
 
-	return &Session{b: b, store: store}, nil
+	return &Session{b: b, store: store, moved: moved}, nil
 }
+
+// Subscribe registers a channel pulsed for every job.<id> entry applied for id.
+// The pulse is a hint and never an answer:
+// the handler re-reads the record and decides from that read alone,
+// so a pulse carries nothing
+// and a full buffer drops one rather than blocking apply.
+// The returned function removes the registration and is called when the request ends.
+func (s *Session) Subscribe(id string) (<-chan struct{}, func()) { return s.b.Caches.Subscribe(id) }
+
+// GenerationMoved returns the channel this session captured when it was taken:
+// the one closed when the generation its view is bound to is left behind.
+// It is a field of the session and not a lookup,
+// so a generation that moves between a handler's read and its select still closes the channel it holds;
+// a lookup would hand back the replacement and lose the signal.
+func (s *Session) GenerationMoved() <-chan struct{} { return s.moved }
+
+// NewTimer is the session's clock, which is what bounds a request that waits.
+func (s *Session) NewTimer(d time.Duration) Timer { return s.b.Clock.NewTimer(d) }
 
 // Now is the session's clock, in UTC.
 func (s *Session) Now() time.Time { return s.b.Clock.Now().UTC() }
@@ -150,6 +205,34 @@ func (s *Session) WriteRecord(ctx context.Context, rec Record, revision uint64) 
 	}
 	if _, err := s.store.Jobs.Update(ctx, jobKey(rec.ID), value, revision); err != nil {
 		return fmt.Errorf("pgo: write collection %s: %w", rec.ID, err)
+	}
+
+	return nil
+}
+
+// ReadReceipt reads idem.<hash> authoritatively, past every cache,
+// because a receipt decides whether a Collection is created.
+// It reports the revision the receipt was read at,
+// which is the one a stale receipt is deleted at,
+// and natskv.ErrKeyNotFound for a key with no history.
+func (s *Session) ReadReceipt(ctx context.Context, key string) (Receipt, uint64, error) {
+	r, revision, gone, err := readReceipt(ctx, s.store.Jobs, key)
+	switch {
+	case err != nil:
+		return Receipt{}, 0, err
+	case gone:
+		return Receipt{}, 0, fmt.Errorf("pgo: read receipt %s: %w", key, natskv.ErrKeyNotFound)
+	}
+
+	return r, revision, nil
+}
+
+// DeleteReceipt removes a stale receipt at the revision its read returned.
+// Losing the delete means another writer got there first, which is what makes
+// the revision the guard rather than the key's existence.
+func (s *Session) DeleteReceipt(ctx context.Context, key string, revision uint64) error {
+	if err := s.store.Jobs.Delete(ctx, key, revision); err != nil {
+		return fmt.Errorf("pgo: delete receipt %s: %w", key, err)
 	}
 
 	return nil
@@ -222,10 +305,11 @@ func (s *Session) CachedOverride(ns, svc string) (*PolicyOverride, uint64) {
 	return s.b.Caches.Override(ns, svc)
 }
 
-// Collections lists what the watched job cache holds for one Service, newest
-// first and at most maxListCollections entries.
-func (s *Session) Collections(ns, svc string) []CollectionView {
-	return s.b.Caches.Collections(ns, svc)
+// Collections lists what the watched job cache holds for one Service, newest first:
+// the page the query asks for,
+// and whether the listing holds more entries behind it.
+func (s *Session) Collections(ns, svc string, q CollectionQuery) ([]CollectionView, bool) {
+	return s.b.Caches.Collections(ns, svc, q)
 }
 
 // Live reports whether the caches already show the Service as holding a live
@@ -260,6 +344,80 @@ func (s *Session) OpenArtifact(ctx context.Context, object string) (io.ReadClose
 	}
 
 	return rc, nil
+}
+
+// LatestCompleted returns the newest Collection of a Service that is completed
+// and whose artifact is still in the store,
+// together with that artifact open for reading; the caller closes it.
+// The watched cache is a candidate filter and never the authority:
+// each candidate costs one authoritative Get,
+// a candidate whose fresh read is not completed is dropped,
+// and one whose object cannot be opened is flipped to expired
+// at the revision that read returned before the walk continues.
+// The open is the confirmation,
+// so the reader a caller streams is the one the walk confirmed
+// and no second open can find the object gone.
+// It is natskv.ErrKeyNotFound when no candidate survives,
+// and a store that cannot be read is reported rather than an older Collection:
+// a store the gateway cannot read says nothing about which artifact is newest.
+func (s *Session) LatestCompleted(ctx context.Context, ns, svc string) (StoredRecord, io.ReadCloser, error) {
+	candidates, _ := s.b.Caches.Collections(ns, svc, CollectionQuery{})
+	for _, v := range candidates {
+		if v.State != StateCompleted {
+			continue
+		}
+
+		stored, err := s.ReadRecord(ctx, v.ID)
+		switch {
+		case err == nil:
+		case errors.Is(err, natskv.ErrKeyNotFound):
+			// The record reached its retention while the cache still held it.
+			continue
+		default:
+			return StoredRecord{}, nil, err
+		}
+		if stored.Record.State != StateCompleted {
+			continue
+		}
+
+		object := ""
+		if stored.Record.Artifact != nil {
+			object = stored.Record.Artifact.Object
+		}
+		if object == "" {
+			s.expireGoneArtifact(ctx, stored)
+
+			continue
+		}
+
+		body, err := s.OpenArtifact(ctx, object)
+		switch {
+		case err == nil:
+			return stored, body, nil
+		case errors.Is(err, natskv.ErrObjectNotFound):
+			s.expireGoneArtifact(ctx, stored)
+		default:
+			return StoredRecord{}, nil, err
+		}
+	}
+
+	return StoredRecord{}, nil, fmt.Errorf("pgo: %s/%s has no completed collection with its artifact: %w",
+		ns, svc, natskv.ErrKeyNotFound)
+}
+
+// expireGoneArtifact flips a completed record whose object is no longer in the store.
+// The conditional update at the revision the fresh read returned is what decides:
+// the reader that wins it owns the transition's log record and its metric row,
+// exactly as the sweeper owns the same transition on its own path,
+// so one flip is never counted twice.
+// A lost update is another reader's flip and needs nothing from this one.
+func (s *Session) expireGoneArtifact(ctx context.Context, stored StoredRecord) {
+	rec := stored.Record
+	rec.State = StateExpired
+	if err := s.WriteRecord(ctx, rec, stored.Revision); err != nil {
+		return
+	}
+	s.RecordTransition(rec)
 }
 
 // ReleaseActive frees the Service the moment its Collection ends.
@@ -319,6 +477,28 @@ func readJob(ctx context.Context, jobs natskv.KV, id string) (Record, bool, erro
 	}
 
 	return rec, false, nil
+}
+
+// readReceipt reads idem.<hash> fresh, past every cache,
+// and reports the revision it was read at and whether the key is gone.
+// No watch is opened on the prefix and no cache holds it,
+// so every read of a receipt is the store's answer;
+// an error means the read said nothing at all,
+// and a caller that could not read a receipt deletes nothing.
+func readReceipt(ctx context.Context, jobs natskv.KV, key string) (Receipt, uint64, bool, error) {
+	e, err := jobs.Get(ctx, key)
+	if errors.Is(err, natskv.ErrKeyNotFound) {
+		return Receipt{}, 0, true, nil
+	}
+	if err != nil {
+		return Receipt{}, 0, false, err
+	}
+	var r Receipt
+	if err := json.Unmarshal(e.Value, &r); err != nil {
+		return Receipt{}, 0, false, fmt.Errorf("pgo: read receipt %s: %w", key, err)
+	}
+
+	return r, e.Revision, false, nil
 }
 
 // releaseActive frees the Service the moment its Collection ends: it deletes

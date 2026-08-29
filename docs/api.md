@@ -64,8 +64,7 @@ The examples in the rest of this guide stay HTTP,
 except where authentication requires TLS;
 on an HTTPS listener this same shape applies to every one of them.
 
-There is no index route and no OpenAPI document.
-Twelve routes live under `/v1`; the seven that take path parameters are:
+Fifteen routes live under `/v1`; the nine that name a Service or a Collection in the path are:
 
 | Route | Methods |
 |---|---|
@@ -73,14 +72,26 @@ Twelve routes live under `/v1`; the seven that take path parameters are:
 | `/v1/namespaces/{ns}/services/{svc}/profiles/{profile}` | GET |
 | `/v1/namespaces/{ns}/services/{svc}/pgo` | GET, PUT, DELETE |
 | `/v1/namespaces/{ns}/services/{svc}/collections` | GET, POST |
+| `/v1/namespaces/{ns}/services/{svc}/collections/latest` | GET |
+| `/v1/namespaces/{ns}/services/{svc}/collections/latest/profile` | GET |
 | `/v1/collections/{id}` | GET |
 | `/v1/collections/{id}/profile` | GET |
 | `/v1/collections/{id}/cancel` | POST |
 
-Five more routes under `/v1` take no path parameter and answer from configuration or the cache:
+Six more routes under `/v1` name neither:
 [Listing endpoints](#listing-endpoints) below covers four of them,
-and [Discovering how to log in](#discovering-how-to-log-in) covers `GET /v1/auth`,
-the one `/v1` route that requires no credential.
+[Discovering how to log in](#discovering-how-to-log-in) covers `GET /v1/auth`,
+the one `/v1` route that requires no credential,
+and `GET /v1/openapi.json` serves the document described just below.
+
+That document is an OpenAPI 3.1 description of every route the API listener serves,
+whatever the configuration enables,
+and it names namespaces and Services as path templates rather than as values from any cluster.
+It is served from the binary and takes no credential,
+because what it publishes is the route grammar that `404 route_unknown`
+and the `Allow` header of a `405` already publish one request at a time.
+The ops listener's `/healthz`, `/readyz`, and `/metrics` are outside it.
+There is no index route.
 
 `{ns}` and `{svc}` must be DNS-1123 labels,
 and `{id}` is a Collection identifier: exactly 20 lowercase Crockford base32 characters
@@ -93,52 +104,66 @@ and its `Allow` header lists what the route accepts.
 ## How a request is processed
 
 A profile request runs this full sequence, and the first failing step answers.
-A targets request runs steps 1 through 10 —
+A targets request runs steps 1 through 11 —
 parameter validation, the port allowlist, discovery, and the `version` and `pod` filters included —
 and answers from what remains after filtering, choosing no single target;
 it never reaches admission, confirmation, or the proxy.
-A policy or Collection request runs only steps 1 through 7 and then dispatches to its handler.
-A listing request ([Listing endpoints](#listing-endpoints)) runs the same steps 1 through 8 and then stops,
+A policy or Collection request runs only steps 1 through 8 and then dispatches to its handler.
+A listing request ([Listing endpoints](#listing-endpoints)) runs the same steps 1 through 9 and then stops,
 answering from the configuration snapshot or the Service cache with no discovery, selection, admission,
 confirmation, or proxy step.
-`GET /v1/auth` runs steps 1 through 3 and then step 8 alone:
-it has no credential-placement, authentication, or realm step,
-because it is the route a client reads before it holds a credential
+`GET /v1/auth` and `GET /v1/openapi.json` run the route, method, and readiness steps
+and then the parameter step alone, where each refuses any query parameter it was sent:
+neither has a credential-placement, authentication, or realm step,
+because each is read before the client holds a credential
 ([Discovering how to log in](#discovering-how-to-log-in)).
 
-1. **Route** — the path must match one of the twelve `/v1` routes (`404 route_unknown`),
+1. **Route** — the path must match one of the fifteen `/v1` routes (`404 route_unknown`),
    and a profile route must name a known profile (`404 profile_unknown`).
 2. **Method** — `405 method_not_allowed` plus `Allow` otherwise.
-3. **Readiness** — until discovery has synced its caches, everything answers `503 not_ready`;
+3. **JSON media type** — the two Collection writes,
+   `POST .../collections` and `POST /v1/collections/{id}/cancel`,
+   must declare `Content-Type: application/json`, sent once, with any parameters they like (`400 invalid_parameter`).
+   The step reads the request's own headers and nothing else,
+   so it answers alike for every caller, before readiness and before any credential is read.
+   The policy writes, `PUT` and `DELETE .../pgo`, do not run it.
+4. **Readiness** — until discovery has synced its caches, everything answers `503 not_ready`;
    under `auth.mode: oidc` the same answer also covers the time before issuer discovery
    and the initial signing-key fetch have succeeded.
-4. **PGO gate** — a PGO route answers `501 pgo_disabled` when `pgo.enabled` is false,
+5. **PGO gate** — a PGO route answers `501 pgo_disabled` when `pgo.enabled` is false,
    and `503 pgo_unavailable` while the NATS stores cannot be decided from.
-5. **Credential placement** — an `access_token` query parameter is refused with `400 invalid_parameter`,
+6. **Credential placement** — an `access_token` query parameter is refused with `400 invalid_parameter`,
    in every authentication mode, before any credential is read.
-6. **Authentication** — the principal and its realm are resolved per `auth.mode`
+7. **Authentication** — the principal and its realm are resolved per `auth.mode`
    (`401 unauthenticated`, `429 too_many_auth`, `503 auth_unavailable`, or, for a browser navigation, `302`;
    see [Authentication](#authentication)).
-7. **Realm** — the request's realm must allow the namespace, Service, profile, and PGO action
+8. **Realm** — the request's realm must allow the namespace, Service, profile, and PGO action
    (`403 realm_denied`; see [Realms](#realms)).
-8. **Parameters** — query string, request body, and preconditions are validated
+9. **Parameters** — query string, request body, and preconditions are validated
    (`400 invalid_parameter` and friends).
    `port` and `portName` (never both) are checked here too:
    malformed or repeated is `400 invalid_parameter`,
    and a well-formed value `discovery.pprof.allowedSelections` does not admit is `400 port_not_allowed` —
    both answered before discovery runs.
-9. **Discovery** — the Service is resolved to its Ready Pods
-   (`404 service_not_found`, `422 service_selectorless`, `503 discovery_unavailable`).
-10. **Select** — on the profile endpoint, `version` then `pod` are applied and one target is chosen
+10. **Discovery** — the Service is resolved to its Ready Pods
+    (`404 service_not_found`, `422 service_selectorless`, `503 discovery_unavailable`).
+11. **Select** — on the profile endpoint, `version` then `pod` are applied and one target is chosen
     (`404 pod_not_found`, `503 no_targets`);
     on the targets endpoint, the same two filters narrow the list rather than choose from it,
     and an empty result is `200` with an empty array.
-11. **Admission** — a concurrency slot is taken or the request is refused now (`429 too_many_profiles`).
-12. **Confirm** — the chosen Pod is re-checked against the API server just before dialing
+12. **Admission** — a concurrency slot is taken or the request is refused now (`429 too_many_profiles`).
+13. **Confirm** — the chosen Pod is re-checked against the API server just before dialing
     (`503 target_changed`, which is safe to retry).
-13. **Proxy** — the profile is fetched from the Pod and streamed back.
+14. **Proxy** — the profile is fetched from the Pod and streamed back.
 
-Every response, success or failure, carries `Cache-Control: no-store`.
+Every response, success or failure, carries `Cache-Control: no-store` and `X-Request-Id`.
+The identifier is set before any routing decision, so a `404` on an unknown path carries one too,
+and the audit record of the same request names it under `requestId`,
+which is what joins a client's report to the gateway's log.
+A request may choose its own by sending `X-Request-Id` once,
+1 to 128 bytes drawn from `[A-Za-z0-9._-]`;
+anything else is replaced by a generated value rather than refused, because the identifier decides nothing.
+Both listeners set it, so `/healthz`, `/readyz`, and `/metrics` carry one as well.
 Failures use the [error envelope](#errors) described at the end of this guide.
 
 ## Listing targets
@@ -473,12 +498,16 @@ go tool trace trace.out
 
 ## PGO collection
 
-The five PGO routes are always recognized but unavailable until the operator has enabled collection:
+The seven PGO routes are always recognized but unavailable until the operator has enabled collection:
 with `pgo.enabled` false they all answer `501 pgo_disabled`,
 and while the gateway cannot reach its NATS stores they answer `503 pgo_unavailable`.
 What a Collection actually does — rounds, merging, artifacts — is described in [pgo.md](pgo.md);
 this section covers the API surface.
-None of the PGO routes take query parameters.
+Two of the seven take query parameters — the Collection listing and the Collection read —
+and the other five refuse every one with `400 invalid_parameter`.
+`POST .../collections` and `POST /v1/collections/{id}/cancel` require
+`Content-Type: application/json`, sent once, with any parameters they like;
+the policy writes do not.
 
 ### Policy override
 
@@ -503,7 +532,7 @@ Every response body has the same shape:
     "schedule": {"every": "6h", "jitter": "10m"},
     "sampling": {"duration": "30s", "rounds": 3, "roundInterval": "30s", "replicas": "all", "maxParallel": 4},
     "target": {"versionPolicy": "strict", "version": ""},
-    "artifact": {"retention": "2h"}
+    "artifact": {"retention": "24h"}
   },
   "violations": [],
   "updatedBy": "anonymous",
@@ -556,13 +585,17 @@ send the full override you want stored.
 ```
 GET  /v1/namespaces/{ns}/services/{svc}/collections
 POST /v1/namespaces/{ns}/services/{svc}/collections
+GET  /v1/namespaces/{ns}/services/{svc}/collections/latest
+GET  /v1/namespaces/{ns}/services/{svc}/collections/latest/profile
 GET  /v1/collections/{id}
 GET  /v1/collections/{id}/profile
 POST /v1/collections/{id}/cancel
 ```
 
 `GET .../collections` lists the Service's Collections newest first,
-at most the newest 100 records, with no pagination:
+ordered by `createdAt` descending and then by `id` descending,
+which is what makes the order total: two records created in the same instant never swap places between reads.
+This page has one entry and more behind it:
 
 ```json
 {
@@ -577,12 +610,35 @@ at most the newest 100 records, with no pagination:
       "resolvedVersion": "1.42.0",
       "createdAt": "2026-08-26T09:00:00Z",
       "finishedAt": "2026-08-26T09:04:12Z",
-      "expiresAt": "2026-08-26T11:04:12Z"
+      "expiresAt": "2026-08-27T09:04:12Z"
     }
-  ]
+  ],
+  "nextCursor": "MTIwMjYtMDgtMjZUMDk6MDA6MDBaCjNnN2hrMm05cDRxcjhzMXR2dzV4CgoK"
 }
 ```
 
+Five query parameters shape the page:
+
+| Parameter | Value |
+|---|---|
+| `state` | one of the seven Collection states; repeatable, and a record is kept when it matches any of them |
+| `origin` | `schedule` or `api` |
+| `since` | an RFC 3339 instant; a record created at or after it is kept |
+| `limit` | 1 to 100, and 100 when absent |
+| `cursor` | the `nextCursor` of the page before |
+
+The filters apply first, then the cursor, then the limit.
+`nextCursor` is present only while entries remain behind the page,
+so its absence is how a client knows it has reached the end.
+A cursor carries the filters it was minted under,
+and sending it beside different ones is `400 invalid_parameter`:
+a position in one filtered listing names nothing in another,
+and reading it there would skip records silently where a refusal costs one corrected request.
+The cursor names a place in the order by value rather than by record,
+so it still pages correctly after the record it was minted from has been swept away.
+
+The listing reads the replica's watched cache,
+so a Collection appears in it once the watch has delivered it and not before.
 A Collection that falls off the listing stays readable at `GET /v1/collections/{id}`
 until `pgo.jobRetention` expires it,
 so a client that needs a Collection later should keep the `id`
@@ -593,11 +649,30 @@ The body is optional — an empty body means "use the Service's effective policy
 and otherwise it is a one-shot policy override for this Collection only.
 It has the same shape and layering as the stored override,
 except that `enabled` and `schedule` may not appear (they are rejected as `400 invalid_parameter`).
+The media type is declared even when the body is empty.
 On success the answer is `202` with a `Location` header pointing at the record:
 
 ```json
 {"id": "3g7hk2m9p4qr8s1tvw5x", "state": "pending"}
 ```
+
+A create may carry an `Idempotency-Key` header, sent once,
+1 to 128 bytes drawn from `[A-Za-z0-9._-]`;
+a key the gateway cannot read is `400 invalid_parameter`,
+because this header decides whether a Collection is created.
+The key binds to the Collection it creates, so sending it again creates nothing.
+A repeat asking for the same thing answers `200` with the same `{"id", "state"}` body and the same `Location`,
+`state` being the Collection's state as it stands now.
+The replay is the create acknowledgement again and never the full record:
+this route needs the realm's `pgo.collect` flag while reading a record needs `pgo.read`.
+A repeat asking for something else answers `409 idempotency_mismatch`, which carries no `details`.
+What the request asks for is the effective policy it would run rather than the bytes it sent,
+so identical JSON is a different request
+once the Service's stored override or the operator's defaults have moved under it.
+A key belongs to the principal, namespace, and Service that used it,
+so two callers, or one caller on two Services, never collide.
+A key whose Collection has passed its retention, and one whose publication never completed,
+bind nothing: the next create under that key creates.
 
 A create can be refused with `429`:
 `rate_limited` when the on-demand token bucket (`pgo.limits.onDemandPerMinute`) is empty,
@@ -609,7 +684,24 @@ so it cannot start when no Pod carries a usable version label,
 when no eligible Pod matches a pinned `target.version`,
 or when the Pods disagree on their version.
 
-`GET /v1/collections/{id}` answers the full stored record.
+`GET /v1/collections/{id}` answers the full stored record,
+at once by default and after a wait with `?wait=`.
+`wait` is a Go duration from `1s` to `60s`, and anything else is `400 invalid_parameter`;
+a value above the top is refused rather than clamped,
+because a parameter that silently becomes another value teaches a client that its input was accepted as sent.
+The request is then held open until the record's state moves, and answered from a read taken after the move.
+Four other endings close it:
+the deadline, which answers with a fresh read as well;
+the replica draining, which answers with the record it last read;
+that replica's connection to the stores moving generation, which is `503 pgo_unavailable`,
+because a replica whose watches are replaying cannot promise the answer is current;
+and the client going away, which is answered to nobody.
+A record that is already `completed`, `failed`, `cancelled`, or `expired` answers at once whatever the wait asked.
+Every answer to a wait the gateway accepted carries `X-Wait-Elapsed`,
+how long the request was held open, in decimal seconds with millisecond precision,
+so a client tells a wait that ran from one that never started without timing the request itself.
+The audit record of the same request carries the duration asked for under `wait`.
+
 The interesting fields:
 
 - `state` — one of `initializing`, `pending`, `running`, `completed`, `failed`, `cancelled`, `expired`.
@@ -622,6 +714,18 @@ The interesting fields:
 - `createdAt`, `startedAt`, `finishedAt`, `expiresAt` — the timestamps of its life;
   `expiresAt` is when a completed profile's retention runs out.
 
+`GET .../collections/latest` answers the newest Collection of the Service whose merged profile is still stored,
+and `GET .../collections/latest/profile` downloads that same profile,
+so a build fetches the newest usable profile in one request without knowing an identifier.
+One walk both picks the Collection and opens its bytes:
+the replica's watched cache only narrows the candidates,
+each candidate costs an authoritative read, and opening the artifact is the confirmation,
+so the record the first route answers with is the record whose bytes the second streams,
+and neither answers `410 artifact_gone` while an intact artifact exists.
+A Service with none answers `404 collection_not_found`,
+which covers one that has never collected and one whose artifacts have all expired.
+Both need the realm's `pgo.read` flag, as the identifier-scoped reads do.
+
 `GET /v1/collections/{id}/profile` downloads the merged profile:
 `application/octet-stream` with `Content-Disposition: attachment; filename="{id}.pprof"`,
 plus `X-Pprof-Collection` and `X-Pprof-Target-Version` headers.
@@ -629,8 +733,8 @@ Only a `completed` Collection has one:
 an `expired` Collection answers `410 artifact_gone`,
 and every other state answers `409 collection_not_completed`.
 
-`POST /v1/collections/{id}/cancel` (no body) ends a live Collection
-and answers `200` with the updated record.
+`POST /v1/collections/{id}/cancel` ends a live Collection and answers `200` with the updated record.
+It carries no body and still declares `Content-Type: application/json`.
 A Collection that already finished answers `409 collection_terminal`,
 and one still `initializing` answers `409 collection_initializing` — retry shortly.
 
@@ -643,7 +747,7 @@ curl -sf -X PUT \
   http://localhost:8080/v1/namespaces/payments/services/checkout/pgo
 
 # 2. Start an on-demand collection.
-curl -sf -X POST \
+curl -sf -X POST -H 'Content-Type: application/json' \
   http://localhost:8080/v1/namespaces/payments/services/checkout/collections
 # -> 202 {"id": "3g7hk2m9p4qr8s1tvw5x", "state": "pending"}
 
@@ -832,7 +936,7 @@ The PGO flags gate the PGO routes by what they do:
 
 | Flag | Grants |
 |---|---|
-| `read` | `GET .../pgo`, `GET .../collections`, `GET /v1/collections/{id}`, `GET /v1/collections/{id}/profile` |
+| `read` | `GET .../pgo`, `GET .../collections`, `GET .../collections/latest`, `GET .../collections/latest/profile`, `GET /v1/collections/{id}`, `GET /v1/collections/{id}/profile` |
 | `collect` | `POST .../collections`, `POST /v1/collections/{id}/cancel` |
 | `configure` | `PUT .../pgo`, `DELETE .../pgo` |
 
@@ -854,8 +958,8 @@ Every gateway-generated failure is a JSON envelope with a stable machine-readabl
 The message names at most a namespace, a Service, a Pod, or the `port`/`portName` value the client sent —
 never a Pod address, and never the port number a `portName` selection resolved to.
 
-`400 port_not_allowed` also carries a `details` array with exactly one item,
-naming the query parameter the client sent and the value it sent, and nothing else:
+A refusal whose code has a vocabulary also carries a `details` array,
+naming the inputs the caller has to change and nothing else:
 
 ```json
 {
@@ -865,8 +969,24 @@ naming the query parameter the client sent and the value it sent, and nothing el
 }
 ```
 
-`field` is `port` or `portName`, whichever the request carried, and `code` is always `not_admitted`.
-Every other error omits the `details` key entirely — never `null`, never `[]`.
+Each item holds `field`, `code`, and `message`.
+`field` is the input at fault — a query parameter name, a header name, or a JSON pointer into the request body,
+and empty where no single input is at fault — and the item's `code` says which of the three it names.
+`message` is free text and may change.
+`code` is the stable part, drawn from the vocabulary of the envelope's own code, and three codes have one:
+
+| Code | Its `details` vocabulary |
+|---|---|
+| `invalid_parameter` | `unknown_parameter`, `repeated_parameter`, `empty_parameter`, `malformed_parameter`, `parameter_not_applicable`, `mutually_exclusive`, `header_required`, `header_malformed`, `unknown_field`, `field_not_applicable`, `body_not_allowed`, `body_malformed` |
+| `limit_exceeded` | `above_maximum`, `below_minimum`, `out_of_range`, `not_permitted`, `retention_under_interval` |
+| `port_not_allowed` | `not_admitted`, its only value |
+
+In `invalid_parameter` the first six values name a query parameter,
+`header_required` and `header_malformed` name a request header,
+and the last four name the request body.
+Items arrive in the order the inputs were validated, which for query parameters is name order.
+Every other code omits the `details` key entirely — never `null`, never `[]` —
+and `409 idempotency_mismatch` is one of them.
 When the target Pod itself answers an HTTP error,
 the gateway forwards that status and body verbatim instead of wrapping it.
 
@@ -879,7 +999,7 @@ the gateway forwards that status and body verbatim instead of wrapping it.
 | 401 | `unauthenticated` | No credential, a wrong or expired one, or one that maps to no realm; see [Authentication](#authentication). `WWW-Authenticate` names the scheme. |
 | 403 | `realm_denied` | The realm does not allow this namespace, Service, profile, or PGO action. |
 | 403 | `config_api_disabled` | `pgo.configAPI` is `disabled`; policy reads still work. |
-| 404 | `route_unknown` | The path is not one of the twelve `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
+| 404 | `route_unknown` | The path is not one of the fifteen `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
 | 404 | `profile_unknown` | The profile name is not in the profile table. |
 | 404 | `service_not_found` | The Service does not exist in that namespace. |
 | 404 | `pod_not_found` | The pinned Pod is not currently an eligible target. |
@@ -891,6 +1011,7 @@ the gateway forwards that status and body verbatim instead of wrapping it.
 | 409 | `collection_not_completed` | The Collection has no stored profile (it is not `completed`). |
 | 409 | `collection_initializing` | The Collection is still being published; retry shortly. |
 | 409 | `collection_terminal` | The Collection already finished, so it cannot be cancelled. |
+| 409 | `idempotency_mismatch` | The `Idempotency-Key` already stands for a create that asked for something else; carries no `details`. |
 | 410 | `artifact_gone` | The Collection's profile has expired and is no longer stored. |
 | 412 | `precondition_failed` | `If-Match` names a revision the policy has moved past; re-read and retry. |
 | 422 | `service_selectorless` | The Service has no selector, so it has no Pods to profile. |

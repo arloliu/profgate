@@ -195,6 +195,10 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	if cfg.PGO.Enabled {
 		pgoRuntime = pgo.NewRuntime()
 	}
+	// The signal a request held open by a wait ends on.
+	// It closes with readiness, before the endpoint-removal window,
+	// so no poll outlasts the drain the deployment sized.
+	drainSignal := make(chan struct{})
 	apiDeps := httpapi.Deps{
 		Discovery: cluster,
 		Upstream:  deps.upstream,
@@ -204,6 +208,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		PGO:       pgoRuntime,
 		Auth:      authenticator,
 		Ready:     handlersReady,
+		Drain:     drainSignal,
 		Logger:    logger,
 	}
 	if oidc != nil {
@@ -342,7 +347,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	if cfg.PGO.Enabled {
 		natsCh = make(chan natsResult, 1)
 		go func() {
-			client, err := natsPreflight(runCtx, deps, cfg.NATS, owner.Instance, logger)
+			client, err := natsPreflight(runCtx, deps, cfg.NATS, owner.Instance, pgoRuntime, logger)
 			natsCh <- natsResult{client: client, err: err}
 		}()
 	}
@@ -350,6 +355,9 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	shutdown := func(mode shutdownMode) {
 		start := time.Now()
 		draining.Store(true)
+		// Every arm of the loop below returns once it has drained,
+		// so this runs exactly once.
+		close(drainSignal)
 		// Stops the scheduler, the sweeper, and the worker's claiming.
 		// The informers are the one thing that outlives it, until the waits
 		// below have ended: an in-flight Collection finishes when it can, and
@@ -595,15 +603,25 @@ type natsResult struct {
 // a missing bucket, a bucket of the wrong kind, a configuration outside the contract, a denied probe —
 // because no amount of waiting turns it into a pass.
 func natsPreflight(
-	ctx context.Context, deps serveDeps, nats config.NATSConfig, instance string, logger *slog.Logger,
+	ctx context.Context, deps serveDeps, nats config.NATSConfig, instance string,
+	runtime *pgo.Runtime, logger *slog.Logger,
 ) (natskv.Client, error) {
 	opts := natskv.Options{
 		URL:            nats.URL,
 		CredsFile:      nats.CredsFile,
 		ConnectTimeout: nats.ConnectTimeout,
-		// Without the report Preflight makes on its first connection,
-		// the gauge would read zero until the first reconnect.
-		OnConnectionChange: deps.recorder.NATSConnected,
+		// The one report has two readers.
+		// Without the one Preflight makes on its first connection,
+		// the gauge would read zero until the first reconnect;
+		// the broadcast a request held open by a wait selects on is moved by the disconnect alone,
+		// which is the only report a generation moves with,
+		// and it moves before the report is made.
+		OnConnectionChange: func(connected bool) {
+			deps.recorder.NATSConnected(connected)
+			if !connected {
+				runtime.MoveGeneration()
+			}
+		},
 	}
 	backoff := preflightBackoffFirst
 	for {

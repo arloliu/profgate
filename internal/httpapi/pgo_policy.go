@@ -28,22 +28,22 @@ var ifMatchRE = regexp.MustCompile(`^"[0-9]+"$`)
 var (
 	errPreconditionFailed = &requestError{
 		status:  http.StatusPreconditionFailed,
-		code:    "precondition_failed",
+		code:    CodePreconditionFailed,
 		message: "the policy has moved since the revision If-Match names",
 	}
 	errPreconditionRequired = &requestError{
 		status:  http.StatusPreconditionRequired,
-		code:    "precondition_required",
+		code:    CodePreconditionRequired,
 		message: "the service already has a policy override; send If-Match with its ETag",
 	}
 	errOverrideNotFound = &requestError{
 		status:  http.StatusNotFound,
-		code:    "pgo_override_not_found",
+		code:    CodePGOOverrideNotFound,
 		message: "the service has no policy override",
 	}
 	errConfigAPIDisabled = &requestError{
 		status:  http.StatusForbidden,
-		code:    "config_api_disabled",
+		code:    CodeConfigAPIDisabled,
 		message: "the policy configuration api is disabled",
 	}
 )
@@ -297,27 +297,47 @@ func parseIfMatch(header string) (revision uint64, present bool, err *requestErr
 		return 0, false, nil
 	}
 	if !ifMatchRE.MatchString(header) {
-		return 0, false, invalidParameter("If-Match must be a quoted decimal revision, as the ETag carries it")
+		return 0, false, ifMatchMalformed()
 	}
 	revision, parseErr := strconv.ParseUint(strings.Trim(header, `"`), 10, 64)
 	if parseErr != nil {
-		return 0, false, invalidParameter("If-Match must be a quoted decimal revision, as the ETag carries it")
+		return 0, false, ifMatchMalformed()
 	}
 
 	return revision, true, nil
 }
 
+// ifMatchMalformed refuses an If-Match the route carried and cannot read.
+// The header is optional, so its absence is no condition rather than a fault.
+func ifMatchMalformed() *requestError {
+	const message = "If-Match must be a quoted decimal revision, as the ETag carries it"
+
+	return invalidParameter(message, headerFault(detailHeaderMalformed, "If-Match", message))
+}
+
 // limitExceeded is the refusal of a policy that a current ceiling would not
 // hold, naming the fields so the caller knows what to lower.
+// One item per violation carries the violation's own code and detail, in the
+// order validation produced them.
 func limitExceeded(violations []pgo.Violation) *requestError {
 	fields := make([]string, 0, len(violations))
+	items := make([]errorDetail, 0, len(violations))
 	for _, v := range violations {
 		fields = append(fields, v.Field+" ("+v.Detail+")")
+		items = append(items, bodyFault(v.Code, policyPointer(v.Field), v.Detail))
 	}
 
 	return &requestError{
 		status:  http.StatusBadRequest,
-		code:    "limit_exceeded",
+		code:    CodeLimitExceeded,
 		message: "the effective policy exceeds a limit: " + strings.Join(fields, ", "),
+		details: items,
 	}
+}
+
+// policyPointer writes a dotted policy field as a JSON pointer into the body.
+// GET /pgo keeps publishing the dotted form its clients already read, so the
+// two renderings of one field are produced in exactly one place each.
+func policyPointer(field string) string {
+	return "/" + strings.ReplaceAll(field, ".", "/")
 }

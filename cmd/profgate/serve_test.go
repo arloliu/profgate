@@ -47,6 +47,7 @@ import (
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
 	"github.com/arloliu/profgate/internal/natskv"
+	"github.com/arloliu/profgate/internal/pgo"
 	"github.com/arloliu/profgate/internal/proxy"
 )
 
@@ -1172,6 +1173,73 @@ func (emptyKV) Watch(ctx context.Context, _ string) (<-chan natskv.Entry, error)
 	return ch, nil
 }
 
+// waitCollectionID is the Collection a parked wait names.
+// It is the identifier grammar the route table admits: twenty Crockford base32 characters.
+const waitCollectionID = "abcdefghjkmnpqrstv00"
+
+// oneRecordKV is a bucket holding one Collection record, which is what a
+// request held open by a wait needs to exist.
+// Nothing ever writes it, so the record never moves and the wait ends only on
+// the drain or on its own deadline.
+type oneRecordKV struct {
+	emptyKV
+	key   string
+	value []byte
+}
+
+func newOneRecordKV(t *testing.T, id string) *oneRecordKV {
+	t.Helper()
+
+	value, err := json.Marshal(pgo.Record{
+		ID:        id,
+		Namespace: fixtureNamespace,
+		Service:   fixtureService,
+		Origin:    pgo.OriginSchedule,
+		State:     pgo.StatePending,
+		CreatedBy: "schedule",
+	})
+	if err != nil {
+		t.Fatalf("encode the collection record: %v", err)
+	}
+
+	return &oneRecordKV{key: "job." + id, value: value}
+}
+
+// entry is the record as a watch and a read both deliver it.
+func (k *oneRecordKV) entry() natskv.Entry {
+	return natskv.Entry{Key: k.key, Value: k.value, Revision: 1, Generation: fakeGeneration}
+}
+
+func (k *oneRecordKV) Get(_ context.Context, key string) (natskv.Entry, error) {
+	if key != k.key {
+		return natskv.Entry{}, natskv.ErrKeyNotFound
+	}
+
+	return k.entry(), nil
+}
+
+func (k *oneRecordKV) Keys(_ context.Context, prefix string) ([]string, error) {
+	if !strings.HasPrefix(k.key, prefix) {
+		return nil, nil
+	}
+
+	return []string{k.key}, nil
+}
+
+func (k *oneRecordKV) Watch(ctx context.Context, prefix string) (<-chan natskv.Entry, error) {
+	ch := make(chan natskv.Entry, 2)
+	if strings.HasPrefix(k.key, prefix) {
+		ch <- k.entry()
+	}
+	ch <- natskv.Entry{Synced: true, Generation: fakeGeneration}
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
+
+	return ch, nil
+}
+
 // emptyObjects is an Object Store holding nothing.
 type emptyObjects struct{}
 
@@ -1199,6 +1267,16 @@ type fakeNATS struct {
 func newFakeNATS(synced bool) *fakeNATS {
 	f := &fakeNATS{stores: natskv.Stores{Config: emptyKV{}, Jobs: emptyKV{}, Artifacts: emptyObjects{}}}
 	f.synced.Store(synced)
+
+	return f
+}
+
+// newFakeNATSHoldingOneRecord is the same connection with one Collection record in its job bucket.
+func newFakeNATSHoldingOneRecord(t *testing.T, id string) *fakeNATS {
+	t.Helper()
+
+	f := newFakeNATS(true)
+	f.stores.Jobs = newOneRecordKV(t, id)
 
 	return f
 }
@@ -1500,6 +1578,58 @@ func TestServePGO(t *testing.T) {
 		waitFor(t, waitTimeout, "NATSConnected(true)", func() bool { return len(gw.rec.connectedCalls()) > 0 })
 		if got := gw.rec.connectedCalls(); len(got) != 1 || !got[0] {
 			t.Fatalf("NATSConnected calls = %v, want exactly [true]", got)
+		}
+	})
+
+	t.Run("the drain ends a request held open by a wait", func(t *testing.T) {
+		const delay = 3 * time.Second
+		collection := "/v1/collections/" + waitCollectionID
+		worker := newStubWorker()
+		pf := newPreflightStub(preflightResult{client: newFakeNATSHoldingOneRecord(t, waitCollectionID)})
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
+			gatewayOpts{enabled: true, preflight: pf, worker: worker, drainDelay: delay})
+		gw.waitReady(t, waitTimeout)
+		waitFor(t, waitTimeout, "the collection route answering", func() bool {
+			code, _, err := get(gw.apiAddr, collection)
+
+			return err == nil && code == http.StatusOK
+		})
+
+		answered := make(chan int, 1)
+		go func() {
+			code, _, _ := get(gw.apiAddr, collection+"?wait=60s")
+			answered <- code
+		}()
+		// The record never moves, so nothing but the drain or the minute the
+		// wait asked for can end this request.
+		waitFor(t, waitTimeout, "the collection route answering beside the held request", func() bool {
+			code, _, err := get(gw.apiAddr, collection)
+
+			return err == nil && code == http.StatusOK
+		})
+		select {
+		case code := <-answered:
+			t.Fatalf("the wait answered %d before the drain began", code)
+		default:
+		}
+
+		gw.stopOnce()
+		gw.waitStatus(t, waitTimeout, gw.opsAddr, "/readyz", http.StatusServiceUnavailable)
+
+		// The signal closes with readiness and before the endpoint-removal
+		// window, so the answer arrives inside the window rather than at the
+		// minute the client asked for.
+		select {
+		case code := <-answered:
+			if code != http.StatusOK {
+				t.Errorf("the drained wait answered %d, want 200 with the record it last read", code)
+			}
+		case <-time.After(delay):
+			t.Fatalf("a request held open by a wait outlived the %s drain delay", delay)
+		}
+		worker.releaseDrain()
+		if code := gw.exitCode(t, delay+waitTimeout); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
 		}
 	})
 

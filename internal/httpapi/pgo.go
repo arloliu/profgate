@@ -1,12 +1,17 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
+	"strings"
+	"time"
 
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/natskv"
@@ -37,7 +42,7 @@ var (
 	// not replayed under this generation, or a call reported ErrUnavailable.
 	errPGOUnavailable = &requestError{
 		status:  http.StatusServiceUnavailable,
-		code:    "pgo_unavailable",
+		code:    CodePGOUnavailable,
 		message: "pgo state is unavailable",
 	}
 	// errCollectionNotFound is the one answer for a Collection that does not
@@ -46,23 +51,34 @@ var (
 	// realm hides and telling them alike costs nothing.
 	errCollectionNotFound = &requestError{
 		status:  http.StatusNotFound,
-		code:    "collection_not_found",
+		code:    CodeCollectionNotFound,
 		message: "no such collection",
 	}
 	errArtifactGone = &requestError{
 		status:  http.StatusGone,
-		code:    "artifact_gone",
+		code:    CodeArtifactGone,
 		message: "the profile of this collection is no longer stored",
 	}
 )
 
-// servePGOService dispatches the four Service-scoped PGO routes, past the
+// servePGOService dispatches the six Service-scoped PGO routes, past the
 // realm check their namespace and Service were evaluated against.
 func (s *server) servePGOService(
 	w http.ResponseWriter, r *http.Request, q *request, cfg *config.Config, sess *pgo.Session, principal string,
 ) {
-	if r.URL.RawQuery != "" {
-		q.fail(w, invalidParameter("this endpoint takes no parameters"))
+	// The Collection listing is the one Service-scoped route that takes query parameters;
+	// every other one refuses a query as it always has.
+	listing := q.route.kind == kindCollections && r.Method == http.MethodGet
+	var query pgo.CollectionQuery
+	if listing {
+		var perr *requestError
+		if query, perr = parseCollectionList(r.URL.RawQuery); perr != nil {
+			q.fail(w, perr)
+
+			return
+		}
+	} else if r.URL.RawQuery != "" {
+		q.fail(w, noParameters(r.URL.RawQuery))
 
 		return
 	}
@@ -74,8 +90,10 @@ func (s *server) servePGOService(
 		s.servePolicyWrite(w, r, q, cfg, sess, principal)
 	case q.route.kind == kindPGOPolicy:
 		s.servePolicyDelete(w, r, q, cfg, sess)
-	case r.Method == http.MethodGet:
-		s.serveCollectionList(w, q, sess)
+	case q.route.kind == kindCollectionLatest, q.route.kind == kindCollectionLatestProfile:
+		s.serveLatestCollection(w, r, q, sess)
+	case listing:
+		s.serveCollectionList(w, q, sess, query)
 	default:
 		s.serveCollectionCreate(w, r, q, sess, principal)
 	}
@@ -88,8 +106,24 @@ func (s *server) servePGOCollection(
 	w http.ResponseWriter, r *http.Request, q *request, _ *config.Config,
 	sess *pgo.Session, realm config.Realm,
 ) {
-	if r.URL.RawQuery != "" {
-		q.fail(w, invalidParameter("this endpoint takes no parameters"))
+	// The Collection read is the one route here that takes a parameter;
+	// the download and the cancel take none and refuse any query as they always have.
+	var wait time.Duration
+	if q.route.kind == kindCollection {
+		var perr *requestError
+		if wait, perr = parseWait(r.URL.RawQuery); perr != nil {
+			q.fail(w, perr)
+
+			return
+		}
+		q.audit.wait = wait
+		if wait > 0 {
+			// Every answer to an accepted wait carries the header, including
+			// the ones given before the wait itself begins.
+			w.Header().Set(waitElapsedHeader, waitElapsed(0))
+		}
+	} else if r.URL.RawQuery != "" {
+		q.fail(w, noParameters(r.URL.RawQuery))
 
 		return
 	}
@@ -115,13 +149,15 @@ func (s *server) servePGOCollection(
 
 	switch q.route.kind {
 	case kindCollection:
-		s.serveCollectionRead(w, q, stored)
+		s.serveCollectionRead(w, r, q, sess, stored, wait)
 	case kindCollectionProfile:
 		s.serveCollectionDownload(w, r, q, sess, stored)
 	case kindCollectionCancel:
 		s.serveCollectionCancel(w, r, q, sess, stored)
-	case kindTargets, kindProfile, kindPGOPolicy, kindCollections,
-		kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth:
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollectionLatest,
+		kindCollectionLatestProfile, kindNamespaces, kindServices,
+		kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout,
+		kindOpenAPI, kindConsole:
 		q.fail(w, errCollectionNotFound)
 	}
 }
@@ -163,38 +199,173 @@ func storeError(err error) *requestError {
 // type does not declare and anything after the first value.
 // allowEmpty accepts a request that sent no body at all as the empty object,
 // which is what POST /collections means by "every field is optional".
+//
+// The unknown field is located before the value is decoded, because the
+// standard decoder reports a field name with no path and a create body nests:
+// sampling.rounds and {"bogus": 1} would otherwise answer alike.
 func decodeBody(w http.ResponseWriter, r *http.Request, v any, allowEmpty bool) *requestError {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	dec.DisallowUnknownFields()
-
-	switch err := dec.Decode(v); {
-	case err == nil:
-	case errors.Is(err, io.EOF) && allowEmpty:
-		return nil
-	default:
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			return invalidParameter(fmt.Sprintf("the request body is larger than %d bytes", maxBodyBytes))
+			return bodyMalformed(fmt.Sprintf("the request body is larger than %d bytes", maxBodyBytes))
 		}
 
-		return invalidParameter(fmt.Sprintf("the request body is not valid: %v", err))
+		return bodyMalformed(fmt.Sprintf("the request body is not readable: %v", err))
+	}
+	if allowEmpty && len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	if pointer, found := firstUnknownField(raw, reflect.TypeOf(v)); found {
+		return invalidParameter(fmt.Sprintf("the request body carries no field %s", pointer),
+			bodyFault(detailUnknownField, pointer, "this route accepts no field at that path"))
 	}
 
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return bodyMalformed(fmt.Sprintf("the request body is not valid: %v", err))
+	}
 	if err := dec.Decode(new(struct{})); !errors.Is(err, io.EOF) {
-		return invalidParameter("the request body carries more than one value")
+		return bodyMalformed("the request body carries more than one value")
 	}
 
 	return nil
+}
+
+// bodyMalformed refuses a body no field of which can be named at fault:
+// one that is not JSON, one over the size limit, or one carrying a value the
+// target type cannot hold.
+func bodyMalformed(message string) *requestError {
+	return invalidParameter(message, bodyFault(detailBodyMalformed, "", message))
 }
 
 // rejectBody refuses a request that carries one where the route accepts none.
 func rejectBody(w http.ResponseWriter, r *http.Request) *requestError {
 	var probe [1]byte
 	if n, _ := io.ReadFull(http.MaxBytesReader(w, r.Body, 1), probe[:]); n > 0 {
-		return invalidParameter("this endpoint takes no request body")
+		const message = "this endpoint takes no request body"
+
+		return invalidParameter(message, bodyFault(detailBodyNotAllowed, "", message))
 	}
 
 	return nil
+}
+
+// The two interfaces that make a type decode itself.
+// Their inside is not a set of declared JSON names,
+// so the walk stops there and leaves a value they refuse to the strict decode,
+// which answers body_malformed.
+var (
+	jsonUnmarshalerType = reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+	textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
+)
+
+// firstUnknownField walks the body in document order against the JSON names t declares,
+// and returns a pointer to the first name it does not.
+// A body that is not a JSON object is left to the strict decode,
+// and so is a value whose shape the target type cannot hold.
+func firstUnknownField(raw []byte, t reflect.Type) (string, bool) {
+	return walkObject(raw, walkableStruct(t), "")
+}
+
+// walkObject reads one JSON object against the struct it decodes into,
+// descending into a field that is itself a struct of declared names.
+func walkObject(raw []byte, t reflect.Type, prefix string) (string, bool) {
+	if t == nil {
+		return "", false
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return "", false
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		name, ok := key.(string)
+		if !ok {
+			return "", false
+		}
+		pointer := prefix + "/" + escapePointer(name)
+		field, declared := declaredField(t, name)
+		if !declared {
+			return pointer, true
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return "", false
+		}
+		if inner, found := walkObject(value, walkableStruct(field), pointer); found {
+			return inner, true
+		}
+	}
+
+	return "", false
+}
+
+// walkableStruct is the struct type a JSON object may be walked against:
+// the type with its pointers removed, and nothing that decodes itself.
+func walkableStruct(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.Struct {
+		return nil
+	}
+	for _, iface := range []reflect.Type{jsonUnmarshalerType, textUnmarshalerType} {
+		if t.Implements(iface) || reflect.PointerTo(t).Implements(iface) {
+			return nil
+		}
+	}
+
+	return t
+}
+
+// declaredField finds the field a body name decodes into,
+// matching the way encoding/json does: the declared name exactly, then without regard to case.
+func declaredField(t reflect.Type, name string) (reflect.Type, bool) {
+	for _, fold := range []bool{false, true} {
+		for i := range t.NumField() {
+			f := t.Field(i)
+			declared, ok := declaredName(f)
+			if !ok {
+				continue
+			}
+			if declared == name || (fold && strings.EqualFold(declared, name)) {
+				return f.Type, true
+			}
+		}
+	}
+
+	return nil, false
+}
+
+// declaredName is the JSON name of one struct field, and false for a field
+// encoding/json never fills from a body.
+func declaredName(f reflect.StructField) (string, bool) {
+	if !f.IsExported() {
+		return "", false
+	}
+	tag, ok := f.Tag.Lookup("json")
+	if !ok {
+		return f.Name, true
+	}
+	name, _, _ := strings.Cut(tag, ",")
+	if name == "-" {
+		return "", false
+	}
+	if name == "" {
+		return f.Name, true
+	}
+
+	return name, true
+}
+
+// escapePointer writes one body field name as a JSON pointer token.
+func escapePointer(name string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(name, "~", "~0"), "/", "~1")
 }
 
 // writeJSON writes one PGO response body.

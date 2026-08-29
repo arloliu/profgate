@@ -266,8 +266,15 @@ func TestCachesCollectionsListsNewestFirst(t *testing.T) {
 	}
 	other := f.seedRecord("payment", "other-api", StateCompleted)
 
-	r.waitCache("three collections", func(c *Caches) bool { return len(c.Collections("payment", "payment-api")) == 3 })
-	got := r.caches.Collections("payment", "payment-api")
+	r.waitCache("three collections", func(c *Caches) bool {
+		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+
+		return len(views) == 3
+	})
+	got, more := r.caches.Collections("payment", "payment-api", CollectionQuery{})
+	if more {
+		t.Errorf("more = true, want false: the whole listing fits one page")
+	}
 
 	for i, view := range got {
 		if view.ID != want[i] {
@@ -282,25 +289,171 @@ func TestCachesCollectionsListsNewestFirst(t *testing.T) {
 	}
 }
 
-// TestCachesCollectionsCapsTheListing pins the ceiling of section "List
-// Collections": at most 100 entries and no pagination behind them.
-func TestCachesCollectionsCapsTheListing(t *testing.T) {
+// TestCachesCollectionsOrderIsTotal pins the order the Collection listing is read in:
+// createdAt descending,
+// and identifier descending where two records share an instant.
+// The identifier is random rather than time-ordered,
+// so that second key is what makes the order total,
+// and a cursor reads a page as the entries after a pair in exactly this order.
+func TestCachesCollectionsOrderIsTotal(t *testing.T) {
 	f := startPGO(t)
 	r := f.newReplica("a", replicaOpts{})
 	r.waitSynced()
 
-	for i := range maxListCollections + 5 {
-		id := f.seedRecord("payment", "payment-api", StateCompleted)
-		rec := f.record(id)
-		rec.CreatedAt = slotBase.Add(time.Duration(i) * time.Minute)
-		f.putJSON(f.jobs, jobKey(id), rec)
+	tie := slotBase.Add(time.Hour)
+	// The two that share an instant are seeded oldest identifier first, so an
+	// order that read the identifier ascending would return them as seeded.
+	for _, seed := range []struct {
+		id      string
+		created time.Time
+	}{
+		{"aaaaaaaaaaaaaaaaaaaa", tie},
+		{"zzzzzzzzzzzzzzzzzzzz", tie},
+		{"mmmmmmmmmmmmmmmmmmmm", slotBase},
+	} {
+		f.seedRecord("payment", "payment-api", StateCompleted, func(rec *Record) {
+			rec.ID = seed.id
+			rec.CreatedAt = seed.created
+		})
 	}
 
-	r.waitCache("every collection", func(c *Caches) bool {
-		return len(c.jobEntries()) == maxListCollections+5
+	r.waitCache("three collections", func(c *Caches) bool {
+		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+
+		return len(views) == 3
 	})
-	if got := len(r.caches.Collections("payment", "payment-api")); got != maxListCollections {
-		t.Errorf("listing length = %d, want %d", got, maxListCollections)
+
+	got, _ := r.caches.Collections("payment", "payment-api", CollectionQuery{})
+	want := []string{"zzzzzzzzzzzzzzzzzzzz", "aaaaaaaaaaaaaaaaaaaa", "mmmmmmmmmmmmmmmmmmmm"}
+	for i, view := range got {
+		if view.ID != want[i] {
+			t.Errorf("entry %d = %s, want %s", i, view.ID, want[i])
+		}
+	}
+}
+
+// TestCachesCollectionsPagesByValue covers what a cursor rests on:
+// a page is the entries sorting after a pair,
+// and nothing looks that pair's record up.
+// The record the position names is deleted between the two reads,
+// and the page after it is still the entries that sort after it, not the whole listing.
+func TestCachesCollectionsPagesByValue(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+
+	for i := range 3 {
+		f.seedRecord("payment", "payment-api", StateCompleted, func(rec *Record) {
+			rec.CreatedAt = slotBase.Add(time.Duration(i) * time.Minute)
+		})
+	}
+	r.waitCache("three collections", func(c *Caches) bool {
+		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+
+		return len(views) == 3
+	})
+
+	first, more := r.caches.Collections("payment", "payment-api", CollectionQuery{Limit: 2})
+	if len(first) != 2 || !more {
+		t.Fatalf("first page = %d entries, more %v, want 2 and true", len(first), more)
+	}
+	last := first[1]
+	after := CollectionPosition{CreatedAt: last.CreatedAt, ID: last.ID}
+
+	f.deleteKey(f.jobs, jobKey(last.ID))
+	r.waitCache("the deletion", func(c *Caches) bool {
+		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+
+		return len(views) == 2
+	})
+
+	rest, more := r.caches.Collections("payment", "payment-api", CollectionQuery{After: after})
+	if len(rest) != 1 || more {
+		t.Fatalf("page after a deleted position = %d entries, more %v, want 1 and false: %+v", len(rest), more, rest)
+	}
+	if rest[0].ID == first[0].ID {
+		t.Errorf("entry %s was on the first page, want only what sorts after the position", rest[0].ID)
+	}
+}
+
+// TestCachesCollectionsFilters keeps the records each filter names and drops
+// the rest, and the limit bounds what is left.
+func TestCachesCollectionsFilters(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+
+	running := f.seedRecord("payment", "payment-api", StateRunning, func(rec *Record) {
+		rec.CreatedAt = slotBase.Add(time.Hour)
+		rec.Origin = OriginAPI
+	})
+	f.seedRecord("payment", "payment-api", StateCompleted, func(rec *Record) {
+		rec.CreatedAt = slotBase
+	})
+	r.waitCache("both collections", func(c *Caches) bool {
+		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+
+		return len(views) == 2
+	})
+
+	for _, tc := range []struct {
+		name  string
+		query CollectionQuery
+		want  int
+	}{
+		{"one state", CollectionQuery{States: []State{StateRunning}}, 1},
+		{"two states", CollectionQuery{States: []State{StateRunning, StateCompleted}}, 2},
+		{"since the newer instant", CollectionQuery{Since: slotBase.Add(time.Hour)}, 1},
+		{"origin", CollectionQuery{Origin: OriginAPI}, 1},
+		{"an intersection that keeps nothing", CollectionQuery{
+			States: []State{StateCompleted}, Origin: OriginAPI}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := r.caches.Collections("payment", "payment-api", tc.query)
+			if len(got) != tc.want {
+				t.Fatalf("entries = %d, want %d: %+v", len(got), tc.want, got)
+			}
+			if tc.want == 1 && tc.name != "since the newer instant" && got[0].ID != running {
+				t.Errorf("entry = %s, want %s", got[0].ID, running)
+			}
+		})
+	}
+}
+
+// TestCachesCollectionsLimitsThePage bounds a page at the limit asked for and
+// at MaxListCollections, and reports that more entries stand behind it.
+func TestCachesCollectionsLimitsThePage(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+
+	for i := range MaxListCollections + 5 {
+		f.seedRecord("payment", "payment-api", StateCompleted, func(rec *Record) {
+			rec.CreatedAt = slotBase.Add(time.Duration(i) * time.Minute)
+		})
+	}
+	r.waitCache("every collection", func(c *Caches) bool {
+		return len(c.jobEntries()) == MaxListCollections+5
+	})
+
+	for _, tc := range []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{"no limit", 0, MaxListCollections},
+		{"a limit of its own", 10, 10},
+		{"a limit over the ceiling", MaxListCollections + 50, MaxListCollections},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, more := r.caches.Collections("payment", "payment-api", CollectionQuery{Limit: tc.limit})
+			if len(got) != tc.want {
+				t.Errorf("page = %d entries, want %d", len(got), tc.want)
+			}
+			if !more {
+				t.Errorf("more = false, want true: %d records stand behind the page", MaxListCollections+5-tc.want)
+			}
+		})
 	}
 }
 
@@ -397,4 +550,215 @@ func TestTokenBucketBoundsOnDemandCreation(t *testing.T) {
 	if bucket.Take() {
 		t.Error("the bucket refilled past its capacity")
 	}
+}
+
+// pulseWait is how long a subscription assertion gives one entry to reach the caches,
+// and how long it watches for a pulse that must never arrive.
+const pulseWait = 2 * time.Second
+
+// expectPulse fails unless the subscription is woken.
+func expectPulse(t *testing.T, what string, pulses <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-pulses:
+	case <-time.After(pulseWait):
+		t.Fatalf("no pulse for %s within %s", what, pulseWait)
+	}
+}
+
+// expectNoPulse fails when the subscription is woken.
+// The caller has already waited for the entry it means to see no pulse for, so
+// the window here only covers the fan-out that would follow it.
+func expectNoPulse(t *testing.T, what string, pulses <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-pulses:
+		t.Fatalf("a pulse arrived for %s", what)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// subscriberCount is how many registrations the caches hold for one record.
+func subscriberCount(c *Caches, id string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return len(c.subscribers[id])
+}
+
+// TestSubscribeWakesOnlyItsOwnRecord proves the fan-out is per record:
+// a request waiting on one Collection is woken by every entry applied for it,
+// and by no other Service's traffic.
+func TestSubscribeWakesOnlyItsOwnRecord(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+
+	mine := f.seedRecord("payment", "payment-api", StatePending)
+	other := f.seedRecord("payment", "payment-web", StatePending)
+	r.waitCache("both records", func(c *Caches) bool { return c.hasJob(mine) && c.hasJob(other) })
+
+	pulses, unsubscribe := r.caches.Subscribe(mine)
+	defer unsubscribe()
+
+	f.failRecord(other, ReasonNoSamples)
+	r.waitCache("the other record failed", func(c *Caches) bool {
+		return c.jobEntries()[jobKey(other)].State == StateFailed
+	})
+	expectNoPulse(t, "another record's entry", pulses)
+
+	f.failRecord(mine, ReasonNoSamples)
+	expectPulse(t, "the subscribed record's entry", pulses)
+
+	f.deleteKey(f.jobs, jobKey(mine))
+	expectPulse(t, "the subscribed record's deletion", pulses)
+}
+
+// TestSubscribeNeverBlocksAnApply proves a subscriber nobody is reading costs
+// the cache nothing: the send is dropped rather than held, so the entry is
+// applied and every other subscriber is woken.
+func TestSubscribeNeverBlocksAnApply(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+
+	id := f.seedRecord("payment", "payment-api", StatePending)
+	r.waitCache("the record", func(c *Caches) bool { return c.hasJob(id) })
+
+	_, unsubscribeIdle := r.caches.Subscribe(id)
+	defer unsubscribeIdle()
+	pulses, unsubscribe := r.caches.Subscribe(id)
+	defer unsubscribe()
+
+	// The idle subscriber's buffer fills on the first entry and stays full.
+	for _, state := range []State{StateRunning, StateFailed} {
+		rec := f.record(id)
+		rec.State = state
+		f.putJSON(f.jobs, jobKey(id), rec)
+		expectPulse(t, "an entry beside an idle subscriber", pulses)
+	}
+	r.waitCache("the record applied", func(c *Caches) bool {
+		return c.jobEntries()[jobKey(id)].State == StateFailed
+	})
+}
+
+// TestSubscribePulseIsCoalesced proves a pulse is a hint:
+// a buffer that is full drops the entry's wake-up rather than blocking apply,
+// and the next entry wakes the subscriber again.
+func TestSubscribePulseIsCoalesced(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+
+	id := f.seedRecord("payment", "payment-api", StatePending)
+	r.waitCache("the record", func(c *Caches) bool { return c.hasJob(id) })
+
+	pulses, unsubscribe := r.caches.Subscribe(id)
+	defer unsubscribe()
+
+	for _, state := range []State{StateRunning, StateCompleted} {
+		rec := f.record(id)
+		rec.State = state
+		f.putJSON(f.jobs, jobKey(id), rec)
+	}
+	r.waitCache("both entries applied", func(c *Caches) bool {
+		return c.jobEntries()[jobKey(id)].State == StateCompleted
+	})
+
+	expectPulse(t, "the first of two entries", pulses)
+	expectNoPulse(t, "the coalesced second entry", pulses)
+
+	f.deleteKey(f.jobs, jobKey(id))
+	expectPulse(t, "the entry after the coalesced one", pulses)
+}
+
+// TestUnsubscribeLeavesNothingBehind proves the registration ends with the
+// request: no further pulse reaches it and the caches hold no entry for it.
+func TestUnsubscribeLeavesNothingBehind(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+
+	id := f.seedRecord("payment", "payment-api", StatePending)
+	r.waitCache("the record", func(c *Caches) bool { return c.hasJob(id) })
+
+	pulses, unsubscribe := r.caches.Subscribe(id)
+	if got := subscriberCount(r.caches, id); got != 1 {
+		t.Fatalf("subscribers for the record = %d, want 1", got)
+	}
+	unsubscribe()
+	if got := subscriberCount(r.caches, id); got != 0 {
+		t.Errorf("subscribers after the request ended = %d, want 0", got)
+	}
+
+	f.failRecord(id, ReasonNoSamples)
+	r.waitCache("the record failed", func(c *Caches) bool {
+		return c.jobEntries()[jobKey(id)].State == StateFailed
+	})
+	expectNoPulse(t, "an entry after the registration was removed", pulses)
+
+	r.caches.mu.Lock()
+	left := len(r.caches.subscribers)
+	r.caches.mu.Unlock()
+	if left != 0 {
+		t.Errorf("subscriber map entries = %d, want 0: an empty registration is removed with its record", left)
+	}
+}
+
+// expectChannelClosed fails unless the channel is closed.
+func expectChannelClosed(t *testing.T, what string, ch <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-ch:
+	default:
+		t.Errorf("%s is still open", what)
+	}
+}
+
+// expectChannelOpen fails when the channel is closed.
+func expectChannelOpen(t *testing.T, what string, ch <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-ch:
+		t.Errorf("%s is closed", what)
+	default:
+	}
+}
+
+// TestGenerationBroadcastReachesEverySessionOfThatGeneration proves the broadcast ends a parked request:
+// every session taken under the generation being left behind sees its channel close,
+// and a session taken after the move holds the channel of the generation that followed,
+// which the move it came after does not close.
+//
+// The channel a session holds is the one it captured,
+// not the one current when it is asked for:
+// a generation that moves between a request's read and its select hands back the replacement,
+// and the signal is lost,
+// leaving the request parked to its deadline over an outage.
+func TestGenerationBroadcastReachesEverySessionOfThatGeneration(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("a", replicaOpts{})
+	r.waitSynced()
+	rt := r.newRuntime()
+
+	one := r.session(rt)
+	two := r.session(rt)
+	expectChannelOpen(t, "a session's channel before any move", one.GenerationMoved())
+	expectChannelOpen(t, "a second session's channel before any move", two.GenerationMoved())
+
+	rt.MoveGeneration()
+
+	expectChannelClosed(t, "the first session's channel after the move", one.GenerationMoved())
+	expectChannelClosed(t, "the second session's channel after the move", two.GenerationMoved())
+
+	after := r.session(rt)
+	expectChannelOpen(t, "a session taken after the move", after.GenerationMoved())
+	expectChannelClosed(t, "the first session's channel once a later session exists", one.GenerationMoved())
+
+	rt.MoveGeneration()
+	expectChannelClosed(t, "the later session's channel after the second move", after.GenerationMoved())
 }

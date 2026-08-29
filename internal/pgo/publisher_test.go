@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,7 +16,9 @@ import (
 )
 
 // publishOne runs one publication for a Service through r's publisher.
-func (r *replica) publishOne(t *testing.T, jobs natskv.KV, ns, svc string) (string, Outcome, error) {
+func (r *replica) publishOne(
+	t *testing.T, jobs natskv.KV, ns, svc string, mutate ...func(*PublishInput),
+) (string, Outcome, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
 	defer cancel()
@@ -24,14 +27,27 @@ func (r *replica) publishOne(t *testing.T, jobs natskv.KV, ns, svc string) (stri
 	if !ok {
 		return "", "", errCeilingRefused
 	}
-
-	return r.pub.Publish(ctx, jobs, res, PublishInput{
+	in := PublishInput{
 		Namespace: ns, Service: svc,
 		Origin:    OriginAPI,
 		ClaimBy:   r.clock.Now().Add(time.Hour),
 		Policy:    schedulerDefaults(t),
 		CreatedBy: "tester",
-	})
+	}
+	for _, m := range mutate {
+		m(&in)
+	}
+
+	return r.pub.Publish(ctx, jobs, res, in)
+}
+
+// keyed makes a publication carry an Idempotency-Key for one principal,
+// which is the only difference between a request that binds a key and one that does not.
+func keyed(principal, key string) func(*PublishInput) {
+	return func(in *PublishInput) {
+		in.CreatedBy = principal
+		in.IdempotencyKey = key
+	}
 }
 
 // errCeilingRefused reports that Reserve refused before any write.
@@ -704,4 +720,363 @@ func TestNonterminalRecordsBounded(t *testing.T) {
 	if got := len(f.nonterminalRecords()); got > bound {
 		t.Fatalf("%d nonterminal records, want at most %d", got, bound)
 	}
+}
+
+// assertPublishedRecord holds every publication to what a record carries:
+// the canonical hash of the policy it runs with, whatever created it,
+// the idempotency key of the request that created it,
+// and the principal the receipt is scoped to.
+func assertPublishedRecord(t *testing.T, f *pgoFixture, id, wantKey, wantPrincipal string) Record {
+	t.Helper()
+	rec := f.record(id)
+	if want := SnapshotHash(rec.Policy); rec.SnapshotHash != want {
+		t.Errorf("record hash is %q, want %q over its own policy", rec.SnapshotHash, want)
+	}
+	if rec.SnapshotHash == "" {
+		t.Error("the record carries no snapshot hash")
+	}
+	if rec.IdempotencyKey != wantKey {
+		t.Errorf("record idempotencyKey is %q, want %q", rec.IdempotencyKey, wantKey)
+	}
+	if rec.CreatedBy != wantPrincipal {
+		t.Errorf("record createdBy is %q, want %q", rec.CreatedBy, wantPrincipal)
+	}
+
+	return rec
+}
+
+// TestPublishReceiptOrder proves the write that releases a keyed publication:
+// the receipt lands after the active key is won and before the record becomes claimable,
+// so a Collection a caller can poll is one whose key is durable.
+func TestPublishReceiptOrder(t *testing.T) {
+	f := startPGO(t)
+	r := f.newReplica("replica", replicaOpts{})
+	r.waitSynced()
+
+	const principal, key = "tester", "k-1"
+	name := ReceiptKey(principal, "payment", "payment-api", key)
+	hook := &kvHook{}
+	jobs := &hookKV{KV: r.jobsView(), hook: hook}
+
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	hook.setBefore(func(op, k string) (error, bool) {
+		if op == "create" && k == name {
+			close(reached)
+			<-release
+		}
+
+		return nil, false
+	})
+
+	type published struct {
+		id      string
+		outcome Outcome
+		err     error
+	}
+	done := make(chan published, 1)
+	go func() {
+		id, outcome, err := r.publishOne(t, jobs, "payment", "payment-api", keyed(principal, key))
+		done <- published{id, outcome, err}
+	}()
+
+	select {
+	case <-reached:
+	case got := <-done:
+		t.Fatalf("the publication finished as (%q, %v) without creating a receipt", got.outcome, got.err)
+	}
+	// At the barrier the active key is won and the record exists,
+	// but it is not claimable and no key resolves to it.
+	if f.hasKey(f.jobs, name) {
+		t.Error("the receipt is in the bucket before its own create ran")
+	}
+	held := f.records()
+	if len(held) != 1 || held[0].State != StateInitializing {
+		t.Fatalf("the bucket holds %v, want one initializing record", held)
+	}
+	if !f.hasKey(f.jobs, activeKey("payment", "payment-api")) {
+		t.Error("the active key is not won before the receipt is written")
+	}
+	close(release)
+
+	got := <-done
+	if got.err != nil || got.outcome != OutcomeWon {
+		t.Fatalf("publish returned (%q, %v), want a won publication", got.outcome, got.err)
+	}
+
+	want := []kvCall{
+		{Op: "create", Key: jobKey(got.id)},
+		{Op: "create", Key: activeKey("payment", "payment-api")},
+		{Op: "create", Key: name},
+		{Op: "update", Key: jobKey(got.id)},
+	}
+	if ops := hook.operations(); !reflect.DeepEqual(ops, want) {
+		t.Fatalf("the publication issued %v, want %v", ops, want)
+	}
+
+	rec := assertPublishedRecord(t, f, got.id, key, principal)
+	if rec.State != StatePending {
+		t.Errorf("record state is %q, want %q", rec.State, StatePending)
+	}
+	receipt := f.receipt(name)
+	if receipt.ID != got.id || receipt.SnapshotHash != rec.SnapshotHash {
+		t.Errorf("receipt is %+v, want the record's id and hash", receipt)
+	}
+	if receipt.CreatedAt.IsZero() {
+		t.Error("the receipt carries no createdAt, which the reconciliation reads")
+	}
+}
+
+// TestPublishReceiptRecovery covers what a receipt Create can meet,
+// and what each answer costs, up to the withdraw that leaves nothing behind.
+func TestPublishReceiptRecovery(t *testing.T) {
+	const principal, key = "tester", "k-1"
+
+	t.Run("an unavailable create is retried once", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+		name := ReceiptKey(principal, "payment", "payment-api", key)
+
+		var creates atomic.Int32
+		hook := &kvHook{}
+		hook.setBefore(func(op, k string) (error, bool) {
+			if op == "create" && k == name && creates.Add(1) == 1 {
+				return natskv.ErrUnavailable, true
+			}
+
+			return nil, false
+		})
+
+		id, outcome, err := r.publishOne(t, &hookKV{KV: r.jobsView(), hook: hook},
+			"payment", "payment-api", keyed(principal, key))
+		if err != nil || outcome != OutcomeWon {
+			t.Fatalf("publish returned (%q, %v), want the retry to complete it", outcome, err)
+		}
+		if got := len(hook.callsFor("create", name)); got != 2 {
+			t.Fatalf("the receipt was created %d times, want one retry behind the same generation", got)
+		}
+		if got := f.receipt(name).ID; got != id {
+			t.Fatalf("the receipt names %q, want %q", got, id)
+		}
+		assertPublishedRecord(t, f, id, key, principal)
+	})
+
+	t.Run("a create that fails twice withdraws", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+		name := ReceiptKey(principal, "payment", "payment-api", key)
+
+		hook := &kvHook{}
+		hook.setBefore(func(op, k string) (error, bool) {
+			if op == "create" && k == name {
+				return natskv.ErrUnavailable, true
+			}
+
+			return nil, false
+		})
+
+		_, outcome, err := r.publishOne(t, &hookKV{KV: r.jobsView(), hook: hook},
+			"payment", "payment-api", keyed(principal, key))
+		if !errors.Is(err, natskv.ErrUnavailable) {
+			t.Fatalf("publish returned (%q, %v), want an unavailable outcome", outcome, err)
+		}
+		if got := f.jobKeys(); len(got) != 0 {
+			t.Fatalf("the withdraw left %v, want no record", got)
+		}
+		if got := f.keys(f.jobs, activePrefix); len(got) != 0 {
+			t.Fatalf("the withdraw left %v, want no active key", got)
+		}
+		if got := f.receiptKeys(); len(got) != 0 {
+			t.Fatalf("the withdraw left %v, want no receipt", got)
+		}
+	})
+
+	t.Run("a receipt already naming this collection is the earlier attempt", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+		name := ReceiptKey(principal, "payment", "payment-api", key)
+
+		// The first create commits and loses its acknowledgement,
+		// so the retry meets the receipt this very publication wrote.
+		var creates atomic.Int32
+		hook := &kvHook{}
+		hook.setAfter(func(op, k string, err error) error {
+			if op == "create" && k == name && creates.Add(1) == 1 {
+				return natskv.ErrUnavailable
+			}
+
+			return err
+		})
+
+		id, outcome, err := r.publishOne(t, &hookKV{KV: r.jobsView(), hook: hook},
+			"payment", "payment-api", keyed(principal, key))
+		if err != nil || outcome != OutcomeWon {
+			t.Fatalf("publish returned (%q, %v), want a won publication", outcome, err)
+		}
+		if got := len(hook.callsFor("create", name)); got != 2 {
+			t.Fatalf("the receipt was created %d times, want the retry and no write beyond it", got)
+		}
+		if got := len(hook.callsFor("delete", name)); got != 0 {
+			t.Fatalf("the publication deleted its own receipt %d times, want 0", got)
+		}
+		if got := f.receipt(name).ID; got != id {
+			t.Fatalf("the receipt names %q, want %q", got, id)
+		}
+	})
+
+	t.Run("a receipt whose record is absent is stale and is replaced", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+
+		// What a sweep that deleted a record without reaching its receipt leaves:
+		// a receipt naming a Collection that is gone.
+		stale := newID()
+		name := f.seedReceipt(principal, "payment", "payment-api", key, Receipt{
+			ID: stale, SnapshotHash: SnapshotHash(schedulerDefaults(t)), CreatedAt: slotBase,
+		})
+
+		hook := &kvHook{}
+		id, outcome, err := r.publishOne(t, &hookKV{KV: r.jobsView(), hook: hook},
+			"payment", "payment-api", keyed(principal, key))
+		if err != nil || outcome != OutcomeWon {
+			t.Fatalf("publish returned (%q, %v), want a won publication", outcome, err)
+		}
+		if got := f.receipt(name).ID; got != id {
+			t.Fatalf("the receipt names %q, want the new collection %q", got, id)
+		}
+
+		want := []kvCall{
+			{Op: "create", Key: name},
+			{Op: "get", Key: name},
+			{Op: "get", Key: jobKey(stale)},
+			{Op: "delete", Key: name},
+			{Op: "create", Key: name},
+		}
+		var got []kvCall
+		for _, c := range hook.operations() {
+			if c.Key == name || c.Key == jobKey(stale) {
+				got = append(got, c)
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("the receipt step issued %v, want %v", got, want)
+		}
+	})
+}
+
+// TestPublishWithoutAReceipt covers the publications that write none:
+// a loser, and the scheduler, whose records still carry a snapshot hash.
+func TestPublishWithoutAReceipt(t *testing.T) {
+	const principal, key = "tester", "k-1"
+
+	t.Run("a keyed publication whose active create loses writes no receipt", func(t *testing.T) {
+		f := startPGO(t)
+		frozen := newFreezer(cacheJobs, cacheActive)
+		r := f.newReplica("replica", replicaOpts{freezer: frozen})
+		r.waitSynced()
+		frozen.freeze()
+		f.seedLiveCollection("payment", "payment-api", StateRunning)
+
+		_, outcome, err := r.publishOne(t, r.jobsView(), "payment", "payment-api", keyed(principal, key))
+		if err != nil || outcome != OutcomeBusy {
+			t.Fatalf("publish returned (%q, %v), want a busy publication", outcome, err)
+		}
+		if got := f.receiptKeys(); len(got) != 0 {
+			t.Fatalf("a loser wrote %v, want no receipt", got)
+		}
+	})
+
+	t.Run("a scheduled publication writes no receipt and still carries a hash", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+
+		id, outcome, err := r.publishOne(t, r.jobsView(), "payment", "payment-api", func(in *PublishInput) {
+			in.Origin = OriginSchedule
+			in.Slot = slotBase
+			in.CreatedBy = createdBySchedule
+		})
+		if err != nil || outcome != OutcomeWon {
+			t.Fatalf("publish returned (%q, %v), want a won publication", outcome, err)
+		}
+		if got := f.receiptKeys(); len(got) != 0 {
+			t.Fatalf("the scheduler wrote %v, want no receipt", got)
+		}
+		rec := assertPublishedRecord(t, f, id, "", createdBySchedule)
+		if want := SnapshotHash(schedulerDefaults(t)); rec.SnapshotHash != want {
+			t.Fatalf("record hash is %q, want %q over the policy it runs with", rec.SnapshotHash, want)
+		}
+	})
+}
+
+// TestKeyedCreatorDied proves what the two windows of a keyed publication leave behind,
+// and that neither ever ran:
+// a record no key resolves, and a receipt naming a record that never became claimable.
+// Both end the same way, in a record the scan fails not_published.
+func TestKeyedCreatorDied(t *testing.T) {
+	const principal, key = "tester", "k-1"
+
+	t.Run("killed after its record and before its receipt", func(t *testing.T) {
+		f := startPGO(t)
+		id := f.seedLiveCollection("payment", "payment-api", StateInitializing, func(rec *Record) {
+			rec.Origin = OriginAPI
+			rec.CreatedBy = principal
+			rec.IdempotencyKey = key
+		})
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+
+		if got := f.receiptKeys(); len(got) != 0 {
+			t.Fatalf("the bucket holds %v, want no key resolving to this record", got)
+		}
+		if f.hasKey(f.jobs, ReceiptKey(principal, "payment", "payment-api", key)) {
+			t.Fatal("the record's own key resolves to a receipt it never wrote")
+		}
+
+		r.clock.Set(slotBase.Add(publishGrace + skewMargin + time.Second))
+		scanNow(t, r.newWorker(trapRun(t)))
+		if rec := f.record(id); rec.State != StateFailed || rec.Reason != ReasonNotPublished {
+			t.Fatalf("record is %q %q, want failed %q", rec.State, rec.Reason, ReasonNotPublished)
+		}
+	})
+
+	t.Run("killed after its receipt and before the pending update", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+		name := ReceiptKey(principal, "payment", "payment-api", key)
+
+		hook := &kvHook{}
+		hook.setBefore(func(op, k string) (error, bool) {
+			if op == "update" && strings.HasPrefix(k, jobPrefix) {
+				return natskv.ErrUnavailable, true
+			}
+
+			return nil, false
+		})
+
+		id, _, err := r.publishOne(t, &hookKV{KV: r.jobsView(), hook: hook},
+			"payment", "payment-api", keyed(principal, key))
+		if !errors.Is(err, natskv.ErrUnavailable) {
+			t.Fatalf("publish returned %v, want ErrUnavailable", err)
+		}
+		if got := f.receipt(name).ID; got != id {
+			t.Fatalf("the receipt names %q, want %q: it landed before the update", got, id)
+		}
+		if got := f.record(id).State; got != StateInitializing {
+			t.Fatalf("record state is %q, want %q: the update never ran", got, StateInitializing)
+		}
+
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+		r.clock.Set(slotBase.Add(publishGrace + skewMargin + time.Second))
+		scanNow(t, r.newWorker(trapRun(t)))
+		if rec := f.record(id); rec.State != StateFailed || rec.Reason != ReasonNotPublished {
+			t.Fatalf("record is %q %q, want failed %q", rec.State, rec.Reason, ReasonNotPublished)
+		}
+	})
 }

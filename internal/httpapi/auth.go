@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/arloliu/profgate/internal/auth"
@@ -11,8 +12,6 @@ import (
 )
 
 const (
-	// authPrefix is where the three /auth/ routes live; nothing under it is a /v1 route.
-	authPrefix = "/auth/"
 	// failureMessage is the one message every authentication failure carries,
 	// whatever the reason, so the response tells a caller nothing about which check failed.
 	failureMessage = "authentication required"
@@ -24,18 +23,22 @@ const (
 	noPrincipal = "-"
 )
 
-// authRoute names the audit line of one of the three exact /auth/ paths, and
-// reports false for any other path.
-func authRoute(path string) (string, bool) {
-	switch path {
-	case "/auth/login":
-		return "auth_login", true
-	case "/auth/callback":
-		return "auth_callback", true
-	case "/auth/logout":
-		return "auth_logout", true
+// authRouteName names the audit line of one of the three browser-login routes.
+// Every other kind reaches serveAuthRoute through no declaration, so it names none.
+func authRouteName(kind routeKind) string {
+	switch kind {
+	case kindAuthLogin:
+		return "auth_login"
+	case kindAuthCallback:
+		return "auth_callback"
+	case kindAuthLogout:
+		return "auth_logout"
+	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
+		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindNamespaces, kindServices,
+		kindWhoami, kindLimits, kindAuth, kindOpenAPI, kindConsole:
+		return ""
 	default:
-		return "", false
+		return ""
 	}
 }
 
@@ -121,24 +124,28 @@ func (s *server) failAuth(w http.ResponseWriter, q *request, f *auth.Failure, mo
 		if challenge := auth.Challenge(mode); challenge != "" {
 			w.Header().Set("WWW-Authenticate", challenge)
 		}
-		q.fail(w, &requestError{status: http.StatusUnauthorized, code: "unauthenticated", message: failureMessage})
+		q.fail(w, &requestError{status: http.StatusUnauthorized, code: CodeUnauthenticated, message: failureMessage})
 	case http.StatusTooManyRequests:
 		w.Header().Set("Retry-After", "1")
-		q.fail(w, &requestError{status: http.StatusTooManyRequests, code: "too_many_auth", message: failureMessage})
+		q.fail(w, &requestError{status: http.StatusTooManyRequests, code: CodeTooManyAuth, message: failureMessage})
 	default:
 		w.Header().Set("Retry-After", "5")
-		q.fail(w, &requestError{status: http.StatusServiceUnavailable, code: "auth_unavailable", message: failureMessage})
+		q.fail(w, &requestError{status: http.StatusServiceUnavailable, code: CodeAuthUnavailable, message: failureMessage})
 	}
 }
 
-// serveAuthRoute serves a path under /auth/: the three exact routes when the
-// browser flow is configured, 404 route_unknown otherwise.
-// The route writes the whole response; this owns the match, the method, readiness,
+// serveAuthRoute serves one of the three browser-login routes the table matched,
+// or 404 route_unknown when the browser flow is not configured.
+// The route writes the whole response; this owns the method, readiness,
 // the audit line, and the metrics row.
-func (s *server) serveAuthRoute(w http.ResponseWriter, r *http.Request, q *request, cfg *config.Config) {
-	name, known := authRoute(r.URL.Path)
-	if !known || s.deps.AuthRoutes == nil {
-		q.fail(w, &requestError{status: http.StatusNotFound, code: "route_unknown", message: "no such route"})
+// The method check runs before readiness,
+// so a refused method is answered while the caches are still syncing.
+func (s *server) serveAuthRoute(
+	w http.ResponseWriter, r *http.Request, q *request, cfg *config.Config, decl declaration,
+) {
+	name := authRouteName(decl.Kind)
+	if name == "" || s.deps.AuthRoutes == nil {
+		q.fail(w, errRouteUnknown)
 
 		return
 	}
@@ -146,14 +153,14 @@ func (s *server) serveAuthRoute(w http.ResponseWriter, r *http.Request, q *reque
 	q.audit.route = name
 	q.audit.method = r.Method
 	q.audit.principal = noPrincipal
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		q.fail(w, &requestError{status: http.StatusMethodNotAllowed, code: "method_not_allowed", message: "method " + r.Method + " not allowed"})
+	if !slices.Contains(decl.Methods, r.Method) {
+		w.Header().Set("Allow", strings.Join(decl.Methods, ", "))
+		q.fail(w, methodNotAllowed(r.Method))
 
 		return
 	}
 	if !s.ready() {
-		q.fail(w, &requestError{status: http.StatusServiceUnavailable, code: "not_ready", message: "the gateway is not ready"})
+		q.fail(w, errNotReady)
 
 		return
 	}

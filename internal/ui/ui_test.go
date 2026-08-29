@@ -2,15 +2,20 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/arloliu/profgate/internal/httpapi"
 )
 
 // copyTree copies every regular file of fsys into a MapFS a test can edit.
@@ -178,8 +183,41 @@ func checkEnvelope(t *testing.T, rec *httptest.ResponseRecorder, status int, cod
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
-	if !strings.Contains(rec.Body.String(), `"code":"`+code+`"`) {
-		t.Errorf("body = %q, want code %q", rec.Body.String(), code)
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not a JSON envelope: %v", rec.Body.String(), err)
+	}
+	if body.Code != code {
+		t.Errorf("code = %q, want %q", body.Code, code)
+	}
+	// The console writes into the gateway's envelope,
+	// so the code it names has to be one the gateway's registry holds.
+	// Anything else would be a code the OpenAPI document could not enumerate.
+	if !slices.Contains(httpapi.EnvelopeCodes(), body.Code) {
+		t.Errorf("code %q is not in the gateway's registry", body.Code)
+	}
+}
+
+// TestConsoleCodesComeFromTheRegistry reads the console's own source:
+// the two codes it answers with are registry constants,
+// so the console and the rest of the gateway cannot spell the same refusal two ways.
+func TestConsoleCodesComeFromTheRegistry(t *testing.T) {
+	b, err := os.ReadFile("ui.go")
+	if err != nil {
+		t.Fatalf("read ui.go: %v", err)
+	}
+	source := string(b)
+	for _, code := range []string{httpapi.CodeRouteUnknown, httpapi.CodeMethodNotAllowed} {
+		if strings.Contains(source, `"`+code+`"`) {
+			t.Errorf("ui.go spells %q as a literal; it takes the code from the registry", code)
+		}
+	}
+	for _, name := range []string{"httpapi.CodeRouteUnknown", "httpapi.CodeMethodNotAllowed"} {
+		if !strings.Contains(source, name) {
+			t.Errorf("ui.go does not name %s", name)
+		}
 	}
 }
 
@@ -256,7 +294,7 @@ func TestAssets(t *testing.T) {
 		})
 		t.Run("wrong hash "+tc.path, func(t *testing.T) {
 			rec := do(newHandler(t), http.MethodGet, "/ui/static/0000000000000000/"+tc.path)
-			checkEnvelope(t, rec, http.StatusNotFound, "route_unknown")
+			checkEnvelope(t, rec, http.StatusNotFound, httpapi.CodeRouteUnknown)
 		})
 	}
 }
@@ -285,7 +323,7 @@ func TestMisses(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := do(newHandler(t), http.MethodGet, tc.path)
-			checkEnvelope(t, rec, http.StatusNotFound, "route_unknown")
+			checkEnvelope(t, rec, http.StatusNotFound, httpapi.CodeRouteUnknown)
 		})
 		t.Run("head "+tc.name, func(t *testing.T) {
 			rec := do(newHandler(t), http.MethodHead, tc.path)
@@ -372,6 +410,9 @@ func TestHeadIsNever405(t *testing.T) {
 	}
 }
 
+// TestMethod pins the Allow header the console writes.
+// The gateway declares the same two methods for the console's three routes,
+// and asserts that string in its own package, so the two cannot drift.
 func TestMethod(t *testing.T) {
 	hash := newHandler(t).Hash()
 	cases := []struct{ method, target string }{
@@ -382,7 +423,7 @@ func TestMethod(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.target, func(t *testing.T) {
 			rec := do(newHandler(t), tc.method, tc.target)
-			checkEnvelope(t, rec, http.StatusMethodNotAllowed, "method_not_allowed")
+			checkEnvelope(t, rec, http.StatusMethodNotAllowed, httpapi.CodeMethodNotAllowed)
 			if got := rec.Header().Get("Allow"); got != "GET, HEAD" {
 				t.Errorf("Allow = %q, want %q", got, "GET, HEAD")
 			}

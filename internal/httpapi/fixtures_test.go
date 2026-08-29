@@ -457,16 +457,20 @@ type harness struct {
 	routes    auth.AuthRoutes    // nil leaves the /auth/ routes unknown
 	console   http.Handler       // nil leaves /ui/ and / unknown
 	ready     func() bool        // nil leaves readiness on disc.synced
+	// drain is the signal a request held open by a wait ends on;
+	// it closes only where a test drains the replica.
+	drain chan struct{}
 	// beforeAllowlist, when set, runs between the realm check and the allowlist check.
 	beforeAllowlist func()
 }
 
 func newHarness(targets ...k8s.Target) *harness {
 	h := &harness{
-		disc: &fakeDiscovery{targets: targets, synced: true},
-		up:   newFakeUpstream(),
-		rec:  &recorder{},
-		logs: &syncBuffer{},
+		disc:  &fakeDiscovery{targets: targets, synced: true},
+		up:    newFakeUpstream(),
+		rec:   &recorder{},
+		logs:  &syncBuffer{},
+		drain: make(chan struct{}),
 	}
 	h.cfg.Store(testConfig())
 
@@ -506,6 +510,7 @@ func (h *harness) handler() http.Handler {
 		AuthRoutes: h.routes,
 		Console:    h.console,
 		Ready:      h.ready,
+		Drain:      h.drain,
 		Logger:     h.logger(),
 		Choose:     h.choose,
 	})
@@ -525,8 +530,22 @@ func (h *harness) logger() *slog.Logger { return slog.New(slog.NewJSONHandler(h.
 func (h *harness) do(t *testing.T, method, target string) *httptest.ResponseRecorder {
 	t.Helper()
 
+	return h.doHeaders(t, method, target, nil)
+}
+
+// doHeaders is do with the request headers a row sends.
+func (h *harness) doHeaders(t *testing.T, method, target string, header http.Header) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequestWithContext(context.Background(), method, target, nil)
+	for name, values := range header {
+		for _, v := range values {
+			req.Header.Add(name, v)
+		}
+	}
+
 	rec := httptest.NewRecorder()
-	h.handler().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), method, target, nil))
+	h.handler().ServeHTTP(rec, req)
 	assertNoLeak(t, rec)
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
@@ -541,6 +560,13 @@ func assertNoLeak(t *testing.T, rec *httptest.ResponseRecorder) {
 
 	for _, leak := range []string{fixtureIP, strconv.Itoa(fixturePort)} {
 		for name, values := range rec.Header() {
+			// The request identifier is 32 random hexadecimal characters when the gateway mints one,
+			// and the client's own text when it does not,
+			// so it names nothing of the cluster and a chance substring is not a leak.
+			// Its own rules are asserted in requestid_test.go.
+			if name == requestIDHeader {
+				continue
+			}
 			for _, v := range values {
 				if strings.Contains(v, leak) {
 					t.Errorf("header %s leaks %q: %q", name, leak, v)
@@ -564,6 +590,11 @@ func errorBodyOf(t *testing.T, rec *httptest.ResponseRecorder) (code, message st
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("body %q is not a JSON envelope: %v", rec.Body.String(), err)
 	}
+	// Every envelope the suite reads passes through here or through detailsOf,
+	// so between them a code no registry constant names is caught wherever it is written.
+	if !slices.Contains(EnvelopeCodes(), body.Code) {
+		t.Errorf("body %q carries code %q, which is not in the registry", rec.Body.String(), body.Code)
+	}
 
 	return body.Code, body.Error
 }
@@ -571,6 +602,23 @@ func errorBodyOf(t *testing.T, rec *httptest.ResponseRecorder) (code, message st
 // expectError checks a gateway-generated error: status, code, JSON type, no target headers,
 // and that the audit record and the single Recorder.Request call carry the same code.
 func (h *harness) expectError(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+
+	h.expectErrorBody(t, rec, status, code)
+	h.expectAudit(t, status, code)
+}
+
+// expectUnnarratedError is expectError for a route that writes no audit record:
+// it carries no principal and names nothing a realm bounds.
+func (h *harness) expectUnnarratedError(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+
+	h.expectErrorBody(t, rec, status, code)
+	h.expectNoAudit(t)
+}
+
+// expectErrorBody holds every rule a gateway error obeys but the audit record.
+func (h *harness) expectErrorBody(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 
 	if rec.Code != status {
@@ -582,21 +630,78 @@ func (h *harness) expectError(t *testing.T, rec *httptest.ResponseRecorder, stat
 	if got, _ := errorBodyOf(t, rec); got != code {
 		t.Errorf("code = %q, want %q (body %q)", got, code, rec.Body.String())
 	}
-	// details is omitted, never null or empty, and only port_not_allowed carries it.
-	body := rec.Body.String()
-	if strings.Contains(body, `"details":null`) || strings.Contains(body, `"details":[]`) {
-		t.Errorf("body %q carries an empty details", body)
-	}
-	if strings.Contains(body, `"details"`) != (code == "port_not_allowed") {
-		t.Errorf("body %q: details must appear for port_not_allowed and no other code", body)
-	}
+	detailsOf(t, rec, code)
 	for name := range rec.Header() {
 		if strings.HasPrefix(name, "X-Pprof-Target-") {
 			t.Errorf("gateway error carries %s", name)
 		}
 	}
-	h.expectAudit(t, status, code)
 	h.expectMetricCode(t, code)
+}
+
+// codesWithDetails are the envelope codes Errors and pgo.md Ceilings give a
+// details vocabulary; every other code carries no details key at all.
+var codesWithDetails = []string{"invalid_parameter", "limit_exceeded", "port_not_allowed"}
+
+// detailsOf decodes the details array of an error envelope and holds the rules every error body obeys:
+// a code the registry holds,
+// at least one item for a code with a vocabulary,
+// no key at all for a code without one,
+// never null and never empty,
+// every item carrying a code,
+// and no item naming a Pod, an address, or a resolved port.
+func detailsOf(t *testing.T, rec *httptest.ResponseRecorder, code string) []errorDetail {
+	t.Helper()
+
+	body := rec.Body.String()
+	if strings.Contains(body, `"details":null`) || strings.Contains(body, `"details":[]`) {
+		t.Errorf("body %q carries an empty details", body)
+	}
+
+	var envelope struct {
+		Code    string        `json:"code"`
+		Details []errorDetail `json:"details"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("body %q is not a JSON envelope: %v", body, err)
+	}
+	// expectDetails reaches this without errorBodyOf, so the registry check runs here too.
+	if !slices.Contains(EnvelopeCodes(), envelope.Code) {
+		t.Errorf("body %q carries code %q, which is not in the registry", body, envelope.Code)
+	}
+	if want := slices.Contains(codesWithDetails, code); (len(envelope.Details) > 0) != want {
+		t.Errorf("body %q: details appear for %v and for no other code", body, codesWithDetails)
+	}
+	for _, item := range envelope.Details {
+		if item.Code == "" {
+			t.Errorf("details item %+v carries no code", item)
+		}
+		for _, leak := range []string{fixturePod, fixtureIP, strconv.Itoa(fixturePort)} {
+			if strings.Contains(item.Field, leak) || strings.Contains(item.Message, leak) {
+				t.Errorf("details item %+v names %q", item, leak)
+			}
+		}
+	}
+
+	return envelope.Details
+}
+
+// expectDetails checks the whole details array of one refusal, item by item.
+func expectDetails(t *testing.T, rec *httptest.ResponseRecorder, code string, want []errorDetail) {
+	t.Helper()
+
+	got := detailsOf(t, rec, code)
+	if len(got) != len(want) {
+		t.Fatalf("details = %+v, want %d item(s): %+v", got, len(want), want)
+	}
+	for i, w := range want {
+		if got[i].Field != w.Field || got[i].Code != w.Code {
+			t.Errorf("details[%d] = %+v, want field %q code %q", i, got[i], w.Field, w.Code)
+		}
+		if got[i].Message == "" {
+			t.Errorf("details[%d] = %+v, want a message", i, got[i])
+		}
+	}
 }
 
 // expectAudit checks that exactly one audit record was written with the spec's keys,
@@ -609,7 +714,7 @@ func (h *harness) expectAudit(t *testing.T, status int, code string) map[string]
 		t.Fatalf("audit records = %d, want 1: %s", len(records), h.logs.String())
 	}
 	rec := records[0]
-	for _, key := range []string{"principal", "namespace", "service", "pod", "profile", "seconds", "port", "status", "code", "duration_ms"} {
+	for _, key := range []string{"requestId", "principal", "namespace", "service", "pod", "profile", "seconds", "port", "status", "code", "duration_ms"} {
 		if _, ok := rec[key]; !ok {
 			t.Errorf("audit record lacks %q: %v", key, rec)
 		}
@@ -696,6 +801,7 @@ const (
 	activeKeyPrefix   = "active."
 	slotKeyPrefix     = "schedule."
 	overrideKeyPrefix = "service."
+	idemKeyPrefix     = "idem."
 )
 
 // watchBuffer is how many entries one fake watch holds before a send would block.
@@ -734,16 +840,44 @@ type fakeKV struct {
 	// afterGet, when set, runs after a successful Get, so a test can move a key
 	// between a handler's read and the conditional write it makes at that revision.
 	afterGet func()
+	// beforeCall, when set, runs at the start of every operation,
+	// outside the bucket's lock,
+	// so a test can hold one write open while another request runs to completion.
+	beforeCall func(op, key string)
 
 	updates atomic.Int32
 	creates atomic.Int32
+	// calls counts the reads and writes a caller makes through the seam.
+	// Keys and Watch are outside it:
+	// those are the caches' own replay,
+	// which runs in the background whether or not a handler reaches the store.
+	calls atomic.Int32
 }
 
 func newFakeKV(gen func() uint64) *fakeKV {
 	return &fakeKV{gen: gen, entries: make(map[string]natskv.Entry)}
 }
 
+// hold runs the test's intervention for one operation, outside the lock.
+func (k *fakeKV) hold(op, key string) {
+	k.mu.Lock()
+	before := k.beforeCall
+	k.mu.Unlock()
+	if before != nil {
+		before(op, key)
+	}
+}
+
+// setBefore installs the intervention every later operation runs first.
+func (k *fakeKV) setBefore(fn func(op, key string)) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.beforeCall = fn
+}
+
 func (k *fakeKV) Get(_ context.Context, key string) (natskv.Entry, error) {
+	k.calls.Add(1)
+	k.hold("get", key)
 	k.mu.Lock()
 	getErr, after := k.getErr, k.afterGet
 	e, ok := k.entries[key]
@@ -765,7 +899,9 @@ func (k *fakeKV) Get(_ context.Context, key string) (natskv.Entry, error) {
 }
 
 func (k *fakeKV) Create(_ context.Context, key string, value []byte) (uint64, error) {
+	k.calls.Add(1)
 	k.creates.Add(1)
+	k.hold("create", key)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.createErr != nil {
@@ -779,7 +915,9 @@ func (k *fakeKV) Create(_ context.Context, key string, value []byte) (uint64, er
 }
 
 func (k *fakeKV) Update(_ context.Context, key string, value []byte, expected uint64) (uint64, error) {
+	k.calls.Add(1)
 	k.updates.Add(1)
+	k.hold("update", key)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.updateErr != nil {
@@ -794,6 +932,8 @@ func (k *fakeKV) Update(_ context.Context, key string, value []byte, expected ui
 }
 
 func (k *fakeKV) Delete(_ context.Context, key string, expected uint64) error {
+	k.calls.Add(1)
+	k.hold("delete", key)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	e, ok := k.entries[key]
@@ -922,6 +1062,37 @@ func (k *fakeKV) put(t *testing.T, key string, value any) uint64 {
 	return k.storeLocked(key, body)
 }
 
+// remove deletes one key outside the seam, standing in for the sweeper.
+func (k *fakeKV) remove(t *testing.T, key string) {
+	t.Helper()
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if _, ok := k.entries[key]; !ok {
+		t.Fatalf("remove %s: no such key", key)
+	}
+	delete(k.entries, key)
+	k.revision++
+	k.deliverLocked(natskv.Entry{Key: key, Revision: k.revision, Generation: k.gen()})
+}
+
+// setGetErr installs what every later read answers,
+// so a test can take the store away from a request that is already in flight.
+func (k *fakeKV) setGetErr(err error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.getErr = err
+}
+
+// watchCount is how many watches are open on the bucket, which is the caches'
+// own and nothing a request added.
+func (k *fakeKV) watchCount() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	return len(k.watches)
+}
+
 // record reads one Collection record straight from the authoritative bucket.
 func (k *fakeKV) record(t *testing.T, id string) pgo.Record {
 	t.Helper()
@@ -955,6 +1126,14 @@ type fakeObjects struct {
 	// opened is the last reader handed out, so a test can see how far the
 	// stream got and whether it was released.
 	opened *fakeReader
+	// afterOpen, when set, runs after a reader has been handed out,
+	// outside the store's lock,
+	// so a test can take the object away from a request that already holds its bytes.
+	afterOpen func(name string)
+
+	// opens counts the readers handed out,
+	// which is how many times a request asked the store for an object.
+	opens atomic.Int32
 }
 
 func newFakeObjects() *fakeObjects { return &fakeObjects{objects: make(map[string][]byte)} }
@@ -972,13 +1151,18 @@ func (o *fakeObjects) Put(_ context.Context, name string, r io.Reader) error {
 }
 
 func (o *fakeObjects) Get(ctx context.Context, name string) (io.ReadCloser, error) {
+	o.opens.Add(1)
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.openErr != nil {
-		return nil, o.openErr
+		err := o.openErr
+		o.mu.Unlock()
+
+		return nil, err
 	}
 	body, ok := o.objects[name]
 	if !ok {
+		o.mu.Unlock()
+
 		return nil, fmt.Errorf("get %q: %w", name, natskv.ErrObjectNotFound)
 	}
 
@@ -990,8 +1174,16 @@ func (o *fakeObjects) Get(ctx context.Context, name string) (io.ReadCloser, erro
 		onRead:    o.onRead,
 		gate:      o.gate,
 	}
+	opened, after := o.opened, o.afterOpen
+	o.mu.Unlock()
 
-	return o.opened, nil
+	// The object may go now, which is what makes an open the confirmation:
+	// the reader already holds the bytes, and a second open would not find them.
+	if after != nil {
+		after(name)
+	}
+
+	return opened, nil
 }
 
 // reader is the last reader the store handed out.
@@ -1151,10 +1343,15 @@ func (f *fakeNATS) holdReplay() {
 	f.synced = false
 }
 
-// fakePGOClock is the clock the publisher and the on-demand bucket run on.
+// fakePGOClock is the clock the publisher, the on-demand bucket,
+// and the wait of a Collection read run on,
+// so no test waits on wall-clock time.
+// Moving it fires every timer whose time has come,
+// which is how a test drives a wait to its deadline.
 type fakePGOClock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu     sync.Mutex
+	now    time.Time
+	timers []*fakePGOTimer
 }
 
 func newFakePGOClock() *fakePGOClock { return &fakePGOClock{now: pgoFixtureNow} }
@@ -1173,10 +1370,70 @@ func (c *fakePGOClock) advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
+	for _, t := range c.timers {
+		if t.active && !t.deadline.After(c.now) {
+			t.active = false
+			select {
+			case t.ch <- c.now:
+			default:
+			}
+		}
+	}
 }
 
-func (c *fakePGOClock) NewTimer(time.Duration) pgo.Timer   { panic("no PGO route uses a timer") }
+func (c *fakePGOClock) NewTimer(d time.Duration) pgo.Timer {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t := &fakePGOTimer{c: c, ch: make(chan time.Time, 1), deadline: c.now.Add(d), active: true}
+	c.timers = append(c.timers, t)
+	if d <= 0 {
+		t.active = false
+		t.ch <- c.now
+	}
+
+	return t
+}
+
 func (c *fakePGOClock) NewTicker(time.Duration) pgo.Ticker { panic("no PGO route uses a ticker") }
+
+// timerCount is how many timers this clock has handed out,
+// which is what a test waits for before it moves the clock:
+// a timer taken after the move would never fire.
+func (c *fakePGOClock) timerCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return len(c.timers)
+}
+
+// fakePGOTimer fires when the clock reaches its deadline.
+type fakePGOTimer struct {
+	c        *fakePGOClock
+	ch       chan time.Time
+	deadline time.Time
+	active   bool
+}
+
+func (t *fakePGOTimer) C() <-chan time.Time { return t.ch }
+
+func (t *fakePGOTimer) Reset(d time.Duration) bool {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	was := t.active
+	t.deadline = t.c.now.Add(d)
+	t.active = true
+
+	return was
+}
+
+func (t *fakePGOTimer) Stop() bool {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	was := t.active
+	t.active = false
+
+	return was
+}
 
 // PGO route paths over the fixture Service and one Collection.
 const (
@@ -1247,7 +1504,7 @@ func testPGODefaults() config.PGODefaults {
 			MaxParallel:   4,
 		},
 		Target:   config.PGOTargetDefaults{VersionPolicy: "strict"},
-		Artifact: config.PGOArtifactDefaults{Retention: 2 * time.Hour},
+		Artifact: config.PGOArtifactDefaults{Retention: 24 * time.Hour},
 	}
 }
 
@@ -1380,7 +1637,8 @@ func (p *pgoHarness) seedRecord(t *testing.T, rec pgo.Record) pgo.Record {
 
 	p.nats.jobs.put(t, jobKeyPrefix+rec.ID, rec)
 	p.waitCache(t, "collection "+rec.ID, func() bool {
-		for _, v := range p.caches.Collections(rec.Namespace, rec.Service) {
+		views, _ := p.caches.Collections(rec.Namespace, rec.Service, pgo.CollectionQuery{})
+		for _, v := range views {
 			if v.ID == rec.ID {
 				return true
 			}
@@ -1390,6 +1648,15 @@ func (p *pgoHarness) seedRecord(t *testing.T, rec pgo.Record) pgo.Record {
 	})
 
 	return rec
+}
+
+// dropRecord deletes one Collection record from the authoritative bucket,
+// standing in for the sweeper, and waits for the cache to lose it.
+func (p *pgoHarness) dropRecord(t *testing.T, id string) {
+	t.Helper()
+
+	p.nats.jobs.remove(t, jobKeyPrefix+id)
+	p.waitCache(t, "collection "+id+" to go", func() bool { return p.cachedState(id) == "" })
 }
 
 // seedActive writes the active key of one Service, which is what a live
@@ -1415,6 +1682,19 @@ func (p *pgoHarness) seedOverride(t *testing.T, override *pgo.PolicyOverride) ui
 	})
 
 	return revision
+}
+
+// cachedState is the state the watched job cache holds for one Collection,
+// and the empty state for one it does not hold.
+func (p *pgoHarness) cachedState(id string) pgo.State {
+	views, _ := p.caches.Collections(fixtureNamespace, fixtureService, pgo.CollectionQuery{})
+	for _, v := range views {
+		if v.ID == id {
+			return v.State
+		}
+	}
+
+	return ""
 }
 
 // newFixtureID is a Collection identifier of the grammar the routes accept.
@@ -1461,8 +1741,150 @@ func (p *pgoHarness) doPGO(t *testing.T, method, target, body string, header htt
 	return rec
 }
 
+// heldOpenTimeout is how long a test gives a held-open request to answer,
+// once what it waits for has happened.
+// Nothing in these tests waits on wall-clock time,
+// so reaching it is a failure rather than a slow machine.
+const heldOpenTimeout = 5 * time.Second
+
+// disconnect is the connection going down as the process sees it:
+// the generation moves, and the broadcast a held-open request selects on moves
+// with it, which is what cmd/profgate composes into one connection report.
+func (p *pgoHarness) disconnect() {
+	p.nats.disconnect()
+	p.runtime.MoveGeneration()
+}
+
+// startDrain is the replica beginning to drain, the moment /readyz turns 503.
+func (p *pgoHarness) startDrain() { close(p.drain) }
+
+// held is one request the handler has not answered yet:
+// the recorder it answers into, the client's own cancellation,
+// and the channel closed when the handler returns.
+type held struct {
+	rec    *httptest.ResponseRecorder
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// hold runs one PGO request on a goroutine of its own
+// and hands back what is still in flight,
+// so a test can act while the request is parked.
+func (p *pgoHarness) hold(t *testing.T, target string) *held {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	h := &held{rec: httptest.NewRecorder(), cancel: cancel, done: make(chan struct{})}
+	handler := p.handler()
+	go func() {
+		defer close(h.done)
+		handler.ServeHTTP(h.rec, req)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-h.done:
+		case <-time.After(heldOpenTimeout):
+			t.Errorf("a request was still held open %s after its client left", heldOpenTimeout)
+		}
+	})
+
+	return h
+}
+
+// answered reports whether the handler has returned.
+func (h *held) answered() bool {
+	select {
+	case <-h.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// join waits for the answer and applies the assertions every PGO answer makes.
+func (h *held) join(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+
+	select {
+	case <-h.done:
+	case <-time.After(heldOpenTimeout):
+		t.Fatalf("the request was still held open after %s", heldOpenTimeout)
+	}
+	assertNoLeak(t, h.rec)
+
+	return h.rec
+}
+
+// waitTimer blocks until the held request has taken its deadline from the
+// clock; moving the clock before that would leave the timer never firing.
+func (p *pgoHarness) waitTimer(t *testing.T) {
+	t.Helper()
+
+	p.waitCache(t, "the wait's deadline timer", func() bool { return p.clock.timerCount() > 0 })
+}
+
+// keyed is what a create that binds itself to one Collection sends:
+// the JSON media type the route requires and the idempotency key.
+func keyed(key string) http.Header {
+	return http.Header{"Content-Type": []string{jsonMediaType}, idempotencyKeyHeader: []string{key}}
+}
+
+// receipt reads one idempotency receipt straight from the authoritative bucket.
+func (k *fakeKV) receipt(t *testing.T, key string) pgo.Receipt {
+	t.Helper()
+
+	e, err := k.Get(context.Background(), key)
+	if err != nil {
+		t.Fatalf("receipt %s: %v", key, err)
+	}
+	var r pgo.Receipt
+	if err := json.Unmarshal(e.Value, &r); err != nil {
+		t.Fatalf("receipt %s is not readable: %v", key, err)
+	}
+
+	return r
+}
+
+// expectCode checks the status and the envelope code of one answer.
+// It is for a test that makes more than one request,
+// which is a test that cannot assert a single audit record.
+func expectCode(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+
+	if rec.Code != status {
+		t.Errorf("status = %d, want %d (body %q)", rec.Code, status, rec.Body.String())
+	}
+	if got, _ := errorBodyOf(t, rec); got != code {
+		t.Errorf("code = %q, want %q (body %q)", got, code, rec.Body.String())
+	}
+	detailsOf(t, rec, code)
+}
+
 // ifMatch is the header one conditional policy write carries.
 func ifMatch(etag string) http.Header { return http.Header{"If-Match": []string{etag}} }
+
+// jsonType is the media type the two write routes require.
+func jsonType() http.Header { return http.Header{"Content-Type": []string{"application/json"}} }
+
+// clientHeaders is what an ordinary client sends for one method:
+// a POST declares the JSON media type the two write routes require,
+// and every other method declares no media type at all.
+func clientHeaders(method string) http.Header {
+	if method == http.MethodPost {
+		return jsonType()
+	}
+
+	return nil
+}
+
+// storeCalls is how many reads and writes the two buckets have been asked for.
+// A snapshot taken once a harness is up moves only when a handler reaches the store,
+// so a refusal that is meant to write nothing leaves it where it was.
+func (p *pgoHarness) storeCalls() int32 {
+	return p.nats.config.calls.Load() + p.nats.jobs.calls.Load()
+}
 
 // expectPGOError checks a PGO failure: status, the code the body carries, and
 // the code the audit record and the metrics row carry.
@@ -1479,6 +1901,7 @@ func (h *harness) expectPGOError(
 	if got, _ := errorBodyOf(t, rec); got != code {
 		t.Errorf("code = %q, want %q (body %q)", got, code, rec.Body.String())
 	}
+	detailsOf(t, rec, code)
 	h.expectPGOAudit(t, status, auditCode)
 	h.expectMetricCode(t, auditCode)
 }

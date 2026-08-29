@@ -23,6 +23,56 @@ const (
 	strategyRandom = "random"
 )
 
+// The grammar each parameter is refused against.
+// One sentence serves as the envelope message and as the item's message,
+// and it names the grammar rather than the value the client sent.
+const (
+	secondsGrammar  = "seconds must be a decimal integer between 1 and 86400"
+	portGrammar     = "port must be a decimal integer between 1 and 65535"
+	portNameGrammar = "portName must be a container port name"
+	podGrammar      = "pod must be a DNS-1123 subdomain"
+	explainGrammar  = "explain must be true or false"
+	strategyGrammar = "strategy must be random"
+	exclusiveDetail = "port and portName exclude each other"
+)
+
+// singleValue applies the rule every query parameter shares:
+// at most once, carrying a value.
+func singleValue(name string, values []string) *requestError {
+	switch {
+	case len(values) > 1:
+		return invalidParameter(fmt.Sprintf("parameter %q appears more than once", name),
+			paramFault(detailRepeatedParameter, name, "the parameter appears more than once"))
+	case len(values) == 0 || values[0] == "":
+		return invalidParameter(fmt.Sprintf("parameter %q carries no value", name),
+			paramFault(detailEmptyParameter, name, "the parameter carries no value"))
+	}
+
+	return nil
+}
+
+// malformedParameter refuses one parameter whose value is outside its grammar.
+// The grammar sentence is the whole answer:
+// neither the message nor the item repeats the value the client sent.
+func malformedParameter(name, grammar string) *requestError {
+	return invalidParameter(grammar, paramFault(detailMalformedParameter, name, grammar))
+}
+
+// unknownParameter refuses a name the route does not take.
+func unknownParameter(name string) *requestError {
+	return invalidParameter(fmt.Sprintf("unknown parameter %q", name),
+		paramFault(detailUnknownParameter, name, "this route takes no parameter of that name"))
+}
+
+// exclusiveSelection refuses port beside portName, naming both in name order:
+// either one alone would have been read, so both are inputs to change.
+func exclusiveSelection() *requestError {
+	return invalidParameter(exclusiveDetail,
+		paramFault(detailMutuallyExclusive, "port", exclusiveDetail),
+		paramFault(detailMutuallyExclusive, "portName", exclusiveDetail),
+	)
+}
+
 // profileSpec maps one profile name to its upstream path and duration rule.
 type profileSpec struct {
 	name           string
@@ -75,25 +125,25 @@ func parsePortParams(values url.Values) (portParams, *requestError) {
 		if !ok {
 			continue
 		}
-		if len(vs) != 1 || vs[0] == "" {
-			return portParams{}, invalidParameter(fmt.Sprintf("parameter %q must appear once with a value", key.name))
+		if perr := singleValue(key.name, vs); perr != nil {
+			return portParams{}, perr
 		}
 		*key.dst = vs[0]
 		delete(values, key.name)
 	}
 	switch {
 	case port != "" && name != "":
-		return portParams{}, invalidParameter("port and portName exclude each other")
+		return portParams{}, exclusiveSelection()
 	case port != "":
 		n, ok := parsePort(port)
 		if !ok {
-			return portParams{}, invalidParameter("port must be a decimal integer between 1 and 65535")
+			return portParams{}, malformedParameter("port", portGrammar)
 		}
 
 		return portParams{sel: k8s.PortSelection{Port: n}, sent: port}, nil
 	case name != "":
 		if len(validation.IsValidPortName(name)) > 0 {
-			return portParams{}, invalidParameter("portName must be a container port name")
+			return portParams{}, malformedParameter("portName", portNameGrammar)
 		}
 
 		return portParams{sel: k8s.PortSelection{PortName: name}, sent: name}, nil
@@ -126,9 +176,7 @@ func parseTargetsParams(values url.Values) (targetsParams, *requestError) {
 	)
 	for _, key := range slices.Sorted(maps.Keys(values)) {
 		vs := values[key]
-		if len(vs) != 1 || vs[0] == "" {
-			perr = invalidParameter(fmt.Sprintf("parameter %q must appear once with a value", key))
-
+		if perr = singleValue(key, vs); perr != nil {
 			break
 		}
 		value := vs[0]
@@ -139,27 +187,27 @@ func parseTargetsParams(values url.Values) (targetsParams, *requestError) {
 				params.explain = true
 			case "false":
 			default:
-				perr = invalidParameter("explain must be true or false")
+				perr = malformedParameter("explain", explainGrammar)
 			}
 		case "pod":
 			if len(validation.IsDNS1123Subdomain(value)) > 0 {
-				perr = invalidParameter("pod must be a DNS-1123 subdomain")
+				perr = malformedParameter("pod", podGrammar)
 			}
 			params.pod = value
 		case "port":
 			if _, ok := parsePort(value); !ok {
-				perr = invalidParameter("port must be a decimal integer between 1 and 65535")
+				perr = malformedParameter("port", portGrammar)
 			}
 			port = value
 		case "portName":
 			if len(validation.IsValidPortName(value)) > 0 {
-				perr = invalidParameter("portName must be a container port name")
+				perr = malformedParameter("portName", portNameGrammar)
 			}
 			name = value
 		case "version":
 			params.version = value
 		default:
-			perr = invalidParameter(fmt.Sprintf("unknown parameter %q", key))
+			perr = unknownParameter(key)
 		}
 		if perr != nil {
 			break
@@ -169,7 +217,7 @@ func parseTargetsParams(values url.Values) (targetsParams, *requestError) {
 	// whatever else in the query failed.
 	params.port = targetsPortSelection(values)
 	if perr == nil && port != "" && name != "" {
-		perr = invalidParameter("port and portName exclude each other")
+		perr = exclusiveSelection()
 	}
 
 	return params, perr
@@ -219,33 +267,36 @@ func parseProfileParams(values url.Values, spec profileSpec, limits config.Limit
 	}
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		vs := values[name]
-		if len(vs) != 1 || vs[0] == "" {
-			return params, invalidParameter(fmt.Sprintf("parameter %q must appear once with a value", name))
+		if perr := singleValue(name, vs); perr != nil {
+			return params, perr
 		}
 		value := vs[0]
 		switch name {
 		case "seconds":
 			if !spec.takesSeconds {
-				return params, invalidParameter(fmt.Sprintf("profile %s takes no seconds parameter", spec.name))
+				message := fmt.Sprintf("profile %s takes no seconds parameter", spec.name)
+
+				return params, invalidParameter(message,
+					paramFault(detailParameterNotApplicable, "seconds", message))
 			}
 			n, ok := parseSeconds(value)
 			if !ok {
-				return params, invalidParameter("seconds must be a decimal integer between 1 and 86400")
+				return params, malformedParameter("seconds", secondsGrammar)
 			}
 			seconds = n
 		case "pod":
 			if len(validation.IsDNS1123Subdomain(value)) > 0 {
-				return params, invalidParameter("pod must be a DNS-1123 subdomain")
+				return params, malformedParameter("pod", podGrammar)
 			}
 			params.pod = value
 		case "version":
 			params.version = value
 		case "strategy":
 			if value != strategyRandom {
-				return params, invalidParameter("strategy must be random")
+				return params, malformedParameter("strategy", strategyGrammar)
 			}
 		default:
-			return params, invalidParameter(fmt.Sprintf("unknown parameter %q", name))
+			return params, unknownParameter(name)
 		}
 	}
 
@@ -261,7 +312,7 @@ func parseProfileParams(values url.Values, spec profileSpec, limits config.Limit
 		if params.seconds > limit {
 			return params, &requestError{
 				status:  http.StatusBadRequest,
-				code:    "seconds_exceeds_limit",
+				code:    CodeSecondsExceedsLimit,
 				message: fmt.Sprintf("effective duration %ds exceeds the %s limit of %ds", params.seconds, spec.name, limit),
 			}
 		}
@@ -307,15 +358,10 @@ func parsePort(s string) (int32, bool) {
 func portNotAllowed(field, sent string) *requestError {
 	return &requestError{
 		status:  http.StatusBadRequest,
-		code:    "port_not_allowed",
+		code:    CodePortNotAllowed,
 		message: fmt.Sprintf("port %q is not allowed by this gateway", sent),
-		details: []errorDetail{{Field: field, Code: "not_admitted", Message: sent + " is not an admitted selection"}},
+		details: []errorDetail{paramFault(detailNotAdmitted, field, sent+" is not an admitted selection")},
 	}
-}
-
-// invalidParameter builds the 400 invalid_parameter error.
-func invalidParameter(message string) *requestError {
-	return &requestError{status: http.StatusBadRequest, code: "invalid_parameter", message: message}
 }
 
 // selectTarget applies the version filter, then the Pod name, then the strategy:
@@ -340,14 +386,14 @@ func selectTarget(targets []k8s.Target, params profileParams, choose func(n int)
 
 		return k8s.Target{}, &requestError{
 			status:  http.StatusNotFound,
-			code:    "pod_not_found",
+			code:    CodePodNotFound,
 			message: fmt.Sprintf("pod %s is not an eligible target", params.pod),
 		}
 	}
 	if len(remaining) == 0 {
 		return k8s.Target{}, &requestError{
 			status:  http.StatusServiceUnavailable,
-			code:    "no_targets",
+			code:    CodeNoTargets,
 			message: "service has no eligible targets",
 		}
 	}

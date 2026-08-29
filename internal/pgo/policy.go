@@ -311,11 +311,28 @@ func setIf[T any](dst *T, src *T) {
 	}
 }
 
+// The vocabulary of a violation: which way the value misses its bound.
+// A client reads Code rather than parsing Detail, which is free to change.
+const (
+	// codeAboveMaximum is a value above the ceiling the detail names.
+	codeAboveMaximum = "above_maximum"
+	// codeBelowMinimum is a value below the floor the detail names.
+	codeBelowMinimum = "below_minimum"
+	// codeOutOfRange is a value outside a range whose two ends are one rule.
+	codeOutOfRange = "out_of_range"
+	// codeNotPermitted is a value outside the fixed set the field admits.
+	codeNotPermitted = "not_permitted"
+	// codeRetentionUnderInterval is an artifact.retention shorter than the schedule.every of the same policy.
+	codeRetentionUnderInterval = "retention_under_interval"
+)
+
 // Violation is one policy field that exceeds a bound.
 // Ceiling names the bound so a reader can tell a lowered pgo.limits key from a
-// value the policy could never have held.
+// value the policy could never have held,
+// and Code says which way the value misses it.
 type Violation struct {
 	Field   string `json:"field"`
+	Code    string `json:"code"`
 	Ceiling string `json:"ceiling"`
 	Detail  string `json:"detail"`
 }
@@ -327,65 +344,73 @@ type Violation struct {
 // worker claim fails the Collection with limit_exceeded.
 func Validate(p Policy, lim config.PGOLimits) []Violation {
 	var out []Violation
-	add := func(field, ceiling, format string, args ...any) {
-		out = append(out, Violation{Field: field, Ceiling: ceiling, Detail: fmt.Sprintf(format, args...)})
+	add := func(field, code, ceiling, format string, args ...any) {
+		out = append(out, Violation{
+			Field:   field,
+			Code:    code,
+			Ceiling: ceiling,
+			Detail:  fmt.Sprintf(format, args...),
+		})
 	}
 
 	switch every := p.Schedule.Every.Duration(); {
 	case every > lim.MaxEvery:
-		add("schedule.every", "pgo.limits.maxEvery", "%v is more than %v", every, lim.MaxEvery)
+		add("schedule.every", codeAboveMaximum, "pgo.limits.maxEvery", "%v is more than %v", every, lim.MaxEvery)
 	case every < lim.MinEvery:
-		add("schedule.every", "pgo.limits.minEvery", "%v is less than %v", every, lim.MinEvery)
+		add("schedule.every", codeBelowMinimum, "pgo.limits.minEvery", "%v is less than %v", every, lim.MinEvery)
 	}
 
 	if jitter := p.Schedule.Jitter.Duration(); jitter < 0 || jitter > p.Schedule.Every.Duration()/2 {
-		add("schedule.jitter", "schedule.every/2", "%v is more than half of %v", jitter, p.Schedule.Every)
+		add("schedule.jitter", codeOutOfRange, "schedule.every/2", "%v is more than half of %v", jitter, p.Schedule.Every)
 	}
 
 	switch d := p.Sampling.Duration.Duration(); {
 	case d > lim.MaxDuration:
-		add("sampling.duration", "pgo.limits.maxDuration", "%v is more than %v", d, lim.MaxDuration)
+		add("sampling.duration", codeAboveMaximum, "pgo.limits.maxDuration", "%v is more than %v", d, lim.MaxDuration)
 	case d < minSamplingDuration:
-		add("sampling.duration", minSamplingDuration.String(), "%v is less than %v", d, minSamplingDuration)
+		add("sampling.duration", codeBelowMinimum, minSamplingDuration.String(), "%v is less than %v", d, minSamplingDuration)
 	}
 
 	switch rounds := p.Sampling.Rounds; {
 	case rounds > lim.MaxRounds:
-		add("sampling.rounds", "pgo.limits.maxRounds", "%d is more than %d", rounds, lim.MaxRounds)
+		add("sampling.rounds", codeAboveMaximum, "pgo.limits.maxRounds", "%d is more than %d", rounds, lim.MaxRounds)
 	case rounds < 1:
-		add("sampling.rounds", "1", "%d is less than 1", rounds)
+		add("sampling.rounds", codeBelowMinimum, "1", "%d is less than 1", rounds)
 	}
 
 	if ri := p.Sampling.RoundInterval.Duration(); ri < 0 || ri > config.PGOMaxRoundInterval {
-		add("sampling.roundInterval", Duration(config.PGOMaxRoundInterval).String(),
+		add("sampling.roundInterval", codeOutOfRange, Duration(config.PGOMaxRoundInterval).String(),
 			"%v is outside 0 to %v", ri, config.PGOMaxRoundInterval)
 	}
 
 	if !p.Sampling.Replicas.IsAll() {
 		switch n := p.Sampling.Replicas.Count(); {
 		case n > lim.MaxTargetsPerRound:
-			add("sampling.replicas", "pgo.limits.maxTargetsPerRound", "%d is more than %d", n, lim.MaxTargetsPerRound)
+			add("sampling.replicas", codeAboveMaximum, "pgo.limits.maxTargetsPerRound", "%d is more than %d", n, lim.MaxTargetsPerRound)
 		case n < 1:
-			add("sampling.replicas", "1", "%d is less than 1", n)
+			add("sampling.replicas", codeBelowMinimum, "1", "%d is less than 1", n)
 		}
 	}
 
 	switch mp := p.Sampling.MaxParallel; {
 	case mp > lim.MaxParallel:
-		add("sampling.maxParallel", "pgo.limits.maxParallel", "%d is more than %d", mp, lim.MaxParallel)
+		add("sampling.maxParallel", codeAboveMaximum, "pgo.limits.maxParallel", "%d is more than %d", mp, lim.MaxParallel)
 	case mp < 1:
-		add("sampling.maxParallel", "1", "%d is less than 1", mp)
+		add("sampling.maxParallel", codeBelowMinimum, "1", "%d is less than 1", mp)
 	}
 
 	if p.Target.VersionPolicy != versionPolicyStrict {
-		add("target.versionPolicy", versionPolicyStrict, "%q is not %q", p.Target.VersionPolicy, versionPolicyStrict)
+		add("target.versionPolicy", codeNotPermitted, versionPolicyStrict, "%q is not %q", p.Target.VersionPolicy, versionPolicyStrict)
 	}
 
 	switch r := p.Artifact.Retention.Duration(); {
 	case r > lim.MaxRetention:
-		add("artifact.retention", "pgo.limits.maxRetention", "%v is more than %v", r, lim.MaxRetention)
+		add("artifact.retention", codeAboveMaximum, "pgo.limits.maxRetention", "%v is more than %v", r, lim.MaxRetention)
 	case r < minRetention:
-		add("artifact.retention", Duration(minRetention).String(), "%v is less than %v", r, minRetention)
+		add("artifact.retention", codeBelowMinimum, Duration(minRetention).String(), "%v is less than %v", r, minRetention)
+	case r < p.Schedule.Every.Duration():
+		add("artifact.retention", codeRetentionUnderInterval, "schedule.every",
+			"%v is less than schedule.every %v", r, p.Schedule.Every)
 	}
 
 	return out

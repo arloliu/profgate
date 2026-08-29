@@ -197,8 +197,12 @@ func TestSchedulerLogsViolationOncePerRevision(t *testing.T) {
 	const message = "pgo: policy exceeds a ceiling and the service is not scheduled"
 
 	f := startPGO(t)
-	f.setOverride("payment", "payment-api", enabledOverride(withEvery(48*time.Hour)))
-	r := f.newReplica("replica", replicaOpts{})
+	// One ceiling crossed and nothing else, so the count of log lines is the
+	// count of evaluations rather than the count of faults.
+	f.setOverride("payment", "payment-api", enabledOverride(withEvery(2*time.Hour)))
+	r := f.newReplica("replica", replicaOpts{
+		limits: limitsWith(func(l *config.PGOLimits) { l.MaxEvery = time.Hour }),
+	})
 	r.waitSynced()
 	r.waitCache("holds the override", func(c *Caches) bool { return len(c.overrideSnapshot()) == 1 })
 
@@ -216,7 +220,7 @@ func TestSchedulerLogsViolationOncePerRevision(t *testing.T) {
 		t.Errorf("violation names ceiling %v, want pgo.limits.maxEvery", got)
 	}
 
-	rev := f.setOverride("payment", "payment-api", enabledOverride(withEvery(36*time.Hour)))
+	rev := f.setOverride("payment", "payment-api", enabledOverride(withEvery(3*time.Hour)))
 	r.waitCache("holds the new revision", func(c *Caches) bool {
 		return c.overrideSnapshot()[serviceRef{Namespace: "payment", Service: "payment-api"}].Revision == rev
 	})
