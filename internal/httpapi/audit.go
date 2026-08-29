@@ -28,9 +28,12 @@ type auditRecord struct {
 	seconds    int
 	port       string // the port selection as sent; empty when absent or malformed
 	explain    bool   // set for a targets request that carried explain=true
-	status     int
-	code       string
-	duration   time.Duration
+	// wait is the duration a Collection read asked to be held open for,
+	// written only for a request whose wait the gateway accepted.
+	wait     time.Duration
+	status   int
+	code     string
+	duration time.Duration
 }
 
 // writeAudit emits rec as the "request" record at info level.
@@ -72,6 +75,9 @@ func writeAudit(log *slog.Logger, rec auditRecord) {
 	}
 	if rec.explain {
 		attrs = append(attrs, "explain", true)
+	}
+	if rec.wait > 0 {
+		attrs = append(attrs, "wait", rec.wait.String())
 	}
 	log.Info("request", attrs...)
 }

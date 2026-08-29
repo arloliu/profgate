@@ -73,7 +73,13 @@ type Deps struct {
 	// requests already routed here, and a replica whose NATS is down still
 	// serves interactive requests.
 	// nil means Discovery.HasSynced alone.
-	Ready  func() bool
+	Ready func() bool
+	// Drain closes the moment the replica begins draining,
+	// which is when /readyz turns 503 and before the drain delay.
+	// A request held open by a wait answers then with the record it last read,
+	// so no poll outlasts the window the deployment sized.
+	// nil is a channel that never closes, which is a handler no drain reaches.
+	Drain  <-chan struct{}
 	Logger *slog.Logger
 	Choose func(n int) int // nil means math/rand/v2 IntN
 }

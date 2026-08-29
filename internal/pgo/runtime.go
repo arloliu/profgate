@@ -50,11 +50,39 @@ type Bundle struct {
 // reports the runtime unavailable and the routes answer 503 pgo_unavailable.
 type Runtime struct {
 	bundle atomic.Pointer[Bundle]
+
+	mu sync.Mutex
+	// moved is closed when the connection generation it belongs to is left behind,
+	// and replaced by the channel of the generation that follows.
+	// It exists from construction,
+	// because the connection can drop before the preflight that binds the runtime has passed.
+	moved chan struct{}
 }
 
 // NewRuntime returns an unbound runtime: every session it hands out until Bind
 // is natskv.ErrUnavailable.
-func NewRuntime() *Runtime { return &Runtime{} }
+func NewRuntime() *Runtime { return &Runtime{moved: make(chan struct{})} }
+
+// MoveGeneration reports that the connection generation has moved.
+// It closes the channel of the generation being left behind,
+// which is what ends a request waiting under it,
+// and installs the channel of the next one.
+// The connection's disconnect callback moves its generation before it reports,
+// so a receiver always sees a generation that has already moved.
+func (r *Runtime) MoveGeneration() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	close(r.moved)
+	r.moved = make(chan struct{})
+}
+
+// generationMoved is the channel of the generation current now.
+func (r *Runtime) generationMoved() <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.moved
+}
 
 // Bind publishes the dependencies the routes serve from.
 // It is called exactly once, after natskv.Preflight succeeds.
@@ -71,6 +99,9 @@ func (r *Runtime) bound() bool { return r.bundle.Load() != nil }
 type Session struct {
 	b     *Bundle
 	store natskv.Stores
+	// moved is the connection-generation broadcast this session captured when it was taken,
+	// and never a lookup made later.
+	moved <-chan struct{}
 }
 
 // Session returns the view this request works from.
@@ -83,6 +114,12 @@ func (r *Runtime) Session() (*Session, error) {
 	if b == nil {
 		return nil, fmt.Errorf("pgo: runtime is not bound: %w", natskv.ErrUnavailable)
 	}
+
+	// The broadcast is captured before the generation is read,
+	// so a move between the two closes the channel this session holds.
+	// The cost of that order is a session refusing a generation still current,
+	// which is the direction that cannot leave a request parked over an outage.
+	moved := r.generationMoved()
 
 	gen := b.Client.Generation()
 	// Both halves of the barrier: the seam marks a watch synced when it
@@ -97,8 +134,26 @@ func (r *Runtime) Session() (*Session, error) {
 		return nil, fmt.Errorf("pgo: view of generation %d: %w", gen, err)
 	}
 
-	return &Session{b: b, store: store}, nil
+	return &Session{b: b, store: store, moved: moved}, nil
 }
+
+// Subscribe registers a channel pulsed for every job.<id> entry applied for id.
+// The pulse is a hint and never an answer:
+// the handler re-reads the record and decides from that read alone,
+// so a pulse carries nothing
+// and a full buffer drops one rather than blocking apply.
+// The returned function removes the registration and is called when the request ends.
+func (s *Session) Subscribe(id string) (<-chan struct{}, func()) { return s.b.Caches.Subscribe(id) }
+
+// GenerationMoved returns the channel this session captured when it was taken:
+// the one closed when the generation its view is bound to is left behind.
+// It is a field of the session and not a lookup,
+// so a generation that moves between a handler's read and its select still closes the channel it holds;
+// a lookup would hand back the replacement and lose the signal.
+func (s *Session) GenerationMoved() <-chan struct{} { return s.moved }
+
+// NewTimer is the session's clock, which is what bounds a request that waits.
+func (s *Session) NewTimer(d time.Duration) Timer { return s.b.Clock.NewTimer(d) }
 
 // Now is the session's clock, in UTC.
 func (s *Session) Now() time.Time { return s.b.Clock.Now().UTC() }

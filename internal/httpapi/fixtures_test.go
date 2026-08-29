@@ -457,16 +457,20 @@ type harness struct {
 	routes    auth.AuthRoutes    // nil leaves the /auth/ routes unknown
 	console   http.Handler       // nil leaves /ui/ and / unknown
 	ready     func() bool        // nil leaves readiness on disc.synced
+	// drain is the signal a request held open by a wait ends on;
+	// it closes only where a test drains the replica.
+	drain chan struct{}
 	// beforeAllowlist, when set, runs between the realm check and the allowlist check.
 	beforeAllowlist func()
 }
 
 func newHarness(targets ...k8s.Target) *harness {
 	h := &harness{
-		disc: &fakeDiscovery{targets: targets, synced: true},
-		up:   newFakeUpstream(),
-		rec:  &recorder{},
-		logs: &syncBuffer{},
+		disc:  &fakeDiscovery{targets: targets, synced: true},
+		up:    newFakeUpstream(),
+		rec:   &recorder{},
+		logs:  &syncBuffer{},
+		drain: make(chan struct{}),
 	}
 	h.cfg.Store(testConfig())
 
@@ -506,6 +510,7 @@ func (h *harness) handler() http.Handler {
 		AuthRoutes: h.routes,
 		Console:    h.console,
 		Ready:      h.ready,
+		Drain:      h.drain,
 		Logger:     h.logger(),
 		Choose:     h.choose,
 	})
@@ -1041,6 +1046,37 @@ func (k *fakeKV) put(t *testing.T, key string, value any) uint64 {
 	return k.storeLocked(key, body)
 }
 
+// remove deletes one key outside the seam, standing in for the sweeper.
+func (k *fakeKV) remove(t *testing.T, key string) {
+	t.Helper()
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if _, ok := k.entries[key]; !ok {
+		t.Fatalf("remove %s: no such key", key)
+	}
+	delete(k.entries, key)
+	k.revision++
+	k.deliverLocked(natskv.Entry{Key: key, Revision: k.revision, Generation: k.gen()})
+}
+
+// setGetErr installs what every later read answers,
+// so a test can take the store away from a request that is already in flight.
+func (k *fakeKV) setGetErr(err error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.getErr = err
+}
+
+// watchCount is how many watches are open on the bucket, which is the caches'
+// own and nothing a request added.
+func (k *fakeKV) watchCount() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	return len(k.watches)
+}
+
 // record reads one Collection record straight from the authoritative bucket.
 func (k *fakeKV) record(t *testing.T, id string) pgo.Record {
 	t.Helper()
@@ -1270,10 +1306,15 @@ func (f *fakeNATS) holdReplay() {
 	f.synced = false
 }
 
-// fakePGOClock is the clock the publisher and the on-demand bucket run on.
+// fakePGOClock is the clock the publisher, the on-demand bucket,
+// and the wait of a Collection read run on,
+// so no test waits on wall-clock time.
+// Moving it fires every timer whose time has come,
+// which is how a test drives a wait to its deadline.
 type fakePGOClock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu     sync.Mutex
+	now    time.Time
+	timers []*fakePGOTimer
 }
 
 func newFakePGOClock() *fakePGOClock { return &fakePGOClock{now: pgoFixtureNow} }
@@ -1292,10 +1333,70 @@ func (c *fakePGOClock) advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
+	for _, t := range c.timers {
+		if t.active && !t.deadline.After(c.now) {
+			t.active = false
+			select {
+			case t.ch <- c.now:
+			default:
+			}
+		}
+	}
 }
 
-func (c *fakePGOClock) NewTimer(time.Duration) pgo.Timer   { panic("no PGO route uses a timer") }
+func (c *fakePGOClock) NewTimer(d time.Duration) pgo.Timer {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t := &fakePGOTimer{c: c, ch: make(chan time.Time, 1), deadline: c.now.Add(d), active: true}
+	c.timers = append(c.timers, t)
+	if d <= 0 {
+		t.active = false
+		t.ch <- c.now
+	}
+
+	return t
+}
+
 func (c *fakePGOClock) NewTicker(time.Duration) pgo.Ticker { panic("no PGO route uses a ticker") }
+
+// timerCount is how many timers this clock has handed out,
+// which is what a test waits for before it moves the clock:
+// a timer taken after the move would never fire.
+func (c *fakePGOClock) timerCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return len(c.timers)
+}
+
+// fakePGOTimer fires when the clock reaches its deadline.
+type fakePGOTimer struct {
+	c        *fakePGOClock
+	ch       chan time.Time
+	deadline time.Time
+	active   bool
+}
+
+func (t *fakePGOTimer) C() <-chan time.Time { return t.ch }
+
+func (t *fakePGOTimer) Reset(d time.Duration) bool {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	was := t.active
+	t.deadline = t.c.now.Add(d)
+	t.active = true
+
+	return was
+}
+
+func (t *fakePGOTimer) Stop() bool {
+	t.c.mu.Lock()
+	defer t.c.mu.Unlock()
+	was := t.active
+	t.active = false
+
+	return was
+}
 
 // PGO route paths over the fixture Service and one Collection.
 const (
@@ -1536,6 +1637,18 @@ func (p *pgoHarness) seedOverride(t *testing.T, override *pgo.PolicyOverride) ui
 	return revision
 }
 
+// cachedState is the state the watched job cache holds for one Collection,
+// and the empty state for one it does not hold.
+func (p *pgoHarness) cachedState(id string) pgo.State {
+	for _, v := range p.caches.Collections(fixtureNamespace, fixtureService) {
+		if v.ID == id {
+			return v.State
+		}
+	}
+
+	return ""
+}
+
 // newFixtureID is a Collection identifier of the grammar the routes accept.
 func newFixtureID() string {
 	fixtureIDs.Add(1)
@@ -1578,6 +1691,90 @@ func (p *pgoHarness) doPGO(t *testing.T, method, target, body string, header htt
 	}
 
 	return rec
+}
+
+// heldOpenTimeout is how long a test gives a held-open request to answer,
+// once what it waits for has happened.
+// Nothing in these tests waits on wall-clock time,
+// so reaching it is a failure rather than a slow machine.
+const heldOpenTimeout = 5 * time.Second
+
+// disconnect is the connection going down as the process sees it:
+// the generation moves, and the broadcast a held-open request selects on moves
+// with it, which is what cmd/profgate composes into one connection report.
+func (p *pgoHarness) disconnect() {
+	p.nats.disconnect()
+	p.runtime.MoveGeneration()
+}
+
+// startDrain is the replica beginning to drain, the moment /readyz turns 503.
+func (p *pgoHarness) startDrain() { close(p.drain) }
+
+// held is one request the handler has not answered yet:
+// the recorder it answers into, the client's own cancellation,
+// and the channel closed when the handler returns.
+type held struct {
+	rec    *httptest.ResponseRecorder
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// hold runs one PGO request on a goroutine of its own
+// and hands back what is still in flight,
+// so a test can act while the request is parked.
+func (p *pgoHarness) hold(t *testing.T, target string) *held {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	h := &held{rec: httptest.NewRecorder(), cancel: cancel, done: make(chan struct{})}
+	handler := p.handler()
+	go func() {
+		defer close(h.done)
+		handler.ServeHTTP(h.rec, req)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-h.done:
+		case <-time.After(heldOpenTimeout):
+			t.Errorf("a request was still held open %s after its client left", heldOpenTimeout)
+		}
+	})
+
+	return h
+}
+
+// answered reports whether the handler has returned.
+func (h *held) answered() bool {
+	select {
+	case <-h.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// join waits for the answer and applies the assertions every PGO answer makes.
+func (h *held) join(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+
+	select {
+	case <-h.done:
+	case <-time.After(heldOpenTimeout):
+		t.Fatalf("the request was still held open after %s", heldOpenTimeout)
+	}
+	assertNoLeak(t, h.rec)
+
+	return h.rec
+}
+
+// waitTimer blocks until the held request has taken its deadline from the
+// clock; moving the clock before that would leave the timer never firing.
+func (p *pgoHarness) waitTimer(t *testing.T) {
+	t.Helper()
+
+	p.waitCache(t, "the wait's deadline timer", func() bool { return p.clock.timerCount() > 0 })
 }
 
 // keyed is what a create that binds itself to one Collection sends:

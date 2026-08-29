@@ -180,6 +180,15 @@ type Caches struct {
 	// one wake-up for whatever it missed.
 	jobPulse chan struct{}
 
+	// subscribers are the channels waiting on one Collection each,
+	// keyed by the identifier of the record their request named.
+	// They are the fan-out of the job.* watch this replica already holds,
+	// so a waiting request opens nothing of its own,
+	// and they outlive a generation change:
+	// a request bound to a generation that moved ends on the broadcast,
+	// not by losing the channel it registered.
+	subscribers map[string]map[chan struct{}]struct{}
+
 	// applyGate, when set, runs before every entry is applied.
 	// A test freezes one cache's delivery with it while the seam's own watch
 	// stays synced.
@@ -201,12 +210,62 @@ const (
 // NewCaches returns caches with nothing in them; Run fills them.
 func NewCaches(log *slog.Logger) *Caches {
 	return &Caches{
-		log:       log,
-		overrides: make(map[string]cachedOverride),
-		jobs:      make(map[string]cachedJob),
-		active:    make(map[serviceRef]cachedActive),
-		slots:     make(map[string]cachedSlot),
-		jobPulse:  make(chan struct{}, 1),
+		log:         log,
+		overrides:   make(map[string]cachedOverride),
+		jobs:        make(map[string]cachedJob),
+		active:      make(map[serviceRef]cachedActive),
+		slots:       make(map[string]cachedSlot),
+		jobPulse:    make(chan struct{}, 1),
+		subscribers: make(map[string]map[chan struct{}]struct{}),
+	}
+}
+
+// Subscribe registers a channel pulsed for every job.<id> entry applied for id.
+// The pulse is a hint and never an answer:
+// the caller re-reads the record and decides from that read alone,
+// so a pulse carries nothing
+// and a full buffer drops one rather than blocking apply.
+// The returned function removes the registration and is called when the request ends.
+func (c *Caches) Subscribe(id string) (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+
+	c.mu.Lock()
+	byID, ok := c.subscribers[id]
+	if !ok {
+		byID = make(map[chan struct{}]struct{})
+		c.subscribers[id] = byID
+	}
+	byID[ch] = struct{}{}
+	c.mu.Unlock()
+
+	return ch, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		byID, ok := c.subscribers[id]
+		if !ok {
+			return
+		}
+		delete(byID, ch)
+		if len(byID) == 0 {
+			delete(c.subscribers, id)
+		}
+	}
+}
+
+// pulseSubscribers wakes every request waiting on one record, called with c.mu held.
+// Each send is non-blocking,
+// so a subscriber nobody is reading holds the lock no longer than the others
+// and delays no entry.
+func (c *Caches) pulseSubscribers(key string) {
+	id, ok := strings.CutPrefix(key, jobPrefix)
+	if !ok {
+		return
+	}
+	for ch := range c.subscribers[id] {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -288,6 +347,10 @@ func (c *Caches) apply(kind cacheKind, e natskv.Entry) {
 		c.applyOverride(e)
 	case cacheJobs:
 		c.applyJob(e)
+		// The fan-out sits beside applyJob rather than inside it,
+		// because an entry that leaves no record still ends a wait on it:
+		// a deleted Collection is what a waiting request is answered 404 from.
+		c.pulseSubscribers(e.Key)
 		select {
 		case c.jobPulse <- struct{}{}:
 		default:

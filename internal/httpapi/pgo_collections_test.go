@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
+	"github.com/arloliu/profgate/internal/metrics"
 	"github.com/arloliu/profgate/internal/natskv"
 	"github.com/arloliu/profgate/internal/pgo"
 )
@@ -1717,5 +1719,499 @@ func TestCollectionReplayReReadsAReceiptItLost(t *testing.T) {
 	}
 	if receipt := h.nats.jobs.receipt(t, receiptKey); receipt.ID != successor.ID {
 		t.Errorf("receipt names %q, want the successor %q", receipt.ID, successor.ID)
+	}
+}
+
+// waitPath is one Collection's read route carrying a query.
+func waitPath(id, query string) string { return collectionPath(id, "") + "?" + query }
+
+// expectNoElapsed fails when an answer carries the header only an accepted wait earns.
+func expectNoElapsed(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+
+	if got := rec.Header().Get(waitElapsedHeader); got != "" {
+		t.Errorf("%s = %q, want none: this request asked for no wait", waitElapsedHeader, got)
+	}
+}
+
+// expectElapsed fails unless the answer carries the elapsed header,
+// and returns the seconds it names.
+func expectElapsed(t *testing.T, rec *httptest.ResponseRecorder) float64 {
+	t.Helper()
+
+	got := rec.Header().Get(waitElapsedHeader)
+	if got == "" {
+		t.Fatalf("%s is absent from an answer to an accepted wait", waitElapsedHeader)
+	}
+	seconds, err := strconv.ParseFloat(got, 64)
+	if err != nil {
+		t.Fatalf("%s = %q, want decimal seconds: %v", waitElapsedHeader, got, err)
+	}
+	if len(got) < 5 || got[len(got)-4] != '.' {
+		t.Errorf("%s = %q, want millisecond precision", waitElapsedHeader, got)
+	}
+
+	return seconds
+}
+
+// stateOf reads the state out of one Collection answer,
+// which is written as the record was stored.
+func stateOf(t *testing.T, rec *httptest.ResponseRecorder) pgo.State {
+	t.Helper()
+
+	var body pgo.Record
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("collection body %q is not a record: %v", rec.Body.String(), err)
+	}
+	if body.Policy.Sampling.Rounds == 0 {
+		t.Errorf("the answer carries no policy: it was written from the cache rather than from a read")
+	}
+
+	return body.State
+}
+
+// TestCollectionReadWithoutWaitAnswersAsItAlwaysDid pins what a client on a timer already gets:
+// the record as read, no elapsed header, and no wait field on the audit record.
+func TestCollectionReadWithoutWaitAnswersAsItAlwaysDid(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	got := h.doPGO(t, http.MethodGet, collectionPath(rec.ID, ""), "", nil)
+
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+	}
+	expectNoElapsed(t, got)
+	audit := h.expectPGOAudit(t, http.StatusOK, codeOK)
+	if _, ok := audit["wait"]; ok {
+		t.Errorf("audit record carries wait for a request that asked for none: %v", audit)
+	}
+}
+
+// TestCollectionReadRefusesAWaitOutsideItsGrammar covers every refusal the parameter earns:
+// each one names the input to change,
+// none of them starts a wait,
+// and none of them carries the elapsed header.
+// A value above the grammar is refused rather than clamped.
+func TestCollectionReadRefusesAWaitOutsideItsGrammar(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		field string
+		code  string
+	}{
+		{"a name the route does not take", "bogus=1", "bogus", detailUnknownParameter},
+		{"a wait of zero", "wait=0", waitParam, detailMalformedParameter},
+		{"a negative wait", "wait=-1s", waitParam, detailMalformedParameter},
+		{"a wait that is not a duration", "wait=abc", waitParam, detailMalformedParameter},
+		{"a wait one second above the top", "wait=61s", waitParam, detailMalformedParameter},
+		{"a wait far above the top", "wait=120s", waitParam, detailMalformedParameter},
+		{"an empty wait", "wait=", waitParam, detailEmptyParameter},
+		{"a repeated wait", "wait=5s&wait=5s", waitParam, detailRepeatedParameter},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPGOHarness(t, pgoOpts{})
+			rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+			before := h.storeCalls()
+
+			got := h.doPGO(t, http.MethodGet, waitPath(rec.ID, tc.query), "", nil)
+
+			h.expectPGOError(t, got, http.StatusBadRequest, CodeInvalidParameter, CodeInvalidParameter)
+			expectDetails(t, got, CodeInvalidParameter, []errorDetail{{Field: tc.field, Code: tc.code}})
+			expectNoElapsed(t, got)
+			if delta := h.storeCalls() - before; delta != 0 {
+				t.Errorf("store calls = %d, want 0: a refused wait reads nothing and registers nothing", delta)
+			}
+		})
+	}
+}
+
+// TestOnlyTheCollectionReadTakesAParameter proves the other Collection-scoped routes take none:
+// the wait belongs to the read alone,
+// and every other route refuses a query naming what the client sent.
+func TestOnlyTheCollectionReadTakesAParameter(t *testing.T) {
+	for _, tc := range []struct{ name, suffix, method string }{
+		{"the download", "/profile", http.MethodGet},
+		{"the cancel", "/cancel", http.MethodPost},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPGOHarness(t, pgoOpts{})
+			rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+			got := h.doPGO(t, tc.method, collectionPath(rec.ID, tc.suffix)+"?wait=5s", "", clientHeaders(tc.method))
+
+			h.expectPGOError(t, got, http.StatusBadRequest, CodeInvalidParameter, CodeInvalidParameter)
+			expectDetails(t, got, CodeInvalidParameter,
+				[]errorDetail{{Field: waitParam, Code: detailUnknownParameter}})
+			expectNoElapsed(t, got)
+		})
+	}
+}
+
+// TestWaitOnATerminalRecordAnswersAtOnce proves the wait ends on the first read
+// when the record is one it can never leave,
+// and that the audit record names the duration asked for
+// while no metrics label is built from it.
+func TestWaitOnATerminalRecordAnswersAtOnce(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StateCompleted))
+
+	got := h.doPGO(t, http.MethodGet, waitPath(rec.ID, "wait=5s"), "", nil)
+
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+	}
+	if elapsed := expectElapsed(t, got); elapsed != 0 {
+		t.Errorf("elapsed = %v, want 0: the wait never started", elapsed)
+	}
+	audit := h.expectPGOAudit(t, http.StatusOK, codeOK)
+	if audit["wait"] != "5s" {
+		t.Errorf("audit wait = %v, want the duration asked for", audit["wait"])
+	}
+	h.expectMetric(t, metrics.EndpointCollection, labelCPU)
+}
+
+// TestWaitRegistersBeforeItReads is the lost-wakeup case.
+// The record moves the moment the handler's first authoritative read returns,
+// and the pulse that transition produces has reached the caches before the
+// handler goes on.
+// A handler that registered first is woken by it and answers at once; one that
+// reads first has nothing registered when the pulse is delivered and parks
+// until its deadline over a change that had already happened.
+func TestWaitRegistersBeforeItReads(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	var reads atomic.Int32
+	h.nats.jobs.afterGet = func() {
+		// The realm read is the first; the wait's own first read is the second.
+		if reads.Add(1) != 2 {
+			return
+		}
+		moved := h.nats.jobs.record(t, rec.ID)
+		moved.State = pgo.StateRunning
+		h.nats.jobs.put(t, jobKeyPrefix+rec.ID, moved)
+		// The pulse has been delivered before the read returns.
+		// This runs on the handler's own goroutine and so reports nothing itself:
+		// a delivery that never landed shows as the answer below.
+		for deadline := time.Now().Add(heldOpenTimeout); time.Now().Before(deadline); {
+			if h.cachedState(rec.ID) == pgo.StateRunning {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	got := h.hold(t, waitPath(rec.ID, "wait=30s")).join(t)
+
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+	}
+	if state := stateOf(t, got); state != pgo.StateRunning {
+		t.Errorf("state = %q, want %q", state, pgo.StateRunning)
+	}
+	if elapsed := expectElapsed(t, got); elapsed != 0 {
+		t.Errorf("elapsed = %v, want 0: the answer came from the pulse, not the deadline", elapsed)
+	}
+}
+
+// TestWaitAnswersTheReadThatFollowsAPulse proves a pulse is a hint:
+// the answer is the record the authoritative read returned,
+// carrying what the cache never holds.
+func TestWaitAnswersTheReadThatFollowsAPulse(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+
+	moved := h.nats.jobs.record(t, rec.ID)
+	moved.State = pgo.StateRunning
+	h.nats.jobs.put(t, jobKeyPrefix+rec.ID, moved)
+
+	got := held.join(t)
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+	}
+	if state := stateOf(t, got); state != pgo.StateRunning {
+		t.Errorf("state = %q, want %q", state, pgo.StateRunning)
+	}
+}
+
+// TestWaitOutlivesTwoRenewals proves only a change of state ends a wait:
+// an owner writes progress with every renewal,
+// and a wait that answered on any write would answer every twenty seconds with a record that had not moved.
+func TestWaitOutlivesTwoRenewals(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	lease := pgoFixtureNow.Add(time.Minute)
+	rec := h.seedRecord(t, h.newRecord(pgo.StateRunning, func(r *pgo.Record) { r.LeaseUntil = &lease }))
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+
+	for i := range 2 {
+		renewed := h.nats.jobs.record(t, rec.ID)
+		next := lease.Add(time.Duration(i+1) * time.Minute)
+		renewed.LeaseUntil = &next
+		renewed.Progress = pgo.Progress{Round: i, Rounds: 2, SamplesOK: i + 1}
+		h.nats.jobs.put(t, jobKeyPrefix+rec.ID, renewed)
+		h.waitCache(t, "the renewal delivered", func() bool { return h.cachedState(rec.ID) == pgo.StateRunning })
+	}
+	if held.answered() {
+		t.Fatal("a renewal that wrote no new state ended the wait")
+	}
+
+	finished := h.nats.jobs.record(t, rec.ID)
+	finished.State = pgo.StateCancelled
+	h.nats.jobs.put(t, jobKeyPrefix+rec.ID, finished)
+
+	if state := stateOf(t, held.join(t)); state != pgo.StateCancelled {
+		t.Errorf("state = %q, want %q: only a change of state ends a wait", state, pgo.StateCancelled)
+	}
+}
+
+// TestWaitAnswers404WhenTheRecordGoes covers the record the sweeper deletes
+// while a client is waiting on it: it answers exactly as a plain read of a
+// deleted record does.
+func TestWaitAnswers404WhenTheRecordGoes(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+	h.nats.jobs.remove(t, jobKeyPrefix+rec.ID)
+
+	got := held.join(t)
+	expectCode(t, got, http.StatusNotFound, CodeCollectionNotFound)
+	expectElapsed(t, got)
+}
+
+// TestWaitExpiresWithTheRecordAsRead proves the deadline answers the record its final read returned,
+// with an elapsed value at least the duration asked for.
+func TestWaitExpiresWithTheRecordAsRead(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+	h.clock.advance(30 * time.Second)
+
+	got := held.join(t)
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+	}
+	if state := stateOf(t, got); state != pgo.StatePending {
+		t.Errorf("state = %q, want %q", state, pgo.StatePending)
+	}
+	if elapsed := expectElapsed(t, got); elapsed < 30 {
+		t.Errorf("elapsed = %v, want at least the 30 seconds asked for", elapsed)
+	}
+}
+
+// TestTheDeadlineReads is the case a deadline answered from an earlier read gets wrong.
+// The transition lands while the cache is frozen, so no pulse follows it,
+// and the wait comes back only on its own timer:
+// a handler that answered from the record it last read would report the state before the transition.
+func TestTheDeadlineReads(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+
+	h.nats.jobs.freeze(jobKeyPrefix)
+	finished := h.nats.jobs.record(t, rec.ID)
+	finished.State = pgo.StateCompleted
+	h.nats.jobs.put(t, jobKeyPrefix+rec.ID, finished)
+	h.clock.advance(30 * time.Second)
+
+	got := held.join(t)
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+	}
+	if state := stateOf(t, got); state != pgo.StateCompleted {
+		t.Errorf("state = %q, want %q: the deadline reads, so a dropped pulse costs latency and not the answer",
+			state, pgo.StateCompleted)
+	}
+}
+
+// TestTheDeadlineAnswers404ForARecordThatWent is the deadline ending for a record that went with no pulse.
+func TestTheDeadlineAnswers404ForARecordThatWent(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+
+	h.nats.jobs.freeze(jobKeyPrefix)
+	h.nats.jobs.remove(t, jobKeyPrefix+rec.ID)
+	h.clock.advance(30 * time.Second)
+
+	expectCode(t, held.join(t), http.StatusNotFound, CodeCollectionNotFound)
+}
+
+// TestATransitionAndTheDeadlineTogetherAnswerTheTransition proves the two arms agree:
+// whichever the select takes, the answer comes from a read taken after it.
+func TestATransitionAndTheDeadlineTogetherAnswerTheTransition(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+
+	finished := h.nats.jobs.record(t, rec.ID)
+	finished.State = pgo.StateFailed
+	finished.Reason = pgo.ReasonNoSamples
+	h.nats.jobs.put(t, jobKeyPrefix+rec.ID, finished)
+	h.clock.advance(30 * time.Second)
+
+	if state := stateOf(t, held.join(t)); state != pgo.StateFailed {
+		t.Errorf("state = %q, want %q whichever arm the select took", state, pgo.StateFailed)
+	}
+}
+
+// TestAWaitThatLosesTheStoreIs503 proves what a final read the store cannot answer ends a wait with:
+// the 503 every other store failure inside one earns.
+func TestAWaitThatLosesTheStoreIs503(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+
+	h.nats.jobs.setGetErr(natskv.ErrUnavailable)
+	h.clock.advance(30 * time.Second)
+
+	got := held.join(t)
+	expectCode(t, got, http.StatusServiceUnavailable, CodePGOUnavailable)
+	expectElapsed(t, got)
+}
+
+// TestAClientThatLeavesMidWaitIsAudited proves nothing is answered to a client
+// that is gone, and that the operator sees why the request ended.
+func TestAClientThatLeavesMidWaitIsAudited(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+	held.cancel()
+
+	got := held.join(t)
+	if got.Body.Len() != 0 {
+		t.Errorf("body = %q, want nothing written to a client that left", got.Body.String())
+	}
+	h.expectPGOAudit(t, 0, codeClientGone)
+}
+
+// TestTheGenerationMoveEndsAWait proves the mid-wait refusal is driven by the
+// broadcast: a parked request cannot read Generation() again, so a handler
+// that read it once would sit out the whole outage and answer from a view the
+// store had moved past.
+func TestTheGenerationMoveEndsAWait(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+	h.disconnect()
+
+	got := held.join(t)
+	expectCode(t, got, http.StatusServiceUnavailable, CodePGOUnavailable)
+	expectElapsed(t, got)
+}
+
+// TestTheGenerationMoveBetweenTheReadAndTheSelectEndsAWait is the window a
+// looked-up broadcast loses.
+// The connection drops the moment the handler's authoritative read returns,
+// which is before it selects:
+// the session holds the channel of its own generation,
+// so the close it already missed is on the channel it holds.
+// A handler that asked for the channel at select time would be handed the replacement,
+// and park to its deadline over the outage.
+func TestTheGenerationMoveBetweenTheReadAndTheSelectEndsAWait(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	var reads atomic.Int32
+	h.nats.jobs.afterGet = func() {
+		if reads.Add(1) == 2 {
+			h.disconnect()
+		}
+	}
+
+	held := h.hold(t, waitPath(rec.ID, "wait=30s"))
+	h.waitTimer(t)
+	// A wait that missed the move would come back only on its own deadline,
+	// and answer 200 with a record read under a generation the store left.
+	h.clock.advance(30 * time.Second)
+
+	expectCode(t, held.join(t), http.StatusServiceUnavailable, CodePGOUnavailable)
+}
+
+// TestDrainingEndsEveryWait proves a poll cannot outlast the drain window the
+// deployment sized: every waiting request answers with the record it last
+// read, the moment readiness turns 503.
+func TestDrainingEndsEveryWait(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+
+	first := h.hold(t, waitPath(rec.ID, "wait=60s"))
+	second := h.hold(t, waitPath(rec.ID, "wait=60s"))
+	h.waitCache(t, "both waits parked", func() bool { return h.clock.timerCount() == 2 })
+
+	h.startDrain()
+
+	for _, held := range []*held{first, second} {
+		got := held.join(t)
+		if got.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body %q)", got.Code, got.Body.String())
+		}
+		if state := stateOf(t, got); state != pgo.StatePending {
+			t.Errorf("state = %q, want the record as last read", state)
+		}
+		expectElapsed(t, got)
+	}
+}
+
+// TestOneEntryWakesEveryWaitOnTheRecord proves what a hundred waiting clients cost:
+// one channel each,
+// one read each when the record moves,
+// and no traffic to the store beyond the watches the replica already holds.
+func TestOneEntryWakesEveryWaitOnTheRecord(t *testing.T) {
+	const waiters = 50
+
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+	watches := h.nats.jobs.watchCount()
+
+	start := h.storeCalls()
+	waiting := make([]*held, waiters)
+	for i := range waiting {
+		waiting[i] = h.hold(t, waitPath(rec.ID, "wait=60s"))
+	}
+	// Two reads each: the realm read and the first authoritative read.
+	// Counting from before those land would read one of them as a wake-up.
+	h.waitCache(t, "every wait past its first read", func() bool { return h.storeCalls() >= start+2*waiters })
+
+	before := h.storeCalls()
+	moved := h.nats.jobs.record(t, rec.ID)
+	moved.State = pgo.StateRunning
+	h.nats.jobs.put(t, jobKeyPrefix+rec.ID, moved)
+
+	for i, held := range waiting {
+		if state := stateOf(t, held.join(t)); state != pgo.StateRunning {
+			t.Fatalf("wait %d state = %q, want %q", i, state, pgo.StateRunning)
+		}
+	}
+
+	// The record read above is the one call beside the waits' own.
+	if delta := h.storeCalls() - before - 1; delta != waiters {
+		t.Errorf("store calls after one applied entry = %d, want one read per woken request (%d)", delta, waiters)
+	}
+	if got := h.nats.jobs.watchCount(); got != watches {
+		t.Errorf("watches = %d, want the caches' own %d: a waiting request opens none", got, watches)
 	}
 }

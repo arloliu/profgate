@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/natskv"
@@ -92,7 +93,23 @@ func (s *server) servePGOCollection(
 	w http.ResponseWriter, r *http.Request, q *request, _ *config.Config,
 	sess *pgo.Session, realm config.Realm,
 ) {
-	if r.URL.RawQuery != "" {
+	// The Collection read is the one route here that takes a parameter;
+	// the download and the cancel take none and refuse any query as they always have.
+	var wait time.Duration
+	if q.route.kind == kindCollection {
+		var perr *requestError
+		if wait, perr = parseWait(r.URL.RawQuery); perr != nil {
+			q.fail(w, perr)
+
+			return
+		}
+		q.audit.wait = wait
+		if wait > 0 {
+			// Every answer to an accepted wait carries the header, including
+			// the ones given before the wait itself begins.
+			w.Header().Set(waitElapsedHeader, waitElapsed(0))
+		}
+	} else if r.URL.RawQuery != "" {
 		q.fail(w, noParameters(r.URL.RawQuery))
 
 		return
@@ -119,7 +136,7 @@ func (s *server) servePGOCollection(
 
 	switch q.route.kind {
 	case kindCollection:
-		s.serveCollectionRead(w, q, stored)
+		s.serveCollectionRead(w, r, q, sess, stored, wait)
 	case kindCollectionProfile:
 		s.serveCollectionDownload(w, r, q, sess, stored)
 	case kindCollectionCancel:

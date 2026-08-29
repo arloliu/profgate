@@ -1516,11 +1516,11 @@ the moment `/readyz` turns 503 and before `server.drainDelay` at `:368` —
 so a parked request cannot outlast the drain window the deployment sized.
 The drain bound itself does not move.
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 Declare `Subscribe`, `GenerationMoved`, `Deps.Drain`, the `wait` parameter parse, and the audit field.
 
-- [ ] **Write the wait tests**
+- [x] **Write the wait tests**
 
 `internal/pgo/caches_test.go`:
 
@@ -1563,11 +1563,11 @@ Declare `Subscribe`, `GenerationMoved`, `Deps.Drain`, the `wait` parameter parse
 `serve` closes the drain signal when `/readyz` turns 503 and before `server.drainDelay`,
 and a request parked in `wait=` answers at that moment rather than at its own deadline.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the subscriptions, the broadcast, the handler, and the signal**
+- [x] **Implement the subscriptions, the broadcast, the handler, and the signal**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/pgo/ ./internal/httpapi/ ./cmd/profgate/

@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/arloliu/profgate/internal/natskv"
@@ -479,16 +483,168 @@ func versionRefusal(reason, namespace, service, pin string) *requestError {
 	}
 }
 
-// serveCollectionRead answers the Collection record as the bucket holds it.
-func (s *server) serveCollectionRead(w http.ResponseWriter, q *request, stored pgo.StoredRecord) {
+// The one parameter GET /v1/collections/{id} takes, and its grammar.
+// A value above the top is refused rather than clamped:
+// a parameter that silently becomes another value teaches a client that its input was accepted as sent.
+const (
+	waitParam   = "wait"
+	minWait     = time.Second
+	maxWait     = time.Minute
+	waitGrammar = "wait must be a duration between 1s and 60s"
+)
+
+// waitElapsedHeader names how long the answer was held for,
+// so a client can tell a wait that ran from one that never started,
+// without timing the request itself.
+const waitElapsedHeader = "X-Wait-Elapsed"
+
+// parseWait reads the query of GET /v1/collections/{id}, in name order,
+// and is zero for a request that asked for no wait.
+// A query string that does not parse leaves no name at fault,
+// which is the one place malformed_parameter names none.
+func parseWait(rawQuery string) (time.Duration, *requestError) {
+	if rawQuery == "" {
+		return 0, nil
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return 0, invalidParameter("the query string is malformed",
+			paramFault(detailMalformedParameter, "", "the query string does not parse"))
+	}
+
+	var wait time.Duration
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		vs := values[name]
+		if perr := singleValue(name, vs); perr != nil {
+			return 0, perr
+		}
+		if name != waitParam {
+			return 0, unknownParameter(name)
+		}
+		d, err := time.ParseDuration(vs[0])
+		if err != nil || d < minWait || d > maxWait {
+			return 0, malformedParameter(waitParam, waitGrammar)
+		}
+		wait = d
+	}
+
+	return wait, nil
+}
+
+// waitElapsed is how long an answer was held for,
+// in decimal seconds with millisecond precision.
+func waitElapsed(d time.Duration) string { return strconv.FormatFloat(d.Seconds(), 'f', 3, 64) }
+
+// terminalState reports whether a Collection never leaves the state it is in,
+// which is one of the two readings that end a wait at once.
+func terminalState(state pgo.State) bool {
+	switch state {
+	case pgo.StateCompleted, pgo.StateFailed, pgo.StateCancelled, pgo.StateExpired:
+		return true
+	case pgo.StateInitializing, pgo.StatePending, pgo.StateRunning:
+		return false
+	default:
+		// A state a newer version writes is one this build cannot call finished,
+		// so a wait keeps waiting rather than answering early.
+		return false
+	}
+}
+
+// serveCollectionRead answers the Collection record as the bucket holds it,
+// at once for a request that asked for no wait and after the wait for one that did.
+func (s *server) serveCollectionRead(
+	w http.ResponseWriter, r *http.Request, q *request, sess *pgo.Session, stored pgo.StoredRecord, wait time.Duration,
+) {
+	if wait <= 0 {
+		writeCollection(w, q, stored)
+
+		return
+	}
+	s.waitForCollection(w, r, q, sess, stored, wait)
+}
+
+// waitForCollection holds the request open until the Collection moves.
+//
+// The realm read is the baseline, and the handler registers before it reads:
+// a transition landing between the two is delivered to a channel that already exists,
+// where a handler that read first would park to its deadline over a change that had already happened.
+// Every move it reports comes from a read taken after it —
+// a pulse ends the wait with a read and so does the deadline —
+// because answering the deadline from an earlier read would turn a dropped pulse into a wrong answer.
+// The two endings that answer without a read are the two where a read cannot be taken:
+// a draining replica answers with the record it last read,
+// and a connection generation that moved answers 503 pgo_unavailable,
+// because a replica whose watches are replaying cannot promise the answer is current.
+func (s *server) waitForCollection(
+	w http.ResponseWriter, r *http.Request, q *request, sess *pgo.Session, stored pgo.StoredRecord, wait time.Duration,
+) {
+	baseline := stored.Record.State
+	pulses, unsubscribe := sess.Subscribe(stored.Record.ID)
+	defer unsubscribe()
+
+	timer := sess.NewTimer(wait)
+	defer timer.Stop()
+
+	started := sess.Now()
+	elapsed := func() { w.Header().Set(waitElapsedHeader, waitElapsed(sess.Now().Sub(started))) }
+
+	deadline := false
+	for {
+		fresh, rerr := s.readCollection(r.Context(), q, sess)
+		if rerr != nil {
+			elapsed()
+			q.fail(w, rerr)
+
+			return
+		}
+		stored = fresh
+		if deadline || stored.Record.State != baseline || terminalState(stored.Record.State) {
+			elapsed()
+			writeCollection(w, q, stored)
+
+			return
+		}
+
+		select {
+		case <-pulses:
+		case <-timer.C():
+			deadline = true
+		case <-s.deps.Drain:
+			elapsed()
+			writeCollection(w, q, stored)
+
+			return
+		// The session captured this channel when it was taken.
+		// A generation that moves after the read above still closes it,
+		// where a lookup at select time would hand back the replacement.
+		case <-sess.GenerationMoved():
+			elapsed()
+			q.fail(w, errPGOUnavailable)
+
+			return
+		case <-r.Context().Done():
+			// The client left; there is nobody to answer.
+			q.audit.code = codeClientGone
+
+			return
+		}
+	}
+}
+
+// writeCollection writes one Collection record as the answer.
+func writeCollection(w http.ResponseWriter, q *request, stored pgo.StoredRecord) {
 	q.audit.status = http.StatusOK
 	q.audit.code = codeOK
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	// The record is written back as stored, so a reader sees exactly what the
 	// gateway decides from.
+	// The newline is a write of its own rather than an append:
+	// the bytes belong to the read they came from,
+	// and two requests reading one record must not write into them.
 	// A failed write is the client's connection going away.
-	_, _ = w.Write(append(stored.Value, '\n'))
+	_, _ = w.Write(stored.Value)
+	_, _ = w.Write([]byte("\n"))
 }
 
 // serveCollectionDownload streams the merged profile out of the Object Store.
