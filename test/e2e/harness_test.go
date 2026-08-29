@@ -32,7 +32,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/httpstream"
+
+	// client-go's spdy.NewDialer returns this package's Dialer,
+	// so the replacement cannot be used until client-go returns that one instead.
+	"k8s.io/apimachinery/pkg/util/httpstream" //nolint:staticcheck // the type client-go hands back
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -96,8 +99,8 @@ const (
 
 	// credsSecret is the Secret deploy/base mounts, credsSecretKey the entry in
 	// it, and credsFile where the pair appears in the container.
-	credsSecret    = "profgate-nats-creds" //nolint:gosec // the Secret's name, not its contents
-	credsSecretKey = "nats.creds"
+	credsSecret    = "profgate-nats-creds"           //nolint:gosec // the Secret's name, not its contents
+	credsSecretKey = "nats.creds"                    //nolint:gosec // the key's name inside the Secret, not its contents
 	credsFile      = "/etc/profgate/nats/nats.creds" //nolint:gosec // a path, not a credential
 
 	// tlsSecret is the certificate Secret the tls-gateway overlay mounts, and
@@ -603,7 +606,9 @@ func (h *Harness) forward(ctx context.Context, ns, pod string, ports []string) (
 		local[i] = fp.Local
 		pinned[i] = fmt.Sprintf("%d:%d", fp.Local, fp.Remote)
 	}
-	go func() {
+	// The reopen outlives the call that opened the forward, and stopCh is what ends it,
+	// so a reopen carrying the caller's context would be cancelled while the scenario still needs the forward.
+	go func() { //nolint:gosec // stopCh bounds this goroutine, not the caller's context
 		for {
 			select {
 			case <-stopCh:

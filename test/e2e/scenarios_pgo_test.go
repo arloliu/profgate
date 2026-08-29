@@ -167,7 +167,7 @@ func doCtx(
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.Do(req)
+	resp, err := c.Do(req) //nolint:bodyclose // readBody closes it on every path
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, rawURL, err)
 	}
@@ -396,7 +396,7 @@ func postWithoutMediaType(t *testing.T, c *http.Client, rawURL, body string) res
 	if err != nil {
 		t.Fatalf("build request POST %s: %v", rawURL, err)
 	}
-	resp, err := c.Do(req)
+	resp, err := c.Do(req) //nolint:bodyclose // readBody closes it on every path
 	if err != nil {
 		t.Fatalf("POST %s: %v", rawURL, err)
 	}
