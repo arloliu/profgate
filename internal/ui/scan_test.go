@@ -11,7 +11,7 @@ import (
 // consoleSources returns the console's own modules, the files the source scan
 // of Rendering response values runs against.
 func consoleSources() []string {
-	return []string{"app.js", "urls.js", "portmodel.js", "targetmodel.js"}
+	return []string{"app.js", "urls.js", "portmodel.js", "targetmodel.js", "collectionmodel.js"}
 }
 
 // htmlInterfaceRe matches every interface that turns a string into markup.
@@ -24,6 +24,11 @@ var pathLiteralRe = regexp.MustCompile("['\"`]/(?:v1|ui|auth)")
 // stringConcatRe matches a + whose left operand is a string literal in any
 // quote style, backticks included.
 var stringConcatRe = regexp.MustCompile("['\"`][^'\"`]*['\"`]\\s*\\+")
+
+// dialogRe matches a call of one of the three blocking browser dialogs.
+// The opening parenthesis is part of the pattern: the same three words appear
+// in prose the page shows and in the ARIA role of its error region.
+var dialogRe = regexp.MustCompile(`\b(?:confirm|alert|prompt)\(`)
 
 // topLevelStateRe matches a let or var declaration at column zero, which is
 // module-level mutable state.
@@ -44,6 +49,11 @@ func pathLiteralFindings(content string) []string {
 // string literal.
 func stringConcatFindings(content string) []string {
 	return stringConcatRe.FindAllString(content, -1)
+}
+
+// dialogFindings returns every blocking-dialog call content makes.
+func dialogFindings(content string) []string {
+	return dialogRe.FindAllString(content, -1)
 }
 
 // topLevelStateFindings returns every top-level let or var in content.
@@ -75,6 +85,15 @@ func TestScanNoHTMLInterfaces(t *testing.T) {
 func TestScanPathsLiveInURLs(t *testing.T) {
 	if bad := pathLiteralFindings(readSource(t, "app.js")); len(bad) > 0 {
 		t.Errorf("app.js: path literals belong in urls.js: %v", bad)
+	}
+}
+
+// TestScanNoBlockingDialogs holds the page to confirming in place.
+// A dialog blocks the event loop until it is answered,
+// and a browser that suppresses one turns a confirmation the operator never saw into a request never sent.
+func TestScanNoBlockingDialogs(t *testing.T) {
+	if bad := dialogFindings(readSource(t, "app.js")); len(bad) > 0 {
+		t.Errorf("app.js: blocking browser dialogs: %v", bad)
 	}
 }
 
@@ -213,6 +232,9 @@ func TestScanFixturesFail(t *testing.T) {
 		{"bare import", len(nonRelativeImports(`import h from "htm"`))},
 		{"on attribute", len(inlineFormFindings(`<div onclick=alert(1)>`, true))},
 		{"new Function", len(inlineFormFindings(`new Function("x")`, true))},
+		{"confirm dialog", len(dialogFindings(`if (confirm("sure?")) {`))},
+		{"alert dialog", len(dialogFindings(`window.alert(message)`))},
+		{"prompt dialog", len(dialogFindings(`const name = prompt("name")`))},
 		{"top-level let", len(topLevelStateFindings("let navigated = false;\n"))},
 		{"top-level var", len(topLevelStateFindings("import x from './x.js';\nvar n = 0;\n"))},
 	}
@@ -228,6 +250,12 @@ func TestScanFixturesFail(t *testing.T) {
 func TestScanFixturesPass(t *testing.T) {
 	if bad := topLevelStateFindings("  let inner = 1;\nconst x = 1;\n"); len(bad) > 0 {
 		t.Errorf("indented let and const are not top-level state, got %v", bad)
+	}
+	if bad := dialogFindings(`"could not read its cache or confirm the Pod"`); len(bad) > 0 {
+		t.Errorf("the word confirm in prose is not a dialog, got %v", bad)
+	}
+	if bad := dialogFindings(`<div class="error" role="alert">`); len(bad) > 0 {
+		t.Errorf("the alert role is not a dialog, got %v", bad)
 	}
 	if bad := stringConcatFindings(`a + "b"`); len(bad) > 0 {
 		t.Errorf("a literal on the right is not concatenation from a literal, got %v", bad)

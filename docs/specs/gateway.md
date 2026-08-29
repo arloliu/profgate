@@ -2358,7 +2358,7 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
 | `golang.org/x/crypto` | `bcrypt` (only in `internal/auth`) |
 | `golang.org/x/term` | reading a password without echo for `profgate auth hash` (only in `cmd/profgate`) |
 | `sigs.k8s.io/yaml` | tests only: golden ClusterRole and `versions.yaml` |
-| `github.com/dop251/goja` | tests only: evaluating the console's port-control model ([`ui.md`](ui.md) *What is not proven*) |
+| `github.com/dop251/goja` | tests only: evaluating the console's port-control, targets, and Collection-control models ([`ui.md`](ui.md) *What is not proven*) |
 
 Everything else is the standard library.
 The console adds no Go module to the binary and one to the tests, the interpreter above;
