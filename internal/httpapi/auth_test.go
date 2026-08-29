@@ -360,6 +360,11 @@ func TestAuthFailures(t *testing.T) {
 				t.Errorf("reason %s: response differs from the first: %d %q", reason, rec.Code, rec.Body.String())
 			}
 			for name := range first.Header() {
+				// The identifier names the request rather than the failure,
+				// and differs on every response by design.
+				if name == requestIDHeader {
+					continue
+				}
 				if got, want := rec.Header().Values(name), first.Header().Values(name); !slices.Equal(got, want) {
 					t.Errorf("reason %s: header %s = %v, want %v", reason, name, got, want)
 				}

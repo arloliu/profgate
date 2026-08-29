@@ -572,13 +572,13 @@ so the field is first on the interactive record, the PGO one, and the `/auth/` o
 The console arm writes no record and is unaffected.
 `labels()` at `server.go:283` is untouched: the identifier is not a metrics label (*Metrics*).
 
-- [ ] **Add the compile seams**
+- [x] **Add the compile seams**
 
 Declare `RequestID` and `WithRequestID` returning a fixed value and the handler unchanged,
 add the `requestID` field to `auditRecord`,
 and let `internal/ops.New` wrap its mux, so every assertion below fails on content.
 
-- [ ] **Write the identifier tests**
+- [x] **Write the identifier tests**
 
 `requestid_test.go` restates *Request identifier* and the identifier row of *Layers*,
 against the assembled handler and against `ops.New`:
@@ -615,11 +615,11 @@ against the assembled handler and against `ops.New`:
 | `/v1/auth` | no audit record, and the header present |
 | any request | the recorder sees no label built from the identifier |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Implement the grammar, the middleware, and the record**
+- [x] **Implement the grammar, the middleware, and the record**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/httpapi/ ./internal/ops/

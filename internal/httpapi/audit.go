@@ -12,6 +12,9 @@ import (
 // or which login step a browser took.
 // An authentication failure adds the reason and never the credential.
 type auditRecord struct {
+	// requestID is the identifier of the response this record belongs to,
+	// client-sent or generated, and the field a report from a client joins on.
+	requestID  string
 	pgo        bool
 	route      string // auth_login, auth_callback, or auth_logout; set only for the /auth/ routes
 	reason     string // auth_reason; empty on a successful authentication
@@ -32,24 +35,24 @@ type auditRecord struct {
 
 // writeAudit emits rec as the "request" record at info level.
 func writeAudit(log *slog.Logger, rec auditRecord) {
-	var attrs []any
+	attrs := []any{"requestId", rec.requestID}
 	switch {
 	case rec.route != "":
-		attrs = []any{
+		attrs = append(attrs,
 			"principal", rec.principal,
 			"route", rec.route,
 			"method", rec.method,
-		}
+		)
 	case rec.pgo:
-		attrs = []any{
+		attrs = append(attrs,
 			"principal", rec.principal,
 			"namespace", rec.namespace,
 			"service", rec.service,
 			"collection", rec.collection,
 			"method", rec.method,
-		}
+		)
 	default:
-		attrs = []any{
+		attrs = append(attrs,
 			"principal", rec.principal,
 			"namespace", rec.namespace,
 			"service", rec.service,
@@ -57,7 +60,7 @@ func writeAudit(log *slog.Logger, rec auditRecord) {
 			"profile", rec.profile,
 			"seconds", rec.seconds,
 			"port", rec.port,
-		}
+		)
 	}
 	attrs = append(attrs,
 		"status", rec.status,

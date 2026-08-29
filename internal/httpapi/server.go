@@ -357,8 +357,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	cfg := s.deps.Config.Load()
 	w.Header().Set("Cache-Control", "no-store")
+	// The identifier is set before any routing decision, so the console's answers,
+	// an /auth/ redirect, and every error envelope carry it without a second writer.
+	id := RequestID(r)
+	w.Header().Set(requestIDHeader, id)
 
 	q := &request{}
+	q.audit.requestID = id
 	defer func() {
 		q.audit.duration = time.Since(start)
 		endpoint, profile := q.labels()

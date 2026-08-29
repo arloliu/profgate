@@ -609,7 +609,7 @@ func (h *harness) expectAudit(t *testing.T, status int, code string) map[string]
 		t.Fatalf("audit records = %d, want 1: %s", len(records), h.logs.String())
 	}
 	rec := records[0]
-	for _, key := range []string{"principal", "namespace", "service", "pod", "profile", "seconds", "port", "status", "code", "duration_ms"} {
+	for _, key := range []string{"requestId", "principal", "namespace", "service", "pod", "profile", "seconds", "port", "status", "code", "duration_ms"} {
 		if _, ok := rec[key]; !ok {
 			t.Errorf("audit record lacks %q: %v", key, rec)
 		}

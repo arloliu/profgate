@@ -8,10 +8,14 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/arloliu/profgate/internal/httpapi"
 )
 
 // New returns a handler serving /healthz (always 200), /readyz (200 when ready() is true,
 // 503 otherwise), and /metrics from reg.
+// Every response carries X-Request-Id as the API listener's do;
+// no path here writes an audit record, so the header is the whole of what it buys.
 func New(ready func() bool, reg *prometheus.Registry) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -29,5 +33,5 @@ func New(ready func() bool, reg *prometheus.Registry) http.Handler {
 	})
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 
-	return mux
+	return httpapi.WithRequestID(mux)
 }
