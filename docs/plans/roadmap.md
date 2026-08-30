@@ -189,8 +189,46 @@ and revised [`pgo.md`](../specs/pgo.md) to say so.
   and nothing else in the process would keep it.
   The trade is about 230 lines of production code against about 340 lines of tests and 30 of spec,
   and the sweeper would stop reading `PROFGATE_CONFIG` at all, `sweepProbes` being its only reader of that bucket.
-- [ ] `deploy/chart_test.go` is larger than the chart it tests;
-  replace per-field assertions with `helm template` golden files where a golden file reads as well.
+- `deploy/chart_test.go` keeps its per-field assertions — withdrawn.
+  `helm template` golden files cannot carry most of what the file asserts.
+  It calls `renderFailure` 110 times,
+  and that helper asserts `helm template` *fails* and reads the reason out of stderr;
+  a refused render writes no stdout, so a golden file has nothing to record.
+  Those cases are about 720 lines of table rows and loop bodies,
+  in eleven functions running about 1,500 lines together,
+  and they exercise the 42 `fail` sites in `deploy/chart/profgate/templates/_helpers.tpl`,
+  one site refusing many bad values.
+  Another 178 lines assert agreement between the render and something else in the repository —
+  `TestChartClusterRoleMatchesBase` against `deploy/base/clusterrole.yaml`,
+  `TestChartPrometheusRule` against the series `internal/metrics/prometheus.go` exports
+  and the code `internal/httpapi/codes.go` registers,
+  `TestChartGuardedEnvNamesMatchTheBinary` against the `env` struct tags `config.Load` reads —
+  or about 240 counting `TestChartSecurityContexts` against `deploy/base/deployment.yaml`
+  and `TestChartReadmeValues` against the chart README.
+  A golden file records one side of such a pair;
+  the agreement is the assertion, and both sides moving together would leave the golden green.
+  About 110 more lines assert a relationship between two renders that no single recording holds:
+  `TestChartConfigChecksum` requires the checksum to move on a configuration change
+  and to stay put on a `replicaCount` change,
+  and `TestChartClusterResourcesAreReleaseScoped` requires two releases to render different cluster-scoped names.
+  What is left is a thin band of static shape assertions,
+  and the file renders the chart at 72 points, each with its own values,
+  so recording even part of it would cost dozens of golden files, and this repository has none.
+  Its three `testdata/` directories hold input fixtures fed to `config.Load`, not recorded output.
+  `deploy/chart/profgate/templates/deployment.yaml:34` puts `checksum/config`,
+  a sha256 over the whole rendered ConfigMap, into the pod template,
+  so a golden file holding the pod template reddens on every `values.yaml` default change,
+  with a diff that reads as one hex string becoming another.
+  The premise was wrong as well:
+  3,177 lines of test against a 1,887-line chart —
+  1,327 of templates, 541 of `values.yaml`, 19 of `Chart.yaml` —
+  is 1.68 times, not the multiple "larger than the chart it tests" suggests.
+  741 of those template lines are `_helpers.tpl`,
+  whose 568 lines from `profgate.pgoCeiling` on are derivation and validation.
+  A validation program's suite is one case per bad value it must refuse.
+- [ ] Collapse the repeated type checks in `TestChartMountPartsAreValidated` (`deploy/chart_test.go`):
+  twelve rows prove `profgate.mountPartString` refuses a non-string,
+  and the ones that differ only in which values key the message names become one table.
 - [x] `docs/decisions/e2e-without-framework.md` set a revisit trigger on harness size;
   `test/e2e/harness_test.go` has passed it, and no revisit is recorded.
 
