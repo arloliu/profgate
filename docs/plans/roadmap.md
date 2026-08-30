@@ -153,7 +153,7 @@ Shipped: pull request #5, in `Unreleased`.
   this removes the rolling-update failure `docs/console.md` documents.
 
 Spec: `docs/specs/ui.md` (revision required).
-Shipped: on `feat/console-write-paths`, in `Unreleased`.
+Shipped: pull request #10, in `Unreleased`.
 
 ### 8. Small removals
 
