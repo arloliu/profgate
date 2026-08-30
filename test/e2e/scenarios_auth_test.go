@@ -98,6 +98,14 @@ const (
 	maxHops = 10
 	// dialTimeout bounds one connection attempt of the browser walk.
 	dialTimeout = 5 * time.Second
+	// forwardHealDeadline is how long a request is retried while a port-forward heals.
+	// A session the Pod ended is reopened on the same local port,
+	// and the reopen rebinds that port before its stream to the Pod works:
+	// the port accepts a connection and resets it until the stream is up,
+	// and client-go gives up on a stream it cannot create only after 30 seconds.
+	// A budget sized for a dial gives up while the port is still accepting and resetting,
+	// which is a scenario failing on a forward that was about to heal.
+	forwardHealDeadline = 60 * time.Second
 )
 
 // dexServer is a running Dex Deployment, reached at its NodePort by the gateway and by the host alike;
@@ -258,10 +266,12 @@ func authClient(gwLocal, dexAddr string, pool *x509.CertPool) *http.Client {
 	}
 }
 
-// dialForward dials a port-forward's local address, retrying a refused connection until dialTimeout passes:
+// dialForward dials a port-forward's local address, retrying a refused connection while the forward heals:
 // the harness reopens a forward whose session the Pod ended, and a dial inside that window finds no listener.
+// The window is the reopen's, not a dial's,
+// so the budget is the one send retries by rather than the one a single connection attempt is given.
 func dialForward(ctx context.Context, d *net.Dialer, network, addr string) (net.Conn, error) {
-	deadline := time.Now().Add(dialTimeout)
+	deadline := time.Now().Add(forwardHealDeadline)
 	for {
 		conn, err := d.DialContext(ctx, network, addr)
 		if !errors.Is(err, syscall.ECONNREFUSED) || time.Now().After(deadline) {
@@ -277,23 +287,49 @@ func dialForward(ctx context.Context, d *net.Dialer, network, addr string) (net.
 
 // send performs one request with the headers given and returns the response
 // with its body read and closed.
+// A request that reaches no answer is sent again while the forward heals,
+// for as long as sending it again is something the gateway cannot observe.
 func send(t *testing.T, c *http.Client, method, rawURL string, headers http.Header, body io.Reader) response {
 	t.Helper()
-	deadline := time.Now().Add(dialTimeout)
+	// The body is read once and replayed from memory,
+	// because a reader a first attempt drained has nothing left for a second.
+	var payload []byte
+	if body != nil {
+		var err error
+		payload, err = io.ReadAll(body)
+		if err != nil {
+			t.Fatalf("%s %s: read the body to send: %v", method, rawURL, err)
+		}
+	}
+	deadline := time.Now().Add(forwardHealDeadline)
 	for {
-		resp, err := try(t.Context(), c, method, rawURL, headers, body)
+		var attempt io.Reader
+		if body != nil {
+			attempt = bytes.NewReader(payload)
+		}
+		resp, err := try(t.Context(), c, method, rawURL, headers, attempt)
 		if err == nil {
 			return resp
 		}
-		// A forward whose session the Pod ended answers a request in flight with EOF rather than refusing the dial,
+		// A forward whose session the Pod ended answers a request in flight with EOF or a reset rather than refusing the dial,
 		// so dialForward's retry never sees it and the caller is left with no answer at all.
-		// Only a read with no answer is retried, and only for a method that carries no body,
-		// so a request the gateway did act on is never sent twice.
-		if body != nil || (method != http.MethodGet && method != http.MethodHead) || time.Now().After(deadline) {
+		if !repeatable(method, headers) || time.Now().After(deadline) {
 			t.Fatalf("%s %s: %v", method, rawURL, err)
 		}
 		time.Sleep(pollInterval)
 	}
+}
+
+// repeatable says whether the gateway could tell that a request was sent twice.
+// A GET and a HEAD change nothing, so a second one is invisible.
+// Any other method is repeated only when it carries an idempotency key,
+// which the gateway answers from the receipt it wrote for the first instead of acting a second time.
+func repeatable(method string, headers http.Header) bool {
+	if method == http.MethodGet || method == http.MethodHead {
+		return true
+	}
+
+	return headers.Get("Idempotency-Key") != ""
 }
 
 // try is send for callers that poll and want the error instead of a failure.
