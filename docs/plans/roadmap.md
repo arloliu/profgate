@@ -163,9 +163,9 @@ removing `pgo.versionPolicy` changed what `GET /pgo` publishes and what the two 
 and revised [`pgo.md`](../specs/pgo.md) to say so.
 
 - [x] `pgo.versionPolicy` is a one-valued enum (`internal/config/config.go`, `oneof=strict`); remove the key.
-- [ ] `internal/pgo/id.go` hand-packs Crockford base32 for an identifier nobody transcribes;
+- [x] `internal/pgo/id.go` hand-packs Crockford base32 for an identifier nobody transcribes;
   keep the identifier grammar the API documents, or revise the spec to plain hex, and delete the packer.
-- [ ] `internal/auth/cookie.go` frames session and transaction fields with hand-written length prefixes;
+- [x] `internal/auth/cookie.go` frames session and transaction fields with hand-written length prefixes;
   serialize with `encoding/json` under the same seal.
 - The startup probes stay — withdrawn.
   `internal/natskv/preflight.go` writes, watches, and deletes a probe key in each KV bucket
@@ -191,12 +191,13 @@ and revised [`pgo.md`](../specs/pgo.md) to say so.
   and the sweeper would stop reading `PROFGATE_CONFIG` at all, `sweepProbes` being its only reader of that bucket.
 - [ ] `deploy/chart_test.go` is larger than the chart it tests;
   replace per-field assertions with `helm template` golden files where a golden file reads as well.
-- [ ] `docs/decisions/e2e-without-framework.md` set a revisit trigger on harness size;
+- [x] `docs/decisions/e2e-without-framework.md` set a revisit trigger on harness size;
   `test/e2e/harness_test.go` has passed it, and no revisit is recorded.
 
 Spec: [`docs/specs/pgo.md`](../specs/pgo.md), amended for the removed `versionPolicy` key,
 and again for the identifier grammar if that bullet is taken up.
-Shipped: `pgo.versionPolicy` is removed, in `Unreleased`.
+Shipped: pull request #11 landed the identifier, the cookie, and the harness revisit;
+`pgo.versionPolicy` is removed, in `Unreleased`.
 
 ### 9. Superseded and finished documents leave the tree
 
