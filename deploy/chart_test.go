@@ -1921,15 +1921,6 @@ func TestChartMountPartsAreValidated(t *testing.T) {
 			want:   `tls.existingSecret "BAD_NAME" is not a name a Secret can carry`,
 		},
 		{
-			name: "numeric nats.secretKey",
-			values: []string{
-				"--set", "pgo.enabled=true",
-				"--set", "nats.url=nats://nats.profgate.svc:4222",
-				"--set", "nats.secretKey=123",
-			},
-			want: "nats.secretKey 123 has type int64, not string",
-		},
-		{
 			// false and 0 are falsy, so a `default ""` applied before the
 			// type check would fold them to "" and report an empty value
 			// the values file does not carry; the check reads the raw
@@ -1937,29 +1928,6 @@ func TestChartMountPartsAreValidated(t *testing.T) {
 			name:   "boolean tls.mountPath",
 			values: []string{"--set", "tls.enabled=true", "--set", "tls.mountPath=false"},
 			want:   "tls.mountPath false has type bool, not string",
-		},
-		{
-			name:   "zero tls.certKey",
-			values: []string{"--set", "tls.enabled=true", "--set", "tls.certKey=0"},
-			want:   "tls.certKey 0 has type int64, not string",
-		},
-		{
-			name: "boolean nats.mountPath",
-			values: []string{
-				"--set", "pgo.enabled=true",
-				"--set", "nats.url=nats://nats.profgate.svc:4222",
-				"--set", "nats.mountPath=false",
-			},
-			want: "nats.mountPath false has type bool, not string",
-		},
-		{
-			name: "zero nats.secretKey",
-			values: []string{
-				"--set", "pgo.enabled=true",
-				"--set", "nats.url=nats://nats.profgate.svc:4222",
-				"--set", "nats.secretKey=0",
-			},
-			want: "nats.secretKey 0 has type int64, not string",
 		},
 		{
 			// "." passes the character class but is a name the kubelet
@@ -2013,25 +1981,6 @@ func TestChartMountPartsAreValidated(t *testing.T) {
 			want: "nats.existingSecret false has type bool, not string",
 		},
 		{
-			name: "zero nats.existingSecret",
-			values: []string{
-				"--set", "pgo.enabled=true",
-				"--set", "nats.url=nats://nats.profgate.svc:4222",
-				"--set", "nats.existingSecret=0",
-			},
-			want: "nats.existingSecret 0 has type int64, not string",
-		},
-		{
-			name:   "false tls.existingSecret",
-			values: []string{"--set", "tls.enabled=true", "--set", "tls.existingSecret=false"},
-			want:   "tls.existingSecret false has type bool, not string",
-		},
-		{
-			name:   "zero tls.existingSecret",
-			values: []string{"--set", "tls.enabled=true", "--set", "tls.existingSecret=0"},
-			want:   "tls.existingSecret 0 has type int64, not string",
-		},
-		{
 			// A falsy credsFile would otherwise skip every credentials
 			// check and silently render the no-credentials path; only a
 			// true empty string selects that path.
@@ -2048,6 +1997,36 @@ func TestChartMountPartsAreValidated(t *testing.T) {
 			out := renderFailure(t, tc.values...)
 			if !strings.Contains(out, tc.want) {
 				t.Errorf("helm's error does not say %q:\n%s", tc.want, out)
+			}
+		})
+	}
+
+	// The rows above each carry a trap of their own.
+	// What is left is one proof repeated per values key:
+	// profgate.mountPartString refuses a value the chart would render verbatim,
+	// and the refusal names the key, the value, and the type helm delivered,
+	// so the rows differ only in which key that is.
+	tlsOn := []string{"--set", "tls.enabled=true"}
+	natsOn := []string{"--set", "pgo.enabled=true", "--set", "nats.url=nats://nats.profgate.svc:4222"}
+	for _, tc := range []struct {
+		key   string
+		setup []string
+		value string
+		kind  string
+	}{
+		{key: "tls.certKey", setup: tlsOn, value: "0", kind: "int64"},
+		{key: "tls.existingSecret", setup: tlsOn, value: "false", kind: "bool"},
+		{key: "tls.existingSecret", setup: tlsOn, value: "0", kind: "int64"},
+		{key: "nats.secretKey", setup: natsOn, value: "123", kind: "int64"},
+		{key: "nats.secretKey", setup: natsOn, value: "0", kind: "int64"},
+		{key: "nats.mountPath", setup: natsOn, value: "false", kind: "bool"},
+		{key: "nats.existingSecret", setup: natsOn, value: "0", kind: "int64"},
+	} {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			out := renderFailure(t, append(slices.Clone(tc.setup), "--set", tc.key+"="+tc.value)...)
+			want := tc.key + " " + tc.value + " has type " + tc.kind + ", not string"
+			if !strings.Contains(out, want) {
+				t.Errorf("helm's error does not say %q:\n%s", want, out)
 			}
 		})
 	}

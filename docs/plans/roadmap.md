@@ -226,7 +226,7 @@ and revised [`pgo.md`](../specs/pgo.md) to say so.
   741 of those template lines are `_helpers.tpl`,
   whose 568 lines from `profgate.pgoCeiling` on are derivation and validation.
   A validation program's suite is one case per bad value it must refuse.
-- [ ] Collapse the repeated type checks in `TestChartMountPartsAreValidated` (`deploy/chart_test.go`):
+- [x] Collapse the repeated type checks in `TestChartMountPartsAreValidated` (`deploy/chart_test.go`):
   twelve rows prove `profgate.mountPartString` refuses a non-string,
   and the ones that differ only in which values key the message names become one table.
 - [x] `docs/decisions/e2e-without-framework.md` set a revisit trigger on harness size;
