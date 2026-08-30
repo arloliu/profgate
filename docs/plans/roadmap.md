@@ -157,23 +157,46 @@ Shipped: pull request #10, in `Unreleased`.
 
 ### 8. Small removals
 
-Each is a refactor with no behavior change visible to a client, and each is one commit.
+Each is one commit.
+Most change nothing a client sees;
+removing `pgo.versionPolicy` changed what `GET /pgo` publishes and what the two write routes accept,
+and revised [`pgo.md`](../specs/pgo.md) to say so.
 
-- [ ] `pgo.versionPolicy` is a one-valued enum (`internal/config/config.go`, `oneof=strict`); remove the key.
+- [x] `pgo.versionPolicy` is a one-valued enum (`internal/config/config.go`, `oneof=strict`); remove the key.
 - [ ] `internal/pgo/id.go` hand-packs Crockford base32 for an identifier nobody transcribes;
   keep the identifier grammar the API documents, or revise the spec to plain hex, and delete the packer.
 - [ ] `internal/auth/cookie.go` frames session and transaction fields with hand-written length prefixes;
   serialize with `encoding/json` under the same seal.
-- [ ] `internal/natskv/preflight.go` writes, watches, and deletes probe keys and objects at startup
-  and `internal/pgo/sweeper.go` then sweeps those probes;
-  drop the probes and let the first real operation fail loudly instead.
+- The startup probes stay — withdrawn.
+  `internal/natskv/preflight.go` writes, watches, and deletes a probe key in each KV bucket
+  and a probe object in the artifact store,
+  and `internal/pgo/sweeper.go` removes what a preflight that died between a probe's create and its delete left behind.
+  Dropping them and letting the first real operation fail loudly was the idea.
+  The probes are the only thing that verifies NATS *write* permission, per bucket and per verb, and watch delivery.
+  The bucket-contract check reads stream information and writes nothing;
+  the watches the PGO runtime opens afterwards prove subscribe and never publish;
+  the sweeper's artifact listing warns and carries on when it fails.
+  "The first real operation" has no bound either:
+  `DefaultPolicy` sets `enabled` false for every Service,
+  and the scheduler passes only over Services that carry a stored override,
+  so a gateway with `pgo.enabled: true` and no override anywhere never writes to NATS at all.
+  Today a denied probe is a non-zero exit naming the bucket and the operation,
+  so the new Pod crash-loops and the rollout stalls with the old Pod still serving.
+  Without the probes the process would connect, pass the contract check, answer `/readyz` 200,
+  join the Service, and fail later as a 5xx or a Collection that dies.
+  [`pgo.md`](../specs/pgo.md) promises that exit —
+  a NATS user lacking a permission makes the process exit naming the bucket and the operation —
+  and nothing else in the process would keep it.
+  The trade is about 230 lines of production code against about 340 lines of tests and 30 of spec,
+  and the sweeper would stop reading `PROFGATE_CONFIG` at all, `sweepProbes` being its only reader of that bucket.
 - [ ] `deploy/chart_test.go` is larger than the chart it tests;
   replace per-field assertions with `helm template` golden files where a golden file reads as well.
 - [ ] `docs/decisions/e2e-without-framework.md` set a revisit trigger on harness size;
   `test/e2e/harness_test.go` has passed it, and no revisit is recorded.
 
-Spec: `docs/specs/pgo.md` for the identifier grammar; none otherwise.
-Shipped: not yet; no bullet here is settled in a spec either.
+Spec: [`docs/specs/pgo.md`](../specs/pgo.md), amended for the removed `versionPolicy` key,
+and again for the identifier grammar if that bullet is taken up.
+Shipped: `pgo.versionPolicy` is removed, in `Unreleased`.
 
 ### 9. Superseded and finished documents leave the tree
 
