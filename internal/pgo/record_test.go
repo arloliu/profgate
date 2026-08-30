@@ -41,7 +41,7 @@ const specRecord = `{
     "enabled": true,
     "schedule": {"every": "1h", "jitter": "5m"},
     "sampling": {"duration": "30s", "rounds": 2, "roundInterval": "30s", "replicas": "all", "maxParallel": 4},
-    "target": {"versionPolicy": "strict", "version": ""},
+    "target": {"version": ""},
     "artifact": {"retention": "24h"}
   },
   "state": "running",
@@ -405,7 +405,6 @@ func TestRequiredGracePeriodCoversEveryDeadline(t *testing.T) {
 										Replicas:      r,
 										MaxParallel:   parallel,
 									},
-									Target:   TargetPolicy{VersionPolicy: versionPolicyStrict},
 									Artifact: Artifact{Retention: Duration(lim.MaxRetention)},
 								}
 								if v := Validate(p, lim); len(v) != 0 {

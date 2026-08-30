@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: `pgo.defaults.target.versionPolicy` is removed.**
+  The key admitted one value, `strict`, and nothing read it:
+  a Collection has always resolved one version across the Pods of a round and refused a round that spans two.
+  `versionPolicy` was the only key under `pgo.defaults.target`, so the whole block goes;
+  a configuration file that still sets it fails validation with
+  `pgo.defaults.target has been removed; every Collection pins the one version its Pods agree on, so nothing replaces it`.
+  Delete the block — there is nothing to write in its place.
+  `target.version`, the optional pin a Service override may carry, is unchanged.
+  `not_permitted` leaves the `limit_exceeded` detail vocabulary with it:
+  `target.versionPolicy` was the only field that produced the code.
+  Three things change for a client:
+  - `effective.target.versionPolicy` is gone from the body of `GET /pgo`,
+    and `profgate pgo policy` no longer prints a `versionPolicy` row.
+    A script reading either gets nothing where it used to get `strict`.
+  - A client that reads the effective policy and sends it back as an override now gets
+    `400 invalid_parameter` with an `unknown_field` detail naming `/target/versionPolicy`.
+    This is `PUT /v1/namespaces/{namespace}/services/{service}/pgo`
+    and `POST /v1/namespaces/{namespace}/services/{service}/collections` alike:
+    the two routes share one body type, and both refuse a field they do not know.
+    Drop the field from the body.
+  - The policy hash an `Idempotency-Key` is bound to is taken over the policy's own encoding,
+    so removing a field moves every hash.
+    A client that replays a key minted before the upgrade gets `409 idempotency_mismatch`,
+    and receipts live for `pgo.jobRetention` — a week by default — so the window is that wide.
+    The answer is right: the key stands for a policy that no longer has the shape it was minted under.
+    Retry with a fresh key.
 - **BREAKING: client-selected ports are default-deny.**
   `discovery.pprof.allowedPorts` and `discovery.pprof.allowedPortNames` are removed,
   together with `PROFGATE_PPROF_ALLOWED_PORTS` and `PROFGATE_PPROF_ALLOWED_PORT_NAMES`,

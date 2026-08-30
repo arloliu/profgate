@@ -1,0 +1,11 @@
+pgo:
+  defaults:
+    target:
+      versionPolicy: strict
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

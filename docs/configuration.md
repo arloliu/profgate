@@ -434,12 +434,20 @@ Each value must obey the matching `pgo.limits` ceiling — the cross-key rules b
 | `sampling.roundInterval` | `30s` | `0` to `10m` |
 | `sampling.replicas` | `all` | `all`, or a count from `1` to `maxTargetsPerRound` |
 | `sampling.maxParallel` | `4` | at least `1`; at most `pgo.limits.maxParallel` |
-| `target.versionPolicy` | `strict` | `strict` is the only value |
 | `artifact.retention` | `24h` | at least `1m`; at most `maxRetention`; at least `schedule.every` |
 
 `replicas: all` samples every eligible Pod, up to `maxTargetsPerRound` per round.
-`versionPolicy: strict` requires every sampled Pod to carry the same value of
+Every Collection is version-pinned: each sampled Pod must carry the same value of
 `discovery.versionLabel`, so a merged profile never mixes binary versions.
+`pgo.defaults.target` no longer exists:
+its one key, `versionPolicy`, admitted only `strict`, which every Collection does anyway.
+A file that still sets the block fails validation with
+`pgo.defaults.target has been removed; every Collection pins the one version its Pods agree on, so nothing replaces it`,
+so an older configuration carried forward reads why the key went rather than being told it is unknown.
+Delete the block; there is nothing to write in its place.
+`target.version`, the optional pin a Service override may carry, is unaffected —
+it never had an operator default.
+
 `artifact.retention` covers `schedule.every` so that a finished profile stays downloadable
 until the next Collection replaces it;
 a shorter retention leaves the Service with nothing to download for the tail of every interval.
@@ -533,6 +541,8 @@ Always, whatever `pgo.enabled` says:
 - `pgo.limits.maxSampleBytes` must be at most `pgo.limits.maxMergedBytes`.
 - Every `pgo.defaults` value must obey its ceiling, as the `pgo.defaults` table lists.
 - `pgo.defaults.artifact.retention` must be at least `pgo.defaults.schedule.every`.
+- `pgo.defaults.target` is refused by name, whatever it holds:
+  `versionPolicy` was its only key and it is gone, so nothing belongs under it.
 
 Only when `pgo.enabled` is true:
 
@@ -658,8 +668,6 @@ pgo:
       roundInterval: 30s
       replicas: all
       maxParallel: 4
-    target:
-      versionPolicy: strict
     artifact:
       retention: 24h
 realms:

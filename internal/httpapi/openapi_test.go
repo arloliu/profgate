@@ -47,7 +47,6 @@ var detailVocabularies = map[string][]string{
 		"above_maximum",
 		"below_minimum",
 		"out_of_range",
-		"not_permitted",
 		"retention_under_interval",
 	},
 	CodePortNotAllowed: {detailNotAdmitted},

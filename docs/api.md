@@ -531,7 +531,7 @@ Every response body has the same shape:
     "enabled": true,
     "schedule": {"every": "6h", "jitter": "10m"},
     "sampling": {"duration": "30s", "rounds": 3, "roundInterval": "30s", "replicas": "all", "maxParallel": 4},
-    "target": {"versionPolicy": "strict", "version": ""},
+    "target": {"version": ""},
     "artifact": {"retention": "24h"}
   },
   "violations": [],
@@ -978,7 +978,7 @@ and empty where no single input is at fault — and the item's `code` says which
 | Code | Its `details` vocabulary |
 |---|---|
 | `invalid_parameter` | `unknown_parameter`, `repeated_parameter`, `empty_parameter`, `malformed_parameter`, `parameter_not_applicable`, `mutually_exclusive`, `header_required`, `header_malformed`, `unknown_field`, `field_not_applicable`, `body_not_allowed`, `body_malformed` |
-| `limit_exceeded` | `above_maximum`, `below_minimum`, `out_of_range`, `not_permitted`, `retention_under_interval` |
+| `limit_exceeded` | `above_maximum`, `below_minimum`, `out_of_range`, `retention_under_interval` |
 | `port_not_allowed` | `not_admitted`, its only value |
 
 In `invalid_parameter` the first six values name a query parameter,

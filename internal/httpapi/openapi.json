@@ -982,9 +982,6 @@
             "properties": {
               "version": {
                 "type": "string"
-              },
-              "versionPolicy": {
-                "type": "string"
               }
             },
             "type": "object"
@@ -1216,7 +1213,6 @@
           "above_maximum",
           "below_minimum",
           "out_of_range",
-          "not_permitted",
           "retention_under_interval"
         ],
         "type": "string"
@@ -1446,13 +1442,9 @@
             "properties": {
               "version": {
                 "type": "string"
-              },
-              "versionPolicy": {
-                "type": "string"
               }
             },
             "required": [
-              "versionPolicy",
               "version"
             ],
             "type": "object"
@@ -1515,9 +1507,6 @@
           "target": {
             "properties": {
               "version": {
-                "type": "string"
-              },
-              "versionPolicy": {
                 "type": "string"
               }
             },

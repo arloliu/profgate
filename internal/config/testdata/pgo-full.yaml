@@ -33,8 +33,6 @@ pgo:
       roundInterval: 30s
       replicas: all
       maxParallel: 4
-    target:
-      versionPolicy: strict
     artifact:
       retention: 24h
 realms:

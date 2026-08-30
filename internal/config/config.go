@@ -372,7 +372,6 @@ type PGOLimits struct {
 type PGODefaults struct {
 	Schedule PGOScheduleDefaults `yaml:"schedule"`
 	Sampling PGOSamplingDefaults `yaml:"sampling"`
-	Target   PGOTargetDefaults   `yaml:"target"`
 	Artifact PGOArtifactDefaults `yaml:"artifact"`
 }
 
@@ -390,11 +389,6 @@ type PGOSamplingDefaults struct {
 	RoundInterval time.Duration `yaml:"roundInterval" default:"30s"  validate:"min=0,max=10m"`
 	Replicas      string        `yaml:"replicas"      default:"all"`
 	MaxParallel   int           `yaml:"maxParallel"   default:"4"    validate:"min=1"`
-}
-
-// PGOTargetDefaults is how a Collection picks the binary version it profiles.
-type PGOTargetDefaults struct {
-	VersionPolicy string `yaml:"versionPolicy" default:"strict" validate:"oneof=strict"`
 }
 
 // PGOArtifactDefaults is how long a finished profile is kept by default.
@@ -598,6 +592,9 @@ func Load(path string) (*Config, error) {
 	if err := refuseRemovedPprofKeys(b); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
+	if err := refuseRemovedPGOTarget(b); err != nil {
+		return nil, fmt.Errorf("config: %s: %w", path, err)
+	}
 
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
@@ -662,6 +659,37 @@ func refuseRemovedPprofKeys(b []byte) error {
 		if _, ok := mappingKeys(node)[key]; ok {
 			return fmt.Errorf("discovery.pprof.%s has been removed; list what a client may name under discovery.pprof.allowedSelections or PROFGATE_PPROF_ALLOWED_SELECTIONS instead", key)
 		}
+	}
+
+	return nil
+}
+
+// refuseRemovedPGOTarget fails when the file still sets pgo.defaults.target,
+// whatever the mapping holds: versionPolicy was its only key, so the block goes with it.
+// The walk is the one refuseRemovedPprofKeys makes, for the same reason:
+// mappingKeys resolves << while decoding, so a block carried in by an anchored
+// mapping counts, where a walk over the mapping's own key nodes would see only <<.
+// A missing pgo or defaults mapping means the block is not set,
+// and a value that is not a mapping is left to the strict decode to refuse.
+// No PROFGATE_ variable ever set this key, so the file is the only place it can appear.
+func refuseRemovedPGOTarget(b []byte) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return nil //nolint:nilerr // the strict decode reports the syntax error with its own message
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil
+	}
+	node := *doc.Content[0]
+	for _, key := range []string{"pgo", "defaults"} {
+		child, ok := mappingKeys(node)[key]
+		if !ok {
+			return nil
+		}
+		node = child
+	}
+	if _, ok := mappingKeys(node)["target"]; ok {
+		return errors.New("pgo.defaults.target has been removed; every Collection pins the one version its Pods agree on, so nothing replaces it")
 	}
 
 	return nil

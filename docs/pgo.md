@@ -104,7 +104,7 @@ What each setting buys you in profile quality:
 Rounds spread over time are the point:
 one artifact merges several rounds across several Pods,
 and represents the workload in a way a single snapshot cannot.
-Collections are version-pinned (`target.versionPolicy: strict`):
+Collections are version-pinned:
 every sampled Pod must carry the same version label value,
 so two builds never mix in one artifact.
 
