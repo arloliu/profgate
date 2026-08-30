@@ -280,8 +280,14 @@ func denyWatch(cs *fake.Clientset, resource string) {
 	})
 }
 
-// freeAddr reserves and releases a loopback port, returning its host:port.
-func freeAddr(t *testing.T) string {
+// reserveAddr opens a loopback listener and keeps it open,
+// so nothing else can take the port between here and the moment serve starts accepting on it.
+// The listener is handed to serve through deps.listen, never closed and reopened.
+// A port released to pick its number is a port another process can bind,
+// or draw as an ephemeral source port,
+// and serve would then exit on a bind error
+// while the test waits out its readiness timeout with no clue why.
+func reserveAddr(t *testing.T) net.Listener {
 	t.Helper()
 
 	var lc net.ListenConfig
@@ -289,12 +295,9 @@ func freeAddr(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	addr := l.Addr().String()
-	if err := l.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	t.Cleanup(func() { _ = l.Close() })
 
-	return addr
+	return l
 }
 
 // failingListener is a real listener whose Accept fails for good once the
@@ -455,9 +458,10 @@ func startGateway(t *testing.T, cs *fake.Clientset, l limits) *gateway {
 func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o gatewayOpts) *gateway {
 	t.Helper()
 
+	apiListener, opsListener := reserveAddr(t), reserveAddr(t)
 	gw := &gateway{
-		apiAddr: freeAddr(t),
-		opsAddr: freeAddr(t),
+		apiAddr: apiListener.Addr().String(),
+		opsAddr: opsListener.Addr().String(),
 		stdout:  &syncBuffer{},
 		stderr:  &syncBuffer{},
 		up:      newFakeUpstream(),
@@ -486,16 +490,19 @@ func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o gatewayOpts)
 	if o.worker != nil {
 		deps.pgoWorker = o.worker
 	}
-	if o.failAPI != nil {
-		deps.listen = func(ctx context.Context, network, address string) (net.Listener, error) {
-			var lc net.ListenConfig
-			l, err := lc.Listen(ctx, network, address)
-			if err != nil || address != gw.apiAddr {
-				return l, err
+	deps.listen = func(_ context.Context, _, address string) (net.Listener, error) {
+		switch address {
+		case gw.apiAddr:
+			if o.failAPI != nil {
+				return &failingListener{Listener: apiListener, fail: o.failAPI}, nil
 			}
 
-			return &failingListener{Listener: l, fail: o.failAPI}, nil
+			return apiListener, nil
+		case gw.opsAddr:
+			return opsListener, nil
 		}
+
+		return nil, fmt.Errorf("no listener reserved for %s", address)
 	}
 	go func() { gw.exited <- serve(context.Background(), cfgPath, deps, gw.stdout, gw.stderr) }()
 	t.Cleanup(func() {
