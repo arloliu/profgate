@@ -9,8 +9,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -107,8 +110,9 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		AuthBlock: consoleAuthBlock(dex.issuer, consolePrincipalPayload),
 		UIEnabled: true,
 	})
-	local, _ := deployHTTPSGateway(t, h, ns, "oidc-gateway", oidcGatewayName, gwCA, cfg,
+	local, gateway := deployHTTPSGateway(t, h, ns, "oidc-gateway", oidcGatewayName, gwCA, cfg,
 		credsMountPatch(oidcGatewayName))
+	reportAuthFailures(t, h, ns, gateway)
 
 	pool := x509.NewCertPool()
 	pool.AddCert(gwCA.ca)
@@ -233,7 +237,8 @@ func scenarioConsoleBasic(t *testing.T, h *Harness) {
 	}
 	ca := newAuthority(t, tlsHost)
 	cfg := gatewayConfig(gatewayConfigOptions{TLSMount: tlsMountPath, AuthBlock: basicAuthBlock(hash), UIEnabled: true})
-	local, _ := deployHTTPSGateway(t, h, ns, "basic-gateway", basicGatewayName, ca, cfg)
+	local, gateway := deployHTTPSGateway(t, h, ns, "basic-gateway", basicGatewayName, ca, cfg)
+	reportAuthFailures(t, h, ns, gateway)
 
 	// The gateway is answering before the browser is pointed at it:
 	// a port-forward is open before a connection through it is usable,
@@ -692,6 +697,67 @@ func (s *session) chooseOption(t *testing.T, label, value string) {
 		}
 		t.Fatalf("choose %s = %q: %s\n%s", label, value, why, s.report())
 	}
+}
+
+// authFailureMetric counts every request the authentication layer refused,
+// labelled by the mode and by the reason auth.Reasons names.
+const authFailureMetric = "profgate_auth_failures_total"
+
+// reportAuthFailures logs what the gateway refused, and why, when the scenario fails.
+// A console scenario that fails on a control it cannot find has usually left the console for the login,
+// and the page goes there because something answered one of its fetches 401.
+// The reason for that answer is recorded in this counter and nowhere else,
+// so a failure that does not carry it leaves the cause to another run.
+func reportAuthFailures(t *testing.T, h *Harness, ns, pod string) {
+	t.Helper()
+	ports, stop, err := h.forward(t.Context(), ns, pod, []string{"0:" + gatewayOpsPort})
+	if err != nil {
+		t.Logf("the authentication counters are unavailable: the ops port would not forward: %v", err)
+
+		return
+	}
+	// The stop is registered first so that it runs last:
+	// cleanups run in reverse, and the scrape below needs the forward still open.
+	t.Cleanup(stop)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		t.Log(authFailures(ports[0]))
+	})
+}
+
+// authFailures reads the gateway's ops port and returns the failures it counted.
+// The scrape carries a context of its own because a cleanup runs after the test's is cancelled.
+func authFailures(port uint16) string {
+	ctx, cancel := context.WithTimeout(context.Background(), settleDeadline)
+	defer cancel()
+	rawURL := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))) + "/metrics"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "the authentication counters could not be requested: " + err.Error()
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "the authentication counters could not be read: " + err.Error()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "the authentication counters could not be read: " + err.Error()
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(string(body), "\n") {
+		// A counter the gateway has never incremented is still exported, as zero.
+		if strings.HasPrefix(line, authFailureMetric) && !strings.HasSuffix(line, " 0") {
+			b.WriteString("\n  " + line)
+		}
+	}
+	if b.Len() == 0 {
+		return "the gateway refused nothing: every " + authFailureMetric + " is zero"
+	}
+
+	return "the gateway refused these requests:" + b.String()
 }
 
 // textOf is the rendered text of the first element matching a selector.
