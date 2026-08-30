@@ -149,6 +149,9 @@ func requireBrowser(t *testing.T, h *Harness) browser {
 // The headers are the only place the start POST's media type and idempotency key can be observed
 // as the page wrote them.
 type sentRequest struct {
+	// id is what the browser calls this request in every later event about it,
+	// and is how a load that failed is matched back to the URL it was for.
+	id     network.RequestID
 	method string
 	url    string
 	header map[string][]string
@@ -178,7 +181,8 @@ func (r sentRequest) headerValues(name string) []string {
 // The Log and Runtime domains are enabled and their events collected before the first navigation,
 // so "the browser reported no Content Security Policy violation and no uncaught exception"
 // is proven by an observer rather than by an absence;
-// Network carries the requests the page sent, and Fetch, when credentials are given,
+// Network carries the requests the page sent and the loads that ended with no answer,
+// and Fetch, when credentials are given,
 // answers the HTTP authentication challenge.
 type session struct {
 	ctx      context.Context
@@ -189,6 +193,7 @@ type session struct {
 	violations []string
 	exceptions []string
 	requests   []sentRequest
+	failures   map[network.RequestID]string
 	challenges int
 	finished   chan string
 }
@@ -227,7 +232,8 @@ func newSession(t *testing.T, b browser, o sessionOptions) *session {
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	t.Cleanup(cancel)
 
-	s := &session{ctx: ctx, download: filepath.Join(dir, "downloads"), finished: make(chan string, 16)}
+	s := &session{ctx: ctx, download: filepath.Join(dir, "downloads"),
+		failures: map[network.RequestID]string{}, finished: make(chan string, 16)}
 	if err := os.MkdirAll(s.download, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +286,22 @@ func (s *session) observe(ev any, o sessionOptions) {
 			header[k] = append(header[k], fmt.Sprint(v))
 		}
 		s.mu.Lock()
-		s.requests = append(s.requests, sentRequest{method: e.Request.Method, url: e.Request.URL, header: header})
+		s.requests = append(s.requests,
+			sentRequest{id: e.RequestID, method: e.Request.Method, url: e.Request.URL, header: header})
+		s.mu.Unlock()
+	case *network.EventLoadingFailed:
+		// A fetch that never reaches a response reports here and nowhere else:
+		// the page sees only that it has no answer,
+		// so a failure that shows the requests sent cannot otherwise say which of them died.
+		// Canceled separates the two ways a load ends without an answer,
+		// because a page leaving for another document cancels every load still in flight,
+		// and that is not the same event as a connection the network broke.
+		reason := e.ErrorText
+		if e.Canceled {
+			reason = "canceled: " + reason
+		}
+		s.mu.Lock()
+		s.failures[e.RequestID] = reason
 		s.mu.Unlock()
 	case *cdpbrowser.EventDownloadProgress:
 		if e.State == cdpbrowser.DownloadProgressStateCompleted {
@@ -374,9 +395,14 @@ func (s *session) report() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var b strings.Builder
-	fmt.Fprintf(&b, "log entries: %v\nexceptions: %v\nrequests: %d\n", s.entries, s.exceptions, len(s.requests))
+	fmt.Fprintf(&b, "log entries: %v\nexceptions: %v\nrequests: %d (%d failed)\n",
+		s.entries, s.exceptions, len(s.requests), len(s.failures))
 	for _, r := range s.requests {
-		fmt.Fprintf(&b, "  %s %s\n", r.method, r.url)
+		fmt.Fprintf(&b, "  %s %s", r.method, r.url)
+		if reason, failed := s.failures[r.id]; failed {
+			fmt.Fprintf(&b, " -- no answer: %s", reason)
+		}
+		b.WriteString("\n")
 	}
 
 	return b.String()
