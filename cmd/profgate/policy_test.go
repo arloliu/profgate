@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-const defaultsPolicyBody = `{"namespace":"payments","service":"checkout","source":"defaults","override":null,"effective":{"enabled":false,"schedule":{"every":"6h","jitter":"10m"},"sampling":{"duration":"30s","rounds":1,"roundInterval":"30s","replicas":"all","maxParallel":4},"target":{"versionPolicy":"strict","version":""},"artifact":{"retention":"24h"}},"violations":[]}` + "\n"
+const defaultsPolicyBody = `{"namespace":"payments","service":"checkout","source":"defaults","override":null,"effective":{"enabled":false,"schedule":{"every":"6h","jitter":"10m"},"sampling":{"duration":"30s","rounds":1,"roundInterval":"30s","replicas":"all","maxParallel":4},"target":{"version":""},"artifact":{"retention":"24h"}},"violations":[]}` + "\n"
 
-const overridePolicyBody = `{"namespace":"payments","service":"checkout","source":"override","override":{"enabled":true,"sampling":{"rounds":3}},"effective":{"enabled":true,"schedule":{"every":"6h","jitter":"10m"},"sampling":{"duration":"30s","rounds":3,"roundInterval":"30s","replicas":2,"maxParallel":4},"target":{"versionPolicy":"strict","version":""},"artifact":{"retention":"2h"}},"violations":[{"field":"/artifact/retention","ceiling":"pgo.defaults.schedule.every","detail":"retention 2h is under the interval 6h"}],"updatedBy":"alice","updatedAt":"2026-08-26T09:00:00Z"}` + "\n"
+const overridePolicyBody = `{"namespace":"payments","service":"checkout","source":"override","override":{"enabled":true,"sampling":{"rounds":3}},"effective":{"enabled":true,"schedule":{"every":"6h","jitter":"10m"},"sampling":{"duration":"30s","rounds":3,"roundInterval":"30s","replicas":2,"maxParallel":4},"target":{"version":""},"artifact":{"retention":"2h"}},"violations":[{"field":"/artifact/retention","ceiling":"pgo.defaults.schedule.every","detail":"retention 2h is under the interval 6h"}],"updatedBy":"alice","updatedAt":"2026-08-26T09:00:00Z"}` + "\n"
 
 // policyTransport is the gateway's policy route: every GET answers the read
 // with its ETag when one is set, and every other method answers with what the test supplies.
@@ -288,7 +288,7 @@ func TestPolicyGet(t *testing.T) {
 		if code := runPolicy(te, pt, "get", "payments/checkout"); code != 0 {
 			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
 		}
-		want := "source\toverride\nenabled\ttrue\nevery\t6h\njitter\t10m\nduration\t30s\nrounds\t3\nroundInterval\t30s\nreplicas\t2\nmaxParallel\t4\nversionPolicy\tstrict\nversion\t\nretention\t2h\nupdatedBy\talice\nupdatedAt\t2026-08-26T09:00:00Z\nviolation\t/artifact/retention: retention 2h is under the interval 6h\n"
+		want := "source\toverride\nenabled\ttrue\nevery\t6h\njitter\t10m\nduration\t30s\nrounds\t3\nroundInterval\t30s\nreplicas\t2\nmaxParallel\t4\nversion\t\nretention\t2h\nupdatedBy\talice\nupdatedAt\t2026-08-26T09:00:00Z\nviolation\t/artifact/retention: retention 2h is under the interval 6h\n"
 		if te.stdout.String() != want {
 			t.Fatalf("stdout = %q, want %q", te.stdout.String(), want)
 		}
@@ -299,7 +299,7 @@ func TestPolicyGet(t *testing.T) {
 		if code := runPolicy(te, pt, "get", "payments/checkout"); code != 0 {
 			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
 		}
-		want := "source\tdefaults\nenabled\tfalse\nevery\t6h\njitter\t10m\nduration\t30s\nrounds\t1\nroundInterval\t30s\nreplicas\tall\nmaxParallel\t4\nversionPolicy\tstrict\nversion\t\nretention\t24h\n"
+		want := "source\tdefaults\nenabled\tfalse\nevery\t6h\njitter\t10m\nduration\t30s\nrounds\t1\nroundInterval\t30s\nreplicas\tall\nmaxParallel\t4\nversion\t\nretention\t24h\n"
 		if te.stdout.String() != want {
 			t.Fatalf("stdout = %q, want %q", te.stdout.String(), want)
 		}

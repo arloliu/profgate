@@ -23,7 +23,6 @@ const replicasAll = "all"
 const (
 	minSamplingDuration = time.Second
 	minRetention        = time.Minute
-	versionPolicyStrict = "strict"
 )
 
 // Duration is a Go duration string in JSON: "30s", "1h".
@@ -182,8 +181,7 @@ type Sampling struct {
 // TargetPolicy is how a Collection picks the binary version it profiles.
 // An empty Version means whatever the targets agree on.
 type TargetPolicy struct {
-	VersionPolicy string `json:"versionPolicy"`
-	Version       string `json:"version"`
+	Version string `json:"version"`
 }
 
 // Artifact is how long a finished profile is kept.
@@ -219,8 +217,7 @@ type SamplingOverride struct {
 
 // TargetOverride is the target block of an override.
 type TargetOverride struct {
-	VersionPolicy *string `json:"versionPolicy,omitempty"`
-	Version       *string `json:"version,omitempty"`
+	Version *string `json:"version,omitempty"`
 }
 
 // ArtifactOverride is the artifact block of an override.
@@ -240,6 +237,8 @@ type StoredOverride struct {
 // DefaultPolicy is the operator's pgo.defaults as a Policy.
 // Enabled is false: it has no operator default, so scheduling a Service is
 // always an explicit override.
+// Target.Version is empty for the same reason: an operator pins no version,
+// so a Collection profiles whatever its Pods agree on until an override names one.
 // An unparsable replicas value is an error rather than "all",
 // because configuration validation runs only when pgo.enabled is true.
 func DefaultPolicy(d config.PGODefaults) (Policy, error) {
@@ -266,7 +265,6 @@ func DefaultPolicy(d config.PGODefaults) (Policy, error) {
 			Replicas:      replicas,
 			MaxParallel:   d.Sampling.MaxParallel,
 		},
-		Target:   TargetPolicy{VersionPolicy: d.Target.VersionPolicy},
 		Artifact: Artifact{Retention: Duration(d.Artifact.Retention)},
 	}, nil
 }
@@ -294,7 +292,6 @@ func Effective(defaults Policy, override *PolicyOverride) Policy {
 		setIf(&p.Sampling.MaxParallel, s.MaxParallel)
 	}
 	if t := override.Target; t != nil {
-		setIf(&p.Target.VersionPolicy, t.VersionPolicy)
 		setIf(&p.Target.Version, t.Version)
 	}
 	if a := override.Artifact; a != nil {
@@ -320,8 +317,6 @@ const (
 	codeBelowMinimum = "below_minimum"
 	// codeOutOfRange is a value outside a range whose two ends are one rule.
 	codeOutOfRange = "out_of_range"
-	// codeNotPermitted is a value outside the fixed set the field admits.
-	codeNotPermitted = "not_permitted"
 	// codeRetentionUnderInterval is an artifact.retention shorter than the schedule.every of the same policy.
 	codeRetentionUnderInterval = "retention_under_interval"
 )
@@ -397,10 +392,6 @@ func Validate(p Policy, lim config.PGOLimits) []Violation {
 		add("sampling.maxParallel", codeAboveMaximum, "pgo.limits.maxParallel", "%d is more than %d", mp, lim.MaxParallel)
 	case mp < 1:
 		add("sampling.maxParallel", codeBelowMinimum, "1", "%d is less than 1", mp)
-	}
-
-	if p.Target.VersionPolicy != versionPolicyStrict {
-		add("target.versionPolicy", codeNotPermitted, versionPolicyStrict, "%q is not %q", p.Target.VersionPolicy, versionPolicyStrict)
 	}
 
 	switch r := p.Artifact.Retention.Duration(); {

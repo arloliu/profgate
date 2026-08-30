@@ -1,0 +1,15 @@
+old: &old
+  target:
+    versionPolicy: strict
+pgo:
+  defaults:
+    <<: *old
+    schedule:
+      every: 6h
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

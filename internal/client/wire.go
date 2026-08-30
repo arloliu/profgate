@@ -135,8 +135,7 @@ type PolicyResponse struct {
 			MaxParallel   int    `json:"maxParallel"`
 		} `json:"sampling"`
 		Target struct {
-			VersionPolicy string `json:"versionPolicy"`
-			Version       string `json:"version"`
+			Version string `json:"version"`
 		} `json:"target"`
 		Artifact struct {
 			Retention string `json:"retention"`

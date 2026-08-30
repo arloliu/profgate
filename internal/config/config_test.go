@@ -622,7 +622,6 @@ func TestLoadPGO(t *testing.T) {
 					Replicas:      "all",
 					MaxParallel:   4,
 				},
-				Target:   config.PGOTargetDefaults{VersionPolicy: "strict"},
 				Artifact: config.PGOArtifactDefaults{Retention: 24 * time.Hour},
 			},
 		}
@@ -874,6 +873,29 @@ func TestLoadPGO(t *testing.T) {
 	})
 	t.Run("replicas above ceiling", func(t *testing.T) {
 		loadErr(t, fixture("pgo-replicas-over.yaml"), "pgo.defaults.sampling.replicas")
+	})
+	// versionPolicy was the only key under pgo.defaults.target,
+	// so the block is refused by name — whatever it holds, and even when a
+	// merge key carries it in — before the unknown-key pass would call it unknown.
+	t.Run("removed target block", func(t *testing.T) {
+		for _, tc := range []struct{ name, file string }{
+			{"target block", "removed-pgo-target.yaml"},
+			{"target block set to null", "removed-pgo-target-null.yaml"},
+			{"target block behind a merge key", "removed-pgo-target-merge.yaml"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := config.Load(fixture(tc.file))
+				if err == nil {
+					t.Fatalf("Load(%q) = nil error, want the removed-key message", tc.file)
+				}
+				if !strings.Contains(err.Error(), "pgo.defaults.target has been removed") {
+					t.Errorf("Load(%q) error = %q, want it to name pgo.defaults.target", tc.file, err.Error())
+				}
+				if strings.Contains(err.Error(), "not found in type") {
+					t.Errorf("Load(%q) error = %q: the unknown-key pass spoke before the removed-key check", tc.file, err.Error())
+				}
+			})
+		}
 	})
 }
 

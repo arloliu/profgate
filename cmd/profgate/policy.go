@@ -244,7 +244,6 @@ func renderPolicy(env *cmdEnv, body []byte) error {
 		{"roundInterval", e.Sampling.RoundInterval},
 		{"replicas", fmt.Sprint(e.Sampling.Replicas)},
 		{"maxParallel", strconv.Itoa(e.Sampling.MaxParallel)},
-		{"versionPolicy", e.Target.VersionPolicy},
 		{"version", e.Target.Version},
 		{"retention", e.Artifact.Retention},
 	}

@@ -40,7 +40,6 @@ func testDefaults() config.PGODefaults {
 			Replicas:      "all",
 			MaxParallel:   4,
 		},
-		Target:   config.PGOTargetDefaults{VersionPolicy: "strict"},
 		Artifact: config.PGOArtifactDefaults{Retention: 24 * time.Hour},
 	}
 }
@@ -301,13 +300,6 @@ func TestValidateCeilings(t *testing.T) {
 			field:   "sampling.maxParallel",
 			code:    codeBelowMinimum,
 			ceiling: "1",
-		},
-		{
-			name:    "versionPolicy is not strict",
-			mutate:  func(p Policy) Policy { p.Target.VersionPolicy = "loose"; return p },
-			field:   "target.versionPolicy",
-			code:    codeNotPermitted,
-			ceiling: "strict",
 		},
 		{
 			name:    "retention above maxRetention",
@@ -637,15 +629,14 @@ func TestValidateAlwaysCodesAViolation(t *testing.T) {
 	p.Sampling.RoundInterval = Duration(11 * time.Minute)
 	p.Sampling.Replicas = ReplicaCount(33)
 	p.Sampling.MaxParallel = 5
-	p.Target.VersionPolicy = "loose"
 	p.Artifact.Retention = Duration(25 * time.Hour)
 
 	got := Validate(p, testLimits())
 
-	if len(got) != 9 {
+	if len(got) != 8 {
 		t.Fatalf("violations = %+v, want one per policy field", got)
 	}
-	known := []string{codeAboveMaximum, codeBelowMinimum, codeOutOfRange, codeNotPermitted, codeRetentionUnderInterval}
+	known := []string{codeAboveMaximum, codeBelowMinimum, codeOutOfRange, codeRetentionUnderInterval}
 	for _, v := range got {
 		if v.Code == "" {
 			t.Errorf("violation %+v carries no code", v)

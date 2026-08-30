@@ -338,8 +338,7 @@ func TestLimitExceededDetails(t *testing.T) {
 
 	t.Run("several fields keep validation order", func(t *testing.T) {
 		h := newPGOHarness(t, pgoOpts{})
-		body := `{"enabled":true,"schedule":{"every":"48h"},"sampling":{"rounds":0},` +
-			`"target":{"versionPolicy":"loose"}}`
+		body := `{"enabled":true,"schedule":{"every":"48h"},"sampling":{"rounds":0,"roundInterval":"11m"}}`
 
 		got := h.doPGO(t, http.MethodPut, pgoPath, body, nil)
 
@@ -350,7 +349,7 @@ func TestLimitExceededDetails(t *testing.T) {
 		expectDetails(t, got, "limit_exceeded", []errorDetail{
 			{Field: "/schedule/every", Code: "above_maximum"},
 			{Field: "/sampling/rounds", Code: "below_minimum"},
-			{Field: "/target/versionPolicy", Code: "not_permitted"},
+			{Field: "/sampling/roundInterval", Code: "out_of_range"},
 			{Field: "/artifact/retention", Code: "retention_under_interval"},
 		})
 	})

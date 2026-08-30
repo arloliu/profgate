@@ -796,8 +796,7 @@ type Sampling struct {
 }
 
 type TargetPolicy struct {
-    VersionPolicy string `json:"versionPolicy"` // "strict"; the only value
-    Version       string `json:"version"`       // optional explicit pin; "" means "whatever the targets agree on"
+    Version string `json:"version"` // optional explicit pin; "" means "whatever the targets agree on"
 }
 
 type Artifact struct {
@@ -881,7 +880,6 @@ A refusal carries the same violations as the `details` array of the gateway spec
 | `above_maximum` | is above the ceiling the message names |
 | `below_minimum` | is below the floor the message names |
 | `out_of_range` | is outside a range whose two ends are one rule, as `sampling.roundInterval` has |
-| `not_permitted` | is not one of the fixed values the field admits, as `target.versionPolicy` has |
 | `retention_under_interval` | is an `artifact.retention` under its own policy's `schedule.every`, the rule above |
 
 The last one is reported on `/artifact/retention`,
@@ -1241,7 +1239,7 @@ Key `job.<id>` in `PROFGATE_JOBS`:
     "enabled": true,
     "schedule": {"every": "1h", "jitter": "5m"},
     "sampling": {"duration": "30s", "rounds": 2, "roundInterval": "30s", "replicas": "all", "maxParallel": 4},
-    "target": {"versionPolicy": "strict", "version": ""},
+    "target": {"version": ""},
     "artifact": {"retention": "24h"}
   },
   "state": "running",
@@ -1933,7 +1931,7 @@ ETag: "42"
     "enabled": true,
     "schedule": {"every": "1h", "jitter": "5m"},
     "sampling": {"duration": "30s", "rounds": 3, "roundInterval": "30s", "replicas": "all", "maxParallel": 4},
-    "target": {"versionPolicy": "strict", "version": ""},
+    "target": {"version": ""},
     "artifact": {"retention": "24h"}
   },
   "violations": [],
@@ -2629,7 +2627,6 @@ Loading, strict unknown-key handling, environment prefix, and the `atomic.Pointe
 | `pgo.defaults.sampling.roundInterval` | — | `30s` | hot | 0–10m |
 | `pgo.defaults.sampling.replicas` | — | `all` | hot | `all` or 1–`maxTargetsPerRound` |
 | `pgo.defaults.sampling.maxParallel` | — | `4` | hot | 1–`limits.maxParallel` |
-| `pgo.defaults.target.versionPolicy` | — | `strict` | hot | `strict` |
 | `pgo.defaults.artifact.retention` | — | `24h` | hot | 1m–`maxRetention`; ≥ `pgo.defaults.schedule.every` |
 | `nats.url` | `PROFGATE_NATS_URL` | — | restart | required when `pgo.enabled`; `nats://` or `tls://` URL list |
 | `nats.credsFile` | `PROFGATE_NATS_CREDS_FILE` | — | restart | readable file when set |
@@ -2695,8 +2692,6 @@ pgo:
       roundInterval: 30s
       replicas: all
       maxParallel: 4
-    target:
-      versionPolicy: strict
     artifact:
       retention: 24h
 realms:
@@ -3824,3 +3819,38 @@ Accepting the command line of [`cli.md`](cli.md) amends the following text.
 | File | Section | Change |
 |---|---|---|
 | `docs/specs/pgo.md` | *HTTP API* | a sentence naming [`cli.md`](cli.md) *Collections* as the first-party client that drives these routes, which changes no behavior: it sends what any client sends |
+
+Removing `pgo.defaults.target.versionPolicy` amends the following text.
+The key admitted one value, `strict`, and nothing ever read it:
+a Collection resolves one version across the Pods of a round
+and refuses a round that spans two, whatever the policy holds.
+Its removal takes the whole `pgo.defaults.target` mapping,
+which had no other key,
+and retires `not_permitted`, which had no other producer.
+This is visible to a client:
+`target.versionPolicy` leaves the effective policy `GET /pgo` publishes,
+a write that still carries it is refused as an unknown field,
+and the policy hash an `Idempotency-Key` stands for moves.
+`target.version`, the optional pin, is untouched.
+The first table lists the spec edits;
+the second lists the documents and packages that change in the same commit.
+
+Amended:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *Shape* | `TargetPolicy` carries `Version` alone |
+| `docs/specs/pgo.md` | *Ceilings* | `not_permitted` leaves the `limit_exceeded` vocabulary |
+| `docs/specs/pgo.md` | *Record*, *Policy* | the policy in each example body carries a `target` of `version` alone |
+| `docs/specs/pgo.md` | *Configuration* | the `pgo.defaults.target.versionPolicy` row and the `target` block of the example file |
+
+Updated in the same change:
+
+| File | Change |
+|---|---|
+| `internal/config` | `PGOTargetDefaults` goes with the `pgo.defaults.target` mapping, which is refused by name so a file carried forward reads why the block went instead of "unknown key" |
+| `internal/pgo` | `TargetPolicy` and `TargetOverride` carry `Version` alone; `Validate` drops the check and `not_permitted` with it |
+| `internal/httpapi` | the field leaves the three `target` schemas of the OpenAPI document, and `not_permitted` leaves its `limit_exceeded` enumeration |
+| `internal/client`, `cmd/profgate` | the field leaves the policy the client decodes and the row `profgate pgo policy` prints |
+| `docs/api.md`, `docs/configuration.md`, `docs/pgo.md` | the field leaves the example body, the detail-code table, and the defaults table; the refusal and the fact that nothing replaces the key |
+| `CHANGELOG.md` | the client-visible moves: the field leaving the effective policy and the printed table, a write that still carries it refused as an unknown field, and the shifted policy hash a key minted before the upgrade replays against |
