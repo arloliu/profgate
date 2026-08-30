@@ -161,8 +161,19 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 			t.Fatalf("the identity panel does not name %q:\n%s", want, panels)
 		}
 	}
-	if !strings.Contains(panels, consoleQueryPayload+" is not listed") {
-		t.Fatalf("the page does not show the unlisted selection as text:\n%s", panels)
+	// The unlisted text is checked only once the namespace list has arrived.
+	// nsListed is false while that list is still empty exactly as it is when the selection is absent from a list that arrived,
+	// so the text renders in both states,
+	// and a check made before the list lands cannot tell which one it is looking at.
+	// Options beyond the placeholder are what say the list landed.
+	s.waitFor(t, "the namespace list arrives",
+		`(() => {
+  const l = [...document.querySelectorAll("label")].find((l) => l.querySelector("select") && l.textContent.trim().startsWith("Namespace"));
+  return Boolean(l) && l.querySelector("select").options.length > 1;
+})()`)
+	if listed := s.textOf(t, ".panels"); !strings.Contains(listed, consoleQueryPayload+" is not listed") {
+		t.Fatalf("the page does not show the unlisted selection as text against a namespace list that arrived:\n%s",
+			listed)
 	}
 	assertRenderedAsText(t, s, "the load with the hostile query", consoleQueryPayload, consolePrincipalPayload)
 	s.assertClean(t, "the login round trip")
@@ -602,18 +613,23 @@ func (s *session) awaitRequest(t *testing.T, method, route string) {
 // which is the control an operator would use.
 func (s *session) awaitRow(t *testing.T, id, what string) {
 	t.Helper()
+	var asked bool
 	err := poll(s.ctx, settleDeadline, func(context.Context) (bool, error) {
 		for _, got := range s.rowIDs(t) {
 			if got == id {
 				return true, nil
 			}
 		}
-		s.refetchCollections(t)
+		asked = s.refetchCollections(t) || asked
 
 		return false, nil
 	})
 	if err != nil {
-		t.Fatalf("%s never appeared in the Collections table: %v\n%s", what, err, s.report())
+		why := "the Service control never named a Service, so the list was never asked for again"
+		if asked {
+			why = "the list was asked for again and never carried it"
+		}
+		t.Fatalf("%s never appeared in the Collections table: %v (%s)\n%s", what, err, why, s.report())
 	}
 }
 
@@ -647,16 +663,22 @@ func (s *session) awaitStartedDetail(t *testing.T, opened string) string {
 
 // refetchCollections asks the page for the Collections list again by choosing the same Service,
 // which is what the control does on every change.
-func (s *session) refetchCollections(t *testing.T) {
+// It reports whether it asked at all:
+// a Service control that names nothing is a page that has not rendered its selection yet,
+// which is for the caller's poll to wait out rather than for this to decide,
+// and a caller that never once asked failed for a different reason than one whose asking went unanswered.
+func (s *session) refetchCollections(t *testing.T) bool {
 	t.Helper()
 	var svc string
 	s.eval(t, "read the Service control",
 		`(() => { const l = [...document.querySelectorAll("label")].find((l) => l.querySelector("select") &&`+
 			` l.textContent.trim().startsWith("Service")); return l ? l.querySelector("select").value : ""; })()`, &svc)
 	if svc == "" {
-		return
+		return false
 	}
 	s.chooseOption(t, "Service", svc)
+
+	return true
 }
 
 // chooseOption picks a value in the select the label names,
