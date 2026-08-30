@@ -656,6 +656,14 @@ func (s *session) refetchCollections(t *testing.T) {
 
 // chooseOption picks a value in the select the label names,
 // and dispatches the change event the page listens for, which setting the property alone would not.
+// It polls the way waitFor polls rather than reading once,
+// so a control the page has not finished rendering is waited for instead of reported as absent.
+// Every early return in the expression comes before the assignment,
+// so evaluating it a second time still sets the value at most once.
+// The failure carries the session report, which every other browser helper's failure already carries:
+// the request list names where the page went,
+// and a page that navigated away from the console is indistinguishable from an unrendered control
+// in a message that only says a label is missing.
 func (s *session) chooseOption(t *testing.T, label, value string) {
 	t.Helper()
 	expr := fmt.Sprintf(`(() => {
@@ -670,9 +678,19 @@ func (s *session) chooseOption(t *testing.T, label, value string) {
   return "";
 })()`, label, label, value, value, value)
 	var why string
-	s.eval(t, "choose "+label, expr, &why)
-	if why != "" {
-		t.Fatalf("choose %s = %q: %s", label, value, why)
+	err := poll(s.ctx, browserDeadline, func(ctx context.Context) (bool, error) {
+		if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &why)); err != nil {
+			return false, err
+		}
+
+		return why == "", nil
+	})
+	if err != nil {
+		// A transport error leaves no reason behind, so the error itself is the reason.
+		if why == "" {
+			why = err.Error()
+		}
+		t.Fatalf("choose %s = %q: %s\n%s", label, value, why, s.report())
 	}
 }
 
