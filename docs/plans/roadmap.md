@@ -305,6 +305,53 @@ The measurements behind that, and the triggers that would revive it, are in
 and `pgo.preset` is not built for the reason that record gives.
 Why last: it is the largest change, it is off by default, and every earlier item is useful without it.
 
+### 12. Two defects in the watched caches, one of them silent
+
+`Caches.Run` (`internal/pgo/caches.go:282-315`) opens four watches in a loop
+and waits on one `sync.WaitGroup` for all four consumers.
+Below it, `runWatch` (`internal/natskv/client.go:578-613`) owns the channel `Caches.consume` reads,
+and it opens as many underlying watchers as it takes to keep that channel fed.
+Each layer has a defect, and they are not the same defect.
+
+- [ ] **A failed open leaks the consumers already started.**
+  The loop returns the error from `Watch` without reaching `wg.Wait()`
+  and without cancelling the watches it already opened,
+  so those goroutines keep consuming under the caller's context.
+  `runCaches` (`cmd/profgate/serve.go:729-742`) answers a failure by calling `Run` again,
+  which opens a second watch for the same prefix,
+  and every later attempt adds another consumer feeding the same cache.
+  Plan: [`watch-open-cleanup.md`](watch-open-cleanup.md).
+- [ ] **A watcher that reopens under an unchanged generation replays into a cache nothing clears.**
+  `consumeWatcher` reports a closed underlying watcher as a reconnect rather than as completion
+  (`internal/natskv/client.go:636-638`),
+  and `runWatch` opens another without returning (`:596-611`),
+  so the channel `Caches.consume` reads stays open and `Caches.Run` never learns of the cut.
+  When the connection did not drop, the replay carries the generation the watch already held,
+  and `Caches.apply` (`internal/pgo/caches.go:333-337`) rebuilds only when a generation differs,
+  so a key deleted during the gap has no replay entry and survives.
+  `watchState` never clears its marker (`internal/natskv/client.go:309-326`),
+  so `Client.Synced` reports the barrier open throughout.
+
+The second has no plan yet, and it needs a design decision before it gets one.
+Clearing the cache is not the repair:
+`Session` (`internal/pgo/runtime.go:112-137`) checks the barrier once and hands back a bound view,
+and a route reads the cache afterwards without rechecking
+(`internal/httpapi/pgo_collections.go:413`),
+so emptying the maps under a live generation turns an admitted request into a false empty answer.
+The invalidation has to reach a session already inside the barrier,
+which is what moving the generation already does for a dropped connection.
+[`pgo.md`](../specs/pgo.md) *The seam* fixes that movement to the disconnected callback
+and says it never happens in the reconnected one,
+so making a watcher cut move it is a revision that gets argued there first.
+
+Spec: none for the first bullet;
+the second revises [`pgo.md`](../specs/pgo.md) *The seam* before it gets a plan.
+Shipped: not yet.
+Why here: neither bullet blocks item 11 nor is blocked by it.
+The first is small and self-contained.
+The second is the one an operator would never notice,
+because everything keeps answering and only the answers are wrong.
+
 ## Not on This List
 
 - Rendering profiles — flamegraphs, diffs, top tables — stays with `go tool pprof`.
