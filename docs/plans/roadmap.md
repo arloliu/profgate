@@ -271,7 +271,7 @@ The comparison, function by function, is
 
 Shipped: nothing; the item is withdrawn.
 
-### 11. PGO as an optional deployment with presets
+### 11. PGO stops costing what it is not worth
 
 The scheduler, worker, sweeper, and their stores run in every gateway replica whenever `pgo.enabled` is set,
 and `profgate config validate` reports a termination grace period and memory budget
@@ -283,9 +283,26 @@ that an operator must carry into the Deployment by hand.
   and the grace-period and memory arithmetic moves inside the chart.
 - [x] Decide, in the same revision, whether one collector replica suffices;
   if it does, the lease, claim, and orphan-sweep machinery can be removed with the multi-replica guarantee.
+  It does not:
+  a `RollingUpdate` of a one-replica Deployment surges to two, so every mechanism stays.
+- [ ] A gateway replica drains on the lease rather than on a Collection's worst-case deadline.
+  That is what makes the spec's own promise true —
+  `pgo.enabled` does not lengthen a gateway replica's grace period —
+  and `config.RequiredPGOGracePeriod` goes with the 34-hour figure it prints.
+- [ ] Sampling stops taking a slot from the gate interactive requests pass through,
+  and `slot_timeout` leaves the published sample results.
+- [ ] Three of the four ceilings that size the working set get lower defaults,
+  the container limit counts the gateway's own footprint beside that working set,
+  and `docs/configuration.md` gains a sizing table.
 
-Spec: `docs/specs/pgo.md` (revision required).
-Shipped: not yet; the design is settled and no code is written.
+Spec: `docs/specs/pgo.md`, already revised;
+the three unticked bullets implement text it already carries.
+Shipped: not yet.
+Separating the collector into its own Deployment is **deferred, not dropped**.
+The measurements behind that, and the triggers that would revive it, are in
+[`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md);
+`docs/specs/pgo.md` keeps every section that designs the separation,
+and `pgo.preset` is not built for the reason that record gives.
 Why last: it is the largest change, it is off by default, and every earlier item is useful without it.
 
 ## Not on This List
