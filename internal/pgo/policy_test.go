@@ -20,10 +20,10 @@ func testLimits() config.PGOLimits {
 		MinEvery:             15 * time.Minute,
 		MaxEvery:             24 * time.Hour,
 		MaxRetention:         24 * time.Hour,
-		MaxSampleBytes:       33554432,
-		MaxMergedBytes:       67108864,
+		MaxSampleBytes:       16777216,
+		MaxMergedBytes:       33554432,
 		MaxTargetsPerRound:   32,
-		MaxActiveCollections: 2,
+		MaxActiveCollections: 1,
 		OnDemandPerMinute:    10,
 		MaxLiveCollections:   64,
 	}

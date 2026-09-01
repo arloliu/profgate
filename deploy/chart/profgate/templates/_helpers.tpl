@@ -245,9 +245,47 @@ huge ceiling would render a nonsense limit such as a negative number.
 {{- end -}}
 
 {{/*
+memoryLimitWithoutPGO as a plain byte count.
+The container limit with collection on is that value added to the PGO working
+set, so the chart has to read the one value both branches are sized from
+rather than carry a second copy of the same figure.
+Mi and Gi are the suffixes the shipped value and every documented override
+use; anything else fails at render time rather than deploying a container
+sized from a number nobody wrote.
+*/}}
+{{- define "profgate.gatewayBaseMemoryBytes" -}}
+{{- $v := required "memoryLimitWithoutPGO is required: it is the gateway's own footprint, which every container carries" .Values.memoryLimitWithoutPGO -}}
+{{- $s := toString $v -}}
+{{- $unit := 0 -}}
+{{- $n := "" -}}
+{{- if hasSuffix "Mi" $s -}}
+{{- $unit = 1048576 -}}
+{{- $n = trimSuffix "Mi" $s -}}
+{{- else if hasSuffix "Gi" $s -}}
+{{- $unit = 1073741824 -}}
+{{- $n = trimSuffix "Gi" $s -}}
+{{- end -}}
+{{- if or (eq $unit 0) (not (regexMatch "^[0-9]+$" $n)) -}}
+{{- fail (printf "memoryLimitWithoutPGO %v must be a whole number of Mi or Gi: the container limit adds it to the PGO working set, so the chart reads it as bytes" $v) -}}
+{{- end -}}
+{{- mul (int64 $n) $unit -}}
+{{- end -}}
+
+{{/*
+The container memory limit with collection on:
+the PGO working set plus what the gateway process costs before it decodes
+anything.
+It is the formula internal/config.Config.GatewayMemoryBytes applies, over the
+same base term the disabled branch renders on its own.
+*/}}
+{{- define "profgate.gatewayMemoryBytes" -}}
+{{- add (include "profgate.gatewayBaseMemoryBytes" . | int64) (include "profgate.pgoMemoryBytes" . | int64) -}}
+{{- end -}}
+
+{{/*
 The container's resources block.
-limits: an explicit resources.limits, else a memory limit derived from
-pgo.limits, else the static limit for the interactive path.
+limits: an explicit resources.limits, else memoryLimitWithoutPGO plus the
+working set pgo.limits sizes, else memoryLimitWithoutPGO on its own.
 requests: resources.requests as written, which values.yaml ships with a CPU
 request so a namespace whose quota counts requests.cpu admits the Pod.
 The two halves are read separately rather than as one verbatim block, because
@@ -263,7 +301,7 @@ limits:
   {{- toYaml $limits | nindent 2 }}
 {{- else if include "profgate.pgoEnabled" . -}}
 limits:
-  memory: {{ include "profgate.pgoMemoryBytes" . }}
+  memory: {{ include "profgate.gatewayMemoryBytes" . }}
 {{- else -}}
 limits:
   memory: {{ .Values.memoryLimitWithoutPGO }}

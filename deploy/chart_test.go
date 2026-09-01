@@ -385,13 +385,13 @@ func TestChartClusterResourcesAreReleaseScoped(t *testing.T) {
 	}
 }
 
-// TestChartMemoryLimitIsDerived is the reason the chart renders the limit
-// rather than carrying one: the number the templates compute is compared
-// against config.PGOMemoryBytes applied to the configuration the same render
-// produced, so an operator who raises a pgo.limits ceiling raises the limit
-// with it and cannot end up with a container the merge will not fit in.
-// The custom case moves all four inputs, which is what separates a real
-// derivation from a hard-coded 4Gi that happens to match the defaults.
+// TestChartMemoryLimitIsDerived is the reason the chart renders the limit rather than carrying one.
+// The number the templates compute is compared against config.GatewayMemoryBytes applied to the
+// configuration the same render produced,
+// so an operator who raises a pgo.limits ceiling raises the limit with it
+// and cannot end up with a container the merge will not fit in.
+// The custom case moves all four inputs,
+// which is what separates a real derivation from a hard-coded figure that happens to match the defaults.
 func TestChartMemoryLimitIsDerived(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -414,8 +414,8 @@ func TestChartMemoryLimitIsDerived(t *testing.T) {
 			cfg := loadRenderedConfig(t, values...)
 			mem := containerMemoryLimit(t, render[appsv1.Deployment](t, "deployment.yaml", values...))
 
-			if got, want := mem.Value(), cfg.PGOMemoryBytes(); got != want {
-				t.Errorf("resources.limits.memory = %d bytes, want %d from the rendered ConfigMap's own pgo.limits", got, want)
+			if got, want := mem.Value(), cfg.GatewayMemoryBytes(); got != want {
+				t.Errorf("resources.limits.memory = %d bytes, want %d: the working set the rendered ConfigMap's pgo.limits size, over the gateway's base", got, want)
 			}
 		})
 	}
@@ -518,8 +518,8 @@ func TestChartPGOValuesAreValidated(t *testing.T) {
 			t.Errorf("pgo.limits.maxParallel = %d, want %d", got, want)
 		}
 		mem := containerMemoryLimit(t, render[appsv1.Deployment](t, "deployment.yaml", values...))
-		if got, want := mem.Value(), cfg.PGOMemoryBytes(); got != want {
-			t.Errorf("resources.limits.memory = %d bytes, want %d from the rendered ConfigMap's own pgo.limits", got, want)
+		if got, want := mem.Value(), cfg.GatewayMemoryBytes(); got != want {
+			t.Errorf("resources.limits.memory = %d bytes, want %d: the working set the rendered ConfigMap's pgo.limits size, over the gateway's base", got, want)
 		}
 	})
 }
@@ -576,9 +576,9 @@ func TestChartBooleanTogglesAreValidated(t *testing.T) {
 }
 
 // TestChartMemoryLimitWithoutPGO covers the other path.
-// The sizing formula reads pgo.limits and never pgo.enabled,
-// so applying it with collection off would ask for the 4Gi a merge needs on a gateway that never merges;
-// the chart uses a static limit there instead, and holds to limits.memory alone, the way the base does.
+// The working set formula reads pgo.limits and never pgo.enabled,
+// so applying it with collection off would ask for a merge budget on a gateway that never merges;
+// the chart renders memoryLimitWithoutPGO alone there, the way the base does.
 func TestChartMemoryLimitWithoutPGO(t *testing.T) {
 	dep := render[appsv1.Deployment](t, "deployment.yaml")
 	res := dep.Spec.Template.Spec.Containers[0].Resources
@@ -589,6 +589,31 @@ func TestChartMemoryLimitWithoutPGO(t *testing.T) {
 	want := resource.MustParse("512Mi")
 	if got := containerMemoryLimit(t, dep); got.Value() != want.Value() {
 		t.Errorf("resources.limits.memory = %s, want the chart's memoryLimitWithoutPGO %s", got.String(), want.String())
+	}
+}
+
+// TestChartBaseTermIsTheSameFigureBothWays holds the chart's memoryLimitWithoutPGO against the base term
+// the binary adds to the working set.
+// The two are the gateway's own footprint written twice, once in values.yaml and once in internal/config,
+// and this is what stops one of them moving without the other.
+func TestChartBaseTermIsTheSameFigureBothWays(t *testing.T) {
+	withoutPGO := containerMemoryLimit(t, render[appsv1.Deployment](t, "deployment.yaml"))
+
+	values := pgoValues(t)
+	cfg := loadRenderedConfig(t, values...)
+	baseTerm := cfg.GatewayMemoryBytes() - cfg.PGOMemoryBytes()
+
+	if got := withoutPGO.Value(); got != baseTerm {
+		t.Errorf("memoryLimitWithoutPGO is %d bytes and the binary's base term is %d; they are the same footprint", got, baseTerm)
+	}
+}
+
+// TestChartMemoryLimitRejectsAnUnreadableBase proves the base term is read as bytes rather than guessed.
+// A value the chart cannot convert fails the render instead of sizing the container from nothing.
+func TestChartMemoryLimitRejectsAnUnreadableBase(t *testing.T) {
+	out := renderFailure(t, append(pgoValues(t), "--set", "memoryLimitWithoutPGO=512MB")...)
+	if !strings.Contains(out, "memoryLimitWithoutPGO 512MB must be a whole number of Mi or Gi") {
+		t.Errorf("helm's error does not name the unreadable base term:\n%s", out)
 	}
 }
 
@@ -653,7 +678,7 @@ func TestChartResourceRequests(t *testing.T) {
 		}
 		cfg := loadRenderedConfig(t, values...)
 		mem := containerMemoryLimit(t, dep)
-		if got, want := mem.Value(), cfg.PGOMemoryBytes(); got != want {
+		if got, want := mem.Value(), cfg.GatewayMemoryBytes(); got != want {
 			t.Errorf("resources.limits.memory = %d bytes, want the derived %d: only resources.limits turns the derivation off", got, want)
 		}
 	})

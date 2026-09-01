@@ -106,27 +106,25 @@ Set `configChecksumAnnotation: false` to opt out;
 configuration changes then take effect at the next unrelated rollout.
 
 **The memory limit is derived, not written down.**
-With `pgo.enabled`, `limits.memory` is computed from `pgo.limits`:
+With `pgo.enabled`, `limits.memory` is `memoryLimitWithoutPGO` plus the working set `pgo.limits` sizes:
 
 ```text
-maxActiveCollections x (maxParallel x 8 x maxSampleBytes + 2 x 8 x maxMergedBytes)
+memoryLimitWithoutPGO + maxActiveCollections x (maxParallel x 8 x maxSampleBytes + 2 x 8 x maxMergedBytes)
 ```
 
 That is the gateway's own sizing rule
-(`internal/config.Config.PGOMemoryBytes`, which `profgate config validate` prints),
+(`internal/config.Config.GatewayMemoryBytes`, which `profgate config validate` prints beside the working set),
 so raising a ceiling raises the limit with it and the two cannot drift apart.
-The ceilings answer to each other as well:
-`maxParallel` times `maxActiveCollections` has to stay below `limits.maxConcurrentProfiles`,
-which the chart does not render and which defaults to 16,
-so raising either one far enough means raising `config.limits.maxConcurrentProfiles` in the raw block with it.
-That check lives in the binary, so getting it wrong is a startup failure rather than a render failure.
+What each term buys, and what raising one costs, is the sizing table in
+[`docs/configuration.md`](https://github.com/arloliu/profgate/blob/main/docs/configuration.md).
 A test renders the chart, loads the rendered ConfigMap through `internal/config`,
 and compares the rendered limit against the formula applied to that same configuration.
 
-The formula reads `pgo.limits` and never `pgo.enabled`,
+The working set reads `pgo.limits` and never `pgo.enabled`,
 so applying it with collection off would ask for the memory a merge needs on a gateway that never merges.
-With `pgo.enabled: false` the limit is the static `memoryLimitWithoutPGO`, 512Mi,
+With `pgo.enabled: false` the limit is `memoryLimitWithoutPGO` on its own, 512Mi,
 which covers the runtime, the informer caches, and the transfer buffers of the interactive path.
+That term is in the enabled figure too: the gateway does not stop costing it when collection is on.
 `resources.limits` overrides both paths and is rendered verbatim,
 for a cluster that needs a CPU limit or a memory limit the derivation does not produce.
 `resources.requests` is a separate half, rendered as written,

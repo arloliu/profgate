@@ -401,24 +401,47 @@ the same value is judged the same way from either source.
 | `minEvery` | `PROFGATE_PGO_LIMIT_MIN_EVERY` | `15m` | at least `1m` |
 | `maxEvery` | `PROFGATE_PGO_LIMIT_MAX_EVERY` | `24h` | at most `24h` |
 | `maxRetention` | `PROFGATE_PGO_LIMIT_MAX_RETENTION` | `24h` | `1m` to `720h` |
-| `maxSampleBytes` | `PROFGATE_PGO_LIMIT_MAX_SAMPLE_BYTES` | `33554432` | `1048576` to `268435456` |
-| `maxMergedBytes` | `PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES` | `67108864` | at most `1073741824` |
+| `maxSampleBytes` | `PROFGATE_PGO_LIMIT_MAX_SAMPLE_BYTES` | `16777216` | `1048576` to `268435456` |
+| `maxMergedBytes` | `PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES` | `33554432` | at most `1073741824` |
 | `maxTargetsPerRound` | `PROFGATE_PGO_LIMIT_MAX_TARGETS_PER_ROUND` | `32` | `1` to `256` |
-| `maxActiveCollections` | `PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS` | `2` | at least `1` |
+| `maxActiveCollections` | `PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS` | `1` | at least `1` |
 | `onDemandPerMinute` | `PROFGATE_PGO_LIMIT_ON_DEMAND_PER_MINUTE` | `10` | `1` to `600` |
 | `maxLiveCollections` | `PROFGATE_PGO_LIMIT_MAX_LIVE_COLLECTIONS` | `64` | `1` to `1024` |
 
-These ceilings size the container:
-the memory a replica needs at the configured ceilings is
+#### Sizing the container
+
+Four of these ceilings size the working set a Collection holds:
 
 ```text
 maxActiveCollections × (maxParallel × 8 × maxSampleBytes + 2 × 8 × maxMergedBytes)
 ```
 
-which is 4 GiB at the shipped defaults — the figure the Helm chart renders as the memory limit,
-and the third line `config validate` prints.
 The factor 8 estimates how much heap a decoded profile occupies against its encoded length;
 it is a sizing rule, not a proof.
+
+| Term | Shipped | What it multiplies |
+|---|---|---|
+| `maxParallel` | `4` | one in-flight sample: its compressed bytes, its decompressed bytes, and the profile decoded from them |
+| `maxSampleBytes` | `16777216` (16 MiB) | the same in-flight sample |
+| `maxMergedBytes` | `33554432` (32 MiB) | twice: the running merged profile and the serialized copy written to the store |
+| `maxActiveCollections` | `1` | the whole of the above, once per Collection running on the replica |
+| the gateway's own footprint | `512Mi` | nothing — it is a fixed term, not a multiplier |
+
+At the shipped ceilings the working set is `1 × (4 × 8 × 16 MiB + 2 × 8 × 32 MiB)`, which is 1 GiB,
+and the container limit is `512Mi + 1Gi`, which is `1536Mi`.
+`config validate` prints both, and the Helm chart renders the second as `limits.memory`.
+
+The gateway's own footprint is what the process costs before it decodes anything —
+the Go runtime, the informer caches, and `limits.maxConcurrentProfiles` transfer buffers —
+so it is there whether or not collection is enabled.
+With `pgo.enabled: false` the container limit is that term alone.
+
+Raising a ceiling raises the limit with it.
+`maxActiveCollections: 2` lets one replica run two Collections at once
+and doubles the working set to 2 GiB, taking the container to `2560Mi`;
+the chart derives that figure and a hand-written Deployment must follow it.
+Two replicas each collecting one Collection cost nothing extra per replica,
+which is what the shipped `1` assumes.
 
 ### `pgo.defaults`
 
@@ -556,7 +579,8 @@ Only when `pgo.enabled` is true:
 ```console
 $ profgate config validate --config /etc/profgate/config.yaml
 required terminationGracePeriodSeconds: 125
-pgo memory bytes: 4294967296
+pgo working set bytes: 1073741824
+container memory bytes: 1610612736
 ```
 
 The command loads the file exactly as `serve` would — defaults, environment overrides,
@@ -573,7 +597,9 @@ On success it prints two deployment figures:
   A Collection interrupted that way is retried from round zero by the replica that reclaims it,
   as long as an attempt remains under `pgo.maxAttempts`;
   otherwise it ends `failed` as `attempts_exhausted`.
-- The PGO memory bytes figure from the formula under [`pgo.limits`](#pgolimits).
+- The PGO working set and the container memory limit,
+  from the arithmetic under [`pgo.limits`](#pgolimits).
+  The second is the number the Deployment carries.
 
 The other subcommands are `profgate version`, which prints the build version,
 `profgate auth hash`, which prints a bcrypt hash for `auth.basic.users` (see [`auth.basic`](#authbasic)), and

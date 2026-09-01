@@ -100,6 +100,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enabling collection does not ask for a longer `terminationGracePeriodSeconds` than the gateway's own drain,
   which the shipped manifests have always set to 125 seconds.
 
+- **BREAKING: the container memory limit falls from 4 GiB to `1536Mi`, and it now counts the gateway's own footprint.**
+  Three of the four ceilings that size the PGO working set take smaller defaults:
+  `pgo.limits.maxSampleBytes` `33554432` to `16777216`,
+  `pgo.limits.maxMergedBytes` `67108864` to `33554432`,
+  and `pgo.limits.maxActiveCollections` `2` to `1`.
+  `maxParallel` keeps its `4`.
+  Together they take the working set from 4 GiB to 1 GiB.
+  The container limit is that working set plus the 512 MiB the gateway process costs before it decodes anything,
+  which the Helm chart used to choose between rather than add:
+  with `pgo.enabled` it rendered the working set alone.
+  `maxActiveCollections: 1` means one Collection at a time per replica,
+  so the two replicas the chart runs still collect two at once.
+  An operator who set any of the three keys keeps their own value,
+  and the chart and `profgate config validate` size the container from it.
+  A hand-written Deployment carrying `4Gi` still runs; the kustomize base moves to `1536Mi`.
+  `profgate config validate` now prints `pgo working set bytes` and `container memory bytes` in place of
+  `pgo memory bytes`; the second is the number the Deployment carries.
+  The chart's `memoryLimitWithoutPGO` is now read as a byte count and must be a whole number of `Mi` or `Gi`.
+
 ### Added
 
 - **The HTTP API answers a program, not only a person.**

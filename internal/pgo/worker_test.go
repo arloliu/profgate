@@ -937,13 +937,15 @@ func TestWorkerObservability(t *testing.T) {
 
 	completing := newImmediateRunStub(workResult{Object: good + "-1.pprof", Bytes: 7})
 	failing := newImmediateRunStub(workResult{Reason: ReasonNoSamples})
+	// Both Collections run on this replica at once,
+	// which the shipped ceiling of one active Collection would not admit.
 	w := r.newWorker(func(ctx context.Context, in workInput) workResult {
 		if in.Record.ID == good {
 			return completing.fn()(ctx, in)
 		}
 
 		return failing.fn()(ctx, in)
-	})
+	}, func(c *config.PGOConfig) { c.Limits.MaxActiveCollections = 2 })
 
 	scanNow(t, w)
 	waitFor(t, "both collections ended", func() bool {

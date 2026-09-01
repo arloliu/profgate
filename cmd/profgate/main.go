@@ -79,7 +79,8 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 	}
 
 	_, _ = fmt.Fprintf(stdout, "required terminationGracePeriodSeconds: %d\n", int(cfg.RequiredGracePeriod().Seconds()))
-	_, _ = fmt.Fprintf(stdout, "pgo memory bytes: %d\n", cfg.PGOMemoryBytes())
+	_, _ = fmt.Fprintf(stdout, "pgo working set bytes: %d\n", cfg.PGOMemoryBytes())
+	_, _ = fmt.Fprintf(stdout, "container memory bytes: %d\n", cfg.GatewayMemoryBytes())
 	return 0
 }
 

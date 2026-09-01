@@ -801,7 +801,7 @@ func TestDeploymentMemoryLimit(t *testing.T) {
 	if !ok {
 		t.Fatalf("resources.limits = %v, want a memory limit", limits)
 	}
-	if got, want := mem.Value(), cfg.PGOMemoryBytes(); got != want {
-		t.Errorf("resources.limits.memory = %d bytes, want %d from the ConfigMap's own pgo.limits", got, want)
+	if got, want := mem.Value(), cfg.GatewayMemoryBytes(); got != want {
+		t.Errorf("resources.limits.memory = %d bytes, want %d: the working set the ConfigMap's own pgo.limits size, over the gateway's base", got, want)
 	}
 }

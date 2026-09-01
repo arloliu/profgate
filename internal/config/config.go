@@ -357,10 +357,10 @@ type PGOLimits struct {
 	MinEvery             time.Duration `yaml:"minEvery"             env:"PGO_LIMIT_MIN_EVERY"              default:"15m"      validate:"min=1m"`
 	MaxEvery             time.Duration `yaml:"maxEvery"             env:"PGO_LIMIT_MAX_EVERY"              default:"24h"      validate:"max=24h"`
 	MaxRetention         time.Duration `yaml:"maxRetention"         env:"PGO_LIMIT_MAX_RETENTION"          default:"24h"      validate:"min=1m,max=720h"`
-	MaxSampleBytes       int64         `yaml:"maxSampleBytes"       env:"PGO_LIMIT_MAX_SAMPLE_BYTES"       default:"33554432" validate:"min=1048576,max=268435456"`
-	MaxMergedBytes       int64         `yaml:"maxMergedBytes"       env:"PGO_LIMIT_MAX_MERGED_BYTES"       default:"67108864" validate:"max=1073741824"`
+	MaxSampleBytes       int64         `yaml:"maxSampleBytes"       env:"PGO_LIMIT_MAX_SAMPLE_BYTES"       default:"16777216" validate:"min=1048576,max=268435456"`
+	MaxMergedBytes       int64         `yaml:"maxMergedBytes"       env:"PGO_LIMIT_MAX_MERGED_BYTES"       default:"33554432" validate:"max=1073741824"`
 	MaxTargetsPerRound   int           `yaml:"maxTargetsPerRound"   env:"PGO_LIMIT_MAX_TARGETS_PER_ROUND"  default:"32"       validate:"min=1,max=256"`
-	MaxActiveCollections int           `yaml:"maxActiveCollections" env:"PGO_LIMIT_MAX_ACTIVE_COLLECTIONS" default:"2"        validate:"min=1"`
+	MaxActiveCollections int           `yaml:"maxActiveCollections" env:"PGO_LIMIT_MAX_ACTIVE_COLLECTIONS" default:"1"        validate:"min=1"`
 	OnDemandPerMinute    int           `yaml:"onDemandPerMinute"    env:"PGO_LIMIT_ON_DEMAND_PER_MINUTE"   default:"10"       validate:"min=1,max=600"`
 	MaxLiveCollections   int           `yaml:"maxLiveCollections"   env:"PGO_LIMIT_MAX_LIVE_COLLECTIONS"   default:"64"       validate:"min=1,max=1024"`
 }
@@ -525,10 +525,15 @@ const (
 	PGOSampleOverhead = 30 * time.Second
 	// PGODeadlineSlack is the fixed tail of the deadline formula.
 	PGODeadlineSlack = 60 * time.Second
+	// PGOGatewayBaseMemory is what the gateway process costs before it decodes
+	// a profile: the Go runtime, the informer caches,
+	// and limits.maxConcurrentProfiles transfer buffers.
+	// It is what the container needs with collection off,
+	// and it does not stop existing when collection is on.
+	PGOGatewayBaseMemory = 512 << 20
 )
 
-// PGOMemoryBytes is the container memory a Collection worker can occupy at the
-// configured ceilings, over the gateway's own footprint:
+// PGOMemoryBytes is the PGO working set at the configured ceilings, and nothing else:
 // per active Collection, every in-flight sample as compressed bytes,
 // decompressed bytes, and a decoded profile;
 // the running merged profile; and the serialized copy written to the store.
@@ -538,6 +543,13 @@ func (c *Config) PGOMemoryBytes() int64 {
 	perCollection := int64(l.MaxParallel)*PGODecodeFactor*l.MaxSampleBytes + 2*PGODecodeFactor*l.MaxMergedBytes
 
 	return int64(l.MaxActiveCollections) * perCollection
+}
+
+// GatewayMemoryBytes is the container memory limit a collecting gateway needs:
+// the working set PGOMemoryBytes sizes, plus what the process costs before it decodes anything.
+// This is the figure the Deployment carries.
+func (c *Config) GatewayMemoryBytes() int64 {
+	return PGOGatewayBaseMemory + c.PGOMemoryBytes()
 }
 
 // Load reads the YAML file at path, rejects unknown keys at any nesting level,

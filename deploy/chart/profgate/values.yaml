@@ -138,12 +138,11 @@ resources:
   requests:
     cpu: 100m
 
-# The memory limit while pgo.enabled is false.
-# With PGO off the gateway streams profiles through to the client and holds no
-# profile in memory, so its footprint is the runtime plus the informer caches
-# plus limits.maxConcurrentProfiles transfer buffers.
-# With PGO on this value is ignored and the limit is derived from pgo.limits;
-# see the README.
+# The gateway's own footprint: the runtime, the informer caches, and
+# limits.maxConcurrentProfiles transfer buffers.
+# With PGO off it is the whole memory limit, because the gateway streams
+# profiles through to the client and holds none in memory.
+# With PGO on the working set pgo.limits sizes is added to it; see the README.
 memoryLimitWithoutPGO: 512Mi
 
 # How long the kubelet waits after SIGTERM before SIGKILL.
@@ -485,9 +484,9 @@ pgo:
   # At the values below the limit is 4Gi.
   limits:
     maxParallel: 4
-    maxSampleBytes: 33554432
-    maxMergedBytes: 67108864
-    maxActiveCollections: 2
+    maxSampleBytes: 16777216
+    maxMergedBytes: 33554432
+    maxActiveCollections: 1
     # Any other pgo.limits key can be added here and is rendered as written;
     # only the four above take part in the memory arithmetic.
 

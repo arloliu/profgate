@@ -606,10 +606,10 @@ func TestLoadPGO(t *testing.T) {
 				MinEvery:             15 * time.Minute,
 				MaxEvery:             24 * time.Hour,
 				MaxRetention:         24 * time.Hour,
-				MaxSampleBytes:       33554432,
-				MaxMergedBytes:       67108864,
+				MaxSampleBytes:       16777216,
+				MaxMergedBytes:       33554432,
 				MaxTargetsPerRound:   32,
-				MaxActiveCollections: 2,
+				MaxActiveCollections: 1,
 				OnDemandPerMinute:    10,
 				MaxLiveCollections:   64,
 			},
@@ -905,10 +905,41 @@ func TestLoadPGO(t *testing.T) {
 
 func TestPGOSizing(t *testing.T) {
 	cfg := loadOK(t, fixture("pgo-full.yaml"))
-	// The spec's own arithmetic for the shipped ceilings:
-	// 2 x (4 x 8 x 32 MiB + 2 x 8 x 64 MiB).
-	if got, want := cfg.PGOMemoryBytes(), int64(4*1024*1024*1024); got != want {
+	// The working set at the shipped ceilings: 1 x (4 x 8 x 16 MiB + 2 x 8 x 32 MiB).
+	if got, want := cfg.PGOMemoryBytes(), int64(1<<30); got != want {
 		t.Fatalf("PGOMemoryBytes() = %d, want %d", got, want)
+	}
+	// The container holds that working set and the gateway's own 512 MiB beside it.
+	if got, want := cfg.GatewayMemoryBytes(), int64(1536<<20); got != want {
+		t.Fatalf("GatewayMemoryBytes() = %d, want %d", got, want)
+	}
+}
+
+// TestGatewayMemoryFollowsEveryCeiling proves the container figure moves with each ceiling
+// that sizes the working set, and that the base term does not.
+func TestGatewayMemoryFollowsEveryCeiling(t *testing.T) {
+	base := loadOK(t, fixture("pgo-full.yaml"))
+	baseTerm := base.GatewayMemoryBytes() - base.PGOMemoryBytes()
+
+	for _, tc := range []struct{ name, env, value string }{
+		{"maxParallel", "PROFGATE_PGO_LIMIT_MAX_PARALLEL", "8"},
+		{"maxSampleBytes", "PROFGATE_PGO_LIMIT_MAX_SAMPLE_BYTES", "33554432"},
+		{"maxMergedBytes", "PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES", "67108864"},
+		{"maxActiveCollections", "PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS", "2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			cfg := loadOK(t, fixture("pgo-full.yaml"))
+			if cfg.PGOMemoryBytes() <= base.PGOMemoryBytes() {
+				t.Fatalf("raising %s left the working set at %d", tc.name, cfg.PGOMemoryBytes())
+			}
+			if got, want := cfg.GatewayMemoryBytes(), baseTerm+cfg.PGOMemoryBytes(); got != want {
+				t.Fatalf("GatewayMemoryBytes() = %d, want %d: the container follows the working set", got, want)
+			}
+			if got := cfg.GatewayMemoryBytes() - cfg.PGOMemoryBytes(); got != baseTerm {
+				t.Fatalf("the base term is %d, want the fixed %d", got, baseTerm)
+			}
+		})
 	}
 }
 

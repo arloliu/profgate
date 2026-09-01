@@ -31,7 +31,8 @@ func TestRun(t *testing.T) {
 			// Exact, because the one grace period an operator sets is the
 			// gateway's own: enabling PGO adds no second figure to read.
 			wantStdoutExact: "required terminationGracePeriodSeconds: 125\n" +
-				"pgo memory bytes: 4294967296\n",
+				"pgo working set bytes: 1073741824\n" +
+				"container memory bytes: 1610612736\n",
 		},
 		{
 			name:       "validate bad",

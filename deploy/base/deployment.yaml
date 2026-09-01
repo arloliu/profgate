@@ -50,11 +50,11 @@ spec:
               port: ops
           resources:
             limits:
-              # The PGO sizing formula applied to this base's ConfigMap, over
-              # the gateway's own footprint. `profgate config validate` prints
-              # the figure for a given configuration; raise this with any
-              # pgo.limits ceiling.
-              memory: 4Gi
+              # The PGO working set this base's ConfigMap sizes, plus the
+              # gateway's own 512Mi footprint. `profgate config validate`
+              # prints both figures for a given configuration; raise this with
+              # any pgo.limits ceiling.
+              memory: 1536Mi
           volumeMounts:
             - name: config
               mountPath: /etc/profgate

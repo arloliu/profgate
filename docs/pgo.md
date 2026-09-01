@@ -343,15 +343,11 @@ Completed artifacts survive any of this: once a record is `completed`, any repli
 ## Sizing and limits
 
 The `pgo.limits` block is the operator's ceiling on everything a policy can ask for —
-per-setting ranges and defaults are in [`configuration.md`](configuration.md).
-The Deployment's memory limit is sized from
-
-```text
-maxActiveCollections × (maxParallel × 8 × maxSampleBytes + 2 × 8 × maxMergedBytes)
-```
-
-over the gateway's own footprint — 4 GiB at the shipped defaults;
-`profgate config validate` prints the figure for the loaded configuration.
+per-setting ranges and defaults are in [`configuration.md`](configuration.md),
+along with the table that sizes the container from them.
+The short of it: the Deployment's memory limit is the working set four of those ceilings size,
+plus the gateway's own footprint, which is `1536Mi` at the shipped defaults.
+`profgate config validate` prints both figures for the loaded configuration.
 
 Refusals you can hit as a client, all `429`:
 
