@@ -285,19 +285,18 @@ that an operator must carry into the Deployment by hand.
   if it does, the lease, claim, and orphan-sweep machinery can be removed with the multi-replica guarantee.
   It does not:
   a `RollingUpdate` of a one-replica Deployment surges to two, so every mechanism stays.
-- [ ] A gateway replica drains on the lease rather than on a Collection's worst-case deadline.
+- [x] A gateway replica drains on the lease rather than on a Collection's worst-case deadline.
   That is what makes the spec's own promise true —
   `pgo.enabled` does not lengthen a gateway replica's grace period —
   and `config.RequiredPGOGracePeriod` goes with the 34-hour figure it prints.
-- [ ] Sampling stops taking a slot from the gate interactive requests pass through,
+- [x] Sampling stops taking a slot from the gate interactive requests pass through,
   and `slot_timeout` leaves the published sample results.
-- [ ] Three of the four ceilings that size the working set get lower defaults,
+- [x] Three of the four ceilings that size the working set get lower defaults,
   the container limit counts the gateway's own footprint beside that working set,
   and `docs/configuration.md` gains a sizing table.
 
-Spec: `docs/specs/pgo.md`, already revised;
-the three unticked bullets implement text it already carries.
-Shipped: not yet.
+Spec: `docs/specs/pgo.md`, already revised.
+Shipped: `453bc2f`, `82df5c0`, and `b01a389`, under `Unreleased`.
 Separating the collector into its own Deployment is **deferred, not dropped**.
 The measurements behind that, and the triggers that would revive it, are in
 [`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md);

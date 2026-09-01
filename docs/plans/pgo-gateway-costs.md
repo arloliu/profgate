@@ -1,6 +1,7 @@
 # What PGO Costs the Gateway It Runs In
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** commits `453bc2f`, `82df5c0`, and `b01a389` on `plan/pgo-gateway-costs`, with this documentation commit.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -224,7 +225,7 @@ The last is the one an operator acts on.
 It becomes the plain fact: a rollout interrupts a running Collection, which is retried from round 0,
 and 125 seconds is the gateway's own drain whether or not PGO is enabled.
 
-- [ ] **Write the drain tests**
+- [x] **Write the drain tests**
 
 `internal/pgo/worker_test.go`, on the clock seam so no test waits on wall-clock time:
 
@@ -251,18 +252,18 @@ and 125 seconds is the gateway's own drain whether or not PGO is enabled.
 Run the drain-bound case against the current code first:
 it is the one that fails, because today the drain waits for the merge.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Land the drain, and delete the figure with its seven consumers**
+- [x] **Land the drain, and delete the figure with its seven consumers**
 
-- [ ] **Say plainly what a rollout does**
+- [x] **Say plainly what a rollout does**
 
 `CHANGELOG.md`, under `### Changed`:
 a gateway replica no longer waits for a running Collection to finish before it exits,
 `profgate config validate` no longer prints a PGO grace period,
 and a Collection interrupted by a rollout is retried from round 0 by another replica.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/pgo.md docs/deployment.md docs/configuration.md CHANGELOG.md
@@ -299,7 +300,7 @@ git commit -m "feat(pgo): drain on the lease, not the deadline"
 
 `TryAcquire` (`internal/admit/gate.go:26`) stays and keeps every caller it has.
 
-- [ ] **Write the tests first**
+- [x] **Write the tests first**
 
 | Case | Expect |
 |---|---|
@@ -317,9 +318,9 @@ The `a store that refuses is artifact_store_failed` subtest of `TestRoundsFinish
 and the late-`Put` fencing cases (`internal/pgo/rounds_test.go:635-668`, `:1209-1292`)
 stay green and unedited: they are what proves the rounds loop still ends a Collection correctly.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Remove the gate, its reason, and the rule that measured it**
+- [x] **Remove the gate, its reason, and the rule that measured it**
 
 `internal/pgo/rounds.go` loses the `Gate` dependency, the `Acquire` at `:452`,
 the `ReasonSlotTimeout` write at `:455`, and the constant at `:37`.
@@ -333,7 +334,7 @@ the `context` import goes with it if nothing else in the file needs it.
 `internal/config/config.go:869-871` goes in the same commit, for the reason
 *What This Plan Decides* gives.
 
-- [ ] **Take `slot_timeout` out of the published vocabulary**
+- [x] **Take `slot_timeout` out of the published vocabulary**
 
 | File | Change |
 |---|---|
@@ -342,7 +343,7 @@ the `context` import goes with it if nothing else in the file needs it.
 | `docs/configuration.md` | the removed cross-key rule leaves the `pgo.limits` validation notes |
 | `CHANGELOG.md` | under `### Removed`, `slot_timeout` no longer appears in a manifest, because sampling no longer waits for an admission slot; and the rule against `limits.maxConcurrentProfiles` is gone |
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/api.md docs/pgo.md docs/configuration.md CHANGELOG.md
@@ -423,7 +424,7 @@ The two test helpers are the reason this task lists files no arithmetic mentions
 both name themselves after the shipped ceilings and would stay green while exercising values
 that stopped being shipped, which is the failure that outlives the commit that caused it.
 
-- [ ] **Write the tests first**
+- [x] **Write the tests first**
 
 | Case | Expect |
 |---|---|
@@ -437,7 +438,7 @@ that stopped being shipped, which is the failure that outlives the commit that c
 | each of the three lowered ceilings raised one at a time | both derived limits follow it up, and the base term stays fixed |
 | `maxSampleBytes` above `maxMergedBytes` | still refused |
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
 **What `config validate` reports, decided rather than left implicit.**
 One number cannot answer both questions an operator has.
@@ -453,9 +454,9 @@ container memory bytes: 1610612736
 
 The second is the number that goes on the Deployment, and it is the one the manifests are compared against.
 
-- [ ] **Add the base term, move the three defaults, and move every consumer above**
+- [x] **Add the base term, move the three defaults, and move every consumer above**
 
-- [ ] **Write the sizing table**
+- [x] **Write the sizing table**
 
 `docs/configuration.md` gains a short table under `pgo.limits`:
 the four ceilings that enter the formula, what each multiplies, the base term beside them,
@@ -464,7 +465,7 @@ That is the arithmetic an operator does by hand today,
 and it replaces the derivation the guide currently leaves to them.
 `docs/pgo.md` and the chart README point at it rather than repeating it.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/configuration.md docs/pgo.md deploy/chart/profgate/README.md CHANGELOG.md
@@ -482,13 +483,13 @@ git commit -m "feat(pgo): size the container for what it holds"
 - Modify: `docs/pgo.md`, `docs/configuration.md`, `docs/deployment.md`, `docs/api.md`,
   `CHANGELOG.md`, `docs/plans/roadmap.md`, this plan
 
-- [ ] **Read the four guides end to end against the shipped behavior**
+- [x] **Read the four guides end to end against the shipped behavior**
 
 The earlier tasks each moved the documents their own change touched;
 this is the pass that catches what only reads right once all three have landed.
 In particular `docs/pgo.md`'s *Multiple gateway replicas* section describes a drain that no longer happens.
 
-- [ ] **Consolidate the changelog**
+- [x] **Consolidate the changelog**
 
 An operator upgrading reads the behavior changes in one place:
 a rollout now interrupts a running Collection instead of waiting for it,
@@ -499,7 +500,7 @@ which is the first time it has counted the gateway's own footprint at all.
 The last is the one that changes a rendered manifest,
 so it says plainly that an operator who raised the four ceilings keeps their own values.
 
-- [ ] **Flip the roadmap and this plan**
+- [x] **Flip the roadmap and this plan**
 
 `docs/plans/roadmap.md` item 11's three unticked bullets are ticked,
 and its `Shipped:` line names what carried them while keeping the deferral it records.
@@ -508,7 +509,7 @@ The plan is deleted in the next commit that touches it, per
 [`finished-documents-leave-the-tree.md`](../decisions/finished-documents-leave-the-tree.md);
 one commit cannot do both.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/ CHANGELOG.md

@@ -374,20 +374,22 @@ the accepted cost of a probe that cannot restart a healthy replica over a depend
 
 ### Resources
 
-With `pgo.enabled`, the chart derives the container memory limit from the collection ceilings:
+With `pgo.enabled`, the container memory limit is derived from `memoryLimitWithoutPGO` and the ceilings:
 
 ```text
-maxActiveCollections x (maxParallel x 8 x maxSampleBytes + 2 x 8 x maxMergedBytes)
+memoryLimitWithoutPGO + maxActiveCollections x (maxParallel x 8 x maxSampleBytes + 2 x 8 x maxMergedBytes)
 ```
 
-That is the binary's own sizing rule (`profgate config validate` prints it),
+That is the binary's own sizing rule (`profgate config validate` prints both halves),
 so raising a ceiling raises the limit with it.
 The chart rejects `pgo.enabled` and these four ceilings when they arrive through the raw `config:` block or `extraEnv`,
 so the derivation holds: no escape hatch can change the ceilings out from under the rendered limit,
 and every other key stays overridable through both.
-At the shipped ceilings the limit is 4Gi.
-With PGO off the limit is the static `memoryLimitWithoutPGO`, 512Mi,
-which covers the runtime, the informer caches, and the interactive transfer buffers.
+At the shipped ceilings the working set is 1Gi and the limit is 1536Mi;
+[`configuration.md`](configuration.md) has the table of what each term buys and what raising one costs.
+With PGO off the limit is `memoryLimitWithoutPGO` alone, 512Mi,
+which covers the runtime, the informer caches, and the interactive transfer buffers —
+the same term the enabled figure carries, because the gateway still costs it while it collects.
 An explicit `resources.limits` replaces both paths and is rendered verbatim.
 
 `resources.requests` is rendered as written, and ships a CPU request of `100m`.
@@ -408,9 +410,11 @@ On SIGTERM the gateway drains in this order:
    The image is distroless and runs no preStop hook, so the gateway waits in process.
 3. Two drains run in parallel:
    the API drain, bounded by the longer of `limits.cpuSeconds` and `limits.traceSeconds` plus 30 seconds,
-   and the Collection drain, which waits up to each running Collection's deadline
-   and abandons work still running there —
-   merge and write cannot be interrupted once entered — logging what it still waits for every 30 seconds.
+   and the Collection drain, which stops renewing the lease on every Collection this replica owns
+   and returns once each owner has committed or reached the cutoff of the lease it last renewed —
+   `pgo.leaseTTL` minus five seconds of clock skew.
+   Merge and write cannot be interrupted once entered,
+   so a work goroutine may outlive the drain; it commits nothing, because its lease has lapsed.
 4. The informers stop, the ops listener drains, and the process exits 0.
 
 A second signal skips the rest of the drain and exits 1.
