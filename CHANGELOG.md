@@ -207,6 +207,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `profgate targets --explain` prints the same reasons as a second table beside the list.
   No Kubernetes permission changed and no Go module was added.
 
+### Removed
+
+- **`slot_timeout` no longer appears in a Collection manifest.**
+  Sampling takes no slot in the admission gate interactive requests pass through,
+  so a sample never waits for one and never fails for want of one.
+  A client reading `manifest.samples[].result` will not see the value again;
+  nothing replaces it, because the case it named cannot arise.
+  What bounds a replica's sampling is
+  `pgo.limits.maxParallel × pgo.limits.maxActiveCollections` fetches, by construction.
+- **The rule measuring the PGO fan-out against `limits.maxConcurrentProfiles` is gone.**
+  A configuration whose `pgo.limits.maxParallel × pgo.limits.maxActiveCollections` reaches
+  or exceeds `limits.maxConcurrentProfiles` now loads, where it used to fail validation.
+  Nothing an operator has set needs to change: every configuration that loaded before still loads.
+
 ### Fixed
 
 - A gateway with `pgo.enabled` no longer gains a duplicate cache consumer every time a watch fails to open.

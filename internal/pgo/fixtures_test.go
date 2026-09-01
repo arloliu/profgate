@@ -27,7 +27,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/arloliu/profgate/internal/admit"
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
@@ -1861,7 +1860,6 @@ func gzipBytes(t *testing.T, b []byte) []byte {
 // roundsOpts shapes one Rounds under test.
 type roundsOpts struct {
 	discovery k8s.Discovery
-	gate      *admit.Gate
 	limits    config.PGOLimits
 	clock     *fakeClock
 	recorder  metrics.Recorder
@@ -1872,9 +1870,6 @@ type roundsOpts struct {
 // newTestRounds builds a Rounds over the real proxy transport.
 func newTestRounds(t *testing.T, o roundsOpts) *Rounds {
 	t.Helper()
-	if o.gate == nil {
-		o.gate = admit.New(8)
-	}
 	if o.limits == (config.PGOLimits{}) {
 		o.limits = testLimits()
 	}
@@ -1895,7 +1890,6 @@ func newTestRounds(t *testing.T, o roundsOpts) *Rounds {
 	return NewRounds(RoundsDeps{
 		Discovery:    o.discovery,
 		Proxy:        proxy.New(proxy.Options{HeaderDeadline: func(int) time.Duration { return 5 * time.Second }}),
-		Gate:         o.gate,
 		Limits:       o.limits,
 		Clock:        o.clock,
 		Recorder:     o.recorder,

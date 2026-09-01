@@ -178,8 +178,9 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	handlersReady := func() bool {
 		return issuerReady.Load() && cluster.HasSynced()
 	}
-	// The one admission gate, sized from the configuration loaded now:
+	// The interactive admission gate, sized from the configuration loaded now:
 	// limits.maxConcurrentProfiles is a restart-only field.
+	// Collection sampling does not pass through it.
 	gate := admit.New(cfg.Limits.MaxConcurrentProfiles)
 	// The handlers' late-bound view of the PGO machinery:
 	// the HTTP server starts before the NATS preflight has passed,
@@ -486,7 +487,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 			}
 			natsReady.Store(true)
 			logger.Info("nats preflight passed; starting pgo loops")
-			w, err := startPGO(runCtx, res.client, cfg, pgoRuntime, gate, cluster, owner, deps, logger)
+			w, err := startPGO(runCtx, res.client, cfg, pgoRuntime, cluster, owner, deps, logger)
 			if err != nil {
 				logger.Error("pgo runtime", "error", err)
 				shutdown(drainEndpoints)
@@ -626,7 +627,6 @@ func startPGO(
 	client natskv.Client,
 	cfg *config.Config,
 	runtime *pgo.Runtime,
-	gate *admit.Gate,
 	cluster *k8s.Cluster,
 	owner pgo.Owner,
 	deps serveDeps,
@@ -645,7 +645,6 @@ func startPGO(
 	rounds := pgo.NewRounds(pgo.RoundsDeps{
 		Discovery:    cluster,
 		Proxy:        deps.sampler,
-		Gate:         gate,
 		Limits:       cfg.PGO.Limits,
 		Clock:        clock,
 		Recorder:     deps.recorder,

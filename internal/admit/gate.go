@@ -1,14 +1,10 @@
 // Package admit holds the one admission gate that bounds how many profiles run at once.
-// Interactive requests take a slot without waiting and are refused when none is free;
-// Collection samples wait for one until their context ends.
-// A single Gate is constructed in cmd/profgate and injected into every caller,
-// because two semaphores with the same capacity would let Collections hold every slot.
+// A caller takes a slot without waiting and is refused when none is free.
+// Collection sampling does not pass through it:
+// what bounds a Collection is its own maxParallel, per Collection.
 package admit
 
-import (
-	"context"
-	"sync"
-)
+import "sync"
 
 // Gate is a counting semaphore over a buffered channel.
 // The zero value is not usable; call New.
@@ -29,17 +25,6 @@ func (g *Gate) TryAcquire() (release func(), ok bool) {
 		return g.releaser(), true
 	default:
 		return nil, false
-	}
-}
-
-// Acquire waits for a slot until ctx ends; Collection samples use it.
-// It returns the context's error and no release when the wait runs out.
-func (g *Gate) Acquire(ctx context.Context) (release func(), err error) {
-	select {
-	case g.slots <- struct{}{}:
-		return g.releaser(), nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
 	}
 }
 

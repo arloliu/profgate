@@ -1,8 +1,6 @@
 package admit
 
 import (
-	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -36,53 +34,6 @@ func TestGate(t *testing.T) {
 		}
 	})
 
-	t.Run("acquire waits", func(t *testing.T) {
-		g := New(1)
-		held, ok := g.TryAcquire()
-		if !ok {
-			t.Fatal("TryAcquire() ok = false, want true")
-		}
-
-		acquired := make(chan error, 1)
-		go func() {
-			_, err := g.Acquire(context.Background())
-			acquired <- err
-		}()
-
-		select {
-		case err := <-acquired:
-			t.Fatalf("Acquire() returned %v while the only slot was held, want it to wait", err)
-		case <-time.After(50 * time.Millisecond):
-		}
-
-		held()
-		select {
-		case err := <-acquired:
-			if err != nil {
-				t.Errorf("Acquire() error = %v, want nil once the slot was released", err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("Acquire() did not return after the slot was released")
-		}
-	})
-
-	t.Run("acquire context end", func(t *testing.T) {
-		g := New(1)
-		if _, ok := g.TryAcquire(); !ok {
-			t.Fatal("TryAcquire() ok = false, want true")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer cancel()
-
-		release, err := g.Acquire(ctx)
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("Acquire() error = %v, want context.DeadlineExceeded", err)
-		}
-		if release != nil {
-			t.Error("Acquire() returned a release func alongside an error, want nil")
-		}
-	})
-
 	t.Run("release idempotent-ish", func(t *testing.T) {
 		g := New(2)
 		release, ok := g.TryAcquire()
@@ -111,25 +62,14 @@ func TestGate(t *testing.T) {
 		g := New(capacity)
 
 		var wg sync.WaitGroup
-		for i := range goroutines {
+		for range goroutines {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if i%2 == 0 {
-					release, ok := g.TryAcquire()
-					if ok {
-						release()
-					}
-
-					return
+				release, ok := g.TryAcquire()
+				if ok {
+					release()
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				release, err := g.Acquire(ctx)
-				if err != nil {
-					return
-				}
-				release()
 			}()
 		}
 		wg.Wait()

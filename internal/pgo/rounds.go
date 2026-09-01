@@ -17,7 +17,6 @@ import (
 
 	"github.com/google/pprof/profile"
 
-	"github.com/arloliu/profgate/internal/admit"
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
@@ -34,7 +33,6 @@ const profileKind = "cpu"
 // A failed sample is recorded and skipped; only a round with zero successes
 // fails the Collection.
 const (
-	ReasonSlotTimeout          = "slot_timeout"
 	ReasonTargetChanged        = "target_changed"
 	ReasonDiscoveryUnavailable = "discovery_unavailable"
 	ReasonSampleTooLarge       = "sample_too_large"
@@ -53,12 +51,13 @@ const (
 var gzipMagic = []byte{0x1f, 0x8b}
 
 // RoundsDeps is everything the work body needs.
-// Discovery, Proxy, and Gate are the gateway's interactive machinery,
-// unchanged: the same Confirm, the same transport, and the one admission gate.
+// Discovery and Proxy are the gateway's interactive machinery, unchanged:
+// the same Confirm and the same transport.
+// Sampling takes no admission slot,
+// so what bounds it is maxParallel per Collection and nothing shared.
 type RoundsDeps struct {
 	Discovery    k8s.Discovery
 	Proxy        *proxy.Proxy
-	Gate         *admit.Gate
 	Limits       config.PGOLimits
 	Clock        Clock
 	Recorder     metrics.Recorder
@@ -445,20 +444,6 @@ func (r *Rounds) sample(ctx context.Context, round int, t k8s.Target, policy Pol
 		Node:      t.Node,
 		StartedAt: r.deps.Clock.Now().UTC(),
 	}
-
-	// A Collection sample waits for a slot for at most duration + roundInterval,
-	// where an interactive request fails fast.
-	waitCtx, cancelWait := context.WithTimeout(ctx, duration+policy.Sampling.RoundInterval.Duration())
-	release, err := r.deps.Gate.Acquire(waitCtx)
-	cancelWait()
-	if err != nil {
-		s.Result = ReasonSlotTimeout
-
-		return sampleOutcome{sample: s}
-	}
-	// The slot goes back on the success path and on every failure path alike,
-	// after the upstream body has been consumed and closed.
-	defer release()
 
 	if err := r.deps.Discovery.Confirm(ctx, t); err != nil {
 		// Anything the gateway cannot classify is treated as the API server

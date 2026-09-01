@@ -225,10 +225,11 @@ and `truncated: true` means a round had more eligible Pods than it sampled
 (`sampling.replicas`, itself capped by `pgo.limits.maxTargetsPerRound`)
 and the artifact is a sample of the fleet rather than the whole of it.
 
-Sampling shares the gateway's interactive admission gate (`limits.maxConcurrentProfiles`),
-and configuration validation guarantees
-`pgo.limits.maxParallel × pgo.limits.maxActiveCollections < limits.maxConcurrentProfiles`,
-so Collections can never hold every slot and interactive profiling always has headroom.
+Sampling takes no slot in the gateway's interactive admission gate (`limits.maxConcurrentProfiles`),
+so a Collection never queues behind interactive requests and never delays one.
+What bounds a replica's sampling is
+`pgo.limits.maxParallel × pgo.limits.maxActiveCollections` fetches, by construction,
+and the two ceilings are set for what the merge holds rather than against the interactive gate.
 
 ## Lifecycle reference
 
@@ -284,7 +285,7 @@ The `reason` field of a `failed` record:
 
 A cancelled record carries `cancelled_by_api`.
 Individual failed samples do not fail a Collection —
-they are recorded in the manifest (`upstream_timeout`, `sample_too_large`, `slot_timeout`, and so on)
+they are recorded in the manifest (`upstream_timeout`, `sample_too_large`, `target_changed`, and so on)
 and only a round with zero successes does.
 
 ### Retention, expiry, cancel

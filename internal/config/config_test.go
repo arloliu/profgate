@@ -749,14 +749,6 @@ func TestLoadPGO(t *testing.T) {
 		loadErr(t, fixture("pgo-full.yaml"), "nats.credsFile")
 	})
 
-	t.Run("admission inequality violated", func(t *testing.T) {
-		t.Setenv("PROFGATE_PGO_LIMIT_MAX_PARALLEL", "8")
-		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.maxParallel")
-	})
-	t.Run("admission inequality satisfied", func(t *testing.T) {
-		t.Setenv("PROFGATE_PGO_LIMIT_MAX_PARALLEL", "6")
-		loadOK(t, fixture("pgo-full.yaml"))
-	})
 	t.Run("record size product", func(t *testing.T) {
 		t.Setenv("PROFGATE_PGO_LIMIT_MAX_ROUNDS", "20")
 		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.maxRounds")
@@ -854,6 +846,18 @@ func TestLoadPGO(t *testing.T) {
 		t.Setenv("PROFGATE_LIMIT_MAX_CONCURRENT_PROFILES", "1")
 		t.Setenv("PROFGATE_LIMIT_CPU_SECONDS", "30")
 		loadOK(t, fixture("pgo-disabled.yaml"))
+	})
+
+	// Sampling takes no admission slot,
+	// so the fan-out a Collection may reach is not measured against the gate interactive requests pass through:
+	// 8 times 2 is the whole of limits.maxConcurrentProfiles and loads anyway.
+	t.Run("the pgo fan-out is not measured against the interactive gate", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_PARALLEL", "8")
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS", "2")
+		cfg := loadOK(t, fixture("pgo-full.yaml"))
+		if got := cfg.Limits.MaxConcurrentProfiles; got != 16 {
+			t.Fatalf("limits.maxConcurrentProfiles = %d, want the default 16 this case is measured against", got)
+		}
 	})
 
 	t.Run("replicas all", func(t *testing.T) {

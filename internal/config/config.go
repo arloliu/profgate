@@ -796,11 +796,9 @@ func validateUI(cfg *Config) error {
 // The rules that judge the pgo block against itself run whether or not
 // pgo.enabled, so a block that contradicts itself fails at startup rather than
 // on the day collection is turned on.
-// Two rules wait for pgo.enabled because they measure the PGO ceilings against
-// the interactive limits, which a gateway that never collects is free to set
-// low: at limits.maxConcurrentProfiles 1 no maxParallel and
-// maxActiveCollections pair exists that keeps their product below it, and both
-// are at least 1, and limits.cpuSeconds may sit under the shipped maxDuration.
+// One rule waits for pgo.enabled because it measures a PGO ceiling against an interactive limit,
+// which a gateway that never collects is free to set low:
+// limits.cpuSeconds may sit under the shipped maxDuration.
 // The NATS settings wait for the same reason:
 // a disabled gateway reaches no NATS cluster and needs none configured.
 // The per-key ranges are struct tags and hold either way,
@@ -834,10 +832,6 @@ func validatePGO(cfg *Config) error {
 		return err
 	}
 
-	if limits.MaxParallel*limits.MaxActiveCollections >= cfg.Limits.MaxConcurrentProfiles {
-		return fmt.Errorf("pgo.limits.maxParallel %d times pgo.limits.maxActiveCollections %d must stay below limits.maxConcurrentProfiles %d",
-			limits.MaxParallel, limits.MaxActiveCollections, cfg.Limits.MaxConcurrentProfiles)
-	}
 	if cpu := time.Duration(cfg.Limits.CPUSeconds) * time.Second; limits.MaxDuration > cpu {
 		return fmt.Errorf("pgo.limits.maxDuration %v must be at most limits.cpuSeconds %v", limits.MaxDuration, cpu)
 	}

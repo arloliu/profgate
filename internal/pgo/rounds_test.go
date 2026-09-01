@@ -447,11 +447,7 @@ func TestRoundsDecoderInputBounded(t *testing.T) {
 	}
 
 	limits := limitsWith(func(l *config.PGOLimits) { l.MaxSampleBytes = 1 << 20 })
-	// The gate is wider than the target count, so what bounds the fan-out here
-	// is the pool and never an admission slot.
-	r := newTestRounds(t, roundsOpts{
-		discovery: newFakeDiscovery(pods...), limits: limits, gate: admit.New(targets + 1),
-	})
+	r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(pods...), limits: limits})
 
 	var (
 		mu          sync.Mutex
@@ -753,78 +749,6 @@ func TestRoundsObservability(t *testing.T) {
 	}
 	if got := ipv4Pattern.FindString(logs.text()); got != "" {
 		t.Errorf("a log record carries %q, which looks like a pod address", got)
-	}
-}
-
-// TestRoundsGateSlotsAlwaysReturned proves every sampler gives its admission
-// slot back: a multi-batch Collection leaves the gate at full capacity.
-func TestRoundsGateSlotsAlwaysReturned(t *testing.T) {
-	fixture := fixtureProfile(t, "cpu-a.pprof")
-	targets := make([]k8s.Target, 0, 6)
-	for i := range 6 {
-		// A mixture of outcomes, so no release path is left unexercised.
-		name := fmt.Sprintf("pod-%d", i)
-		switch i % 3 {
-		case 0:
-			targets = append(targets, newPodServer(t, name, "1.42.3", fixture).target)
-		case 1:
-			targets = append(targets, newPodServer(t, name, "1.42.3", []byte("garbage")).target)
-		default:
-			pod := newPodHandler(t, name, "1.42.3", func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusServiceUnavailable)
-			})
-			targets = append(targets, pod.target)
-		}
-	}
-
-	const capacity = 4
-	gate := admit.New(capacity)
-	r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(targets...), gate: gate})
-	in := newRunInput(t, func(rec *Record) {
-		rec.Policy.Sampling.MaxParallel = 2
-		rec.Policy.Sampling.Rounds = 3
-	})
-
-	if res := runRounds(t, r, in); res.Reason != "" {
-		t.Fatalf("the collection failed %q", res.Reason)
-	}
-
-	releases := make([]func(), 0, capacity)
-	for range capacity {
-		release, ok := gate.TryAcquire()
-		if !ok {
-			t.Fatalf("the gate has %d of %d slots left; a sampler never released", len(releases), capacity)
-		}
-		releases = append(releases, release)
-	}
-	for _, release := range releases {
-		release()
-	}
-}
-
-// TestRoundsSlotTimeout proves a sample that cannot get an admission slot
-// inside duration + roundInterval is recorded and skipped.
-func TestRoundsSlotTimeout(t *testing.T) {
-	pod := newTrapServer(t, "pod-a", "1.42.3")
-	gate := admit.New(1)
-	held, ok := gate.TryAcquire()
-	if !ok {
-		t.Fatal("a fresh gate refused its only slot")
-	}
-	t.Cleanup(held)
-
-	r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(pod.target), gate: gate})
-	in := newRunInput(t, func(rec *Record) {
-		rec.Policy.Sampling.Duration = Duration(10 * time.Millisecond)
-		rec.Policy.Sampling.RoundInterval = Duration(10 * time.Millisecond)
-	})
-
-	res := runRounds(t, r, in)
-	if res.Reason != ReasonNoSamples {
-		t.Fatalf("reason is %q, want %q", res.Reason, ReasonNoSamples)
-	}
-	if got := sampleResults(res.Manifest)["pod-a"]; got != ReasonSlotTimeout {
-		t.Fatalf("the sample is %q, want %q", got, ReasonSlotTimeout)
 	}
 }
 
@@ -1153,56 +1077,142 @@ func oversizeSamples() []Sample {
 	return samples
 }
 
-// TestRoundsLeavesAnInteractiveSlot proves the other half of the shared-gate
-// guarantee: while a Collection's fan-out is at maxParallel on the one gate,
-// the slot the admission inequality reserves is still free for an interactive
-// request.
-// internal/httpapi proves the handler's half against the real handler.
-func TestRoundsLeavesAnInteractiveSlot(t *testing.T) {
+// TestRoundsSamplesUnderASaturatedGate proves a Collection takes no admission slot.
+// Every sample of a whole round starts and finishes
+// while the gate interactive requests pass through has none free.
+// The gate is saturated for the length of the run and refuses throughout,
+// which is what an interactive request would meet and a sample never does.
+func TestRoundsSamplesUnderASaturatedGate(t *testing.T) {
 	const (
-		capacity    = 3
+		capacity    = 1
 		maxParallel = 2
+		targets     = 4
 	)
 	fixture := fixtureProfile(t, "cpu-a.pprof")
 
+	gate := admit.New(capacity)
+	full, ok := gate.TryAcquire()
+	if !ok {
+		t.Fatal("a fresh gate refused its only slot")
+	}
+	t.Cleanup(full)
+
 	held := make(chan struct{})
-	sampling := make(chan struct{}, 8)
-	targets := make([]k8s.Target, 0, 4)
-	for i := range 4 {
+	sampling := make(chan struct{}, targets*2)
+	pods := make([]k8s.Target, 0, targets)
+	for i := range targets {
 		pod := newPodHandler(t, fmt.Sprintf("pod-%d", i), "1.42.3", func(w http.ResponseWriter, _ *http.Request) {
 			sampling <- struct{}{}
 			<-held
 			//nolint:errcheck // an httptest write that fails fails the assertion instead
 			_, _ = w.Write(fixture)
 		})
-		targets = append(targets, pod.target)
+		pods = append(pods, pod.target)
 	}
 
-	gate := admit.New(capacity)
-	r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(targets...), gate: gate})
+	// The Rounds this builds holds no gate, which is the whole of the change:
+	// there is nothing for a sample to wait on.
+	r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(pods...)})
 	in := newRunInput(t, func(rec *Record) { rec.Policy.Sampling.MaxParallel = maxParallel })
 
 	done := make(chan workResult, 1)
 	go func() { done <- runRounds(t, r, in) }()
 
-	// Wait until the fan-out is at its limit.
+	// The fan-out reaches its own limit with no slot to be had.
 	for range maxParallel {
 		select {
 		case <-sampling:
 		case <-time.After(fixtureTimeout):
-			t.Fatal("the fan-out never reached its limit")
+			t.Fatal("the fan-out never reached its limit while the gate was full")
 		}
 	}
-
-	release, ok := gate.TryAcquire()
-	if !ok {
-		t.Fatalf("no slot was free for an interactive request while %d of %d were held", maxParallel, capacity)
+	if release, ok := gate.TryAcquire(); ok {
+		release()
+		t.Fatal("the gate had a slot free, so this run proves nothing about a saturated one")
 	}
-	release()
 
 	close(held)
-	if res := <-done; res.Reason != "" {
+	res := <-done
+	if res.Reason != "" {
 		t.Fatalf("the collection failed %q", res.Reason)
+	}
+	if got := len(res.Manifest.Samples); got != targets {
+		t.Fatalf("the manifest carries %d samples, want every one of the %d targets", got, targets)
+	}
+	for pod, result := range sampleResults(res.Manifest) {
+		if result != sampleResultOK {
+			t.Errorf("the sample of %s is %q, want it to have succeeded under a full gate", pod, result)
+		}
+	}
+}
+
+// TestRoundsBoundIsParallelTimesActive proves what bounds sampling now that no gate does.
+// Two Collections at maxParallel each hold exactly twice maxParallel fetches and never one more,
+// which is the maxParallel × maxActiveCollections the ceilings promise.
+func TestRoundsBoundIsParallelTimesActive(t *testing.T) {
+	const (
+		collections = 2
+		maxParallel = 2
+		targets     = 4
+	)
+	fixture := fixtureProfile(t, "cpu-a.pprof")
+
+	var (
+		mu      sync.Mutex
+		running int
+		peak    int
+	)
+	held := make(chan struct{})
+	arrived := make(chan struct{}, collections*targets)
+	pods := make([]k8s.Target, 0, targets)
+	for i := range targets {
+		pod := newPodHandler(t, fmt.Sprintf("pod-%d", i), "1.42.3", func(w http.ResponseWriter, _ *http.Request) {
+			mu.Lock()
+			running++
+			peak = max(peak, running)
+			mu.Unlock()
+			arrived <- struct{}{}
+			<-held
+			mu.Lock()
+			running--
+			mu.Unlock()
+			//nolint:errcheck // an httptest write that fails fails the assertion instead
+			_, _ = w.Write(fixture)
+		})
+		pods = append(pods, pod.target)
+	}
+
+	done := make(chan workResult, collections)
+	for range collections {
+		r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(pods...)})
+		in := newRunInput(t, func(rec *Record) { rec.Policy.Sampling.MaxParallel = maxParallel })
+		go func() { done <- runRounds(t, r, in) }()
+	}
+
+	for range collections * maxParallel {
+		select {
+		case <-arrived:
+		case <-time.After(fixtureTimeout):
+			t.Fatalf("fewer than %d fetches ran at once within %s", collections*maxParallel, fixtureTimeout)
+		}
+	}
+	// Every sampler both pools can run is held, so nothing else may arrive.
+	select {
+	case <-arrived:
+		t.Fatalf("another fetch started while %d were held", collections*maxParallel)
+	case <-time.After(fanOutWindow):
+	}
+
+	close(held)
+	for range collections {
+		if res := <-done; res.Reason != "" {
+			t.Fatalf("a collection failed %q", res.Reason)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if peak != collections*maxParallel {
+		t.Fatalf("%d fetches ran at once, want exactly %d", peak, collections*maxParallel)
 	}
 }
 

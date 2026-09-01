@@ -548,8 +548,6 @@ Only when `pgo.enabled` is true:
 
 - `nats.url` is required, and every comma-separated entry must begin with `nats://` or `tls://`;
   `nats.credsFile`, when set, must be readable.
-- `pgo.limits.maxParallel × pgo.limits.maxActiveCollections` must stay strictly below `limits.maxConcurrentProfiles`,
-  so scheduled sampling can never fill the admission gate that interactive requests share.
 - `pgo.limits.maxDuration` must be at most `limits.cpuSeconds`,
   because a Collection sample is an ordinary CPU profile fetch and passes the same duration cap.
 

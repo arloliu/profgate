@@ -851,20 +851,16 @@ func TestConcurrentRequestsAreIndependent(t *testing.T) {
 	}
 }
 
-// TestSharedGateLeavesRoomForInteractiveRequests proves the guarantee that
-// holds only because there is one gate: configuration keeps
-// pgo.limits.maxParallel × maxActiveCollections below
-// limits.maxConcurrentProfiles, so however many slots a Collection's samplers
-// hold, an interactive request always finds one.
-// The second half is what makes the sharing observable: with one slot left,
+// TestGateAdmitsUntilItIsFull proves the handler admits on the gate it was given and nowhere else.
+// It serves while a slot is free, however many other holders the gate has,
+// and refuses with 429 once none is.
+// The last pair is what makes the one gate observable: with one slot left,
 // two requests at once take it and refuse the other, which a handler holding
 // a gate of its own would not do.
-// internal/pgo proves the sampler's half, that a Collection's fan-out never
-// takes more than maxParallel of the same gate.
-func TestSharedGateLeavesRoomForInteractiveRequests(t *testing.T) {
+func TestGateAdmitsUntilItIsFull(t *testing.T) {
 	const (
-		capacity    = 3
-		maxParallel = 2
+		capacity = 3
+		taken    = 2
 	)
 
 	shared := admit.New(capacity)
@@ -872,24 +868,23 @@ func TestSharedGateLeavesRoomForInteractiveRequests(t *testing.T) {
 	h.gate = shared
 	h.configure(func(cfg *config.Config) { cfg.Limits.MaxConcurrentProfiles = capacity })
 
-	// A Collection's samplers take their slots the way internal/pgo does.
-	releases := make([]func(), 0, maxParallel)
-	for i := range maxParallel {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		release, err := shared.Acquire(ctx)
-		cancel()
-		if err != nil {
-			t.Fatalf("a collection sampler could not take slot %d: %v", i, err)
+	// Other holders of the same gate,
+	// taken the way an interactive request takes one: without waiting.
+	releases := make([]func(), 0, taken)
+	for i := range taken {
+		release, ok := shared.TryAcquire()
+		if !ok {
+			t.Fatalf("slot %d of a fresh gate was refused", i)
 		}
 		releases = append(releases, release)
 	}
 
-	// Every interactive request still finds the slot the inequality reserves.
+	// Every request still finds the one slot left.
 	for i := range 5 {
 		rec := h.do(t, http.MethodGet, profilePath+"cpu")
 		if rec.Code != http.StatusOK {
-			t.Fatalf("interactive request %d got %d, want 200 while a collection holds %d of %d slots",
-				i, rec.Code, maxParallel, capacity)
+			t.Fatalf("interactive request %d got %d, want 200 while %d of %d slots are held",
+				i, rec.Code, taken, capacity)
 		}
 	}
 
