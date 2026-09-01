@@ -40,9 +40,6 @@ const (
 	drainSlack = 30 * time.Second
 	// opsDrainTimeout bounds the ops listener's shutdown.
 	opsDrainTimeout = 5 * time.Second
-	// drainReportInterval is how often a drain that is still waiting for a
-	// Collection says so.
-	drainReportInterval = 30 * time.Second
 	// readHeaderTimeout bounds how long a connection may take to send its request headers.
 	readHeaderTimeout = 10 * time.Second
 	// syncedPollInterval is how often the lifecycle re-checks HasSynced after the informers start.
@@ -57,30 +54,26 @@ const (
 // listenFunc opens one of the two listeners.
 type listenFunc func(ctx context.Context, network, address string) (net.Listener, error)
 
-// shutdownMode says what the shutdown waits for.
+// shutdownMode says whether the endpoint-removal window is worth spending.
 type shutdownMode int
 
 const (
-	// drainAll waits for the interactive drain and the Collection drain.
-	drainAll shutdownMode = iota
-	// abandonCollections skips the Collection drain.
-	// The process is ending because a listener it cannot serve without has
-	// failed, and there is nothing left for a finished Collection to be
-	// serving; a Collection left running stops renewing its lease, and
-	// another replica reclaims it after leaseTTL.
-	abandonCollections
+	// drainEndpoints spends server.drainDelay letting the EndpointSlice controllers stop routing here.
+	drainEndpoints shutdownMode = iota
+	// listenerFailed skips that window.
+	// The process is ending because a listener it cannot serve without has failed,
+	// so there is nothing left for the window to protect.
+	listenerFailed
 )
 
 // natsPreflightFunc is the NATS preflight the lifecycle retries; production is natskv.Preflight.
 type natsPreflightFunc func(ctx context.Context, opts natskv.Options, instanceID string, log *slog.Logger) (natskv.Client, error)
 
 // collectionWorker is what the lifecycle needs from the PGO worker:
-// claiming until the stop request, a drain of its own,
-// and the Collection ids the drain reports on.
+// claiming until the stop request, and a drain of its own.
 type collectionWorker interface {
 	Run(ctx context.Context)
 	Drain(ctx context.Context) error
-	InFlight() []string
 }
 
 // serveDeps is what serve needs from the outside; production fills it in runServe,
@@ -383,16 +376,15 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		// supports.
 		// A listener that has failed receives nothing the window protects,
 		// so the fatal path spends none of the grace period on it.
-		if delay := cfg.Server.DrainDelay; delay > 0 && mode == drainAll {
+		if delay := cfg.Server.DrainDelay; delay > 0 && mode == drainEndpoints {
 			logger.Info("draining; waiting for endpoint removal", "delay", delay.String())
 			time.Sleep(delay)
 		}
 
-		// apiOutcome and the two PGO variables are written by the goroutines
-		// below and read after wg.Wait, which is what orders them.
+		// apiOutcome and pgoOutcome are written by the goroutines below and
+		// read after wg.Wait, which is what orders them.
 		apiOutcome := "completed"
 		pgoOutcome := "drained"
-		var abandoned []string
 
 		var wg sync.WaitGroup
 		wg.Add(1)
@@ -414,30 +406,19 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 				logger.Warn("api listener shutdown", "error", err)
 			}
 		}()
-		switch {
-		case worker == nil:
-		case mode == abandonCollections:
-			// Nothing waits: the Collections this replica owns stop renewing
-			// when the process exits, and another replica reclaims them.
-			abandoned = worker.InFlight()
-			pgoOutcome = "abandoned"
-			logger.Warn("exiting without the collection drain", "collections", abandoned)
-		default:
+		if worker != nil {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				reporting := make(chan struct{})
-				defer close(reporting)
-				go reportDraining(reporting, worker, start, logger)
 				// A context of its own, and deliberately an unbounded one:
-				// Drain already waits per Collection no longer than that Collection's deadline,
-				// which is the only bound that knows how long a merge may still legitimately run.
-				// A Collection deadline can far exceed the interactive drain bound above,
+				// Drain stops the owner loops renewing
+				// and waits no longer than the lease each of them last committed,
+				// which is the bound another replica already honours before it reclaims the record.
+				// That bound is unrelated to the interactive drain above,
 				// so the two waits run side by side.
 				if err := worker.Drain(context.Background()); err != nil {
 					logger.Warn("pgo drain incomplete", "error", err)
-					pgoOutcome = "abandoned"
-					abandoned = worker.InFlight()
+					pgoOutcome = "incomplete"
 				}
 			}()
 		}
@@ -455,9 +436,6 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		fields := []any{"elapsed", time.Since(start).Round(time.Millisecond).String(), "api", apiOutcome}
 		if worker != nil {
 			fields = append(fields, "pgo", pgoOutcome)
-			if len(abandoned) > 0 {
-				fields = append(fields, "collections", abandoned)
-			}
 		}
 		logger.Info("drain complete", fields...)
 	}
@@ -467,7 +445,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		case err := <-discoverCh:
 			if err != nil {
 				logger.Error("issuer discovery failed", "error", err)
-				shutdown(drainAll)
+				shutdown(drainEndpoints)
 
 				return 1
 			}
@@ -479,13 +457,13 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 			var fb k8s.ErrForbidden
 			if errors.As(err, &fb) {
 				logger.Error("preflight forbidden; the ClusterRole lacks a tuple", "resource", fb.Resource, "verb", fb.Verb)
-				shutdown(drainAll)
+				shutdown(drainEndpoints)
 
 				return 1
 			}
 			if err != nil {
 				logger.Error("preflight cancelled", "error", err)
-				shutdown(drainAll)
+				shutdown(drainEndpoints)
 
 				return 1
 			}
@@ -502,7 +480,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 				// a configuration outside the contract, or a denied probe.
 				// The error names the bucket and the operation or field.
 				logger.Error("nats preflight failed", "error", res.err)
-				shutdown(drainAll)
+				shutdown(drainEndpoints)
 
 				return 1
 			}
@@ -511,7 +489,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 			w, err := startPGO(runCtx, res.client, cfg, pgoRuntime, gate, cluster, owner, deps, logger)
 			if err != nil {
 				logger.Error("pgo runtime", "error", err)
-				shutdown(drainAll)
+				shutdown(drainEndpoints)
 
 				return 1
 			}
@@ -521,33 +499,14 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 				continue
 			}
 			logger.Error("listener failed", "error", err)
-			shutdown(abandonCollections)
+			shutdown(listenerFailed)
 
 			return 1
 		case <-deps.stop:
 			logger.Info("stop requested; draining")
-			shutdown(drainAll)
+			shutdown(drainEndpoints)
 
 			return 0
-		}
-	}
-}
-
-// reportDraining says what the Collection drain is still waiting for, every
-// drainReportInterval, until reporting is closed.
-// A drain that outlasts the interactive one has nothing else to show for
-// itself: the merge it waits for writes no record until it ends.
-func reportDraining(reporting <-chan struct{}, worker collectionWorker, start time.Time, logger *slog.Logger) {
-	ticker := time.NewTicker(drainReportInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-reporting:
-			return
-		case <-ticker.C:
-			ids := worker.InFlight()
-			logger.Info("still draining collections",
-				"collections", len(ids), "ids", ids, "elapsed", time.Since(start).Round(time.Second).String())
 		}
 	}
 }

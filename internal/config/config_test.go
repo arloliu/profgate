@@ -906,12 +906,6 @@ func TestPGOSizing(t *testing.T) {
 	if got, want := cfg.PGOMemoryBytes(), int64(4*1024*1024*1024); got != want {
 		t.Fatalf("PGOMemoryBytes() = %d, want %d", got, want)
 	}
-	// The deadline formula at the slowest policy the shipped ceilings admit,
-	// which samples one Pod at a time:
-	// 5 x 32 x (60s + 30s + 660s) + 4 x 600s + 60s, after the 5-second drain delay.
-	if got, want := cfg.RequiredPGOGracePeriod(), 122465*time.Second; got != want {
-		t.Fatalf("RequiredPGOGracePeriod() = %v, want %v", got, want)
-	}
 }
 
 // loadErrAll loads path and fails the test unless the error mentions every want.

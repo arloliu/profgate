@@ -79,9 +79,6 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 	}
 
 	_, _ = fmt.Fprintf(stdout, "required terminationGracePeriodSeconds: %d\n", int(cfg.RequiredGracePeriod().Seconds()))
-	_, _ = fmt.Fprintf(stdout, "required terminationGracePeriodSeconds for pgo: %d\n", int(cfg.RequiredPGOGracePeriod().Seconds()))
-	_, _ = fmt.Fprintln(stdout, "  the worst case over every policy pgo.limits admits: drain waits through each Collection's deadline and abandons work still running there;")
-	_, _ = fmt.Fprintln(stdout, "  a shorter period discards the interrupted attempt's samples: another replica retries from round zero only if the lease expires before the Collection's deadline and an attempt remains (pgo.maxAttempts); otherwise the Collection fails as deadline_exceeded or attempts_exhausted")
 	_, _ = fmt.Fprintf(stdout, "pgo memory bytes: %d\n", cfg.PGOMemoryBytes())
 	return 0
 }

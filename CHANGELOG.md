@@ -89,6 +89,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A browser holding a session is signed out once and logs in again;
   a login in flight across the upgrade returns `401` with reason `state` and starts over.
   No configuration, route, or response shape changed, and the cookie key file is unaffected.
+- **A rollout interrupts a running Collection instead of waiting for it.**
+  A terminating gateway replica stops renewing the lease on every Collection it owns
+  and returns once each owner has committed or reached the cutoff of the lease it last renewed,
+  which is `pgo.leaseTTL` minus five seconds of clock skew.
+  An owner still merging at that cutoff commits nothing,
+  and the replica that reclaims the record retries it from round zero
+  as long as an attempt remains under `pgo.maxAttempts`.
+  `profgate config validate` no longer prints a second grace period for PGO:
+  enabling collection does not ask for a longer `terminationGracePeriodSeconds` than the gateway's own drain,
+  which the shipped manifests have always set to 125 seconds.
 
 ### Added
 

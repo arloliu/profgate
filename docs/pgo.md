@@ -313,21 +313,19 @@ Coordination is compare-and-swap on KV keys:
   and restarts sampling from round 0 as a new attempt under a new object name;
   `pgo.maxAttempts` (default 3) bounds total attempts:
   the default permits the first attempt and at most two retries.
-- **Rollouts drain.**
-  On `SIGTERM` a replica stops claiming and waits for its in-flight Collections,
-  up to each Collection's own deadline
-  (the merge and store steps cannot be interrupted mid-call);
-  work still running at its deadline is abandoned.
-  The PGO figure `profgate config validate` prints is the termination grace period
-  that lets the drain wait through any admissible Collection's deadline at the configured ceilings —
-  it bounds the wait, it does not guarantee completion.
-  A shorter grace period is a supported choice with a different outcome:
-  the process is killed and the interrupted attempt's samples are discarded.
+- **A rollout interrupts a running Collection.**
+  On `SIGTERM` a replica stops claiming, stops renewing the lease on every Collection it owns,
+  and returns once each owner has committed or reached the cutoff of the lease it last renewed.
+  That cutoff is `pgo.leaseTTL` minus five seconds of clock skew from the last renewal,
+  so the wait is bounded by the lease rather than by a Collection's deadline
+  and `pgo.enabled` asks for no longer a termination grace period than the gateway's own drain.
+  An owner still merging at its cutoff commits nothing:
+  the merge and store steps cannot be interrupted mid-call,
+  but the record it would have written is gated on a lease that has lapsed.
   Another replica reclaims the record and retries from round zero,
-  but only if the lease (`pgo.leaseTTL`) expires before the Collection's deadline
-  and an attempt remains under `pgo.maxAttempts`;
-  otherwise the Collection ends `failed` as `deadline_exceeded` or `attempts_exhausted`,
-  whichever bound wins.
+  as long as an attempt remains under `pgo.maxAttempts`;
+  otherwise the Collection ends `failed` as `attempts_exhausted`,
+  or as `deadline_exceeded` when the deadline fixed at the first claim passes first.
   Deleting a gateway Pod ends the same way, by reclaim on another replica under the same bounds.
   A process that keeps running after its Pod object is gone loses its Kubernetes credentials with it,
   fails every confirmation in the next round,

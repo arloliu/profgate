@@ -7,7 +7,6 @@ import (
 	"io"
 	"reflect"
 	"regexp"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1120,14 +1119,119 @@ func TestWorkerDrain(t *testing.T) {
 		<-scanned
 	})
 
-	t.Run("abandons a collection still running at its deadline", func(t *testing.T) {
+	t.Run("returns at the lease cutoff, whatever the lease", func(t *testing.T) {
+		for _, lease := range []time.Duration{30 * time.Second, testLeaseTTL, 10 * time.Minute} {
+			t.Run(lease.String(), func(t *testing.T) {
+				f := startPGO(t)
+				id := f.seedClaimable("payment", "payment-api")
+				r := f.newReplica("replica", replicaOpts{})
+				r.waitSynced()
+				r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+
+				// A merge takes no context and runs to completion once entered,
+				// so the drain has to return without a work goroutine that ignores cancellation.
+				stub := newRunStub(workResult{})
+				stub.ignoreCancel = true
+				t.Cleanup(stub.release)
+				w := r.newWorker(stub.fn(), func(c *config.PGOConfig) { c.LeaseTTL = lease })
+				scanNow(t, w)
+				claimed := waitClaimed(t, f, id, 1)
+				stub.waitStarted(t)
+
+				drained := make(chan error, 1)
+				go func() { drained <- w.Drain(context.Background()) }()
+
+				cutoff := claimed.LeaseUntil.Add(-skewMargin)
+				r.clock.Set(cutoff.Add(-time.Second))
+				select {
+				case err := <-drained:
+					t.Fatalf("Drain returned %v a second short of the lease cutoff", err)
+				case <-time.After(50 * time.Millisecond):
+				}
+
+				var err error
+				waitFor(t, "Drain returned at the lease cutoff", func() bool {
+					r.clock.Set(cutoff.Add(time.Second))
+					select {
+					case err = <-drained:
+						return true
+					default:
+						return false
+					}
+				})
+				if err != nil {
+					t.Fatalf("Drain returned %v, want nil: an owner past its cutoff is reclaimed, not a failure", err)
+				}
+			})
+		}
+	})
+
+	t.Run("leaves a collection past its cutoff for another replica", func(t *testing.T) {
 		f := startPGO(t)
 		id := f.seedClaimable("payment", "payment-api")
-		r := f.newReplica("replica", replicaOpts{})
+		one := f.newReplica("replica-one", replicaOpts{})
+		two := f.newReplica("replica-two", replicaOpts{})
+		for _, r := range []*replica{one, two} {
+			r.waitSynced()
+			r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+		}
+
+		stub := newRunStub(workResult{Object: id + "-1.pprof", Bytes: 4})
+		stub.ignoreCancel = true
+		t.Cleanup(stub.release)
+		w := one.newWorker(stub.fn())
+		scanNow(t, w)
+		claimed := waitClaimed(t, f, id, 1)
+		stub.waitStarted(t)
+
+		drained := make(chan error, 1)
+		go func() { drained <- w.Drain(context.Background()) }()
+		waitFor(t, "Drain returned at the lease cutoff", func() bool {
+			one.clock.Set(claimed.LeaseUntil.Add(-skewMargin + time.Second))
+			select {
+			case err := <-drained:
+				if err != nil {
+					t.Errorf("Drain returned %v, want nil", err)
+				}
+
+				return true
+			default:
+				return false
+			}
+		})
+
+		// The drained owner committed nothing:
+		// the record is still the running attempt it was,
+		// and the lease it holds is the one it stopped renewing.
+		if got := f.record(id); got.State != StateRunning || got.Attempt != 1 {
+			t.Fatalf("record is %q attempt %d, want the running attempt the drain left behind", got.State, got.Attempt)
+		}
+
+		two.clock.Set(claimed.LeaseUntil.Add(2 * skewMargin))
+		reclaimed := newRunStub(workResult{})
+		t.Cleanup(reclaimed.release)
+		scanNow(t, two.newWorker(reclaimed.fn()))
+		rec := waitClaimed(t, f, id, 2)
+		if rec.Owner == nil || rec.Owner.Instance != "replica-two" {
+			t.Fatalf("owner is %+v, want the reclaiming replica", rec.Owner)
+		}
+	})
+
+	t.Run("an artifact stored after the drain returned is swept as an orphan", func(t *testing.T) {
+		f := startPGO(t)
+		// The orphan age is measured against the server's own ModTime,
+		// so this fixture runs on a clock anchored to the wall clock.
+		now := time.Now().UTC()
+		id := f.seedClaimable("payment", "payment-api", func(rec *Record) {
+			rec.CreatedAt = now
+			rec.ClaimBy = now.Add(time.Hour)
+		})
+		r := f.newReplica("replica", replicaOpts{clock: newFakeClock(now)})
 		r.waitSynced()
 		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
 
-		stub := newRunStub(workResult{})
+		object := id + "-1.pprof"
+		stub := newRunStub(workResult{Object: object, Bytes: 4})
 		stub.ignoreCancel = true
 		t.Cleanup(stub.release)
 		w := r.newWorker(stub.fn())
@@ -1137,22 +1241,50 @@ func TestWorkerDrain(t *testing.T) {
 
 		drained := make(chan error, 1)
 		go func() { drained <- w.Drain(context.Background()) }()
-
-		var err error
-		waitFor(t, "Drain gave up at the deadline", func() bool {
-			r.clock.Set(claimed.Deadline.Add(time.Second))
+		waitFor(t, "Drain returned at the lease cutoff", func() bool {
+			r.clock.Set(claimed.LeaseUntil.Add(-skewMargin + time.Second))
 			select {
-			case err = <-drained:
+			case err := <-drained:
+				if err != nil {
+					t.Errorf("Drain returned %v, want nil", err)
+				}
+
 				return true
 			default:
 				return false
 			}
 		})
-		if err == nil || !strings.Contains(err.Error(), id) {
-			t.Fatalf("Drain returned %v, want an error naming %s", err, id)
+
+		// The work goroutine stores its profile after the drain has returned.
+		f.putObject(r, object)
+		if got := f.record(id).Artifact; got != nil {
+			t.Fatalf("the record names %+v, want no artifact: the drained owner committed nothing", got)
 		}
-		if got := r.logs.with("pgo: collection abandoned at its deadline"); len(got) != 1 {
-			t.Fatalf("%d abandonment records logged, want 1", len(got))
+
+		// The Collection ends on the replica that reclaimed it,
+		// naming whatever that attempt produced and never this object.
+		f.failRecord(id, ReasonNoSamples)
+		r.clock.Set(f.objectModTime(r, object).Add(orphanAge + 2*skewMargin))
+		sweepNow(t, r.newSweeper())
+		f.waitObjectGone(r, object)
+	})
+
+	t.Run("returns at once with nothing in flight", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+
+		stub := newRunStub(workResult{})
+		t.Cleanup(stub.release)
+		drained := make(chan error, 1)
+		go func() { drained <- r.newWorker(stub.fn()).Drain(context.Background()) }()
+		select {
+		case err := <-drained:
+			if err != nil {
+				t.Fatalf("Drain returned %v, want nil", err)
+			}
+		case <-time.After(fixtureTimeout):
+			t.Fatal("Drain did not return with nothing in flight")
 		}
 	})
 }

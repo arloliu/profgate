@@ -417,18 +417,14 @@ A second signal skips the rest of the drain and exits 1.
 
 `terminationGracePeriodSeconds` defaults to 125,
 which covers the drain delay plus the longest interactive profile at the shipped limits.
-`profgate config validate` prints two grace-period figures:
-the base one covers this interactive drain,
-and the PGO one is the period that lets a terminating gateway wait through any running Collection's deadline;
-work still running at its deadline is abandoned,
-so the figure bounds the wait rather than guaranteeing completion.
-A shorter grace period is a supported choice, not a misconfiguration:
-the kubelet kills the process and the interrupted attempt's samples are discarded.
-Another replica reclaims the Collection and retries from round zero,
-but only if the lease expires before the Collection's deadline
-and an attempt remains under `pgo.maxAttempts`;
-otherwise the Collection ends `failed` as `deadline_exceeded` or `attempts_exhausted`,
-whichever bound wins.
+`profgate config validate` prints that one grace-period figure, and enabling PGO does not raise it.
+A terminating gateway stops renewing the lease on every Collection it owns
+and waits only until each owner has committed or reached the cutoff of the lease it last renewed,
+which is `pgo.leaseTTL` minus five seconds of clock skew.
+An interrupted Collection is reclaimed by another replica and retried from round zero,
+as long as an attempt remains under `pgo.maxAttempts`;
+otherwise it ends `failed` as `attempts_exhausted`,
+or as `deadline_exceeded` when the deadline fixed at the first claim passes first.
 
 ### Metrics
 

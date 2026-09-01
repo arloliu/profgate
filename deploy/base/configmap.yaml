@@ -60,14 +60,11 @@ data:
     # Every pgo.limits ceiling then keeps the shipped default, which is what
     # the 4Gi memory limit in deployment.yaml is sized from.
     #
-    # An enabled gateway asks for terminationGracePeriodSeconds 122465, the
-    # number `profgate config validate` prints for this configuration. That is
-    # the worst case over every policy the ceilings admit -- one Pod at a time,
-    # the longest sample, the most rounds -- so it is large. An operator who
-    # does not want to wait that long can leave the grace period lower:
-    # SIGKILL discards the interrupted attempt's samples, and another replica
-    # reclaims the Collection and retries from round zero only if the lease
-    # expires before the Collection's deadline and an attempt remains;
-    # otherwise it fails as deadline_exceeded or attempts_exhausted. The base
-    # stays at 125, which covers the gateway's own drain with PGO off:
+    # terminationGracePeriodSeconds stays at 125 with PGO on. A terminating
+    # replica stops renewing the lease on every Collection it owns and waits
+    # only until each owner has committed or reached the cutoff of the lease it
+    # last renewed, which is pgo.leaseTTL minus five seconds of clock skew. So
+    # a rollout interrupts a running Collection: another replica reclaims it
+    # and retries from round zero, as long as an attempt remains under
+    # pgo.maxAttempts. The 125 covers the gateway's own drain either way:
     # server.drainDelay, the longest profile, and 60 seconds of slack.

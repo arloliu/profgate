@@ -558,33 +558,23 @@ Only when `pgo.enabled` is true:
 ```console
 $ profgate config validate --config /etc/profgate/config.yaml
 required terminationGracePeriodSeconds: 125
-required terminationGracePeriodSeconds for pgo: 122465
-  the worst case over every policy pgo.limits admits: drain waits through each Collection's deadline and abandons work still running there;
-  a shorter period discards the interrupted attempt's samples: another replica retries from round zero only if the lease expires before the Collection's deadline and an attempt remains (pgo.maxAttempts); otherwise the Collection fails as deadline_exceeded or attempts_exhausted
 pgo memory bytes: 4294967296
 ```
 
 The command loads the file exactly as `serve` would — defaults, environment overrides,
 normalization, every validation rule — and exits `2` with the failing key on any error.
-On success it prints three deployment figures:
+On success it prints two deployment figures:
 
-- The required `terminationGracePeriodSeconds` with PGO off:
+- The required `terminationGracePeriodSeconds`:
   `server.drainDelay`, plus the longer of `limits.cpuSeconds` and `limits.traceSeconds`,
   plus 60 seconds of slack.
-- The variant with PGO on: the worst case over every policy `pgo.limits` admits.
-  It is large by construction,
-  and is the period that lets a drain wait through any admissible Collection's deadline:
-  drain waits for running Collection work up to each Collection's deadline
-  and abandons what is still running there,
-  because the merge and write steps cannot be interrupted —
-  the figure bounds the wait, it does not guarantee completion.
-  A shorter period is a supported choice with a different outcome:
-  the process is killed and the interrupted attempt's samples are discarded.
-  Another replica reclaims the Collection and retries from round zero,
-  but only if the lease (`pgo.leaseTTL`) expires before the Collection's deadline
-  and an attempt remains under `pgo.maxAttempts`;
-  otherwise the Collection ends `failed` as `deadline_exceeded` or `attempts_exhausted`,
-  whichever bound wins.
+  Enabling PGO does not change it.
+  A terminating replica stops renewing the lease on each Collection it owns
+  and returns once every owner has committed or reached the cutoff of the lease it last renewed,
+  which is at most `pgo.leaseTTL` minus five seconds of clock skew.
+  A Collection interrupted that way is retried from round zero by the replica that reclaims it,
+  as long as an attempt remains under `pgo.maxAttempts`;
+  otherwise it ends `failed` as `attempts_exhausted`.
 - The PGO memory bytes figure from the formula under [`pgo.limits`](#pgolimits).
 
 The other subcommands are `profgate version`, which prints the build version,

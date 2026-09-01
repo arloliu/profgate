@@ -324,22 +324,14 @@ func TestDeadline(t *testing.T) {
 	})
 }
 
-// TestRequiredGracePeriodCoversEveryDeadline holds the two copies of the
-// deadline arithmetic against each other.
-// config.RequiredPGOGracePeriod is the number `profgate config validate`
-// prints and the number an operator sets terminationGracePeriodSeconds from;
-// Deadline is what a worker enforces.
-// They read the same per-sample overhead, fixed slack, and 10-minute
-// roundInterval bound from internal/config, and then repeat the arithmetic
-// that combines them with the batching rule in two packages,
-// so the printed number is only true while both stay in step.
-// For each set of ceilings the test walks every policy Validate admits and
-// requires the printed period to cover the longest deadline any of them
-// produces, and some admissible policy to reach it exactly.
-// It lives in internal/pgo because internal/pgo imports internal/config and
-// the reverse direction would be an import cycle,
-// so this is the only package that can see both formulas.
-func TestRequiredGracePeriodCoversEveryDeadline(t *testing.T) {
+// TestDeadlineReachesTheBatchingBound holds Deadline against the closed form its batching rule implies.
+// The slowest Collection a set of ceilings admits samples one Pod at a time,
+// so the batch count is maxTargetsPerRound rather than
+// maxTargetsPerRound / maxParallel: maxParallel only caps a policy from above.
+// For each set of ceilings the test walks every policy Validate admits,
+// takes the longest deadline any of them produces,
+// and requires it to be that closed form exactly.
+func TestDeadlineReachesTheBatchingBound(t *testing.T) {
 	withLimits := func(mutate func(*config.PGOLimits)) config.PGOLimits {
 		lim := testLimits()
 		mutate(&lim)
@@ -378,8 +370,11 @@ func TestRequiredGracePeriodCoversEveryDeadline(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			lim := tc.limits
-			cfg := &config.Config{PGO: config.PGOConfig{Limits: lim}}
-			required := cfg.RequiredPGOGracePeriod()
+			batches := time.Duration(lim.MaxTargetsPerRound)
+			rounds := time.Duration(lim.MaxRounds)
+			admissionWait := lim.MaxDuration + config.PGOMaxRoundInterval
+			bound := rounds*batches*(lim.MaxDuration+config.PGOSampleOverhead+admissionWait) +
+				(rounds-1)*config.PGOMaxRoundInterval + config.PGODeadlineSlack
 
 			replicas := []Replicas{AllReplicas()}
 			for n := 1; n <= lim.MaxTargetsPerRound; n++ {
@@ -423,11 +418,8 @@ func TestRequiredGracePeriodCoversEveryDeadline(t *testing.T) {
 			if admitted == 0 {
 				t.Fatal("no candidate policy was admissible, so the walk proves nothing")
 			}
-			if worst > required {
-				t.Errorf("the longest admissible deadline is %v, more than the printed grace period %v", worst, required)
-			}
-			if worst != required {
-				t.Errorf("the printed grace period is %v but no admissible policy reaches past %v, so it is not the worst case", required, worst)
+			if worst != bound {
+				t.Errorf("the longest admissible deadline is %v, want the batching bound %v", worst, bound)
 			}
 		})
 	}

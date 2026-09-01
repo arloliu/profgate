@@ -1366,9 +1366,6 @@ type stubWorker struct {
 	runEnded chan struct{}
 	entered  chan struct{}
 	release  chan struct{}
-	// abandon, when set, is what this worker reports as still running when the
-	// drain gives up on it.
-	abandon []string
 
 	mu            sync.Mutex
 	runs          int
@@ -1414,20 +1411,7 @@ func (s *stubWorker) Drain(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
-	if len(s.abandon) > 0 {
-		return fmt.Errorf("pgo: %d collection(s) still running at their deadline: %s",
-			len(s.abandon), strings.Join(s.abandon, ", "))
-	}
-
 	return nil
-}
-
-// InFlight names the Collections this worker still owns.
-func (s *stubWorker) InFlight() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return append([]string(nil), s.abandon...)
 }
 
 func (s *stubWorker) runCount() int {
@@ -1683,12 +1667,11 @@ func TestServePGO(t *testing.T) {
 		}
 	})
 
-	t.Run("a failed listener exits without waiting for the collections", func(t *testing.T) {
+	t.Run("a failed listener skips the endpoint window and drains the same", func(t *testing.T) {
 		worker := newStubWorker()
-		worker.abandon = []string{"c-1"}
 		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
 		fail := make(chan struct{})
-		// The drain delay is longer than the wait for the exit below: a
+		// The drain delay is six times the wait for the exit below: a
 		// listener that has failed receives nothing the endpoint window
 		// protects, so the fatal path does not spend the grace period on it.
 		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
@@ -1696,49 +1679,18 @@ func TestServePGO(t *testing.T) {
 		gw.waitReady(t, waitTimeout)
 		waitFor(t, waitTimeout, "the worker starting", func() bool { return worker.runCount() == 1 })
 
-		// The drain is never released: a process whose listener has failed has
-		// nothing left to serve, and the lease another replica reclaims is the
-		// recovery.
 		close(fail)
+		// The Collection drain runs here as it does on any other exit:
+		// it is bounded by the lease each owner last renewed,
+		// and what ends the process makes no difference to that bound.
+		waitFor(t, waitTimeout, "the worker drain starting", func() bool { return closed(worker.entered) })
+		worker.releaseDrain()
 		if code := gw.exitCode(t, waitTimeout); code != 1 {
 			t.Fatalf("exit code = %d, want 1: a failed listener is a crash", code)
 		}
-		if closed(worker.entered) {
-			t.Fatal("the fatal path entered the Collection drain, which has no bound")
-		}
 		rec := gw.record(t, "drain complete")
-		if rec["pgo"] != "abandoned" {
-			t.Fatalf("drain complete record = %v, want pgo=abandoned", rec)
-		}
-		ids, _ := rec["collections"].([]any)
-		if len(ids) != 1 || ids[0] != "c-1" {
-			t.Fatalf("drain complete collections = %v, want [c-1]", rec["collections"])
-		}
-	})
-
-	t.Run("an abandoned collection is named in the drain record", func(t *testing.T) {
-		worker := newStubWorker()
-		worker.abandon = []string{"c-1", "c-2"}
-		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
-		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(),
-			gatewayOpts{enabled: true, preflight: pf, worker: worker})
-		gw.waitReady(t, waitTimeout)
-		waitFor(t, waitTimeout, "the worker starting", func() bool { return worker.runCount() == 1 })
-
-		gw.stopOnce()
-		worker.releaseDrain()
-		if code := gw.exitCode(t, waitTimeout); code != 0 {
-			t.Fatalf("exit code = %d, want 0: a Collection left running is a documented outcome, not a failure", code)
-		}
-		// The ids are what tells the operator which Collections another
-		// replica has to reclaim.
-		rec := gw.record(t, "drain complete")
-		if rec["pgo"] != "abandoned" {
-			t.Fatalf("drain complete record = %v, want pgo=abandoned", rec)
-		}
-		ids, _ := rec["collections"].([]any)
-		if len(ids) != 2 || ids[0] != "c-1" || ids[1] != "c-2" {
-			t.Fatalf("drain complete collections = %v, want [c-1 c-2]", rec["collections"])
+		if rec["pgo"] != "drained" {
+			t.Fatalf("drain complete record = %v, want pgo=drained", rec)
 		}
 	})
 }

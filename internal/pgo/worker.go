@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -64,10 +63,29 @@ type workResult struct {
 type runFunc func(ctx context.Context, in workInput) workResult
 
 // inFlight is one Collection this replica owns, for Drain to wait on.
+// cutoff is how long its owner may still commit under the lease it last renewed,
+// and the owner moves it out on every renewal.
 type inFlight struct {
-	id       string
-	deadline time.Time
-	done     chan struct{}
+	id   string
+	done chan struct{}
+
+	mu     sync.Mutex
+	cutoff time.Time
+}
+
+// setCutoff records the cutoff of a lease the owner has just committed.
+func (fl *inFlight) setCutoff(t time.Time) {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	fl.cutoff = t
+}
+
+// cutoffAt is the cutoff of the last lease the owner committed.
+func (fl *inFlight) cutoffAt() time.Time {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+
+	return fl.cutoff
 }
 
 // Worker claims Collections and owns them until they end.
@@ -88,6 +106,10 @@ type Worker struct {
 	log       *slog.Logger
 	owner     Owner
 	run       runFunc
+
+	// draining is closed by Drain and stops every owner loop renewing its lease,
+	// so each owner ends at the cutoff of the lease it last committed rather than whenever its work finishes.
+	draining chan struct{}
 
 	mu     sync.Mutex
 	active int
@@ -129,6 +151,7 @@ func NewWorker(
 		log:         log,
 		owner:       owner,
 		run:         rounds.run,
+		draining:    make(chan struct{}),
 		inFlight:    make(map[string]*inFlight),
 	}
 }
@@ -157,22 +180,24 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// Drain blocks until every owner loop and work goroutine has exited, waiting
-// per Collection no longer than its deadline.
+// Drain stops every owner loop renewing its lease,
+// and returns once each Collection this replica owns has committed or reached its cutoff.
 // It refuses every later claim first and then waits for the claims already
 // past their capacity check, because a claim whose conditional write is still
 // in flight owns nothing a snapshot can see yet.
 // A pass that waited for anything looks again before it returns,
 // so a Collection registered while the pass was waiting is not left behind;
 // the passes end because no claim can begin after the first line.
-// Merge, Compact, and Write take no context and run to completion once
-// entered, so a work goroutine still running at its Collection's deadline is
-// abandoned, logged by Collection id, and Drain returns without it.
+// Merge, Compact, and Write take no context and run to completion once entered,
+// so a work goroutine may still be running when Drain returns.
+// It commits nothing: its owner's lease has lapsed,
+// and the next scan on another replica reclaims the record as a new attempt.
+// The wait is therefore at most leaseTTL - skewMargin from each owner's last renewal,
+// whatever that owner's work is still doing.
 func (w *Worker) Drain(ctx context.Context) error {
-	w.stopClaiming()
+	w.stopWork()
 	w.claims.Wait()
 
-	var abandoned []string
 	waited := make(map[string]struct{})
 	for {
 		fresh := false
@@ -182,37 +207,29 @@ func (w *Worker) Drain(ctx context.Context) error {
 			}
 			waited[fl.id] = struct{}{}
 			fresh = true
-			exited, err := w.waitCollection(ctx, fl)
-			if err != nil {
+			if err := w.waitCollection(ctx, fl); err != nil {
 				return err
-			}
-			if !exited {
-				abandoned = append(abandoned, fl.id)
 			}
 		}
 		if !fresh {
 			break
 		}
 	}
-	if len(abandoned) > 0 {
-		return fmt.Errorf("pgo: %d collection(s) still running at their deadline: %s",
-			len(abandoned), strings.Join(abandoned, ", "))
-	}
 
 	return nil
 }
 
-// waitCollection waits for one Collection to exit, up to its deadline, and
-// reports whether it did: a false is the deadline passing first.
-func (w *Worker) waitCollection(ctx context.Context, fl *inFlight) (bool, error) {
-	// An already-exited Collection is never abandoned, however long an
-	// earlier one in this pass held the wait.
+// waitCollection waits for one Collection's owner loop to exit,
+// no longer than the cutoff of the lease that owner last committed.
+func (w *Worker) waitCollection(ctx context.Context, fl *inFlight) error {
+	// An owner that has already exited is never left behind,
+	// however long an earlier one in this pass held the wait.
 	select {
 	case <-fl.done:
-		return true, nil
+		return nil
 	default:
 	}
-	wait := fl.deadline.Sub(w.clock.Now())
+	wait := fl.cutoffAt().Sub(w.clock.Now())
 	if wait < 0 {
 		wait = 0
 	}
@@ -220,33 +237,36 @@ func (w *Worker) waitCollection(ctx context.Context, fl *inFlight) (bool, error)
 	defer timer.Stop()
 	select {
 	case <-fl.done:
-		return true, nil
+		return nil
 	case <-timer.C():
-		w.log.Warn("pgo: collection abandoned at its deadline", "collection", fl.id)
+		w.log.Warn("pgo: collection left for another replica at its lease cutoff", "collection", fl.id)
 
-		return false, nil
+		return nil
 	case <-ctx.Done():
-		return false, fmt.Errorf("pgo: drain: %w", ctx.Err())
+		return fmt.Errorf("pgo: drain: %w", ctx.Err())
 	}
 }
 
-// stopClaiming refuses every claim from here on.
-func (w *Worker) stopClaiming() {
+// stopWork refuses every claim from here on,
+// and stops every owner loop renewing its lease.
+func (w *Worker) stopWork() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.stopped {
+		return
+	}
 	w.stopped = true
+	close(w.draining)
 }
 
-// InFlight names the Collections this replica owns, in a stable order,
-// so a drain can report what it is waiting for and what it left behind.
-func (w *Worker) InFlight() []string {
-	snapshot := w.inFlightSnapshot()
-	out := make([]string, 0, len(snapshot))
-	for _, fl := range snapshot {
-		out = append(out, fl.id)
+// stopping reports whether the drain has begun.
+func (w *Worker) stopping() bool {
+	select {
+	case <-w.draining:
+		return true
+	default:
+		return false
 	}
-
-	return out
 }
 
 // inFlightSnapshot lists what this replica owns, in a stable order.
@@ -446,7 +466,7 @@ func (w *Worker) releaseLocalSlot() {
 // The local slot and the memory it stands for stay held until the work
 // goroutine has exited, so a replacement Collection on this replica waits.
 func (w *Worker) startOwner(stores natskv.Stores, rec Record, rev uint64) {
-	fl := &inFlight{id: rec.ID, deadline: *rec.Deadline, done: make(chan struct{})}
+	fl := &inFlight{id: rec.ID, done: make(chan struct{}), cutoff: rec.LeaseUntil.Add(-skewMargin)}
 	w.mu.Lock()
 	w.inFlight[rec.ID] = fl
 	w.mu.Unlock()
@@ -462,7 +482,7 @@ func (w *Worker) startOwner(stores natskv.Stores, rec Record, rev uint64) {
 			w.recorder.CollectionsActive(-1)
 			w.releaseLocalSlot()
 		}()
-		w.ownerLoop(stores, rec, rev)
+		w.ownerLoop(fl, stores, rec, rev)
 	}()
 }
 
@@ -471,7 +491,7 @@ func (w *Worker) startOwner(stores natskv.Stores, rec Record, rev uint64) {
 // the last successful Update stored, so renewal and finish are serialized by
 // construction and the owner can never lose a conditional update to its own
 // newer revision.
-func (w *Worker) ownerLoop(stores natskv.Stores, entry Record, rev uint64) {
+func (w *Worker) ownerLoop(fl *inFlight, stores natskv.Stores, entry Record, rev uint64) {
 	jobs := stores.Jobs
 	committed := *entry.LeaseUntil
 	deadline := *entry.Deadline
@@ -523,6 +543,12 @@ func (w *Worker) ownerLoop(stores natskv.Stores, entry Record, rev uint64) {
 			if aborted {
 				continue
 			}
+			if w.stopping() {
+				// The drain stopped renewing.
+				// This owner commits if its work returns inside the lease it last committed,
+				// and writes nothing if it does not.
+				continue
+			}
 			newRev, lease, err := w.renew(jobs, entry, rev, current, committed)
 			switch {
 			case err == nil:
@@ -531,6 +557,7 @@ func (w *Worker) ownerLoop(stores natskv.Stores, entry Record, rev uint64) {
 				entry.Progress = current
 				committed = lease
 				cutoff.reset(committed.Sub(w.clock.Now()) - skewMargin)
+				fl.setCutoff(committed.Add(-skewMargin))
 			case errors.Is(err, natskv.ErrRevisionMismatch):
 				// Cancelled by the API, or reclaimed after a stall: the work
 				// context is cancelled at once, without waiting for the cutoff.
