@@ -318,8 +318,12 @@ Coordination is compare-and-swap on KV keys:
   On `SIGTERM` a replica stops claiming, stops renewing the lease on every Collection it owns,
   and returns once each owner has committed or reached the cutoff of the lease it last renewed.
   That cutoff is `pgo.leaseTTL` minus five seconds of clock skew from the last renewal,
-  so the wait is bounded by the lease rather than by a Collection's deadline
-  and `pgo.enabled` asks for no longer a termination grace period than the gateway's own drain.
+  so the wait is bounded by the lease rather than by a Collection's deadline.
+  At the shipped 60-second lease that is 55 seconds,
+  inside the interactive drain the same shutdown already waits for,
+  so `pgo.enabled` asks for no longer a termination grace period than the gateway's own.
+  A `pgo.leaseTTL` raised past that drain is the one case where the kubelet's `SIGKILL` arrives first;
+  the outcome is the same reclaim, one attempt sooner.
   An owner still merging at its cutoff commits nothing:
   the merge and store steps cannot be interrupted mid-call,
   but the record it would have written is gated on a lease that has lapsed.

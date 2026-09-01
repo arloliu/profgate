@@ -96,6 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   An owner still merging at that cutoff commits nothing,
   and the replica that reclaims the record retries it from round zero
   as long as an attempt remains under `pgo.maxAttempts`.
+  An exit on a failed listener takes the same bounded drain,
+  where it used to abandon its Collections and exit at once,
+  so a crashing replica can now take up to that cutoff to restart.
   `profgate config validate` no longer prints a second grace period for PGO:
   enabling collection does not ask for a longer `terminationGracePeriodSeconds` than the gateway's own drain,
   which the shipped manifests have always set to 125 seconds.

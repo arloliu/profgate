@@ -590,10 +590,11 @@ On success it prints two deployment figures:
 - The required `terminationGracePeriodSeconds`:
   `server.drainDelay`, plus the longer of `limits.cpuSeconds` and `limits.traceSeconds`,
   plus 60 seconds of slack.
-  Enabling PGO does not change it.
+  Enabling PGO does not change it at the shipped `pgo.leaseTTL`.
   A terminating replica stops renewing the lease on each Collection it owns
   and returns once every owner has committed or reached the cutoff of the lease it last renewed,
-  which is at most `pgo.leaseTTL` minus five seconds of clock skew.
+  which is at most `pgo.leaseTTL` minus five seconds of clock skew —
+  55 seconds at the default 60-second lease, and inside the interactive drain this figure already covers.
   A Collection interrupted that way is retried from round zero by the replica that reclaims it,
   as long as an attempt remains under `pgo.maxAttempts`;
   otherwise it ends `failed` as `attempts_exhausted`.
