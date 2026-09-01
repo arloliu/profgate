@@ -346,7 +346,7 @@ so making a watcher cut move it is a revision that gets argued there first.
 
 Spec: none for the first bullet;
 the second revises [`pgo.md`](../specs/pgo.md) *The seam* before it gets a plan.
-Shipped: the first bullet, in `19f70e2`, in `Unreleased`;
+Shipped: the first bullet, in `19f70e2` under `Unreleased`;
 the second is not shipped.
 Why here: neither bullet blocks item 11 nor is blocked by it.
 The first is small and self-contained.
