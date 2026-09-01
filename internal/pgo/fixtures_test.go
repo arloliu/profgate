@@ -1414,8 +1414,9 @@ func (o *hookObjects) Delete(ctx context.Context, name string) error {
 
 // kvHook records every operation and lets a test intervene before or after one.
 type kvHook struct {
-	mu    sync.Mutex
-	calls []kvCall
+	mu      sync.Mutex
+	calls   []kvCall
+	watches []*watchRecord
 	// before runs ahead of the real call; a true second result short-circuits
 	// it with the returned error, standing in for an uncommitted write.
 	before func(op, key string) (error, bool)
@@ -1428,6 +1429,53 @@ type kvHook struct {
 type kvCall struct {
 	Op  string
 	Key string
+}
+
+// watchRecord is one Watch a hookKV opened: the context it was opened under,
+// and a channel closed once the entries it delivers have run out.
+type watchRecord struct {
+	Prefix string
+	Ctx    context.Context
+	ended  chan struct{}
+}
+
+// Ended reports whether the watch has delivered its last entry.
+func (w *watchRecord) Ended() bool {
+	select {
+	case <-w.ended:
+		return true
+	default:
+		return false
+	}
+}
+
+// addWatch records one opened watch.
+func (h *kvHook) addWatch(w *watchRecord) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.watches = append(h.watches, w)
+}
+
+// watchesOpened is a copy of every watch opened so far, in the order they were opened.
+func (h *kvHook) watchesOpened() []*watchRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]*watchRecord, len(h.watches))
+	copy(out, h.watches)
+
+	return out
+}
+
+// watchesLive counts the watches that have not yet ended.
+func (h *kvHook) watchesLive() int {
+	live := 0
+	for _, w := range h.watchesOpened() {
+		if !w.Ended() {
+			live++
+		}
+	}
+
+	return live
 }
 
 func (h *kvHook) record(op, key string) {
@@ -1557,6 +1605,38 @@ func (k *hookKV) Keys(ctx context.Context, prefix string) ([]string, error) {
 	})
 
 	return out, err
+}
+
+// Watch is recorded under the prefix it opens, so a test can fail one source's
+// open and then see what became of the watches opened before it.
+// The channel it returns carries the underlying watch's entries
+// and closes when that watch closes,
+// which kvView.Watch does once the context it was given is done.
+func (k *hookKV) Watch(ctx context.Context, prefix string) (<-chan natskv.Entry, error) {
+	var src <-chan natskv.Entry
+	if err := k.hook.run("watch", prefix, func() error {
+		var innerErr error
+		src, innerErr = k.KV.Watch(ctx, prefix)
+
+		return innerErr
+	}); err != nil {
+		return nil, err
+	}
+
+	rec := &watchRecord{Prefix: prefix, Ctx: ctx, ended: make(chan struct{})}
+	k.hook.addWatch(rec)
+	out := make(chan natskv.Entry)
+	go func() {
+		for e := range src {
+			out <- e
+		}
+		// ended closes ahead of out,
+		// so a caller that has seen its consumer finish never finds the record still open.
+		close(rec.ended)
+		close(out)
+	}()
+
+	return out, nil
 }
 
 // cacheFreezer holds one cache's delivery.

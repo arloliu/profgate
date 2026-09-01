@@ -197,6 +197,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `profgate targets --explain` prints the same reasons as a second table beside the list.
   No Kubernetes permission changed and no Go module was added.
 
+### Fixed
+
+- A gateway with `pgo.enabled` no longer gains a duplicate cache consumer every time a watch fails to open.
+  The watched caches open four watches in turn,
+  and an open that failed partway through used to leave the watches ahead of it running,
+  so each reopen added another consumer feeding the same cache.
+  A failed open now ends the watches the attempt had already opened before it reports the failure,
+  and a process that reopens its caches runs on one consumer per prefix.
+
+
 ## [0.4.0] - 2026-08-27
 
 Adds authentication, the embedded operator console, and client-selected pprof ports.

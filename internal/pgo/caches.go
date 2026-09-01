@@ -277,8 +277,13 @@ func (c *Caches) jobChanges() <-chan struct{} { return c.jobPulse }
 // The seam re-opens a watch that was cut off and replays it under the new
 // generation, so Run neither retries nor reconnects.
 // Opening can still fail when the connection drops between preflight and the
-// first watch; Run returns that error and the caller must call it again,
+// first watch; Run ends the watches it had already opened, returns that error,
+// and the caller must call it again,
 // because the replay barrier stays closed until the watches exist.
+// A Caches whose Run returned an error is what the caller calls again.
+// One that ran to a healthy return is not.
+// Its sync flags still stand from the watches that fed them,
+// and a later attempt that failed its first open would report a completed replay over an empty cache.
 func (c *Caches) Run(ctx context.Context, client natskv.Client) error {
 	gen := client.Generation()
 	stores, err := client.View(gen)
@@ -297,10 +302,18 @@ func (c *Caches) Run(ctx context.Context, client natskv.Client) error {
 		{cacheSlots, stores.Jobs, slotPrefix},
 	}
 
+	// Every watch runs under one context of this attempt's own, so an open
+	// that fails partway through can end the watches it already has.
+	attempt, abandon := context.WithCancel(ctx)
+	defer abandon()
+
 	var wg sync.WaitGroup
 	for _, s := range sources {
-		ch, err := s.kv.Watch(ctx, s.prefix)
+		ch, err := s.kv.Watch(attempt, s.prefix)
 		if err != nil {
+			abandon()
+			wg.Wait()
+
 			return fmt.Errorf("pgo: watch %s: %w", s.prefix, err)
 		}
 		wg.Add(1)
