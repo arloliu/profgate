@@ -313,7 +313,7 @@ Below it, `runWatch` (`internal/natskv/client.go:578-613`) owns the channel `Cac
 and it opens as many underlying watchers as it takes to keep that channel fed.
 Each layer has a defect, and they are not the same defect.
 
-- [ ] **A failed open leaks the consumers already started.**
+- [x] **A failed open leaks the consumers already started.**
   The loop returns the error from `Watch` without reaching `wg.Wait()`
   and without cancelling the watches it already opened,
   so those goroutines keep consuming under the caller's context.
@@ -346,7 +346,8 @@ so making a watcher cut move it is a revision that gets argued there first.
 
 Spec: none for the first bullet;
 the second revises [`pgo.md`](../specs/pgo.md) *The seam* before it gets a plan.
-Shipped: not yet.
+Shipped: the first bullet, in `19f70e2`, in `Unreleased`;
+the second is not shipped.
 Why here: neither bullet blocks item 11 nor is blocked by it.
 The first is small and self-contained.
 The second is the one an operator would never notice,

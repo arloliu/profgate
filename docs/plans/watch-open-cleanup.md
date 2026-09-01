@@ -1,6 +1,7 @@
 # A Failed Watch Open Cleans Up After Itself
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** commit `19f70e2` on `plan/pgo-gateway-costs`, with this documentation commit.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -144,7 +145,7 @@ Cancelling the attempt closes the sibling channels:
 (`internal/natskv/client.go:629-651`)
 and `runWatch` then closes its channel through the `defer` at `:585`.
 
-- [ ] **Give the fixture a `Watch` it can fail**
+- [x] **Give the fixture a `Watch` it can fail**
 
 `hookKV` (`internal/pgo/fixtures_test.go:1502-1560`) wraps `Get`, `Create`, `Update`, `Delete`, and `Keys`,
 and `hookClient.View` (`:1346-1374`) is what puts it in front of both buckets.
@@ -155,7 +156,7 @@ or the cancel-then-wait this task adds would hang against a fake no real impleme
 `internal/pgo/fixtures_test.go:659-665` calls `caches.Run` with the raw client,
 so the new test wires the hook itself rather than relying on the existing replica fixture.
 
-- [ ] **Write the tests**
+- [x] **Write the tests**
 
 `internal/pgo/caches_test.go`, which does not exist today:
 
@@ -172,16 +173,16 @@ so the new test wires the hook itself rather than relying on the existing replic
 The first three fail against the current code because the two consumers are still live when `Run` returns.
 The fourth is what makes the leak visible as a count rather than as a description.
 
-- [ ] **Run the tests and watch them fail**
+- [x] **Run the tests and watch them fail**
 
-- [ ] **Land the repair**
+- [x] **Land the repair**
 
-- [ ] **Say what changed**
+- [x] **Say what changed**
 
 `CHANGELOG.md`, under `## [Unreleased]` and `### Fixed`:
 a gateway with `pgo.enabled` no longer accumulates a duplicate cache consumer each time a watch fails to open.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check CHANGELOG.md
@@ -198,20 +199,20 @@ git commit -m "fix(pgo): clean up after a failed watch open"
 **Files:**
 - Modify: `docs/plans/roadmap.md`, this plan
 
-- [ ] **Tick the bullet this plan covers**
+- [x] **Tick the bullet this plan covers**
 
 The item's first bullet is ticked and its `Shipped:` line names the change that carried it.
 The second bullet stays open: it is a different defect in a different package,
 and this plan does not touch it.
 
-- [ ] **Flip this plan**
+- [x] **Flip this plan**
 
 Line 3 becomes `**Status:** Done` and line 4 an `Outcome:` naming the same change.
 The plan is deleted in the next commit that touches it, per
 [`finished-documents-leave-the-tree.md`](../decisions/finished-documents-leave-the-tree.md);
 one commit cannot do both.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/plans/
