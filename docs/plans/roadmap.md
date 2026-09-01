@@ -296,7 +296,7 @@ that an operator must carry into the Deployment by hand.
   and `docs/configuration.md` gains a sizing table.
 
 Spec: `docs/specs/pgo.md`, already revised.
-Shipped: `453bc2f`, `82df5c0`, and `b01a389`, under `Unreleased`.
+Shipped: pull request #17, in `Unreleased`.
 Separating the collector into its own Deployment is **deferred, not dropped**.
 The measurements behind that, and the triggers that would revive it, are in
 [`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md);
@@ -312,14 +312,11 @@ Below it, `runWatch` (`internal/natskv/client.go:578-613`) owns the channel `Cac
 and it opens as many underlying watchers as it takes to keep that channel fed.
 Each layer has a defect, and they are not the same defect.
 
-- [x] **A failed open leaks the consumers already started.**
-  The loop returns the error from `Watch` without reaching `wg.Wait()`
-  and without cancelling the watches it already opened,
-  so those goroutines keep consuming under the caller's context.
-  `runCaches` (`cmd/profgate/serve.go:729-742`) answers a failure by calling `Run` again,
-  which opens a second watch for the same prefix,
-  and every later attempt adds another consumer feeding the same cache.
-  Plan: [`watch-open-cleanup.md`](watch-open-cleanup.md).
+- [x] **A failed open cleans up after itself.**
+  `Caches.Run` opens every watch under a context of its own,
+  and a failed open cancels that context and waits for the consumers it started before returning the error.
+  `runCaches` (`cmd/profgate/serve.go`) still answers a failure by calling `Run` again,
+  and now reopens from one consumer per prefix rather than from a growing number.
 - [ ] **A watcher that reopens under an unchanged generation replays into a cache nothing clears.**
   `consumeWatcher` reports a closed underlying watcher as a reconnect rather than as completion
   (`internal/natskv/client.go:636-638`),
@@ -345,7 +342,7 @@ so making a watcher cut move it is a revision that gets argued there first.
 
 Spec: none for the first bullet;
 the second revises [`pgo.md`](../specs/pgo.md) *The seam* before it gets a plan.
-Shipped: the first bullet, in `19f70e2` under `Unreleased`;
+Shipped: the first bullet, in pull request #17, under `Unreleased`;
 the second is not shipped.
 Why here: neither bullet blocks item 11 nor is blocked by it.
 The first is small and self-contained.
