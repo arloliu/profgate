@@ -17,7 +17,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- else }}
         # Every expression below reads a metric the gateway exports on the ops
-        # port, so all three need something scraping that port -- the
+        # port, so each one needs something scraping that port -- the
         # PodMonitor above, or a scrape configured by hand.
         - alert: ProfgateNotReady
           expr: profgate_discovery_synced == 0
@@ -51,5 +51,20 @@ spec:
               auth.oidc.jwksMaxStale, 24 hours at the binary's default, so this fires at half
               of it while tokens still verify. The gauge is NaN until the first fetch, which
               crosses no threshold, so the rule is inert outside auth.mode oidc.
+        {{- if include "profgate.pgoEnabled" . }}
+        - alert: ProfgatePGONotSynced
+          expr: profgate_pgo_synced == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: profgate is deciding nothing from its PGO caches.
+            description: >-
+              The watched caches have been unsynced for ten minutes, the window
+              ProfgateNotReady already gives discovery, so the process decides nothing from
+              them and, on a gateway replica, every PGO route is refusing. The gauge dips on
+              every reconnect and clears again once every watch has replayed, so what holds
+              it firing this long is a store a watch cannot re-open.
+        {{- end }}
         {{- end }}
 {{- end }}

@@ -448,6 +448,7 @@ All metrics are on the ops port at `/metrics`.
 | `profgate_sweeper_deletes_total` | counter | `kind` | Sweeper deletions |
 | `profgate_collections_active` | gauge | | Collections currently active |
 | `profgate_nats_connected` | gauge | | 1 while the NATS connection is up |
+| `profgate_pgo_synced` | gauge | | 1 while every watch has replayed the current store generation and every cache has applied it |
 | `profgate_tls_reloads_total` | counter | `result` | Certificate load and reload outcomes, the startup load included |
 | `profgate_tls_certificate_expiry_seconds` | gauge | | When the served certificate expires, as a Unix timestamp |
 | `profgate_auth_failures_total` | counter | `mode`, `reason` | Authentication failures answered `401`, `429`, or `503`; a redirect is not a failure |
@@ -473,11 +474,13 @@ so the endpoint names the container port rather than a Service port.
 With `networkPolicy.enabled`, `opsFromNamespaces` has to name the namespace the scraper runs in,
 or the scrape is refused before it reaches the port.
 
-`prometheusRule.enabled` (default `false`) renders a `PrometheusRule` over three of the metrics above:
+`prometheusRule.enabled` (default `false`) renders a `PrometheusRule` over metrics from the table above:
 `ProfgateNotReady` on `profgate_discovery_synced == 0`,
 `ProfgateAdmissionSaturated` on `profgate_requests_total` refusing with `too_many_profiles`,
-and `ProfgateOIDCKeysStale` on `profgate_oidc_jwks_age_seconds`.
-All three read the ops port, so they need something scraping it.
+`ProfgateOIDCKeysStale` on `profgate_oidc_jwks_age_seconds`,
+and, only when `pgo.enabled`, `ProfgatePGONotSynced` on `profgate_pgo_synced == 0` for ten minutes,
+the window `ProfgateNotReady` already gives discovery.
+Every one reads the ops port, so they need something scraping it.
 The stale-keys threshold is half of the binary's `auth.oidc.jwksMaxStale` default of 24 hours,
 which is when verification starts failing as `keys_stale`;
 `prometheusRule.rules` replaces the shipped set outright for a deployment that lowers that key,

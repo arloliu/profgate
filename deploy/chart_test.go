@@ -1004,49 +1004,72 @@ func TestChartPrometheusRule(t *testing.T) {
 	})
 
 	t.Run("the shipped set", func(t *testing.T) {
-		values := []string{
-			"--set", "prometheusRule.enabled=true",
-			"--set", "prometheusRule.labels.release=kube-prometheus-stack",
-		}
-		pr := render[prometheusRule](t, "prometheusrule.yaml", values...)
-
-		if len(pr.Spec.Groups) != 1 {
-			t.Fatalf("groups = %+v, want exactly one", pr.Spec.Groups)
-		}
-		if got := pr.Metadata.Labels["release"]; got != "kube-prometheus-stack" {
-			t.Errorf("the release label = %q, want kube-prometheus-stack: it is how a Prometheus selects this", got)
-		}
-
-		var names []string
-		for _, rule := range pr.Spec.Groups[0].Rules {
-			names = append(names, rule.Alert)
-			if rule.For == "" {
-				t.Errorf("%s has no for: an instantaneous alert fires on one scrape", rule.Alert)
-			}
-			if rule.Labels["severity"] == "" {
-				t.Errorf("%s carries no severity label", rule.Alert)
-			}
-			if rule.Annotations["summary"] == "" || rule.Annotations["description"] == "" {
-				t.Errorf("%s carries no summary or description: %+v", rule.Alert, rule.Annotations)
-			}
-		}
-		want := []string{"ProfgateNotReady", "ProfgateAdmissionSaturated", "ProfgateOIDCKeysStale"}
-		if !slices.Equal(names, want) {
-			t.Errorf("alerts = %v, want the readiness, admission, and signing-key three %v", names, want)
-		}
-
-		//nolint:gosec // the path is this repository's own source
-		recorder, err := os.ReadFile(filepath.Join("..", "internal", "metrics", "prometheus.go"))
-		if err != nil {
-			t.Fatalf("read the Prometheus recorder: %v", err)
-		}
-		metric := regexp.MustCompile(`profgate_[a-z_]+`)
-		for _, rule := range pr.Spec.Groups[0].Rules {
-			for _, name := range metric.FindAllString(rule.Expr, -1) {
-				if !bytes.Contains(recorder, []byte(`"`+name+`"`)) {
-					t.Errorf("%s alerts on %s, which internal/metrics/prometheus.go does not export", rule.Alert, name)
+		for _, tc := range []struct {
+			name string
+			pgo  bool
+			want []string
+		}{
+			{
+				name: "pgo disabled",
+				pgo:  false,
+				want: []string{"ProfgateNotReady", "ProfgateAdmissionSaturated", "ProfgateOIDCKeysStale"},
+			},
+			{
+				name: "pgo enabled",
+				pgo:  true,
+				want: []string{
+					"ProfgateNotReady", "ProfgateAdmissionSaturated", "ProfgateOIDCKeysStale", "ProfgatePGONotSynced",
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				values := []string{
+					"--set", "prometheusRule.enabled=true",
+					"--set", "prometheusRule.labels.release=kube-prometheus-stack",
 				}
-			}
+				if tc.pgo {
+					values = append(values, "--set", "pgo.enabled=true", "--set", "nats.url=nats://nats.profgate.svc:4222")
+				}
+				pr := render[prometheusRule](t, "prometheusrule.yaml", values...)
+
+				if len(pr.Spec.Groups) != 1 {
+					t.Fatalf("groups = %+v, want exactly one", pr.Spec.Groups)
+				}
+				if got := pr.Metadata.Labels["release"]; got != "kube-prometheus-stack" {
+					t.Errorf("the release label = %q, want kube-prometheus-stack: it is how a Prometheus selects this", got)
+				}
+
+				var names []string
+				for _, rule := range pr.Spec.Groups[0].Rules {
+					names = append(names, rule.Alert)
+					if rule.For == "" {
+						t.Errorf("%s has no for: an instantaneous alert fires on one scrape", rule.Alert)
+					}
+					if rule.Labels["severity"] == "" {
+						t.Errorf("%s carries no severity label", rule.Alert)
+					}
+					if rule.Annotations["summary"] == "" || rule.Annotations["description"] == "" {
+						t.Errorf("%s carries no summary or description: %+v", rule.Alert, rule.Annotations)
+					}
+				}
+				if !slices.Equal(names, tc.want) {
+					t.Errorf("alerts = %v, want %v", names, tc.want)
+				}
+
+				//nolint:gosec // the path is this repository's own source
+				recorder, err := os.ReadFile(filepath.Join("..", "internal", "metrics", "prometheus.go"))
+				if err != nil {
+					t.Fatalf("read the Prometheus recorder: %v", err)
+				}
+				metric := regexp.MustCompile(`profgate_[a-z_]+`)
+				for _, rule := range pr.Spec.Groups[0].Rules {
+					for _, name := range metric.FindAllString(rule.Expr, -1) {
+						if !bytes.Contains(recorder, []byte(`"`+name+`"`)) {
+							t.Errorf("%s alerts on %s, which internal/metrics/prometheus.go does not export", rule.Alert, name)
+						}
+					}
+				}
+			})
 		}
 	})
 

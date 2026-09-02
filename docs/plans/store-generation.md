@@ -294,7 +294,7 @@ its description says the process decides nothing from its caches and every PGO r
 | `docs/deployment.md:450`, `:476-480` | a `profgate_pgo_synced` row beside `profgate_nats_connected`, and an alert list naming the fourth |
 | `deploy/chart_test.go:1033` | the pinned alert names, now per `pgo.enabled` |
 
-- [ ] **Write the tests, run them, and record which subtests were red**
+- [x] **Write the tests, run them, and record which subtests were red**
 
 `deploy/chart_test.go`: with `pgo.enabled=true` the rendered alerts are the four in order, three at the defaults;
 and the loop at `:1020-1032` already checks each for a `for`, a `severity`, a `summary`, and a `description`.
@@ -302,7 +302,7 @@ The series-name check at `:1039-1049` greps the bytes of `internal/metrics/prome
 which the `GaugeOpts{Name: ...}` inside `PGOSyncedFrom` satisfies wherever in that file it stands,
 so this task lands after the one that writes it.
 
-- [ ] **Render the alert, move the four documents, then validate and commit**
+- [x] **Render the alert, move the four documents, then validate and commit**
 
 ```bash
 semlf check deploy/chart/profgate/README.md docs/deployment.md

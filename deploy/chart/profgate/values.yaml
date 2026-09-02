@@ -227,12 +227,12 @@ prometheusRule:
   # Extra labels on the PrometheusRule, which is how a Prometheus selects it.
   labels: {}
   # Rules replacing the shipped set outright, as monitoring.coreos.com/v1 rule
-  # entries rendered verbatim. Empty keeps the shipped three:
+  # entries rendered verbatim. Empty keeps the shipped set:
   # ProfgateNotReady (profgate_discovery_synced), ProfgateAdmissionSaturated
   # (profgate_requests_total refusing with too_many_profiles, summed over the
   # endpoint and profile labels so a burst is one alert rather than one per
-  # profile name), and
-  # ProfgateOIDCKeysStale (profgate_oidc_jwks_age_seconds).
+  # profile name), ProfgateOIDCKeysStale (profgate_oidc_jwks_age_seconds), and,
+  # only when pgo.enabled, ProfgatePGONotSynced (profgate_pgo_synced).
   # The stale-keys threshold is half of the binary's own 24h
   # auth.oidc.jwksMaxStale default; a deployment that lowers that key sets its
   # own rules here, because the chart does not render the key and cannot

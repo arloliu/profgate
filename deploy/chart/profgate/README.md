@@ -465,15 +465,17 @@ The endpoint therefore names the container port the Deployment declares rather t
 With `networkPolicy.enabled`, `networkPolicy.opsFromNamespaces` has to name the namespace the scraper runs in,
 or the scrape is refused before it reaches the port.
 
-`prometheusRule.enabled` renders a `PrometheusRule` with three alerts over metrics the gateway already exports:
+`prometheusRule.enabled` renders a `PrometheusRule` with alerts over metrics the gateway already exports,
+three always and a fourth only when `pgo.enabled`:
 
 | Alert | Expression | Fires when |
 |---|---|---|
 | `ProfgateNotReady` | `profgate_discovery_synced == 0` | A replica's discovery cache has been unsynced for ten minutes, so `/readyz` answers 503 |
 | `ProfgateAdmissionSaturated` | `sum(rate(profgate_requests_total{code="too_many_profiles"}[5m])) > 0` | The admission gate is at `limits.maxConcurrentProfiles` and answering 429 |
 | `ProfgateOIDCKeysStale` | `profgate_oidc_jwks_age_seconds > 43200` | Signing keys have not been fetched for 12 hours |
+| `ProfgatePGONotSynced` | `profgate_pgo_synced == 0` | The watched PGO caches have been unsynced for ten minutes, so the process decides nothing from them and every PGO route on a gateway replica is refusing |
 
-All three read the ops port, so they need something scraping it — `podMonitor.enabled`, or a scrape configured by hand.
+Every one reads the ops port, so they need something scraping it — `podMonitor.enabled`, or a scrape configured by hand.
 The stale-keys threshold is half of the binary's own `auth.oidc.jwksMaxStale` default of 24 hours,
 which is when verification starts failing as `keys_stale`,
 so the alert arrives while tokens still verify.
@@ -506,7 +508,7 @@ and for any other rule set an operator would rather ship.
 | `nodeSelector`, `tolerations`, `affinity`, `topologySpreadConstraints` | empty | Scheduling. |
 | `networkPolicy.enabled`, `.apiFromNamespaces`, `.opsFromNamespaces` | `false`, `[ingress-nginx]`, `[monitoring]` | Ingress policy for the gateway Pods. |
 | `podMonitor.enabled`, `.interval`, `.labels` | `false`, `30s`, `{}` | A prometheus-operator PodMonitor for the ops port. |
-| `prometheusRule.enabled`, `.labels`, `.rules` | `false`, `{}`, `[]` | A prometheus-operator PrometheusRule. Empty `rules` keeps the shipped three alerts; a non-empty list replaces them. |
+| `prometheusRule.enabled`, `.labels`, `.rules` | `false`, `{}`, `[]` | A prometheus-operator PrometheusRule. Empty `rules` keeps the shipped alerts, a fourth of them only when `pgo.enabled`; a non-empty list replaces them. |
 | `server.logLevel` | `info` | `debug`, `info`, `warn`, or `error`. |
 | `server.drainDelay` | `5s` | The wait between `/readyz` turning 503 and the API listener closing. |
 | `auth.mode` | `disabled` | `disabled`, `basic`, or `oidc`. |
