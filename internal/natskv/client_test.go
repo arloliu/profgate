@@ -445,7 +445,36 @@ func TestGeneration(t *testing.T) {
 		tap := newWatcherTap()
 		f.c.testWatchOpened = tap.record
 		held := make(chan struct{})
-		f.c.testHoldReopen = func(string) { <-held }
+		// Every re-open names the prefix it is on before it waits,
+		// so the bucket goes only once all three of the watches the cut took down are held.
+		reopens := make(chan string, 16)
+		f.c.testHoldReopen = func(prefix string) {
+			select {
+			case reopens <- prefix:
+			default:
+			}
+			<-held
+		}
+		var failMu sync.Mutex
+		failed := map[string]int{}
+		f.c.testReopenFailed = func(prefix string) {
+			failMu.Lock()
+			defer failMu.Unlock()
+			failed[prefix]++
+		}
+		// retried reports whether every watch has failed an open it made after its first,
+		// which is the retry loop running rather than one failure standing still.
+		retried := func() (int, bool) {
+			failMu.Lock()
+			defer failMu.Unlock()
+			total, all := 0, true
+			for _, prefix := range []string{"job.", "active.", "schedule."} {
+				total += failed[prefix]
+				all = all && failed[prefix] >= 2
+			}
+
+			return total, all
+		}
 
 		kv := f.view().Jobs
 		prefixes := []string{"job.", "active.", "schedule."}
@@ -466,16 +495,26 @@ func TestGeneration(t *testing.T) {
 		tap.cut(t, prefixes[0])
 		waitFor(t, "the cut to move the generation", func() bool { return f.c.Generation() == gen+1 })
 
+		waiting := map[string]bool{}
+		for len(waiting) < len(prefixes) {
+			select {
+			case prefix := <-reopens:
+				waiting[prefix] = true
+			case <-time.After(fixtureTimeout):
+				t.Fatalf("%d of the three watches reached their re-open: %v", len(waiting), waiting)
+			}
+		}
+
 		// The bucket goes while the re-opens are held, so every one of them fails on an absent stream.
 		if err := f.js.DeleteKeyValue(ctx, jobsBucket); err != nil {
 			t.Fatalf("delete bucket: %v", err)
 		}
 		close(held)
 
-		waitFor(t, "the first failed re-open", func() bool { return capture.count(reopenFailingRecord) > 0 })
-		time.Sleep(10 * watchReopenDelay)
+		waitFor(t, "every watch to fail an open past its first", func() bool { _, all := retried(); return all })
+		total, _ := retried()
 		if n := capture.count(reopenFailingRecord); n != 1 {
-			t.Fatalf("failing re-open records over ten retry intervals: got %d, want 1", n)
+			t.Fatalf("failing re-open records over %d failed opens: got %d, want 1", total, n)
 		}
 		if n := capture.count(genMovedRecord); n != 1 {
 			t.Fatalf("generation move records for one cut subscription: got %d, want 1", n)

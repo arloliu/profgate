@@ -687,11 +687,11 @@ func (r *replica) waitSynced() {
 // live is what the replica's caches show for one Service, under the generation the replica reads through.
 // The generation is read fresh on every call,
 // so a predicate polling to convergence follows a move rather than holding the generation it started under.
-// A cache that has not replayed under that generation answers false, which is a poll that keeps waiting.
-func (r *replica) live(ns, svc string) bool {
-	live, ok := r.caches.Live(r.client.Generation(), ns, svc)
-
-	return live && ok
+// Both results are returned because a caller waiting for a Service to go quiet needs them apart:
+// a cache that has not replayed under that generation answers no, which is not the same answer as not live,
+// and folding the two would end such a wait on a cache that has said nothing.
+func (r *replica) live(ns, svc string) (live, ok bool) {
+	return r.caches.Live(r.client.Generation(), ns, svc)
 }
 
 // reserve takes one reservation under the generation the replica reads through,

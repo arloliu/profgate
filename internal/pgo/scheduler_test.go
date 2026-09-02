@@ -244,7 +244,11 @@ func TestSchedulerNeverCatchesUp(t *testing.T) {
 		t.Fatalf("the first tick left %d records, want 1", got)
 	}
 	f.finishCollection("payment", "payment-api")
-	r.waitCache("sees the service free again", func(*Caches) bool { return !r.live("payment", "payment-api") })
+	r.waitCache("sees the service free again", func(*Caches) bool {
+		live, ok := r.live("payment", "payment-api")
+
+		return ok && !live
+	})
 
 	r.clock.Advance(72 * time.Hour)
 	r.tick()
@@ -268,7 +272,11 @@ func TestSchedulerPolicyChangeInsideOneSlot(t *testing.T) {
 	r.waitCache("holds the override", func(c *Caches) bool { return len(c.overrideSnapshot()) == 1 })
 	r.tick()
 	f.finishCollection("payment", "payment-api")
-	r.waitCache("sees the service free again", func(*Caches) bool { return !r.live("payment", "payment-api") })
+	r.waitCache("sees the service free again", func(*Caches) bool {
+		live, ok := r.live("payment", "payment-api")
+
+		return ok && !live
+	})
 
 	rounds := 3
 	rev := f.setOverride("payment", "payment-api", enabledOverride(
@@ -305,7 +313,11 @@ func TestSchedulerSlotRetention(t *testing.T) {
 		r.clock.Set(slotBase.Add(time.Duration(day) * 24 * time.Hour))
 		r.tick()
 		f.finishCollection("payment", "payment-api")
-		r.waitCache("sees the service free again", func(*Caches) bool { return !r.live("payment", "payment-api") })
+		r.waitCache("sees the service free again", func(*Caches) bool {
+			live, ok := r.live("payment", "payment-api")
+
+			return ok && !live
+		})
 	}
 
 	var first slotValue
@@ -346,7 +358,9 @@ func TestSchedulerBusyService(t *testing.T) {
 		r := f.newReplica("replica", replicaOpts{})
 		r.waitSynced()
 		r.waitCache("sees the service live", func(c *Caches) bool {
-			return len(c.overrideSnapshot()) == 1 && r.live("payment", "payment-api")
+			live, ok := r.live("payment", "payment-api")
+
+			return len(c.overrideSnapshot()) == 1 && ok && live
 		})
 		r.tick()
 
@@ -583,7 +597,9 @@ func TestSchedulerSlotMetrics(t *testing.T) {
 	})
 	r.waitSynced()
 	r.waitCache("holds every override and the live service", func(c *Caches) bool {
-		return len(c.overrideSnapshot()) == 4 && r.live("payment", "s3-busy")
+		live, ok := r.live("payment", "s3-busy")
+
+		return len(c.overrideSnapshot()) == 4 && ok && live
 	})
 	frozen.freeze()
 
@@ -641,7 +657,9 @@ func TestSchedulerTransitionLogs(t *testing.T) {
 		r := f.newReplica("replica", replicaOpts{})
 		r.waitSynced()
 		r.waitCache("sees the service live", func(c *Caches) bool {
-			return len(c.overrideSnapshot()) == 1 && r.live("payment", "payment-api")
+			live, ok := r.live("payment", "payment-api")
+
+			return len(c.overrideSnapshot()) == 1 && ok && live
 		})
 		r.tick()
 
@@ -685,7 +703,11 @@ func TestSchedulerReplayBarrier(t *testing.T) {
 
 	held.release()
 	r.waitSynced()
-	r.waitCache("counts the replayed record as live", func(*Caches) bool { return r.live("payment", "payment-api") })
+	r.waitCache("counts the replayed record as live", func(*Caches) bool {
+		live, ok := r.live("payment", "payment-api")
+
+		return ok && live
+	})
 	r.tick()
 	if got := len(f.jobKeys()); got != 1 {
 		t.Fatalf("a replayed nonterminal record did not refuse the service: %d records", got)
@@ -697,7 +719,11 @@ func TestSchedulerReplayBarrier(t *testing.T) {
 	// The worker scan fails a stale initializing record and releases it; only
 	// then does the Service become schedulable again.
 	f.failRecord(leftover, ReasonNotPublished)
-	r.waitCache("sees the service free again", func(*Caches) bool { return !r.live("payment", "payment-api") })
+	r.waitCache("sees the service free again", func(*Caches) bool {
+		live, ok := r.live("payment", "payment-api")
+
+		return ok && !live
+	})
 	r.tick()
 	if got := len(f.jobKeys()); got != 2 {
 		t.Fatalf("after the scan failed the leftover the scheduler left %d records, want 2", got)

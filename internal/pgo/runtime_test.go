@@ -620,18 +620,21 @@ func TestCachesOverrideCarriesItsRevision(t *testing.T) {
 	r := f.newReplica("a", replicaOpts{})
 	r.waitSynced()
 
-	if _, rev, _ := r.caches.Override(r.client.Generation(), "payment", "payment-api"); rev != 0 {
-		t.Errorf("revision without an override = %d, want 0", rev)
+	if _, rev, ok := r.caches.Override(r.client.Generation(), "payment", "payment-api"); !ok || rev != 0 {
+		t.Errorf("revision without an override = %d (ok=%v), want 0 from a cache that answered", rev, ok)
 	}
 
 	want := f.setOverride("payment", "payment-api", enabledOverride(withEvery(time.Hour)))
 	r.waitCache("the override", func(c *Caches) bool {
-		_, rev, _ := c.Override(r.client.Generation(), "payment", "payment-api")
+		_, rev, ok := c.Override(r.client.Generation(), "payment", "payment-api")
 
-		return rev == want
+		return ok && rev == want
 	})
 
-	override, rev, _ := r.caches.Override(r.client.Generation(), "payment", "payment-api")
+	override, rev, ok := r.caches.Override(r.client.Generation(), "payment", "payment-api")
+	if !ok {
+		t.Fatal("the override cache refused a read under the generation it replayed under")
+	}
 	if rev != want {
 		t.Errorf("revision = %d, want %d", rev, want)
 	}

@@ -386,8 +386,8 @@ func TestIndeterminateCreates(t *testing.T) {
 		if got := r.pub.Reserved(); got != 0 {
 			t.Fatalf("reservations held are %d after the cache delivered, want 0", got)
 		}
-		if !r.live("payment", "payment-api") {
-			t.Fatal("the delivered record does not make the service live")
+		if live, ok := r.live("payment", "payment-api"); !ok || !live {
+			t.Fatalf("the delivered record leaves the service live=%v (ok=%v), want live", live, ok)
 		}
 	})
 
@@ -557,7 +557,9 @@ func TestKilledCreatorLeftovers(t *testing.T) {
 			r := f.newReplica("replacement", replicaOpts{})
 			r.waitSynced()
 			r.waitCache("sees the leftover", func(c *Caches) bool {
-				return len(c.overrideSnapshot()) == 1 && r.live("payment", "payment-api") == tc.wantLive
+				live, ok := r.live("payment", "payment-api")
+
+				return len(c.overrideSnapshot()) == 1 && ok && live == tc.wantLive
 			})
 
 			r.tick()
@@ -567,7 +569,9 @@ func TestKilledCreatorLeftovers(t *testing.T) {
 
 			f.failRecord(leftover, ReasonNotPublished)
 			r.waitCache("sees the service free again", func(*Caches) bool {
-				return !r.live("payment", "payment-api")
+				live, ok := r.live("payment", "payment-api")
+
+				return ok && !live
 			})
 			r.clock.Advance(time.Hour)
 			r.tick()

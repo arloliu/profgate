@@ -1651,11 +1651,11 @@ func newPGOHarness(t *testing.T, o pgoOpts, targets ...k8s.Target) *pgoHarness {
 // live is what the harness's caches show for one Service, under the generation the connection is on.
 // The generation is read fresh on every call,
 // so a predicate polling to convergence follows a move rather than holding the generation it started under.
-// A cache that has not replayed under that generation answers false, which is a poll that keeps waiting.
-func (p *pgoHarness) live(namespace, service string) bool {
-	live, ok := p.caches.Live(p.nats.Generation(), namespace, service)
-
-	return live && ok
+// Both results are returned because a caller waiting for a Service to go quiet needs them apart:
+// a cache that has not replayed under that generation answers no, which is not the same answer as not live,
+// and folding the two would end such a wait on a cache that has said nothing.
+func (p *pgoHarness) live(namespace, service string) (live, ok bool) {
+	return p.caches.Live(p.nats.Generation(), namespace, service)
 }
 
 // waitCache blocks until pred holds, so a test never drives a handler against
@@ -1734,7 +1734,11 @@ func (p *pgoHarness) seedActive(t *testing.T, namespace, service, id string) {
 
 	p.nats.jobs.put(t, activeKeyPrefix+namespace+"."+service,
 		map[string]any{"id": id, "createdAt": pgoFixtureNow})
-	p.waitCache(t, "the active key of "+service, func() bool { return p.live(namespace, service) })
+	p.waitCache(t, "the active key of "+service, func() bool {
+		live, ok := p.live(namespace, service)
+
+		return ok && live
+	})
 }
 
 // seedOverride writes one Service's stored policy override and returns its revision.
@@ -1886,8 +1890,8 @@ func (p *pgoHarness) rebuildOverrideCache(t *testing.T) {
 }
 
 // disconnect is the connection going down as the process sees it:
-// the generation moves, and the broadcast a held-open request selects on moves
-// with it, which is what cmd/profgate composes into one connection report.
+// the generation moves, and the broadcast a held-open request selects on moves with it.
+// The harness plays both reports the seam makes, because it stands in for the seam rather than for a caller of it.
 func (p *pgoHarness) disconnect() {
 	p.nats.disconnect()
 	p.runtime.MoveGeneration()

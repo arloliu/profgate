@@ -1002,8 +1002,8 @@ func TestReceiptKeyBelongsToNoOtherRule(t *testing.T) {
 		return c.hasJob(later) && ok && id == later
 	})
 
-	if r.live("payment", "payment-api") {
-		t.Error("a receipt makes its service look live")
+	if live, ok := r.live("payment", "payment-api"); !ok || live {
+		t.Errorf("the caches show payment-api live=%v (ok=%v): a receipt is no service of its own", live, ok)
 	}
 	if got, ok := r.caches.cachedLive(r.client.Generation()); !ok || got != 1 {
 		t.Errorf("cachedLive is %d (ok=%v), want 1: only the record counts", got, ok)

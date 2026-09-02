@@ -129,6 +129,11 @@ type client struct {
 	// It exists only so a test can observe the gap where the watch is down;
 	// production never sets it.
 	testHoldReopen func(prefix string)
+
+	// testReopenFailed, when non-nil, runs after every re-open attempt that failed.
+	// It exists only so a test can wait for a retry rather than sleep long enough for one;
+	// production never sets it.
+	testReopenFailed func(prefix string)
 }
 
 var _ Client = (*client)(nil)
@@ -299,6 +304,9 @@ func (c *client) reopenFailed(prefix string, err error) {
 	c.mu.Unlock()
 	if first {
 		c.log.Warn("nats watch re-open failing", "prefix", prefix, "error", err)
+	}
+	if hook := c.testReopenFailed; hook != nil {
+		hook(prefix)
 	}
 }
 
