@@ -1208,6 +1208,7 @@ func (r *countingRecorder) Request(metrics.Endpoint, string, string, time.Durati
 func (r *countingRecorder) Confirm(string)                                          {}
 func (r *countingRecorder) ProfilesInFlight(int)                                    {}
 func (r *countingRecorder) DiscoverySynced(bool)                                    {}
+func (r *countingRecorder) PGOSyncedFrom(func() bool)                               {}
 func (r *countingRecorder) Collection(result string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

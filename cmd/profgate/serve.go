@@ -584,18 +584,15 @@ func natsPreflight(
 		URL:            nats.URL,
 		CredsFile:      nats.CredsFile,
 		ConnectTimeout: nats.ConnectTimeout,
-		// The one report has two readers.
-		// Without the one Preflight makes on its first connection,
-		// the gauge would read zero until the first reconnect;
-		// the broadcast a request held open by a wait selects on is moved by the disconnect alone,
-		// which is the only report a generation moves with,
-		// and it moves before the report is made.
-		OnConnectionChange: func(connected bool) {
-			deps.recorder.NATSConnected(connected)
-			if !connected {
-				runtime.MoveGeneration()
-			}
-		},
+		// The connection callback drives profgate_nats_connected and nothing else.
+		// Without the report Preflight makes on its first connection,
+		// the gauge would read zero until the first reconnect.
+		OnConnectionChange: deps.recorder.NATSConnected,
+		// Either move reaches this callback,
+		// the disconnect and the watch cut under a live connection alike,
+		// and the seam has already moved the generation by the time it runs,
+		// so a request ended here always sees a generation that has moved.
+		OnGenerationMove: runtime.MoveGeneration,
 	}
 	backoff := preflightBackoffFirst
 	for {
@@ -616,6 +613,31 @@ func natsPreflight(
 		}
 		backoff = min(backoff*2, preflightBackoffCap)
 	}
+}
+
+// cacheBarrier is the watched-cache half of the PGO replay barrier,
+// which *pgo.Caches satisfies.
+type cacheBarrier interface {
+	Synced(gen uint64) bool
+}
+
+// genBarrier is the seam half of the same barrier,
+// and holds the store generation both halves are read under;
+// natskv.Client satisfies it.
+type genBarrier interface {
+	cacheBarrier
+	Generation() uint64
+}
+
+// pgoSynced answers the profgate_pgo_synced gauge for one scrape.
+// It reads the store generation on every call and holds nothing between calls,
+// so the answer turns false the moment a disconnect or a watch cut moves that generation,
+// and turns true again only once every watch has replayed under the new one
+// and every cache has applied that replay.
+func pgoSynced(client genBarrier, caches cacheBarrier) bool {
+	gen := client.Generation()
+
+	return client.Synced(gen) && caches.Synced(gen)
 }
 
 // startPGO constructs the PGO machinery the passed preflight made reachable,
@@ -640,6 +662,10 @@ func startPGO(
 	clock := pgo.SystemClock{}
 	caches := pgo.NewCaches(logger)
 	go runCaches(ctx, caches, client, logger)
+	// The series exists only when pgo.enabled,
+	// and this is the one path a PGO start reaches, from a channel one goroutine writes once,
+	// so the gauge is registered here and exactly once.
+	deps.recorder.PGOSyncedFrom(func() bool { return pgoSynced(client, caches) })
 
 	publisher := pgo.NewPublisher(caches, clock, cfg.PGO.Limits.MaxLiveCollections, owner.Instance, logger)
 	rounds := pgo.NewRounds(pgo.RoundsDeps{

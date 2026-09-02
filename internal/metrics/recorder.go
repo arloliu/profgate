@@ -70,6 +70,12 @@ type Recorder interface {
 	ProfilesInFlight(delta int)
 	// DiscoverySynced reports whether the discovery cache is currently synced.
 	DiscoverySynced(synced bool)
+	// PGOSyncedFrom registers read as the source of the PGO replay barrier gauge.
+	// The gauge exists from this call on, and never before it,
+	// because the series exists only when pgo.enabled;
+	// read answers whether both halves of the barrier hold under the store generation current at that moment,
+	// and a scrape calls it rather than reading a value pushed earlier.
+	PGOSyncedFrom(read func() bool)
 	// Collection records the terminal outcome of one Collection: "completed", "failed", "cancelled", or "expired".
 	Collection(result string)
 	// CollectionSample records the outcome of one worker sample: "ok" or "failed".
@@ -126,6 +132,9 @@ func (Noop) ProfilesInFlight(int) {}
 
 // DiscoverySynced implements Recorder and does nothing.
 func (Noop) DiscoverySynced(bool) {}
+
+// PGOSyncedFrom implements Recorder and does nothing.
+func (Noop) PGOSyncedFrom(func() bool) {}
 
 // Collection implements Recorder and does nothing.
 func (Noop) Collection(string) {}

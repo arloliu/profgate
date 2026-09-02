@@ -44,6 +44,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
 	"github.com/arloliu/profgate/internal/natskv"
@@ -118,12 +119,13 @@ func (f *fakeUpstream) Do(_ context.Context, w http.ResponseWriter, _ proxy.Requ
 	return proxy.Outcome{Code: "ok", Status: http.StatusOK, Committed: true}
 }
 
-// recorder remembers every DiscoverySynced, NATSConnected, and TLS call and ignores the rest.
+// recorder remembers every DiscoverySynced, NATSConnected, PGOSyncedFrom, and TLS call and ignores the rest.
 type recorder struct {
 	metrics.Noop
 	mu        sync.Mutex
 	synced    []bool
 	connected []bool
+	pgoSynced []func() bool
 	reloads   []string
 	expiry    time.Time
 }
@@ -139,6 +141,22 @@ func (r *recorder) syncedCalls() []bool {
 	defer r.mu.Unlock()
 
 	return append([]bool(nil), r.synced...)
+}
+
+// PGOSyncedFrom keeps the function it is handed rather than a value,
+// because what the gauge answers is decided by the scrape and not by this call.
+func (r *recorder) PGOSyncedFrom(read func() bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pgoSynced = append(r.pgoSynced, read)
+}
+
+// pgoSyncedReads returns every function handed to PGOSyncedFrom, in order.
+func (r *recorder) pgoSyncedReads() []func() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]func() bool(nil), r.pgoSynced...)
 }
 
 func (r *recorder) NATSConnected(up bool) {
@@ -1461,6 +1479,148 @@ func pgoCode(t *testing.T, addr, path string) (int, string) {
 	return status, parsed.Code
 }
 
+// barrierStub is one half of the replay barrier.
+// It reports synced under exactly one store generation, the one its replay was delivered under,
+// so a generation that moves past it turns the half false without anything else changing.
+type barrierStub struct {
+	syncedUnder uint64
+	synced      bool
+}
+
+func (b *barrierStub) Synced(gen uint64) bool { return b.synced && gen == b.syncedUnder }
+
+// genStub is the seam half of the barrier and carries the generation both halves are read under.
+type genStub struct {
+	barrierStub
+	gen uint64
+}
+
+func (g *genStub) Generation() uint64 { return g.gen }
+
+// move leaves the current store generation behind.
+// The stub cannot tell a disconnect from a watch cut and does not need to:
+// pgoSynced sees a moved generation and nothing about what moved it.
+func (g *genStub) move() { g.gen++ }
+
+func TestPGOSynced(t *testing.T) {
+	const gen = uint64(7)
+
+	halves := []struct {
+		name    string
+		watches bool
+		caches  bool
+		want    bool
+	}{
+		{"neither half has replayed", false, false, false},
+		{"the watches have replayed and the caches have not applied it", true, false, false},
+		{"the caches carry a replay the watches have not finished", false, true, false},
+		{"both halves hold under the one generation", true, true, true},
+	}
+	for _, tc := range halves {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &genStub{barrierStub{syncedUnder: gen, synced: tc.watches}, gen}
+			caches := &barrierStub{syncedUnder: gen, synced: tc.caches}
+			if got := pgoSynced(client, caches); got != tc.want {
+				t.Errorf("pgoSynced = %v, want %v: the gauge is 1 only when every watch has replayed "+
+					"and every cache has applied that replay", got, tc.want)
+			}
+		})
+	}
+
+	for _, cause := range []string{"a disconnect", "a watch cut"} {
+		t.Run("the first call after "+cause+" moved the generation answers false", func(t *testing.T) {
+			client := &genStub{barrierStub{syncedUnder: gen, synced: true}, gen}
+			caches := &barrierStub{syncedUnder: gen, synced: true}
+			if !pgoSynced(client, caches) {
+				t.Fatalf("pgoSynced before %s = false, want true", cause)
+			}
+
+			client.move()
+
+			if pgoSynced(client, caches) {
+				t.Errorf("pgoSynced on the first call after %s moved the generation = true, want false: "+
+					"it re-reads Generation on every call and holds nothing between them", cause)
+			}
+		})
+	}
+
+	t.Run("the caches still filling under the new generation keep it false", func(t *testing.T) {
+		client := &genStub{barrierStub{syncedUnder: gen, synced: true}, gen}
+		caches := &barrierStub{syncedUnder: gen, synced: true}
+
+		client.move()
+		client.syncedUnder = client.gen
+
+		if pgoSynced(client, caches) {
+			t.Error("pgoSynced with the watches replayed and the caches still filling = true, want false: " +
+				"a gauge fed from the seam alone reads 1 over caches that hold nothing")
+		}
+	})
+}
+
+// TestNATSCallbacksSplitTheirDuties pins what each preflight callback is for.
+// The connection callback drives profgate_nats_connected and nothing else,
+// because a watch cut moves the store generation while the connection is still up
+// and reporting that cut through the connection callback would read 0 on a gauge whose subject never went down.
+// The generation callback is what ends a request parked under the generation just left behind.
+func TestNATSCallbacksSplitTheirDuties(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	nats := newFakeNATS(true)
+	caches := pgo.NewCaches(logger)
+	go func() { _ = caches.Run(ctx, nats) }()
+	waitFor(t, waitTimeout, "the watched caches applying their replay", func() bool {
+		return caches.Synced(fakeGeneration)
+	})
+
+	pgoRuntime := pgo.NewRuntime()
+	pgoRuntime.Bind(pgo.Bundle{Client: nats, Caches: caches, Log: logger})
+
+	rec := &recorder{}
+	var opts natskv.Options
+	deps := serveDeps{
+		recorder: rec,
+		natsPreflight: func(_ context.Context, o natskv.Options, _ string, _ *slog.Logger) (natskv.Client, error) {
+			opts = o
+
+			return nats, nil
+		},
+	}
+	if _, err := natsPreflight(ctx, deps, config.NATSConfig{}, "instance", pgoRuntime, logger); err != nil {
+		t.Fatalf("nats preflight: %v", err)
+	}
+
+	// The session captures the broadcast of the generation it was taken under,
+	// which is the channel either callback would close.
+	sess, err := pgoRuntime.Session()
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+
+	opts.OnConnectionChange(false)
+
+	if got := rec.connectedCalls(); len(got) != 1 || got[0] {
+		t.Fatalf("NATSConnected calls after a lost connection = %v, want exactly [false]", got)
+	}
+	if closed(sess.GenerationMoved()) {
+		t.Fatal("a lost connection moved the runtime generation through OnConnectionChange: " +
+			"the seam moves it and reports the move through OnGenerationMove, so this ends the session twice")
+	}
+
+	opts.OnGenerationMove()
+
+	if !closed(sess.GenerationMoved()) {
+		t.Fatal("OnGenerationMove did not reach Runtime.MoveGeneration: " +
+			"a watch cut under a live connection would leave a parked request waiting out its own deadline")
+	}
+	if got := rec.connectedCalls(); len(got) != 1 {
+		t.Fatalf("NATSConnected calls after a generation move = %v, want the one the lost connection made: "+
+			"a moved generation is not a connection report", got)
+	}
+}
+
 func TestServePGO(t *testing.T) {
 	t.Run("disabled reaches no NATS and answers 501", func(t *testing.T) {
 		pf := newPreflightStub(preflightResult{client: newFakeNATS(true)})
@@ -1473,6 +1633,9 @@ func TestServePGO(t *testing.T) {
 		}
 		if got := pf.callCount(); got != 0 {
 			t.Fatalf("NATS preflight attempts = %d, want 0: pgo.enabled false constructs nothing NATS-related", got)
+		}
+		if got := gw.rec.pgoSyncedReads(); len(got) != 0 {
+			t.Fatalf("PGOSyncedFrom calls with pgo off = %d, want 0: profgate_pgo_synced exists only when pgo.enabled", len(got))
 		}
 	})
 
@@ -1554,12 +1717,26 @@ func TestServePGO(t *testing.T) {
 			t.Fatalf("/readyz while the watches replay = %d, want 200: a replaying replica still serves interactive requests", code)
 		}
 
+		waitFor(t, waitTimeout, "the pgo barrier gauge registered", func() bool {
+			return len(gw.rec.pgoSyncedReads()) > 0
+		})
+		reads := gw.rec.pgoSyncedReads()
+		if len(reads) != 1 {
+			t.Fatalf("PGOSyncedFrom calls = %d, want exactly 1: one PGO start registers the series once", len(reads))
+		}
+		if reads[0]() {
+			t.Error("profgate_pgo_synced reads 1 while the watches have not replayed, want 0")
+		}
+
 		nats.synced.Store(true)
 		waitFor(t, waitTimeout, "the collections route passing the barrier", func() bool {
 			code, _, err := get(gw.apiAddr, collectionsPath)
 
 			return err == nil && code == http.StatusOK
 		})
+		if !reads[0]() {
+			t.Error("profgate_pgo_synced reads 0 with both halves of the barrier held, want 1")
+		}
 	})
 
 	t.Run("the connected gauge reports the initial connection", func(t *testing.T) {

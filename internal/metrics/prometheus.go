@@ -35,6 +35,12 @@ type Prometheus struct {
 	// jwksFetched is the Unix time of the last successful key fetch, or 0
 	// before the first. jwksAge reads it on the scrape goroutine.
 	jwksFetched atomic.Int64
+
+	// reg is the registry the constructor was handed.
+	// PGOSyncedFrom registers on it long after the constructor has returned,
+	// because profgate_pgo_synced exists only when pgo.enabled
+	// and nothing knows a barrier to read until the PGO loops start.
+	reg prometheus.Registerer
 }
 
 // NewPrometheus builds the gateway's metrics and registers them with reg.
@@ -122,6 +128,7 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 			Name: "profgate_auth_cookie_key_info",
 			Help: "One per loaded cookie key, by fingerprint and role, always 1.",
 		}, []string{"fingerprint", "role"}),
+		reg: reg,
 	}
 
 	// The age is computed when the scrape asks, not when the fetch happened,
@@ -175,6 +182,24 @@ func (p *Prometheus) DiscoverySynced(synced bool) {
 		value = 1.0
 	}
 	p.discoverySynced.Set(value)
+}
+
+// PGOSyncedFrom implements Recorder.
+// The gauge answers read on the scrape goroutine rather than from a value pushed to it,
+// so it reads 0 from the moment the store generation moves,
+// with no push site to reach and no sampling interval to lag by.
+func (p *Prometheus) PGOSyncedFrom(read func() bool) {
+	p.reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "profgate_pgo_synced",
+		Help: "Whether every PGO watch has replayed under the current store generation " +
+			"and every cache has applied that replay: 1 if both, 0 otherwise.",
+	}, func() float64 {
+		if read() {
+			return 1
+		}
+
+		return 0
+	}))
 }
 
 // Collection implements Recorder.

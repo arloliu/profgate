@@ -250,7 +250,7 @@ so this task registers the gauge from the PGO start path rather than from anythi
 a collector role that starts its loops through that path gets the series with them.
 No collector test appears below because no collector code exists to run one against.
 
-- [ ] **Write the tests, run them, and record which subtests were red**
+- [x] **Write the tests, run them, and record which subtests were red**
 
 `prometheus_test.go`, beside `TestPrometheus_DiscoverySynced` (`:89`):
 a registry gathers no `profgate_pgo_synced` until `PGOSyncedFrom` is called,
@@ -266,7 +266,7 @@ and false while the caches are still filling under a new generation,
 which catches a gauge fed from `Client.Synced` alone.
 `OnConnectionChange` still reports the connection and `OnGenerationMove` reaches `Runtime.MoveGeneration`.
 
-- [ ] **Add the gauge, rewire the two callbacks, then validate and commit**
+- [x] **Add the gauge, rewire the two callbacks, then validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/metrics/ ./cmd/profgate/ ./internal/httpapi/ ./internal/pgo/

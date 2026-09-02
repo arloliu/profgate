@@ -310,6 +310,8 @@ func (r *recorder) ProfilesInFlight(delta int) {
 
 func (r *recorder) DiscoverySynced(bool) {}
 
+func (r *recorder) PGOSyncedFrom(func() bool) {}
+
 func (r *recorder) Collection(result string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

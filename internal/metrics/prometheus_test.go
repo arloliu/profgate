@@ -102,6 +102,42 @@ profgate_discovery_synced 1
 	}
 }
 
+func TestPrometheus_PGOSyncedFrom(t *testing.T) {
+	reg := prometheus.NewPedanticRegistry()
+	rec := NewPrometheus(reg)
+
+	count, err := testutil.GatherAndCount(reg, "profgate_pgo_synced")
+	if err != nil {
+		t.Fatalf("gather before PGOSyncedFrom: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("profgate_pgo_synced series before PGOSyncedFrom = %d, want 0: "+
+			"the series exists only when pgo.enabled, and nothing but this call declares that", count)
+	}
+
+	synced := true
+	rec.PGOSyncedFrom(func() bool { return synced })
+
+	const help = `
+# HELP profgate_pgo_synced Whether every PGO watch has replayed under the current store generation and every cache has applied that replay: 1 if both, 0 otherwise.
+# TYPE profgate_pgo_synced gauge
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(help+"profgate_pgo_synced 1\n"),
+		"profgate_pgo_synced"); err != nil {
+		t.Errorf("profgate_pgo_synced with both halves of the barrier held: %v", err)
+	}
+
+	// No recorder call stands between the two gathers.
+	// The scrape asks the function rather than reading a value pushed to it,
+	// so a generation that moved since the last scrape shows in the next one.
+	synced = false
+
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(help+"profgate_pgo_synced 0\n"),
+		"profgate_pgo_synced"); err != nil {
+		t.Errorf("profgate_pgo_synced after the barrier shut: %v", err)
+	}
+}
+
 func TestPrometheus_Collection(t *testing.T) {
 	reg := prometheus.NewPedanticRegistry()
 	rec := NewPrometheus(reg)
