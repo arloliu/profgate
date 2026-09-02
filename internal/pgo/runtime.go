@@ -52,7 +52,7 @@ type Runtime struct {
 	bundle atomic.Pointer[Bundle]
 
 	mu sync.Mutex
-	// moved is closed when the connection generation it belongs to is left behind,
+	// moved is closed when the store generation it belongs to is left behind,
 	// and replaced by the channel of the generation that follows.
 	// It exists from construction,
 	// because the connection can drop before the preflight that binds the runtime has passed.
@@ -63,7 +63,7 @@ type Runtime struct {
 // is natskv.ErrUnavailable.
 func NewRuntime() *Runtime { return &Runtime{moved: make(chan struct{})} }
 
-// MoveGeneration reports that the connection generation has moved.
+// MoveGeneration reports that the store generation has moved.
 // It closes the channel of the generation being left behind,
 // which is what ends a request waiting under it,
 // and installs the channel of the next one.
@@ -99,7 +99,7 @@ func (r *Runtime) bound() bool { return r.bundle.Load() != nil }
 type Session struct {
 	b     *Bundle
 	store natskv.Stores
-	// moved is the connection-generation broadcast this session captured when it was taken,
+	// moved is the store-generation broadcast this session captured when it was taken,
 	// and never a lookup made later.
 	moved <-chan struct{}
 }

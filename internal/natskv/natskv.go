@@ -35,7 +35,7 @@ type Entry struct {
 	Revision   uint64
 	Created    time.Time // server timestamp of this revision, KeyValueEntry.Created()
 	Synced     bool      // true on the one marker entry that ends the initial replay; Key is empty
-	Generation uint64    // the connection generation this entry was delivered under
+	Generation uint64    // the store generation this entry was delivered under
 }
 
 // KV is one bucket.
@@ -91,7 +91,7 @@ type Statused interface {
 	Status(ctx context.Context) (Status, error)
 }
 
-// Stores is a view of the three buckets bound to one connection generation.
+// Stores is a view of the three buckets bound to one store generation.
 // Every method of its KV and Objects values compares the view's generation
 // with the client's current generation before issuing the call and again
 // when the result arrives, and returns ErrUnavailable on either mismatch;
@@ -107,7 +107,7 @@ type Stores struct {
 type Client interface {
 	// Connected reports whether the underlying connection is currently up.
 	Connected() bool
-	// Generation returns the connection generation: a counter the seam increments
+	// Generation returns the store generation: a counter the seam increments
 	// in the nats.go disconnected callback, never in the reconnected one.
 	Generation() uint64
 	// Synced reports whether every watch opened by the PGO runtime has delivered

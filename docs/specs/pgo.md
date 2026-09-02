@@ -483,7 +483,7 @@ type Entry struct {
     Revision uint64
     Created  time.Time // server timestamp of this revision, KeyValueEntry.Created()
     Synced   bool      // true on the one marker entry that ends the initial replay; Key is empty
-    Generation uint64  // the connection generation this entry was delivered under
+    Generation uint64  // the store generation this entry was delivered under
 }
 
 // KV is one bucket.
@@ -539,7 +539,7 @@ type Statused interface {
     Status(ctx context.Context) (Status, error)
 }
 
-// Stores is a view of the three buckets bound to one connection generation.
+// Stores is a view of the three buckets bound to one store generation.
 // Every method of its KV and Objects values compares the view's generation
 // with the client's current generation before issuing the call and again
 // when the result arrives, and returns ErrUnavailable on either mismatch;
@@ -555,7 +555,7 @@ type Stores struct {
 type Client interface {
     // Connected reports whether the underlying connection is currently up.
     Connected() bool
-    // Generation returns the connection generation: a counter the seam increments
+    // Generation returns the store generation: a counter the seam increments
     // in the nats.go disconnected callback, never in the reconnected one.
     Generation() uint64
     // Synced reports whether every watch opened by the PGO runtime has delivered
@@ -619,7 +619,7 @@ Until then the scheduler publishes nothing, the worker claims nothing, the sweep
 and every PGO route that reads or writes store state answers `503 pgo_unavailable`
 (`501 pgo_disabled` when PGO is off takes precedence, as always).
 
-The barrier is tied to the connection generation, not to watch re-opening,
+The barrier is tied to the store generation, not to watch re-opening,
 because nats.go marks the connection usable before it runs the asynchronous reconnected callback:
 store operations can succeed in the gap between the two,
 and a flag cleared only by a callback would let a tick or a request decide from caches that missed an outage.
@@ -2339,7 +2339,7 @@ Otherwise it holds the request until the first of these:
   and that read is the answer;
 - the client disconnects, and nothing is answered (audit `client_gone`);
 - the replica begins draining (below);
-- the connection generation moves, which ends the wait with `503 pgo_unavailable`.
+- the store generation moves, which ends the wait with `503 pgo_unavailable`.
 
 **Every move a wait reports comes from a read taken after it.**
 That is one rule and not two: a pulse ends the wait with a read, and so does the deadline,
@@ -2350,7 +2350,7 @@ or one that becomes ready in the same instant as the timer,
 would be reported as the state before it.
 The two endings that answer without a read are the two where a read cannot be taken:
 a draining replica answers with the record it last read (below),
-and a connection-generation move answers `503 pgo_unavailable`.
+and a store-generation move answers `503 pgo_unavailable`.
 
 Only a change of `state` ends a wait.
 An owner renews its lease every `leaseTTL / 3` and writes `progress` with it,
@@ -2382,7 +2382,7 @@ that sees whatever the bucket holds by then, including a terminal state two writ
 The one thing a dropped pulse can cost is latency inside the wait, never a wrong answer.
 
 **The generation is a channel too.**
-A connection-generation change is broadcast on a channel of its own,
+A store-generation change is broadcast on a channel of its own,
 which the handler selects on beside the drain signal and the request's own cancellation.
 The seam of section 5.1 exposes `Generation()` as a value, which a parked handler cannot read again on its own;
 without the broadcast a wait would sit out an entire outage and answer from a view the store had moved past.
@@ -2840,7 +2840,7 @@ a collector that cannot reach NATS holds the new Pod unready
 and leaves the previous one running until it can.
 A NATS connection lost afterwards does not change `/readyz` either:
 interactive profiling is unaffected, PGO routes answer `503 pgo_unavailable`
-(the disconnect moves the connection generation and so clears the barrier,
+(the disconnect moves the store generation and so clears the barrier,
 which stays cleared until every watch has replayed under the new generation),
 and the client library reconnects on its own.
 
@@ -3254,7 +3254,7 @@ one server per subtest.
   and the next entry applied for the record pulses it again;
   no cache indexes an idempotency key, asserted by a scan of the package's cache types,
   because every read of one is authoritative;
-  a connection-generation change broadcasts on the channel a parked handler selects on,
+  a store-generation change broadcasts on the channel a parked handler selects on,
   reaching every subscriber once.
 - `internal/pgo` idempotency receipts, over the in-process server:
   the receipt key is `idem.` followed by 32 hexadecimal characters,
@@ -3602,7 +3602,7 @@ nothing depends on it except `httpapi` and `cmd`.
 | Event | Behavior |
 |---|---|
 | NATS unreachable at startup with `pgo.enabled` | preflight retries forever in both processes; `/readyz` 503; interactive `/v1` routes serve once the Kubernetes side is ready; PGO routes `503 pgo_unavailable`; a collector rollout stalls with the previous collector still running |
-| a collector's watches still replaying after preflight or after a reconnect | scheduler, worker, and sweeper idle until every watch has delivered its replay marker under the current connection generation |
+| a collector's watches still replaying after preflight or after a reconnect | scheduler, worker, and sweeper idle until every watch has delivered its replay marker under the current store generation |
 | a gateway replica's watches still replaying | `/readyz` 200; PGO routes `503 pgo_unavailable` under the same condition |
 | a record's policy snapshot exceeds the claiming replica's ceilings | `failed limit_exceeded` on claim or reclaim, before any local slot is reserved; active key released |
 | a bucket missing or of the wrong kind | process exits naming the bucket |
@@ -3610,7 +3610,7 @@ nothing depends on it except `httpapi` and `cmd`.
 | a bucket reaches `MaxBytes` | the write fails `ErrUnavailable` under `Discard: new`; nothing already stored is evicted |
 | on-demand creation faster than `onDemandPerMinute` | `429 rate_limited` before any write |
 | NATS user lacks a permission | a preflight probe fails; process exits naming the bucket and the operation |
-| NATS unreachable while running | PGO routes `503 pgo_unavailable`; scheduler creates nothing; an owner aborts once `leaseUntil - skewMargin` passes without a renewal; the disconnect moves the connection generation and clears the barrier before the connection is usable again; after reconnect the watches replay behind the barrier, then a scan reclaims |
+| NATS unreachable while running | PGO routes `503 pgo_unavailable`; scheduler creates nothing; an owner aborts once `leaseUntil - skewMargin` passes without a renewal; the disconnect moves the store generation and clears the barrier before the connection is usable again; after reconnect the watches replay behind the barrier, then a scan reclaims |
 | collector crashes mid-Collection | lease expires; the next collector's scan reclaims from round 0 with `attempt + 1` under a new object name |
 | stale owner finishes after a reclaim completed | its update loses; it deletes only its own object; the committed artifact is untouched |
 | owner's merge, serialization, or `Put` outlasts its committed lease | the owner issues no final update; the work finishes its current `Merge`/`Compact`/`Write`/`Put` and exits; its local slot is held until then; a scan reclaims |

@@ -824,7 +824,7 @@ func (s *server) serveCollectionRead(
 // because answering the deadline from an earlier read would turn a dropped pulse into a wrong answer.
 // The two endings that answer without a read are the two where a read cannot be taken:
 // a draining replica answers with the record it last read,
-// and a connection generation that moved answers 503 pgo_unavailable,
+// and a store generation that moved answers 503 pgo_unavailable,
 // because a replica whose watches are replaying cannot promise the answer is current.
 func (s *server) waitForCollection(
 	w http.ResponseWriter, r *http.Request, q *request, sess *pgo.Session, stored pgo.StoredRecord, wait time.Duration,

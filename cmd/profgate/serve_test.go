@@ -1262,7 +1262,7 @@ func (emptyObjects) Delete(context.Context, string) error { return natskv.ErrUna
 
 func (emptyObjects) List(context.Context) ([]natskv.ObjectInfo, error) { return nil, nil }
 
-// fakeGeneration is the one connection generation every PGO serve row runs under.
+// fakeGeneration is the one store generation every PGO serve row runs under.
 const fakeGeneration = uint64(1)
 
 // fakeNATS is the connection the preflight seam hands back:

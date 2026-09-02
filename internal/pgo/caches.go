@@ -154,10 +154,10 @@ func terminal(s State) bool {
 // Caches are the four watched views the PGO runtime decides from:
 // service.* in PROFGATE_CONFIG, and job.*, active.*, and schedule.* in
 // PROFGATE_JOBS.
-// Each is rebuilt from its replay rather than patched, and carries the
-// connection generation its contents were delivered under, so a cache is
-// either complete as of a point in the stream under the current generation or
-// not consulted at all.
+// Each is rebuilt from its replay rather than patched,
+// and carries the store generation its contents were delivered under,
+// so a cache is either complete as of a point in the stream under the current generation
+// or not consulted at all.
 type Caches struct {
 	log *slog.Logger
 

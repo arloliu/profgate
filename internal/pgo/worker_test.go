@@ -373,7 +373,7 @@ func TestWorkerClaimUnavailable(t *testing.T) {
 }
 
 // TestWorkerBehindBarrier proves nothing on a replica decides from a cache
-// that has not seen the bucket under the current connection generation.
+// that has not seen the bucket under the current store generation.
 func TestWorkerBehindBarrier(t *testing.T) {
 	t.Run("a held replay claims and scans nothing", func(t *testing.T) {
 		f := startPGO(t)

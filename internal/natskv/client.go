@@ -366,7 +366,7 @@ func statusFromStream(cfg jetstream.StreamConfig) Status {
 	return s
 }
 
-// kvView is one KV bucket bound to one connection generation.
+// kvView is one KV bucket bound to one store generation.
 type kvView struct {
 	c      *client
 	gen    uint64
@@ -672,7 +672,7 @@ func entryFromKVE(kve jetstream.KeyValueEntry, gen uint64) Entry {
 	return e
 }
 
-// objView is the Object Store bucket bound to one connection generation.
+// objView is the Object Store bucket bound to one store generation.
 type objView struct {
 	c      *client
 	gen    uint64

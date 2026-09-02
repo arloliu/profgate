@@ -705,10 +705,9 @@ func TestSchedulerReplayBarrier(t *testing.T) {
 	}
 }
 
-// TestSchedulerGenerationOutage proves the barrier follows the connection
-// generation and not watch re-opening: state that changed during an outage is
-// invisible until the caches have replayed under the new generation, and a
-// tick that took its view before a disconnect writes nothing after it.
+// TestSchedulerGenerationOutage proves the barrier follows the store generation and not watch re-opening:
+// state that changed during an outage is invisible until the caches have replayed under the new generation,
+// and a tick that took its view before a disconnect writes nothing after it.
 func TestSchedulerGenerationOutage(t *testing.T) {
 	t.Run("held replay after an outage issues no store operation", func(t *testing.T) {
 		f := startPGO(t)
