@@ -2178,7 +2178,7 @@ The two variable names have no such pass to reach them —
 an environment variable no field claims is invisible to fuda —
 so they are checked for by name, in the same place, before the file is decoded.
 
-Replacing two fail-open lists with one default-deny list is a breaking change and ships in the next minor version.
+Replacing two fail-open lists with one default-deny list is a breaking change.
 Each old list converts on its own, and the two conversions do not interact:
 
 | Old value | New entry |

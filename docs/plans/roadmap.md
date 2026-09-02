@@ -78,7 +78,7 @@ The console lets a browser type any port under that default.
   one `discovery.pprof.allowedSelections` list whose entries are `{port: N}` or `{portName: name}`;
   an empty list accepts only the configured default;
   `{port: "*"}` admits any number and `{portName: "*"}` admits any name, each on its own;
-  `allowedPorts` and `allowedPortNames` are removed, which is a breaking change for the next minor release.
+  `allowedPorts` and `allowedPortNames` are removed, which is a breaking change.
   `/v1/limits` returns the list so the console can offer a menu or a free field.
 - [x] Revise the permission invariant text in `AGENTS.md`, `README.md`, and `.agents/rules/800-security-invariant.md`,
   which today states that an empty allowlist admits any port a client names,
@@ -86,7 +86,7 @@ The console lets a browser type any port under that default.
 - [x] Write the implementation plan; migrate `docs/configuration.md`, the chart values, and the console's port control.
 
 Spec: `docs/specs/gateway.md` (revision required).
-Shipped: pull request #2, in `Unreleased`.
+Shipped: pull request #2, in `v0.5.0`.
 Why here: it narrows what a compromised client can probe and shrinks the configuration surface,
 and the CLI in item 4 should be written against the final model.
 
@@ -105,7 +105,7 @@ and `docs/authentication.md` sends the user to another tool for one.
 
 Spec: new (`docs/specs/cli.md`), layered on `docs/specs/auth.md`,
 which already defers token acquisition to this document.
-Shipped: pull request #3, in `Unreleased`.
+Shipped: pull request #3, in `v0.5.0`.
 
 ### 5. Target exclusion diagnostics
 
@@ -121,7 +121,7 @@ a named port no Pod declares, a terminating Pod, or a cache not yet synced.
 - [x] The CLI's `targets` prints them.
 
 Spec: `docs/specs/gateway.md` and `docs/specs/ui.md` (revisions required).
-Shipped: pull request #4, in `Unreleased`.
+Shipped: pull request #4, in `v0.5.0`.
 
 ### 6. A machine contract automation can build on
 
@@ -139,7 +139,7 @@ Shipped: pull request #4, in `Unreleased`.
 - [x] An OpenAPI document generated from the routes, served at a fixed path, and checked in CI against the router.
 
 Spec: `docs/specs/gateway.md` and `docs/specs/pgo.md` (revisions required).
-Shipped: pull request #5, in `Unreleased`.
+Shipped: pull request #5, in `v0.5.0`.
 
 ### 7. Console: write paths, browser tests, stable asset paths
 
@@ -153,7 +153,7 @@ Shipped: pull request #5, in `Unreleased`.
   this removes the rolling-update failure `docs/console.md` documents.
 
 Spec: `docs/specs/ui.md` (revision required).
-Shipped: pull request #10, in `Unreleased`.
+Shipped: pull request #10, in `v0.5.0`.
 
 ### 8. Small removals
 
@@ -235,7 +235,7 @@ and revised [`pgo.md`](../specs/pgo.md) to say so.
 Spec: [`docs/specs/pgo.md`](../specs/pgo.md), amended for the removed `versionPolicy` key,
 and again for the identifier grammar if that bullet is taken up.
 Shipped: pull request #11 landed the identifier, the cookie, and the harness revisit;
-`pgo.versionPolicy` is removed, in `Unreleased`.
+`pgo.versionPolicy` is removed, in `v0.5.0`.
 
 ### 9. Superseded and finished documents leave the tree
 
@@ -296,7 +296,7 @@ that an operator must carry into the Deployment by hand.
   and `docs/configuration.md` gains a sizing table.
 
 Spec: `docs/specs/pgo.md`, already revised.
-Shipped: pull request #17, in `Unreleased`.
+Shipped: pull request #17, in `v0.5.0`.
 Separating the collector into its own Deployment is **deferred, not dropped**.
 The measurements behind that, and the triggers that would revive it, are in
 [`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md);
@@ -352,8 +352,7 @@ which the gauge `profgate_pgo_synced` and its alert make visible.
 Spec: none for the first bullet;
 the second is settled in [`pgo.md`](../specs/pgo.md) *The seam*.
 *Logging*, *Health*, *Metrics*, and *Failure Scenarios* carry what follows from it.
-Shipped: the first bullet, in pull request #17, under `Unreleased`;
-the second, in pull request #18, under `Unreleased`.
+Shipped: the first bullet in pull request #17 and the second in pull request #18, both in `v0.5.0`.
 Why here: neither bullet blocks item 11 nor is blocked by it.
 The first is small and self-contained.
 The second is the one an operator would never notice,

@@ -5,47 +5,73 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-09-03
+
+Adds a first-party command line, target exclusion diagnostics, and an HTTP contract automation can build on,
+alongside Collection controls in the console, lower PGO defaults,
+and a store-generation barrier that keeps the watched PGO caches honest, with five breaking changes.
+
+### Added
+
+- **The `profgate` binary is also a client.**
+  `login`, `logout`, `whoami`, `limits`, `namespaces`, `services`, `targets`, `profile`,
+  `collect`, `collections`, `collection get|cancel`, `download`, `pgo policy get|set|delete`,
+  and `context list|show|use|delete` talk to a gateway from a terminal, and `docs/cli.md` is the guide.
+  Under `oidc`, `login` obtains a token by the device-code grant and caches it under `$XDG_STATE_HOME/profgate/tokens/`;
+  under `basic` it verifies a user name and a password it never stores.
+  `profile --open` hands the fetched profile to `go tool pprof -http`.
+- **A device login a client can discover.**
+  `GET /v1/auth`, the one `/v1` route with no authentication step, reports `auth.mode` and,
+  where the new optional `auth.oidc.cli` block (`clientID`, `scopes`, `pkce`) is configured,
+  the issuer, client identifier, token type, scopes, and whether the device endpoint accepts PKCE.
+  The chart renders that block by default through `auth.oidc.cli.enabled: true`.
+- **Every response of both listeners carries `X-Request-Id`** — the caller's own when the request sends one,
+  generated otherwise — and every audit record names the same value under `requestId`.
+- **Every refusal whose code has a vocabulary carries a `details` array of `{field, code, message}` items.**
+  `invalid_parameter` has twelve values, `limit_exceeded` five, and `port_not_allowed` its one,
+  and every entry of `GET /pgo`'s `violations` carries a `code` from the `limit_exceeded` vocabulary.
+- **`POST .../collections` takes an `Idempotency-Key`.**
+  A repeat under one key answers with the Collection the first request created rather than starting a second,
+  and a repeat asking for something else answers `409 idempotency_mismatch`.
+- **`GET /v1/collections/{id}` takes `wait=`, a duration from `1s` to `60s`,**
+  and holds the request open until the Collection's state moves, the deadline passes,
+  the replica drains, or the client leaves.
+- **The collections listing filters and pages, and `latest` answers without an identifier.**
+  `GET .../collections` takes `state`, `origin`, `since`, `limit`, and `cursor`, and its body carries `nextCursor`;
+  `GET .../collections/latest` and `.../latest/profile` answer for the newest Collection still holding a profile.
+- **`GET /v1/openapi.json` serves a hand-maintained OpenAPI 3.1 document.**
+  It describes every route the listener serves, whatever the configuration enables.
+- **`explain=true` on the targets endpoint, and the `version` and `pod` filters it now accepts.**
+  `GET .../targets?explain=true` keeps the plain listing and adds `selectorMatched` and `excluded`,
+  one entry per exclusion reason with a non-zero count, so an empty answer says why it is empty.
+  The console shows those reasons where a Service has no target, and `profgate targets --explain` prints them too.
+- **The console starts and cancels a Collection.**
+  A **Start collection** control, and a **Cancel** on every `pending` or `running` row,
+  appear when `pgo.enabled` is true and the caller's realm carries `pgo.collect`.
+  Each takes two presses in place, and the page still edits no Service's PGO policy.
+- **Optional chart templates for the pieces every install needed to write by hand.**
+  `ingress.enabled` renders an Ingress routing `/`, `/ui/`, `/auth/`, and `/v1/` to the API port;
+  `podMonitor.enabled` renders a PodMonitor for the ops port, which the Service deliberately omits;
+  `prometheusRule.enabled` renders alerts for stale JWKS keys, discovery not synced, and admission saturation.
+  All three are off by default.
+- **A default CPU request.**
+  The container ships `resources.requests.cpu: 100m`, so a namespace whose quota counts CPU requests admits it.
+- **`profgate_pgo_synced`, and the chart's `ProfgatePGONotSynced` alert.**
+  The gauge is `1` only when the watched PGO caches have replayed and applied under the current store generation.
+  The alert fires when it has read `0` for ten minutes, and is off by default like the other three.
+- **The end-to-end suite drives the console in a headless Chromium.**
+  Two scenarios execute the page's own JavaScript, which nothing else does, and a machine with no Chromium skips them.
 
 ### Changed
 
-- **BREAKING: `pgo.defaults.target.versionPolicy` is removed.**
-  The key admitted one value, `strict`, and nothing read it:
-  a Collection has always resolved one version across the Pods of a round and refused a round that spans two.
-  `versionPolicy` was the only key under `pgo.defaults.target`, so the whole block goes;
-  a configuration file that still sets it fails validation with
-  `pgo.defaults.target has been removed; every Collection pins the one version its Pods agree on, so nothing replaces it`.
-  Delete the block — there is nothing to write in its place.
-  `target.version`, the optional pin a Service override may carry, is unchanged.
-  `not_permitted` leaves the `limit_exceeded` detail vocabulary with it:
-  `target.versionPolicy` was the only field that produced the code.
-  Three things change for a client:
-  - `effective.target.versionPolicy` is gone from the body of `GET /pgo`,
-    and `profgate pgo policy` no longer prints a `versionPolicy` row.
-    A script reading either gets nothing where it used to get `strict`.
-  - A client that reads the effective policy and sends it back as an override now gets
-    `400 invalid_parameter` with an `unknown_field` detail naming `/target/versionPolicy`.
-    This is `PUT /v1/namespaces/{namespace}/services/{service}/pgo`
-    and `POST /v1/namespaces/{namespace}/services/{service}/collections` alike:
-    the two routes share one body type, and both refuse a field they do not know.
-    Drop the field from the body.
-  - The policy hash an `Idempotency-Key` is bound to is taken over the policy's own encoding,
-    so removing a field moves every hash.
-    A client that replays a key minted before the upgrade gets `409 idempotency_mismatch`,
-    and receipts live for `pgo.jobRetention` — a week by default — so the window is that wide.
-    The answer is right: the key stands for a policy that no longer has the shape it was minted under.
-    Retry with a fresh key.
 - **BREAKING: client-selected ports are default-deny.**
-  `discovery.pprof.allowedPorts` and `discovery.pprof.allowedPortNames` are removed,
-  together with `PROFGATE_PPROF_ALLOWED_PORTS` and `PROFGATE_PPROF_ALLOWED_PORT_NAMES`,
+  `discovery.pprof.allowedPorts` and `allowedPortNames` are removed, with their `PROFGATE_*` variables,
   and replaced by the one list `discovery.pprof.allowedSelections`
   (`PROFGATE_PPROF_ALLOWED_SELECTIONS`, comma-separated `port:N`, `portName:name`, `port:*`, `portName:*`).
-  Each entry is `{port: N}` or `{portName: name}`;
-  an empty list now admits only the configured default,
-  where an empty allowlist used to admit any value of its parameter.
   `{port: "*"}` admits any port number and `{portName: "*"}` admits any port name, each on its own.
-  A configuration that still sets a removed key or variable fails validation with a message naming the replacement.
-  Each old list converts on its own:
+  An empty list now admits only the configured default, where an empty allowlist used to admit anything,
+  and a configuration that still sets a removed name fails validation with a message naming the replacement.
+  `/v1/limits` reports `pprof.allowedSelections` in place of the two arrays, and each old list converts on its own:
 
   | Old value | New entry |
   |---|---|
@@ -54,228 +80,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `allowedPorts: [6061, 6062]` | `- port: 6061` and `- port: 6062` |
   | `allowedPortNames: [pprof-alt]` | `- portName: pprof-alt` |
 
-  `/v1/limits` reports `pprof.allowedSelections`, an array of one-key objects, in place of the two arrays.
-  `400 port_not_allowed` carries a `details` array with one item,
-  `field` `port` or `portName` and `code` `not_admitted`, naming only the value the client sent.
-  The console's port control is a menu of the configured default and every listed entry,
-  with a free-form field only where the matching wildcard is configured.
-- **Console assets are served at stable paths.**
-  `/ui/app.js` is `/ui/app.js` on every replica running a release, and no asset URL carries a content hash.
-  Each asset now carries an `ETag` — the whole SHA-256 of that file, quoted — and `Cache-Control: no-cache`,
-  so a browser revalidates on every load and is answered `304` while its copy is current;
-  the shell keeps `no-store`, and `/ui/index.html` is still `404`, the shell being served at `/ui/`.
-  This removes the rolling-update failure the old hashed tree produced for every asset at once:
-  an asset both builds of a rollout carry is now served by whichever replica answers.
-  The release that carries this change is the one rollout where neither build serves what the other's page asks for,
-  so a console load can fail while replicas are still rolling;
-  a reload once the rollout has converged succeeds, and nothing else is affected —
-  no request a caller sends and no other route changed.
+- **BREAKING: `pgo.defaults.target.versionPolicy` is removed.**
+  It was the only key under `pgo.defaults.target`, so delete the whole block; nothing replaces it.
+  A configuration file that still sets it fails validation, a request body carrying the field is refused,
+  and `effective.target.versionPolicy` is gone from `GET /pgo` and from `profgate pgo policy`.
+  Removing it also moves the policy hash an `Idempotency-Key` is bound to,
+  so retry with a fresh key: one minted before the upgrade answers `409 idempotency_mismatch`
+  until its receipt expires, which takes `pgo.jobRetention`, a week by default.
 - **BREAKING: an artifact is kept for at least the interval that produces it.**
-  `pgo.defaults.artifact.retention` moves from `2h` to `24h`.
-  Every effective policy must now hold `artifact.retention` at least `schedule.every`:
-  a shorter retention leaves the Service with no downloadable profile for the tail of every interval.
-  `PUT /pgo` and `POST /collections` refuse a policy that breaks the rule with `400 limit_exceeded`,
-  whose `details` carries `code` `retention_under_interval` on `/artifact/retention`;
-  a stored override that breaks it makes the Service ineligible for scheduling
-  and is reported in `GET /pgo`'s `violations` with the same code.
-  A configuration file that pins `pgo.defaults.artifact.retention` under `pgo.defaults.schedule.every` no longer starts,
-  whether or not `pgo.enabled` is true, and the message names both keys.
-  Raise the retention, or lower the interval, to the point where one covers the other.
-  A `pgo.limits.maxRetention` lowered below `24h` now needs `pgo.defaults.artifact.retention` written out explicitly,
-  at or below that ceiling and at or above `pgo.defaults.schedule.every`.
+  `pgo.defaults.artifact.retention` moves from `2h` to `24h`,
+  and every effective policy must now hold `artifact.retention` at least `schedule.every`.
+  A policy that breaks the rule is refused with `400 limit_exceeded` and a `retention_under_interval` detail,
+  a stored override that breaks it makes the Service ineligible for scheduling, and a file pinning it no longer starts.
+  Raise the retention, or lower the interval, until one covers the other.
+- **BREAKING: the container memory limit falls from 4 GiB to `1536Mi` and now counts the gateway's own footprint.**
+  `pgo.limits.maxSampleBytes` (`33554432` to `16777216`), `maxMergedBytes` (`67108864` to `33554432`),
+  and `maxActiveCollections` (`2` to `1`) take the working set from 4 GiB to 1 GiB; `maxParallel` keeps its `4`.
+  An operator who set any of the three keys keeps their own value, and the chart sizes the container from it;
+  the chart's `memoryLimitWithoutPGO` is now read as a byte count and must be a whole number of `Mi` or `Gi`.
+  A hand-written Deployment carrying `4Gi` still runs, and the kustomize base moves to `1536Mi`.
+  `profgate config validate` prints `pgo working set bytes` and `container memory bytes` in place of `pgo memory bytes`.
+- **BREAKING: the two Collection writes require `Content-Type: application/json`.**
+  `POST .../collections` and `POST /v1/collections/{id}/cancel` refuse anything else with `400 invalid_parameter`,
+  so a client that omitted the header declares it.
+- **Console assets are served at stable paths.**
+  No asset URL carries a content hash, and each asset carries an `ETag` and `Cache-Control: no-cache`,
+  so a browser revalidates on every load and is answered `304` while its copy is current.
+  This removes the rolling-update failure the hashed tree produced, at the cost of one rollout —
+  the one that carries this release — where a console load can fail until the replicas converge.
 - **Upgrading invalidates every browser session.**
   Session and transaction cookies now carry a JSON object where they carried length-prefixed fields,
-  so a cookie an older build sealed no longer opens, whatever key sealed it.
-  A browser holding a session is signed out once and logs in again;
-  a login in flight across the upgrade returns `401` with reason `state` and starts over.
-  No configuration, route, or response shape changed, and the cookie key file is unaffected.
-- **"Connection generation" is now "store generation."**
-  A watch cut while the NATS connection stays up moves it too, not only a disconnect,
-  so the documentation now names it for what moves it:
-  the barrier every watched cache and cache read is bound to.
-  The connection-state callback reports connection state alone;
-  a separate callback carries the generation move.
+  so a browser holding a session is signed out once and logs in again,
+  and a login in flight across the upgrade returns `401` with reason `state` and starts over.
 - **A rollout interrupts a running Collection instead of waiting for it.**
-  A terminating gateway replica stops renewing the lease on every Collection it owns
+  A terminating replica stops renewing the lease on every Collection it owns,
   and returns once each owner has committed or reached the cutoff of the lease it last renewed,
   which is `pgo.leaseTTL` minus five seconds of clock skew.
   An owner still merging at that cutoff commits nothing,
-  and the replica that reclaims the record retries it from round zero
-  as long as an attempt remains under `pgo.maxAttempts`.
-  An exit on a failed listener takes the same bounded drain,
-  where it used to abandon its Collections and exit at once,
-  so a crashing replica can now take up to that cutoff to restart.
-  `profgate config validate` no longer prints a second grace period for PGO:
-  enabling collection does not ask for a longer `terminationGracePeriodSeconds` than the gateway's own drain,
-  which the shipped manifests have always set to 125 seconds.
-
-- **BREAKING: the container memory limit falls from 4 GiB to `1536Mi`, and it now counts the gateway's own footprint.**
-  Three of the four ceilings that size the PGO working set take smaller defaults:
-  `pgo.limits.maxSampleBytes` `33554432` to `16777216`,
-  `pgo.limits.maxMergedBytes` `67108864` to `33554432`,
-  and `pgo.limits.maxActiveCollections` `2` to `1`.
-  `maxParallel` keeps its `4`.
-  Together they take the working set from 4 GiB to 1 GiB.
-  The container limit is that working set plus the 512 MiB the gateway process costs before it decodes anything,
-  which the Helm chart used to choose between rather than add:
-  with `pgo.enabled` it rendered the working set alone.
-  `maxActiveCollections: 1` means one Collection at a time per replica,
-  so the two replicas the chart runs still collect two at once.
-  An operator who set any of the three keys keeps their own value,
-  and the chart and `profgate config validate` size the container from it.
-  A hand-written Deployment carrying `4Gi` still runs; the kustomize base moves to `1536Mi`.
-  `profgate config validate` now prints `pgo working set bytes` and `container memory bytes` in place of
-  `pgo memory bytes`; the second is the number the Deployment carries.
-  The chart's `memoryLimitWithoutPGO` is now read as a byte count and must be a whole number of `Mi` or `Gi`.
-
-### Added
-
-- **The HTTP API answers a program, not only a person.**
-  Every response of both listeners carries `X-Request-Id`:
-  the caller's own when the request sends one of 1 to 128 bytes drawn from `[A-Za-z0-9._-]`,
-  and 32 hexadecimal characters otherwise.
-  It is set before any routing decision, so a `404` on an unknown path carries one,
-  and every audit record names the same value under `requestId`.
-  Every refusal whose code has a vocabulary now carries a `details` array of `{field, code, message}` items:
-  `invalid_parameter` has twelve values, `limit_exceeded` five, and `port_not_allowed` its one.
-  A code with no vocabulary still carries no `details` key at all.
-  Every entry of `GET /pgo`'s `violations` carries a `code` from the `limit_exceeded` vocabulary.
-  `POST .../collections` takes an `Idempotency-Key` header of the same grammar:
-  a repeat under one key answers `200 {id, state}` with the same `Location` rather than creating a second Collection,
-  and a repeat asking for something else answers `409 idempotency_mismatch`.
-  `GET /v1/collections/{id}` takes `wait=`, a duration from `1s` to `60s`,
-  and holds the request open until the Collection's state moves,
-  the deadline passes, the replica drains, or the client leaves;
-  every answer to an accepted wait carries `X-Wait-Elapsed`.
-  `GET .../collections/latest` and `GET .../collections/latest/profile` answer for the newest Collection
-  whose merged profile is still stored,
-  so a build fetches that profile in one request without holding an identifier.
-  `GET .../collections` takes `state` (repeatable), `origin`, `since`,
-  `limit` (1 to 100, and 100 when absent), and `cursor`, and its body carries `nextCursor`;
-  the order is `createdAt` descending and then `id` descending,
-  and a cursor names a position by value, so it still pages after its own record has been swept away.
-  `GET /v1/openapi.json` serves a hand-maintained OpenAPI 3.1 document describing every route the listener serves,
-  whatever the configuration enables; the route itself runs no authentication and no realm step.
-  **BREAKING: the two Collection writes require `Content-Type: application/json`.**
-  `POST .../collections` and `POST /v1/collections/{id}/cancel` refuse anything else with `400 invalid_parameter`,
-  so a client that omitted the header declares it.
-  The `profgate` client retries a create whose result is unknown under the same key,
-  at one second doubling to eight for at most 30 seconds,
-  and reports every answer that arrived whole as it came.
-  No Kubernetes permission changed, no NATS store was added, and no Go module was added.
-- **The `profgate` binary is also a client.**
-  `login`, `logout`, `whoami`, `limits`, `namespaces`, `services`, `targets`, `profile`,
-  `collect`, `collections`, `collection get|cancel`, `download`, `pgo policy get|set|delete`,
-  and `context list|show|use|delete` talk to a gateway from a terminal,
-  each calling one route of the HTTP API;
-  `docs/cli.md` is the guide.
-  Under `oidc`, `login` obtains a token by the device-code grant, with a PKCE challenge where the gateway asserts one,
-  caches it under `$XDG_STATE_HOME/profgate/tokens/` with `0600` permissions,
-  and refreshes it before it expires;
-  under `basic` it verifies a user name and a password it never stores;
-  `profile --open` hands the fetched profile to `go tool pprof -http`.
-  A credential travels only over `https://` or to a loopback address, and no flag skips certificate verification.
-  `collect` sends an `Idempotency-Key` on every create and retries under it whenever the result is unknown.
-  No Go module was added.
-- **`GET /v1/auth`, the one `/v1` route with no authentication step.**
-  It reports `auth.mode` to an unauthenticated caller and, where `auth.oidc.cli` is configured,
-  the issuer, the client identifier, the token type, the scopes, and whether the device endpoint accepts PKCE,
-  which is what a device login needs before it holds a credential.
-  It writes no audit record and is counted under `endpoint="auth"`.
-- **The optional `auth.oidc.cli` block.**
-  `clientID` (default `auth.oidc.audience`), `scopes` (default `openid, offline_access`), and `pkce` (default `false`),
-  under `PROFGATE_AUTH_OIDC_CLI_CLIENT_ID` and `PROFGATE_AUTH_OIDC_CLI_PKCE`.
-  The block's presence is what makes `GET /v1/auth` report a device login; an empty block enables it with every default.
-  `clientID` must equal `auth.oidc.audience` under `tokenType: id`,
-  and the block is refused beside `auth.oidc.browser.clientSecretFile` under that token type,
-  because the shared registration must stay a public client.
-  The chart renders the block by default through `auth.oidc.cli.enabled: true`,
-  and omits it, saying so in `NOTES.txt`, when a browser client secret under `tokenType: id` forbids it.
-- **Optional chart templates for the pieces every install needed to write by hand.**
-  `ingress.enabled` renders an Ingress routing `/`, `/ui/`, `/auth/`, and `/v1/` to the API port;
-  `podMonitor.enabled` renders a PodMonitor for the ops port, which the Service deliberately omits;
-  `prometheusRule.enabled` renders alerts for stale JWKS keys, discovery not synced, and admission saturation.
-  All three are off by default.
-- **A default CPU request.**
-  The container ships `resources.requests.cpu: 100m`
-  so a namespace whose quota counts CPU requests admits the gateway;
-  `resources.requests` now merges with the shipped value and `resources.limits` still replaces the derived memory limit.
-- **The console starts and cancels a Collection.**
-  A **Start collection** control above the Collections table, and a **Cancel** on every row that is
-  `pending` or `running`, appear when `pgo.enabled` is true and the caller's realm carries `pgo.collect`.
-  Each takes two presses in place — the second is **Confirm start** or **Confirm cancel**, beside a **Keep**
-  that puts the control back — and an armed control disarms itself after ten seconds.
-  The start sends one `Idempotency-Key` per attempt,
-  so a press repeating one whose answer was lost is answered with the Collection the first press created,
-  rather than starting a second one.
-  A `429` disables the control for the `Retry-After` it names, or for five seconds when it names none.
-  The page still edits no Service's PGO policy.
-  No Kubernetes permission changed, no NATS store was added, and no Go module was added.
-- **The end-to-end suite drives the console in a headless Chromium.**
-  Two scenarios, `console-oidc` and `console-basic`, execute the page's own JavaScript, which nothing else does:
-  the login round trip and its return, a profile download, the two Collection controls with their media type
-  and idempotency key read from the browser's network events,
-  the HTTP authentication challenge answered by the browser itself,
-  and hostile values from a query string and from an issuer claim rendered as text with no script run.
-  Both fail on a Content Security Policy violation or an uncaught exception.
-  They need a Chromium on the machine running the suite:
-  a machine with none skips both by name, a version outside the pinned range fails them,
-  and the end-to-end workflow installs the version it pins.
-  This adds `github.com/chromedp/chromedp` to the tests and nothing to the binary.
-- **`explain=true` on the targets endpoint, and the `version` and `pod` filters it now accepts.**
-  `GET .../targets?explain=true` keeps the plain listing and adds `selectorMatched`,
-  the number of Pods the Service's selector matches,
-  and `excluded`, one entry per exclusion reason with a non-zero count,
-  from the gateway's own ten-reason vocabulary in a fixed order.
-  `version` keeps only targets whose version label matches, and `pod` keeps only the target of that name;
-  a `pod` no target carries is `200` with an empty array, never `404`.
-  An accepted `explain=true` adds an `explain` field to the audit record.
-  The console asks for the diagnostic on every targets fetch and, when a Service has no target,
-  shows the counted reasons or the selector's own empty sentence in place of the Pod and version controls.
-  `profgate targets --explain` prints the same reasons as a second table beside the list.
-  No Kubernetes permission changed and no Go module was added.
-- **`profgate_pgo_synced`, and the chart's `ProfgatePGONotSynced` alert.**
-  The gauge is `1` only when the watched PGO caches have replayed and applied under the current store generation,
-  computed at scrape time and registered only when `pgo.enabled`.
-  `ProfgatePGONotSynced` fires when it has read `0` for ten minutes,
-  rendered in the chart's `PrometheusRule` alongside the other three alerts and off by default like them.
+  and the replica that reclaims the record retries it from round zero under `pgo.maxAttempts`.
+  `profgate config validate` no longer prints a second grace period for PGO.
 
 ### Removed
 
 - **`slot_timeout` no longer appears in a Collection manifest.**
   Sampling takes no slot in the admission gate interactive requests pass through,
   so a sample never waits for one and never fails for want of one.
-  A client reading `manifest.samples[].result` will not see the value again;
-  nothing replaces it, because the case it named cannot arise.
-  What bounds a replica's sampling is
-  `pgo.limits.maxParallel × pgo.limits.maxActiveCollections` fetches, by construction.
 - **The rule measuring the PGO fan-out against `limits.maxConcurrentProfiles` is gone.**
-  A configuration whose `pgo.limits.maxParallel × pgo.limits.maxActiveCollections` reaches
-  or exceeds `limits.maxConcurrentProfiles` now loads, where it used to fail validation.
-  Nothing an operator has set needs to change: every configuration that loaded before still loads.
+  A configuration whose `pgo.limits.maxParallel × pgo.limits.maxActiveCollections` reaches that ceiling now loads,
+  and every configuration that loaded before still loads.
 
 ### Fixed
 
-- A gateway with `pgo.enabled` no longer gains a duplicate cache consumer every time a watch fails to open.
-  The watched caches open four watches in turn,
-  and an open that failed partway through used to leave the watches ahead of it running,
-  so each reopen added another consumer feeding the same cache.
-  A failed open now ends the watches the attempt had already opened before it reports the failure,
-  and a process that reopens its caches runs on one consumer per prefix.
+- **A gateway with `pgo.enabled` no longer gains a duplicate cache consumer when a watch fails to open.**
+  A failed open now ends the watches the attempt had already opened,
+  so a process that reopens its caches runs on one consumer per prefix.
 - **A watch cut under a live connection no longer leaves the watched PGO caches stale.**
-  `consumeWatcher` (`internal/natskv/client.go`) used to re-open a closed watcher under the generation it already held,
-  so the replay overlaid the cache instead of rebuilding it,
-  and a key changed during the gap could stay missing from it indefinitely.
-  The cut now moves the store generation the way a disconnect already does,
-  every watch re-opens under the new one, and every watched cache rebuilds from its replay.
-  A session's cache reads (`internal/pgo/runtime.go`) carry the generation they were admitted under
-  and refuse a read whose caches have since moved,
-  so the collections listing, a Collection create, and the two `latest` routes
-  (`internal/httpapi/pgo_collections.go`) answer `503 pgo_unavailable`
-  where they used to answer `200`, `202`, `404`, or `429` over caches that had gone stale;
-  this is a behavior fix, not a contract change, because none of those four answers was ever a promise.
-  `Caches.Run` (`internal/pgo/caches.go`) also clears its four synced flags at the start of every attempt,
-  closing a window where a retried attempt reported the barrier open over the previous attempt's contents.
+  A re-opened watcher used to replay under the generation it already held,
+  so nothing rebuilt the cache and a key changed during the gap could stay missing indefinitely.
+  Such a cut now moves the store generation the way a disconnect already does, and every watched cache rebuilds.
+  A session's cache reads carry the generation they were admitted under,
+  so the collections listing, a Collection create, and the two `latest` routes now answer `503 pgo_unavailable`
+  where they used to answer over caches that had gone stale.
 
 
 ## [0.4.0] - 2026-08-27
@@ -621,7 +486,7 @@ and PGO CPU-profile collection layered on top of it.
   frozen Kubernetes 1.23 and 1.24 images and the current Kubernetes release,
   matching the 1.23 compatibility baseline.
 
-[Unreleased]: https://github.com/arloliu/profgate/compare/v0.4.0...HEAD
+[0.5.0]: https://github.com/arloliu/profgate/releases/tag/v0.5.0
 [0.4.0]: https://github.com/arloliu/profgate/releases/tag/v0.4.0
 [0.3.0]: https://github.com/arloliu/profgate/releases/tag/v0.3.0
 [0.2.0]: https://github.com/arloliu/profgate/releases/tag/v0.2.0
