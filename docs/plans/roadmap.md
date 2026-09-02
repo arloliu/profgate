@@ -333,7 +333,7 @@ Each layer has a defect, and they are not the same defect.
   It survives only when the stream was recreated or its delete markers were purged,
   which is also the likeliest reason the watcher was cut while the connection stayed up.
 
-The second is settled in the spec and has no plan yet.
+The second is settled in the spec.
 Clearing the cache alone is not the repair:
 `Session` (`internal/pgo/runtime.go:112-137`) checks the barrier once and hands back a bound view,
 and a route reads the cache afterwards without rechecking
@@ -353,7 +353,7 @@ Spec: none for the first bullet;
 the second is settled in [`pgo.md`](../specs/pgo.md) *The seam*.
 *Logging*, *Health*, *Metrics*, and *Failure Scenarios* carry what follows from it.
 Shipped: the first bullet, in pull request #17, under `Unreleased`;
-the second is not shipped.
+the second, in pull request #18, under `Unreleased`.
 Why here: neither bullet blocks item 11 nor is blocked by it.
 The first is small and self-contained.
 The second is the one an operator would never notice,

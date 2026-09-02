@@ -1,6 +1,7 @@
 # A Watch Cut Under a Live Connection Moves the Store Generation
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #18 on `fix/pgo-store-generation`.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit, and checkboxes (`- [ ]`) track progress.
@@ -317,7 +318,7 @@ and `ProfgatePGONotSynced` fires after ten minutes, the window `ProfgateNotReady
 
 **Files:** `CHANGELOG.md`, `docs/plans/roadmap.md`, this plan.
 
-- [ ] **Write the changelog entries**
+- [x] **Write the changelog entries**
 
 Under `### Fixed`: a watch cut while the NATS connection stayed up re-opened under the generation it already held,
 so the watched PGO caches missed every change made in the gap while the routes kept answering from them;
@@ -327,7 +328,7 @@ No `### Changed` entry for `Options.OnGenerationMove`:
 every `Unreleased` entry describes a configuration key, an HTTP contract, or a rendered manifest,
 and `internal/natskv` has no consumer.
 
-- [ ] **Flip the roadmap and this plan, then validate and commit**
+- [x] **Flip the roadmap and this plan, then validate and commit**
 
 Item 12's second bullet is ticked, its "has no plan yet" close goes, its `Shipped:` line names what carried it,
 this plan's line 3 becomes `**Status:** Done` and line 4 an `Outcome:` naming the same commits,

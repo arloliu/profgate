@@ -89,6 +89,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A browser holding a session is signed out once and logs in again;
   a login in flight across the upgrade returns `401` with reason `state` and starts over.
   No configuration, route, or response shape changed, and the cookie key file is unaffected.
+- **"Connection generation" is now "store generation."**
+  A watch cut while the NATS connection stays up moves it too, not only a disconnect,
+  so the documentation now names it for what moves it:
+  the barrier every watched cache and cache read is bound to.
+  The connection-state callback reports connection state alone;
+  a separate callback carries the generation move.
 - **A rollout interrupts a running Collection instead of waiting for it.**
   A terminating gateway replica stops renewing the lease on every Collection it owns
   and returns once each owner has committed or reached the cutoff of the lease it last renewed,
@@ -228,6 +234,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows the counted reasons or the selector's own empty sentence in place of the Pod and version controls.
   `profgate targets --explain` prints the same reasons as a second table beside the list.
   No Kubernetes permission changed and no Go module was added.
+- **`profgate_pgo_synced`, and the chart's `ProfgatePGONotSynced` alert.**
+  The gauge is `1` only when the watched PGO caches have replayed and applied under the current store generation,
+  computed at scrape time and registered only when `pgo.enabled`.
+  `ProfgatePGONotSynced` fires when it has read `0` for ten minutes,
+  rendered in the chart's `PrometheusRule` alongside the other three alerts and off by default like them.
 
 ### Removed
 
@@ -251,6 +262,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so each reopen added another consumer feeding the same cache.
   A failed open now ends the watches the attempt had already opened before it reports the failure,
   and a process that reopens its caches runs on one consumer per prefix.
+- **A watch cut under a live connection no longer leaves the watched PGO caches stale.**
+  `consumeWatcher` (`internal/natskv/client.go`) used to re-open a closed watcher under the generation it already held,
+  so the replay overlaid the cache instead of rebuilding it,
+  and a key changed during the gap could stay missing from it indefinitely.
+  The cut now moves the store generation the way a disconnect already does,
+  every watch re-opens under the new one, and every watched cache rebuilds from its replay.
+  A session's cache reads (`internal/pgo/runtime.go`) carry the generation they were admitted under
+  and refuse a read whose caches have since moved,
+  so the collections listing, a Collection create, and the two `latest` routes
+  (`internal/httpapi/pgo_collections.go`) answer `503 pgo_unavailable`
+  where they used to answer `200`, `202`, `404`, or `429` over caches that had gone stale;
+  this is a behavior fix, not a contract change, because none of those four answers was ever a promise.
+  `Caches.Run` (`internal/pgo/caches.go`) also clears its four synced flags at the start of every attempt,
+  closing a window where a retried attempt reported the barrier open over the previous attempt's contents.
 
 
 ## [0.4.0] - 2026-08-27
