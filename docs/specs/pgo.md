@@ -556,7 +556,8 @@ type Client interface {
     // Connected reports whether the underlying connection is currently up.
     Connected() bool
     // Generation returns the store generation: a counter the seam increments
-    // in the nats.go disconnected callback, never in the reconnected one.
+    // in the nats.go disconnected callback, and again when a watch's subscription
+    // closes under a live connection; never in the reconnected one.
     Generation() uint64
     // Synced reports whether every watch opened by the PGO runtime has delivered
     // its initial-replay marker under generation gen.
@@ -580,7 +581,7 @@ Sentinel errors, matched with `errors.Is`:
 | `ErrKeyExists` | `Create` lost; another actor wrote the key first |
 | `ErrRevisionMismatch` | `Update` or `Delete` lost; the key moved past `expected` |
 | `ErrObjectNotFound` | `Get` on an absent object |
-| `ErrUnavailable` | the connection is down or the request timed out |
+| `ErrUnavailable` | the connection is down, the request timed out, or the store or cache generation is no longer current |
 
 Every call carries a 5-second context deadline in addition to the caller's;
 the worker's lease renewals use a shorter one (section 8.4).
@@ -613,9 +614,13 @@ A collector opens no `collector.*` watch,
 because the heartbeat there is a key it writes for gateway replicas to read (section 7.5)
 and nothing in the collector decides from another collector's copy of it.
 Three prefixes are common to both roles, and each role adds one of its own.
-The barrier, `pgoSynced`, is defined as `Synced(gen)` for the current generation `gen = Generation()`:
-true only once every watch this process opened has delivered its marker under that generation.
-Until then the scheduler publishes nothing, the worker claims nothing, the sweeper runs nothing,
+The barrier, `pgoSynced`, is two halves for the current generation `gen = Generation()`:
+`Client.Synced(gen)`, true once every watch this process opened has delivered its marker under that generation,
+and `Caches.Synced(gen)`, true once every cache has applied the replay that marker ended.
+Both are needed: the seam marks a watch synced when it forwards the marker into its channel,
+which is before the cache behind it has applied a single entry,
+so a process that consulted the first half alone would decide from a cache that is still filling.
+Until the two hold together the scheduler publishes nothing, the worker claims nothing, the sweeper runs nothing,
 and every PGO route that reads or writes store state answers `503 pgo_unavailable`
 (`501 pgo_disabled` when PGO is off takes precedence, as always).
 
@@ -623,14 +628,34 @@ The barrier is tied to the store generation, not to watch re-opening,
 because nats.go marks the connection usable before it runs the asynchronous reconnected callback:
 store operations can succeed in the gap between the two,
 and a flag cleared only by a callback would let a tick or a request decide from caches that missed an outage.
-The seam increments `Generation()` in the *disconnected* callback,
-which runs before the connection is usable again,
-so a disconnect clears the barrier at once and it stays cleared until the watches are re-opened for the new generation
-and every one of them has replayed again
-(a watcher that was cut off has an unknown gap behind it, so the seam re-opens every one of them).
-Every watched cache is rebuilt from the replay rather than patched,
+Two events move `Generation()`, and the reconnected callback is neither of them.
+The first is the nats.go *disconnected* callback, which runs before the connection is usable again.
+The second is a watch whose subscription closes while the connection is still up:
+a bucket's stream deleted or recreated, or a consumer the NATS user may no longer create.
+That one is the rarer of the two, and from a cache's point of view it is the same event as the first —
+a watcher that was cut off has an unknown gap behind it, whatever the connection was doing —
+so it gets the same answer.
+Either way the barrier clears at once and stays cleared
+until every watch has been re-opened under the new generation and has replayed again.
+The seam re-opens every watch, not only the one that was cut.
+Every watched cache is reset under the new generation and rebuilt from its replay rather than patched,
 and marker entries and cache contents carry the generation they were delivered under,
 so a cache is either complete as of a point in the stream under the current generation or not consulted at all.
+That promise reaches a request already inside the barrier.
+A session binds the generation it passed the barrier under,
+and every cache read it makes takes that generation,
+so a read arriving after those caches were reset answers `503 pgo_unavailable` rather than an empty listing.
+`Caches.Run` clears its four synced flags at the start of every attempt,
+so an attempt that fails partway through the set leaves the barrier shut until a whole set has replayed again.
+
+**How a move is reported.**
+`Options.OnGenerationMove`, when set, runs after either event has moved the store generation:
+the disconnected callback, or a watch cut under a live connection.
+`cmd/profgate` wires it to `Runtime.MoveGeneration`,
+which ends every request parked on the broadcast of section 10.4 under the generation just left behind.
+`Options.OnConnectionChange` reports connection state alone and drives `profgate_nats_connected`.
+The two are separate fields because a watch cut moves the generation while the connection is still up,
+and reporting that cut through the connection callback would read `0` on a gauge whose subject never went down.
 
 Every scheduler tick, worker scan, sweeper pass, owner loop, publisher pass, and state-touching PGO handler begins with
 
@@ -643,8 +668,10 @@ stores, err := c.View(gen)                 // ErrUnavailable when gen already mo
 and uses only that view —
 `stores.Jobs`, `stores.Config`, `stores.Artifacts`, written `jobs`, `config`, `artifacts` in the pseudocode below —
 for the whole operation;
-a call on the view after a disconnect is `ErrUnavailable` to it,
+a call on the view after the generation moved is `ErrUnavailable` to it,
 so one tick or request never mixes two views of the bucket.
+`c.Synced(gen)` in that preamble is the whole barrier, both halves of it,
+and the scheduler and claim preambles below abbreviate it the same way.
 The barrier is what makes the counts of section 7.2 and the policy reads of section 10.2 trustworthy after a restart:
 nothing in either process decides from a cache that has not yet seen the bucket.
 `/readyz` does not depend on the flag (section 12.2).
@@ -1421,8 +1448,11 @@ Nodes whose clocks disagree by more than that can reclaim a live Collection earl
 the result is a duplicated attempt, never a lost or corrupted artifact (section 8.6).
 
 The owner loop takes its view once, at claim time, from the generation the claiming scan ran under;
-a disconnect during the Collection makes every later renewal `ErrUnavailable` on that view,
-which is the abort path below.
+a store-generation move during the Collection makes every later renewal `ErrUnavailable` on that view,
+whether a disconnect or a watch cut moved it,
+and no call through the superseded view reaches NATS.
+The owner keeps renewing on its timer until `committedLeaseUntil - skewMargin` passes without a success,
+and then takes the abort path below.
 Every `leaseTTL / 3` the owner loop renews:
 
 ```text
@@ -2826,6 +2856,13 @@ collection, namespace, service, state, attempt, reason, instance
 
 Every sample emits one record at debug level with `pod`, `round`, `result`, `bytes`; never an IP.
 
+The seam emits one record whenever the store generation moves,
+naming what moved it: the disconnected callback, or the watch whose subscription closed and the prefix it carried.
+Re-opening the watches emits a record only when its outcome changes —
+one when a re-open starts failing, carrying the error, and one when every watch is open and has replayed again.
+The re-open retries on a fixed interval and a retry logs nothing,
+so a bucket that stays absent for an hour leaves two records rather than one per retry.
+
 ### 12.2 Health
 
 A gateway replica's `/readyz` additionally requires the NATS preflight to have passed when `pgo.enabled` is true.
@@ -2838,11 +2875,15 @@ the same two conditions, minus everything about serving requests —
 and no Service selects it, so readiness there gates only the rollout:
 a collector that cannot reach NATS holds the new Pod unready
 and leaves the previous one running until it can.
-A NATS connection lost afterwards does not change `/readyz` either:
-interactive profiling is unaffected, PGO routes answer `503 pgo_unavailable`
-(the disconnect moves the store generation and so clears the barrier,
-which stays cleared until every watch has replayed under the new generation),
-and the client library reconnects on its own.
+Store state that becomes unreadable afterwards does not change `/readyz` either:
+interactive profiling is unaffected, and PGO routes answer `503 pgo_unavailable`
+(the store generation moves and so clears the barrier,
+which stays cleared until every watch has replayed under the new generation).
+A lost connection repairs itself, because the client library reconnects.
+A bucket whose stream was deleted or recreated does not:
+the process stays up and the seam retries the re-open until the bucket exists again,
+so `/readyz` is green and every PGO route refuses for as long as that lasts.
+`profgate_pgo_synced` is where that state shows (section 12.3).
 
 ### 12.3 Metrics
 
@@ -2855,6 +2896,7 @@ and the client library reconnects on its own.
 | `profgate_sweeper_deletes_total` (counter) | `kind` (`artifact`/`record`/`slot`/`active`/`orphan`/`probe`) |
 | `profgate_collections_active` (gauge) | — |
 | `profgate_pgo_collector_available` (gauge) | — |
+| `profgate_pgo_synced` (gauge) | — |
 | `profgate_nats_connected` (gauge) | — |
 
 `profgate_requests_total` gains `endpoint` values
@@ -2876,23 +2918,40 @@ so its `cancelled` and `expired` counts come from gateway replicas and the rest 
 `profgate_collection_samples_total`, `profgate_collection_duration_seconds`, `profgate_schedule_slots_total`,
 `profgate_sweeper_deletes_total`, and `profgate_collections_active` are the collector's alone;
 `profgate_requests_total` and `profgate_pgo_collector_available` are a gateway replica's alone;
-`profgate_nats_connected` is on both.
+`profgate_nats_connected` and `profgate_pgo_synced` are on both,
+because both roles open watches and both refuse to decide behind the barrier.
 `profgate_pgo_collector_available` is a gateway metric on purpose:
 a collector cannot report its own absence, and the replicas that refuse work for it can.
 It is `1` while that replica sees a fresh heartbeat and `0` otherwise (section 7.5),
 and it exists only when `pgo.enabled`.
+
+`profgate_pgo_synced` is the replay barrier as a gauge, the PGO counterpart of `profgate_discovery_synced`:
+`1` only when both halves hold for the current store generation —
+every watch this process opened has replayed, and every cache has applied that replay —
+and `0` until then.
+It reads `0` from the moment the generation moves
+until the last watch has replayed and its cache has applied that replay,
+so it dips on every reconnect and stays down for as long as a bucket a watch needs is missing.
+It exists only when `pgo.enabled`.
 
 Every one of them is on an ops listener, which no Service selects,
 so a scrape configuration has to reach both Deployments to see the whole picture —
 which is why the chart's `PodMonitor` selects the common labels and no `component`
 (the gateway spec's *Build and Deployment* section).
 
-The chart's `PrometheusRule` carries one PGO alert, rendered only when `pgo.enabled`:
-`profgate_pgo_collector_available == 0` for 5 minutes, at warning severity,
+The chart's `PrometheusRule` carries two PGO alerts, rendered only when `pgo.enabled`
+and off by default with the rest of the rule.
+One is `profgate_pgo_collector_available == 0` for 5 minutes, at warning severity,
 whose text says that policy writes still succeed and that no Collection will run until a collector returns.
 Five minutes is long enough to sit out a collector rolling update,
 whose new Pod writes its first heartbeat as soon as its preflight passes,
 and short enough that a collection outage does not first surface as a stale artifact hours later.
+The other, `ProfgatePGONotSynced`, is `profgate_pgo_synced == 0` for ten minutes, at warning severity,
+whose text says that the process is deciding nothing from its caches
+and that, on a gateway replica, every PGO route is refusing.
+Ten minutes is the window `ProfgateNotReady` gives `profgate_discovery_synced`,
+and it is far longer than a reconnect and its replay,
+so what holds it firing is a store a watch cannot re-open.
 
 ### 12.4 Shutdown
 
@@ -3020,8 +3079,12 @@ one server per subtest.
   and stops on context end;
   the marker arrives even for an empty prefix;
   after the in-process server is restarted the seam re-opens the watch and delivers a fresh marker after the full replay;
-  the disconnected callback alone moves `Generation()` and makes `Synced(gen)` false for the new generation
-  before the connection is usable again, with no watch re-opened yet;
+  the disconnected callback moves `Generation()` before the connection is usable again and with no watch re-opened yet,
+  and it makes `Synced(gen)` false for the new generation;
+  a watch whose subscription is closed while the connection stays up moves `Generation()` before the seam re-opens it,
+  and `Synced` for the generation that watch held is false from that moment
+  (the test fails when a cut watcher re-opens under the generation it was already holding);
+  the reconnected callback moves nothing;
   a call on a `View(gen)` issued after the generation moved is `ErrUnavailable` before it reaches the server,
   and one issued before the move whose result arrives after it is `ErrUnavailable` whatever the server answered;
   `View(gen)` for a generation that is not current is `ErrUnavailable`;
@@ -3255,7 +3318,17 @@ one server per subtest.
   no cache indexes an idempotency key, asserted by a scan of the package's cache types,
   because every read of one is authoritative;
   a store-generation change broadcasts on the channel a parked handler selects on,
-  reaching every subscriber once.
+  reaching every subscriber once;
+  `Caches.Run` clears its four synced flags at the start of every attempt,
+  so `Synced(gen)` is false between an attempt that failed partway through the set and the attempt that follows it
+  (the test fails when the flags an earlier attempt set survive into the next one);
+  a session taken before the generation moves, released into a cache read after the caches were reset,
+  answers `503 pgo_unavailable` rather than an empty listing,
+  asserted once for every cache path a session reads —
+  `CachedOverride`, `Collections` including `LatestCompleted`, and `Live` —
+  so a path that reads its cache without the session's generation fails the case that covers it;
+  a watch cut under a live connection resets all four caches under the new generation,
+  so a key the re-opened replay no longer carries is absent from the cache once `Synced` is true again.
 - `internal/pgo` idempotency receipts, over the in-process server:
   the receipt key is `idem.` followed by 32 hexadecimal characters,
   the head of the SHA-256 of the four length-prefixed scope fields;
@@ -3279,6 +3352,9 @@ one server per subtest.
   a table over every PGO route × method × realm flag × state → status and code, including `501` with `pgo.enabled` false
   and `503` with a fake `Client` whose `Connected()` reports false or with the replay barrier not yet cleared
   (every state-reading and state-writing PGO route, while `/readyz` stays `200`);
+  the generation moved between a route's `Session` and the cache it then reads —
+  `CachedOverride`, `Collections` including `LatestCompleted`, and `Live` —
+  answering `503 pgo_unavailable` on each of the routes those three paths serve;
   `If-Match` matrix of section 10.1, and `DELETE` against a key moved between its read and its delete answering `412`;
   cancel racing a renewal at a barrier: the cancel wins on its retry with `200`, never `409`;
   cancel against a record already `completed` answering `409 collection_terminal`,
@@ -3454,7 +3530,11 @@ one server per subtest.
   `SIGTERM` to `collect` stops the loops and stops lease renewal,
   an owner that can finish inside the remaining lease commits,
   one that cannot writes nothing and leaves a reclaimable record,
-  and the process exits without waiting for a work goroutine held at a barrier inside `Write`.
+  and the process exits without waiting for a work goroutine held at a barrier inside `Write`;
+  `profgate_pgo_synced` is fed from both halves of the barrier in each role:
+  it reads `1` only once the watches have replayed
+  and the caches have applied that replay under the current generation,
+  and `0` again from either move — a disconnect, and a watch cut under a live connection.
 - `deploy/`: the NATS account fragment equals the section 3.3 list exactly.
   A manifest test pins the NATS credentials Secret volume on both Deployments:
   volume name, Secret source with `defaultMode: 0440`,
@@ -3499,8 +3579,8 @@ The harness provisions the three buckets with `nats.go` through a port-forward b
 with the configuration of section 3.2 (file storage, no TTL, `Discard: new`, no size limits).
 Between scenarios it purges every key and object so each starts empty;
 it never deletes or recreates a bucket while a gateway or a collector runs,
-because both roles' watches and consumers belong to the original streams
-and a recreated stream would leave them watching nothing.
+because that cuts every watch of that bucket and moves the store generation (section 5.1),
+which is a behavior of its own rather than the behavior a scenario is measuring.
 Both Deployments run with `pgo.enabled: true`, and the gateway with a realm whose `pgo` flags are all true.
 Scenarios that need a proxy to a test-app Pod to complete declare `needsPodReach`.
 
@@ -3605,12 +3685,13 @@ nothing depends on it except `httpapi` and `cmd`.
 | a collector's watches still replaying after preflight or after a reconnect | scheduler, worker, and sweeper idle until every watch has delivered its replay marker under the current store generation |
 | a gateway replica's watches still replaying | `/readyz` 200; PGO routes `503 pgo_unavailable` under the same condition |
 | a record's policy snapshot exceeds the claiming replica's ceilings | `failed limit_exceeded` on claim or reclaim, before any local slot is reserved; active key released |
-| a bucket missing or of the wrong kind | process exits naming the bucket |
+| a bucket missing or of the wrong kind at preflight | process exits naming the bucket |
 | a bucket with a TTL, memory storage, `Discard: old`, or a size limit below the contract | preflight reads the status; process exits naming the bucket and the field |
 | a bucket reaches `MaxBytes` | the write fails `ErrUnavailable` under `Discard: new`; nothing already stored is evicted |
 | on-demand creation faster than `onDemandPerMinute` | `429 rate_limited` before any write |
-| NATS user lacks a permission | a preflight probe fails; process exits naming the bucket and the operation |
+| a required permission absent at preflight | a preflight probe fails; process exits naming the bucket and the operation |
 | NATS unreachable while running | PGO routes `503 pgo_unavailable`; scheduler creates nothing; an owner aborts once `leaseUntil - skewMargin` passes without a renewal; the disconnect moves the store generation and clears the barrier before the connection is usable again; after reconnect the watches replay behind the barrier, then a scan reclaims |
+| a bucket's stream deleted or recreated, or consumer-create permission withdrawn, while running | the watches on it close under a live connection; the store generation moves, the barrier clears, and every watched cache is reset; PGO routes `503 pgo_unavailable`, new scans and passes idle, an owner already running keeps retrying its superseded view until `committedLeaseUntil - skewMargin` and then aborts, and no call through that view reaches NATS; the process stays up and `/readyz` stays green; the seam retries the re-open until the bucket exists again, with `profgate_pgo_synced` at `0` and `ProfgatePGONotSynced` firing after ten minutes; the caches are rebuilt from the replay under the new generation, so keys the bucket no longer holds leave them rather than surviving in them |
 | collector crashes mid-Collection | lease expires; the next collector's scan reclaims from round 0 with `attempt + 1` under a new object name |
 | stale owner finishes after a reclaim completed | its update loses; it deletes only its own object; the committed artifact is untouched |
 | owner's merge, serialization, or `Put` outlasts its committed lease | the owner issues no final update; the work finishes its current `Merge`/`Compact`/`Write`/`Put` and exits; its local slot is held until then; a scan reclaims |
@@ -3854,3 +3935,33 @@ Updated in the same change:
 | `internal/client`, `cmd/profgate` | the field leaves the policy the client decodes and the row `profgate pgo policy` prints |
 | `docs/api.md`, `docs/configuration.md`, `docs/pgo.md` | the field leaves the example body, the detail-code table, and the defaults table; the refusal and the fact that nothing replaces the key |
 | `CHANGELOG.md` | the client-visible moves: the field leaving the effective policy and the printed table, a write that still carries it refused as an unknown field, and the shifted policy hash a key minted before the upgrade replays against |
+
+A watch cut under a live connection moving the store generation,
+and the two smaller guarantees that move makes true —
+a cache read bound to the session that took it, and an attempt that starts from cleared flags —
+amend the following text.
+The first table lists the spec edits made in the same change as this block;
+the second lists the documents and packages that carry the behavior once it is implemented.
+
+Amended:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *The seam* | the store generation moves in the disconnected callback and when a watch's subscription closes under a live connection, never in the reconnected one; either move re-opens every watch and resets every watched cache; a session's cache reads take the generation it bound and answer `503 pgo_unavailable` on a mismatch; `Caches.Run` clears its four synced flags at the start of every attempt; `Options.OnGenerationMove` reports either move and `Options.OnConnectionChange` reports connection state alone |
+| `docs/specs/pgo.md` | *Logging* | one record for a store-generation move naming what moved it, and a re-open record only when its outcome changes |
+| `docs/specs/pgo.md` | *Health* | a bucket whose stream was deleted or recreated keeps the process up and `/readyz` green while every PGO route refuses |
+| `docs/specs/pgo.md` | *Metrics* | `profgate_pgo_synced`, emitted by both roles, and a second PGO alert `ProfgatePGONotSynced` over it |
+| `docs/specs/gateway.md` | *Build and Deployment* | the chart's `PrometheusRule` renders the PGO alerts of *Metrics* rather than the collector-availability one alone |
+| `docs/specs/pgo.md` | *Unit*, *End-to-end*, *Failure Scenarios* | the watch-cut move, the session that reads a cache reset under it, and the flags cleared between attempts; the harness's reason for never recreating a bucket under a running process; a row for a bucket's stream deleted or recreated while running |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `internal/natskv` | a watcher closed under a live connection moves the generation before the seam re-opens it, and `Options.OnGenerationMove` carries either move to the runtime |
+| `internal/pgo` | `Caches.Run` clears its synced flags per attempt; the cache reads take a generation and refuse a mismatch; `Session` passes the generation it bound |
+| `internal/httpapi` | the routes that read a cache through a session answer `503 pgo_unavailable` on a generation mismatch |
+| `internal/metrics`, `internal/ops` | the `profgate_pgo_synced` gauge |
+| `cmd/profgate` | `OnGenerationMove` wired to `Runtime.MoveGeneration`, `OnConnectionChange` left to the connection gauge, and `profgate_pgo_synced` fed from both halves of the barrier |
+| `docs/deployment.md` | `profgate_pgo_synced` in the metrics table and `ProfgatePGONotSynced` in the alert list |
+| `deploy/chart/profgate/values.yaml`, `templates/prometheusrule.yaml`, `README.md`, `deploy/chart_test.go` | the `ProfgatePGONotSynced` alert, rendered when `pgo.enabled`, and the test that pins the alert names the chart renders |

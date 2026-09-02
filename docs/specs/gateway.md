@@ -2357,7 +2357,7 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
     beside the egress [`pgo.md`](pgo.md) *Deployment* lists.
   - A prometheus-operator `PrometheusRule`, off by default,
     over the metrics section's readiness, admission, and signing-key gauges,
-    and, when `pgo.enabled`, the collector-availability alert of [`pgo.md`](pgo.md) *Metrics*,
+    and, when `pgo.enabled`, the PGO alerts of [`pgo.md`](pgo.md) *Metrics*,
     replaceable outright by a rule set the operator supplies.
 
   `tls.enabled` gates the certificate volume, its mount, and the `server.tls` keys in the rendered configuration.
