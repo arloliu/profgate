@@ -58,6 +58,40 @@ func (w *watchedCaches) failWatch(prefix string) {
 // liftWatchFailure lets every later watch open.
 func (w *watchedCaches) liftWatchFailure() { w.hook.setBefore(nil) }
 
+// failWatchAfterReplay makes the watch on prefix fail to open,
+// but only once every named cache has marked itself synced,
+// so the attempt that fails leaves exactly those flags standing.
+func (w *watchedCaches) failWatchAfterReplay(prefix string, kinds ...cacheKind) {
+	w.hook.setBefore(func(op, key string) (error, bool) {
+		if op != "watch" || key != prefix {
+			return nil, false
+		}
+		// The wait runs on the goroutine Run is on,
+		// so it ends on a deadline rather than failing the test from here;
+		// the caller asserts the flags it wanted.
+		deadline := time.Now().Add(fixtureTimeout)
+		for !w.replayed(kinds...) && time.Now().Before(deadline) {
+			time.Sleep(2 * time.Millisecond)
+		}
+
+		return errWatchOpen, true
+	})
+}
+
+// replayed reports whether every named cache has marked itself synced,
+// read the way Caches.Synced reads it and without its generation check.
+func (w *watchedCaches) replayed(kinds ...cacheKind) bool {
+	w.caches.mu.Lock()
+	defer w.caches.mu.Unlock()
+	for _, kind := range kinds {
+		if !w.caches.synced[kind] {
+			return false
+		}
+	}
+
+	return true
+}
+
 // run starts Run and returns a channel carrying its result.
 func (w *watchedCaches) run(ctx context.Context) <-chan error {
 	out := make(chan error, 1)
@@ -129,6 +163,9 @@ func TestCachesRunFailedWatchOpen(t *testing.T) {
 	if live := wc.hook.watchesLive(); live != 0 {
 		t.Errorf("%d watches outlived the failed attempt, want none", live)
 	}
+	if wc.caches.Synced(wc.client.Generation()) {
+		t.Error("the barrier is open although the attempt failed partway through the four watches")
+	}
 
 	// The caller answers a failure by calling Run again over the same Caches.
 	wc.liftWatchFailure()
@@ -149,18 +186,85 @@ func TestCachesRunFailedWatchOpen(t *testing.T) {
 	}
 }
 
+// TestCachesRunClearsSyncedFlagsPerAttempt covers the barrier across two attempts.
+// An attempt that fails partway through the four watches leaves the flags of the watches it opened,
+// and the next attempt starts from none of them,
+// so the barrier stays shut until a whole set has replayed under it.
+func TestCachesRunClearsSyncedFlagsPerAttempt(t *testing.T) {
+	f := startPGO(t)
+	wc := newWatchedCaches(t, f)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The third of the four sources fails only once the two ahead of it have replayed,
+	// so the first attempt leaves exactly two flags standing.
+	wc.failWatchAfterReplay(activePrefix, cacheOverrides, cacheJobs)
+	if err := wc.awaitRun(wc.run(ctx)); !errors.Is(err, errWatchOpen) {
+		t.Fatalf("the first attempt returned %v, want the open failure", err)
+	}
+	if !wc.replayed(cacheOverrides, cacheJobs) {
+		t.Fatal("the first attempt marked neither watch it opened synced, so it left nothing for the second to clear")
+	}
+
+	// The two caches the first attempt filled are held through the whole second attempt,
+	// so only active and slots can mark themselves synced under it.
+	// The gate is installed between the attempts, with no consumer of the first one left running.
+	release := make(chan struct{})
+	wc.caches.applyGate = func(which cacheKind, _ natskv.Entry) {
+		if which == cacheOverrides || which == cacheJobs {
+			<-release
+		}
+	}
+
+	wc.liftWatchFailure()
+	result := wc.run(ctx)
+	waitFor(t, "the second attempt replays the two caches it is not holding", func() bool {
+		return wc.replayed(cacheActive, cacheSlots)
+	})
+	if wc.caches.Synced(wc.client.Generation()) {
+		t.Error("the barrier is open although two of the four caches have not replayed under this attempt")
+	}
+
+	close(release)
+	waitFor(t, "the caches complete their replay", func() bool {
+		return wc.caches.Synced(wc.client.Generation())
+	})
+
+	cancel()
+	if err := wc.awaitRun(result); err != nil {
+		t.Errorf("the second attempt returned %v, want nil on a cancelled context", err)
+	}
+}
+
 // TestCachesRunViewFailure covers the error path ahead of every watch.
 func TestCachesRunViewFailure(t *testing.T) {
 	f := startPGO(t)
 	wc := newWatchedCaches(t, f)
 	viewErr := errors.New("no view")
 
+	// A whole attempt runs first, so all four flags stand when the failing attempt starts.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := wc.run(ctx)
+	waitFor(t, "the caches complete their replay", func() bool {
+		return wc.caches.Synced(wc.client.Generation())
+	})
+	cancel()
+	if err := wc.awaitRun(result); err != nil {
+		t.Fatalf("the first attempt returned %v, want nil on a cancelled context", err)
+	}
+	opened := len(wc.hook.watchesOpened())
+
 	err := wc.caches.Run(t.Context(), viewFailClient{Client: wc.client, err: viewErr})
 	if !errors.Is(err, viewErr) {
 		t.Fatalf("Run returned %v, want the view failure", err)
 	}
-	if opened := wc.hook.watchesOpened(); len(opened) != 0 {
+	if len(wc.hook.watchesOpened()) != opened {
 		t.Errorf("Run opened %v, want nothing when the view fails", wc.watchPrefixes())
+	}
+	if wc.caches.Synced(wc.client.Generation()) {
+		t.Error("the barrier is open although the failing attempt never reached a watch")
 	}
 }
 

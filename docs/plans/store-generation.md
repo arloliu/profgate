@@ -111,7 +111,7 @@ An attempt that opens `overrides` and `jobs` and then fails on `active` (`:305-3
 and the next attempt overlays a replay `apply` never resets,
 so `Caches.Synced(gen)` turns true as the `active` and `slots` markers land, with two replays queued.
 
-- [ ] **Write the tests, run them, and record which subtests were red**
+- [x] **Write the tests, run them, and record which subtests were red**
 
 `TestCachesRunClearsSyncedFlagsPerAttempt`, new, over the `watchedCaches` fixture (`caches_test.go:19-44`):
 fail the `active` open with `wc.failWatch(activePrefix)` (`:47`),
@@ -126,16 +126,17 @@ set the four flags through a first attempt that reaches `Synced(gen)` and cancel
 then run the attempt whose view fails,
 and `wc.caches.Synced(wc.client.Generation())` is false afterwards.
 A `clearSynced` placed below the view failure's early return leaves that assertion red.
-`TestCachesResetOnAWatchCut`, new: seed a `job.*` key, wait for `Synced(gen)`,
-delete and recreate `PROFGATE_JOBS` through the fixture's `f.js` (`fixtures_test.go:62`),
-then assert `Synced(gen)` is false through the gap and the key is gone once the caches are synced again.
-That deletion cuts three watches, so the generation moves more than once
-and every wait re-reads `client.Generation()` on each poll rather than holding one captured before it.
-**The first action of this step is to confirm that the re-open binds:**
-`WatchFiltered` binds by stream name, so a stream recreated under it is reachable through the handle the client holds.
-If it is not, stop and report it — the seam would have to re-open the bucket handle, which this plan does not design.
+A watch cut has no test in `internal/pgo`.
+The cut is driven through `client.testWatchOpened`, an unexported field of an unexported type in `internal/natskv`,
+which no test outside that package reaches,
+and deleting `PROFGATE_JOBS` through the fixture's `f.js` does not cut the watches over it promptly:
+the seam's own tests cut a watcher through that field and delete the bucket only to make the re-opens fail.
+Covering the cut from `internal/pgo` needs an exported seam in `internal/natskv`, which this task does not touch,
+so the rebuild from a replay under a moved generation stays covered at the seam by `TestGeneration`,
+and a bucket deleted or recreated under a running process is uncovered.
+Whether a re-open binds to a stream recreated under the handle the client holds is unverified for the same reason.
 
-- [ ] **Clear the flags, then validate and commit**
+- [x] **Clear the flags, then validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/pgo/ && mise run lint && mise run test && mise run check

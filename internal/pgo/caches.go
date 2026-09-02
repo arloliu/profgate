@@ -282,10 +282,11 @@ func (c *Caches) jobChanges() <-chan struct{} { return c.jobPulse }
 // because the replay barrier stays closed until the watches exist.
 // A Caches whose Run returned an error is what the caller calls again.
 // One that ran to a healthy return is not.
-// Its sync flags still stand from the watches that fed them,
-// and a later attempt that failed its first open would report a completed replay over an empty cache.
+// Every attempt starts by clearing the four sync flags,
+// so an attempt that failed partway through the set leaves the barrier shut until a whole set has replayed.
 func (c *Caches) Run(ctx context.Context, client natskv.Client) error {
 	gen := client.Generation()
+	c.clearSynced()
 	stores, err := client.View(gen)
 	if err != nil {
 		return fmt.Errorf("pgo: open watched caches: %w", err)
@@ -325,6 +326,16 @@ func (c *Caches) Run(ctx context.Context, client natskv.Client) error {
 	wg.Wait()
 
 	return nil
+}
+
+// clearSynced drops the replay flag of every cache.
+// It runs ahead of the view of an attempt rather than beside a watch,
+// so an attempt that opens nothing at all starts from cleared flags too.
+// The generations stay as they are, because apply resets a cache whose generation moved.
+func (c *Caches) clearSynced() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.synced = [cacheCount]bool{}
 }
 
 // consume applies one watch's entries until its channel closes.
