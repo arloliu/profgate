@@ -107,8 +107,10 @@ type Stores struct {
 type Client interface {
 	// Connected reports whether the underlying connection is currently up.
 	Connected() bool
-	// Generation returns the store generation: a counter the seam increments
-	// in the nats.go disconnected callback, never in the reconnected one.
+	// Generation returns the store generation:
+	// a counter the seam increments in the nats.go disconnected callback,
+	// and again when a watch's subscription closes under a live connection,
+	// never in the reconnected one.
 	Generation() uint64
 	// Synced reports whether every watch opened by the PGO runtime has delivered
 	// its initial-replay marker under generation gen.
@@ -129,4 +131,11 @@ type Options struct {
 	// metrics.Recorder.NATSConnected so natskv never imports internal/metrics.
 	// Without the initial call the gauge would read zero until the first reconnect.
 	OnConnectionChange func(up bool)
+
+	// OnGenerationMove, when set, runs after either event that moves the store generation:
+	// the disconnected callback, or a watch whose subscription closed under a live connection.
+	// The caller wires it to the runtime call that ends every request parked under the generation just left behind.
+	// It is a separate field from OnConnectionChange because a watch cut moves the generation
+	// while the connection is still up.
+	OnGenerationMove func()
 }

@@ -44,6 +44,7 @@ func Preflight(ctx context.Context, opts Options, instanceID string, log *slog.L
 		connectTimeout:     opts.ConnectTimeout,
 		name:               "profgate",
 		onConnectionChange: opts.OnConnectionChange,
+		onGenerationMove:   opts.OnGenerationMove,
 	}, log)
 	if err != nil {
 		return nil, fmt.Errorf("nats preflight: %w", err)

@@ -48,6 +48,10 @@ type connectConfig struct {
 	// true itself once the first connection is up.
 	onConnectionChange func(up bool)
 
+	// onGenerationMove, when set, runs after the store generation has moved,
+	// whether the disconnected callback or a closed watch subscription moved it.
+	onGenerationMove func()
+
 	// dialer, when set, replaces the TCP dialer.
 	// It exists only for the test that records every subject the seam
 	// publishes to; production never sets it.
@@ -72,10 +76,27 @@ type client struct {
 	// onConnectionChange mirrors connectConfig.onConnectionChange.
 	onConnectionChange func(up bool)
 
+	// onGenerationMove mirrors connectConfig.onGenerationMove.
+	onGenerationMove func()
+
+	// moveMu serializes a whole move: the increment, the record it writes, and the callback it runs.
+	// Two watchers whose subscriptions close together each move the generation.
+	// A report that reached the runtime out of its order would end the requests of a later generation.
+	// It is taken outside c.mu and never held while c.mu is,
+	// so the callback still runs with c.mu released.
+	moveMu sync.Mutex
+
 	mu       sync.Mutex
 	gen      uint64
 	genMoved chan struct{} // closed and replaced when the generation moves
 	watches  map[*watchState]struct{}
+
+	// reopening stands from a generation move until every watch has replayed under the new generation,
+	// and reopenFailing records that one re-open has already failed and written its record.
+	// Both are client-wide,
+	// so a cut that took down several watches at once writes one failure record rather than one for each of them.
+	reopening     bool
+	reopenFailing bool
 
 	// permMu guards permErr, the last asynchronous permission violation the
 	// server reported; preflight reads it to turn a silent request timeout
@@ -96,6 +117,18 @@ type client struct {
 	// does not deliver even though every write succeeded; production never
 	// sets it.
 	testInterceptProbeWatch func(bucket string, e Entry) bool
+
+	// testWatchOpened, when non-nil, runs with every watcher this client opens.
+	// It exists only so a test can stop a live watcher,
+	// which drives the same closed subscription a deleted stream drives;
+	// production never sets it.
+	testWatchOpened func(prefix string, w jetstream.KeyWatcher)
+
+	// testHoldReopen, when non-nil, runs at the top of every re-open attempt
+	// and blocks for as long as the test holds it.
+	// It exists only so a test can observe the gap where the watch is down;
+	// production never sets it.
+	testHoldReopen func(prefix string)
 }
 
 var _ Client = (*client)(nil)
@@ -110,6 +143,7 @@ func connect(ctx context.Context, cfg connectConfig, log *slog.Logger) (*client,
 		watches:            make(map[*watchState]struct{}),
 		probeDeadline:      probeTimeout,
 		onConnectionChange: cfg.onConnectionChange,
+		onGenerationMove:   cfg.onGenerationMove,
 	}
 
 	reconnectWait := cfg.reconnectWait
@@ -229,13 +263,43 @@ func (c *client) close() {
 // It runs before the connection is usable again, so a disconnect clears the
 // replay barrier at once; the reconnected callback moves nothing.
 func (c *client) bumpGeneration(err error) {
+	c.moveGeneration("disconnected", "error", err)
+}
+
+// moveGeneration increments the store generation and reports the move.
+// Both causes reach it: the disconnected callback, and a watch whose subscription closed under a live connection.
+// reason names the cause, and the one record it writes is the record for that move.
+// The whole sequence runs under moveMu, so two moves report in the order they were made
+// and no report reaches the runtime naming a generation another move has already left behind.
+func (c *client) moveGeneration(reason string, attrs ...any) {
+	c.moveMu.Lock()
+	defer c.moveMu.Unlock()
+
 	c.mu.Lock()
 	c.gen++
 	close(c.genMoved)
 	c.genMoved = make(chan struct{})
+	c.reopening = true
 	gen := c.gen
 	c.mu.Unlock()
-	c.log.Warn("nats disconnected", "generation", gen, "error", err)
+	c.log.Warn("nats store generation moved", append([]any{"reason", reason, "generation", gen}, attrs...)...)
+	if c.onGenerationMove != nil {
+		c.onGenerationMove()
+	}
+}
+
+// reopenFailed writes the one record that says re-opening the watches has started failing.
+// The state it reads is client-wide,
+// so a cut that took several watches down at once writes one record rather than one for each of them,
+// and the retries that follow write nothing.
+func (c *client) reopenFailed(prefix string, err error) {
+	c.mu.Lock()
+	first := !c.reopenFailing
+	c.reopenFailing = true
+	c.mu.Unlock()
+	if first {
+		c.log.Warn("nats watch re-open failing", "prefix", prefix, "error", err)
+	}
 }
 
 func (c *client) Connected() bool {
@@ -251,6 +315,12 @@ func (c *client) Generation() uint64 {
 func (c *client) Synced(gen uint64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	return c.syncedLocked(gen)
+}
+
+// syncedLocked is Synced with c.mu already held.
+func (c *client) syncedLocked(gen uint64) bool {
 	if gen != c.gen {
 		return false
 	}
@@ -259,6 +329,24 @@ func (c *client) Synced(gen uint64) bool {
 			return false
 		}
 	}
+
+	return true
+}
+
+// markSynced records one watch's replay marker under gen.
+// It takes c.mu before ws.mu, the order every path that touches both takes.
+// It reports whether this marker is the one that ended a re-open:
+// the last of the watches to replay again under the generation the move left them.
+func (c *client) markSynced(ws *watchState, gen uint64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ws.setMarker(gen)
+	if !c.reopening || !c.syncedLocked(gen) {
+		return false
+	}
+	c.reopening = false
+	c.reopenFailing = false
+
 	return true
 }
 
@@ -566,6 +654,9 @@ func (c *client) openWatcher(ctx context.Context, kv jetstream.KeyValue, prefix 
 			cancel()
 			return nil, nil, r.err
 		}
+		if hook := c.testWatchOpened; hook != nil {
+			hook(prefix, r.w)
+		}
 		return r.w, cancel, nil
 	case <-timer.C:
 		// The canceled context aborts the pending open; if it produced a
@@ -585,7 +676,7 @@ func (c *client) runWatch(ctx context.Context, kv jetstream.KeyValue, prefix str
 	defer close(ch)
 	defer c.removeWatch(ws)
 	for {
-		done := c.consumeWatcher(ctx, w, gen, moved, ch, ws)
+		done := c.consumeWatcher(ctx, w, prefix, gen, moved, ch, ws)
 		//nolint:errcheck // stopping a watcher whose subscription is already gone is fine
 		_ = w.Stop()
 		stop()
@@ -598,12 +689,16 @@ func (c *client) runWatch(ctx context.Context, kv jetstream.KeyValue, prefix str
 				return
 			default:
 			}
+			if hook := c.testHoldReopen; hook != nil {
+				hook(prefix)
+			}
 			gen, moved = c.genState()
 			var err error
 			w, stop, err = c.openWatcher(ctx, kv, prefix)
 			if err == nil {
 				break
 			}
+			c.reopenFailed(prefix, err)
 			select {
 			case <-ctx.Done():
 				return
@@ -615,7 +710,7 @@ func (c *client) runWatch(ctx context.Context, kv jetstream.KeyValue, prefix str
 
 // consumeWatcher forwards one watcher's deliveries, tagged with gen,
 // until ctx ends (done), the generation moves, or the subscription closes.
-func (c *client) consumeWatcher(ctx context.Context, w jetstream.KeyWatcher,
+func (c *client) consumeWatcher(ctx context.Context, w jetstream.KeyWatcher, prefix string,
 	gen uint64, moved <-chan struct{}, ch chan<- Entry, ws *watchState,
 ) (done bool) {
 	for {
@@ -633,6 +728,17 @@ func (c *client) consumeWatcher(ctx context.Context, w jetstream.KeyWatcher,
 			return false
 		case kve, ok := <-w.Updates():
 			if !ok {
+				// A watcher the caller's context closed is this process shutting the watch down, not a cut.
+				if ctx.Err() != nil {
+					return true
+				}
+				// A subscription that ends under a live connection has the same unknown gap behind it
+				// as a disconnect, so it moves the store generation too and every watch re-opens under the new one.
+				// A connection that went down moves it from the disconnected callback instead.
+				if c.Connected() {
+					c.moveGeneration("watch subscription closed", "prefix", prefix)
+				}
+
 				return false
 			}
 			var e Entry
@@ -640,7 +746,9 @@ func (c *client) consumeWatcher(ctx context.Context, w jetstream.KeyWatcher,
 				// The marker becomes visible to Synced before it is readable
 				// from the channel, so a reader that saw the marker never
 				// races the barrier.
-				ws.setMarker(gen)
+				if c.markSynced(ws, gen) {
+					c.log.Info("nats watches replayed", "generation", gen)
+				}
 				e = Entry{Synced: true, Generation: gen}
 			} else {
 				e = entryFromKVE(kve, gen)

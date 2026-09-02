@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestKV(t *testing.T) {
@@ -309,7 +311,274 @@ func TestWatch(t *testing.T) {
 	})
 }
 
+// The three records the seam writes about the store generation and re-opening.
+const (
+	genMovedRecord      = "nats store generation moved"
+	reopenFailingRecord = "nats watch re-open failing"
+	reopenedRecord      = "nats watches replayed"
+)
+
 func TestGeneration(t *testing.T) {
+	t.Run("a watch cut under a live connection moves the generation", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		tap := newWatcherTap()
+		f.c.testWatchOpened = tap.record
+		held := make(chan struct{})
+		defer close(held)
+		f.c.testHoldReopen = func(string) { <-held }
+
+		kv := f.view().Jobs
+		gen := f.c.Generation()
+		ch, err := kv.Watch(ctx, "g.")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+		if e := nextEntry(t, ch); !e.Synced {
+			t.Fatalf("first entry: got %+v, want the marker", e)
+		}
+
+		tap.cut(t, "g.")
+		waitFor(t, "the generation to move", func() bool { return f.c.Generation() != gen })
+
+		if got := f.c.Generation(); got != gen+1 {
+			t.Fatalf("generation after the cut: got %d, want %d", got, gen+1)
+		}
+		if f.c.Synced(gen) {
+			t.Fatalf("Synced(%d) is true although the watch over it was cut", gen)
+		}
+		if !f.c.Connected() {
+			t.Fatalf("Connected() is false although the connection never went down")
+		}
+	})
+
+	t.Run("the re-opened watch replays under the new generation", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		tap := newWatcherTap()
+		f.c.testWatchOpened = tap.record
+		held := make(chan struct{})
+		f.c.testHoldReopen = func(string) { <-held }
+
+		kv := f.view().Jobs
+		gen := f.c.Generation()
+		if _, err := kv.Create(ctx, "g.a", []byte("1")); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		ch, err := kv.Watch(ctx, "g.")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+		drainToMarker(t, ch)
+
+		tap.cut(t, "g.")
+		waitFor(t, "the generation to move", func() bool { return f.c.Generation() != gen })
+		newGen := f.c.Generation()
+		close(held)
+
+		e := nextEntry(t, ch)
+		if e.Synced || e.Key != "g.a" || string(e.Value) != "1" {
+			t.Fatalf("first entry after the re-open: got %+v, want the g.a replay", e)
+		}
+		if e.Generation != newGen {
+			t.Fatalf("replayed entry generation: got %d, want %d", e.Generation, newGen)
+		}
+		e = nextEntry(t, ch)
+		if !e.Synced || e.Generation != newGen {
+			t.Fatalf("fresh marker: got %+v, want Synced under generation %d", e, newGen)
+		}
+		if !f.c.Synced(newGen) {
+			t.Fatalf("Synced(%d) is false after the re-opened watch replayed", newGen)
+		}
+	})
+
+	t.Run("a key deleted while the watch is down is absent from the replay", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		admin, err := f.js.KeyValue(ctx, jobsBucket)
+		if err != nil {
+			t.Fatalf("admin bucket: %v", err)
+		}
+		tap := newWatcherTap()
+		f.c.testWatchOpened = tap.record
+		held := make(chan struct{})
+		f.c.testHoldReopen = func(string) { <-held }
+
+		kv := f.view().Jobs
+		gen := f.c.Generation()
+		rev, err := kv.Create(ctx, "g.gone", []byte("1"))
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		ch, err := kv.Watch(ctx, "g.")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+		drainToMarker(t, ch)
+
+		tap.cut(t, "g.")
+		waitFor(t, "the generation to move", func() bool { return f.c.Generation() != gen })
+		newGen := f.c.Generation()
+		if err := admin.Delete(ctx, "g.gone", jetstream.LastRevision(rev)); err != nil {
+			t.Fatalf("delete through the admin connection: %v", err)
+		}
+		close(held)
+
+		for e := nextEntry(t, ch); !e.Synced; e = nextEntry(t, ch) {
+			if e.Generation != newGen {
+				t.Fatalf("replayed entry generation: got %d, want %d", e.Generation, newGen)
+			}
+			if e.Key == "g.gone" && e.Value != nil {
+				t.Fatalf("the replay carried %q, deleted while the watch was down", e.Key)
+			}
+		}
+		if !f.c.Synced(newGen) {
+			t.Fatalf("Synced(%d) is false after the re-opened watch replayed", newGen)
+		}
+	})
+
+	t.Run("a cut that takes every watch down writes one failing record", func(t *testing.T) {
+		f := startServerFixture(t)
+		log, capture := captureLogger()
+		f.c = f.connectClientLogged(log)
+		ctx := t.Context()
+		tap := newWatcherTap()
+		f.c.testWatchOpened = tap.record
+		held := make(chan struct{})
+		f.c.testHoldReopen = func(string) { <-held }
+
+		kv := f.view().Jobs
+		prefixes := []string{"job.", "active.", "schedule."}
+		for _, prefix := range prefixes {
+			ch, err := kv.Watch(ctx, prefix)
+			if err != nil {
+				t.Fatalf("watch %q: %v", prefix, err)
+			}
+			drainToMarker(t, ch)
+		}
+		gen := f.c.Generation()
+		if !f.c.Synced(gen) {
+			t.Fatalf("Synced(%d) is false after all three watches replayed", gen)
+		}
+
+		// The seam re-opens every watch under a new generation,
+		// so cutting one subscription takes all three of these down together.
+		tap.cut(t, prefixes[0])
+		waitFor(t, "the cut to move the generation", func() bool { return f.c.Generation() == gen+1 })
+
+		// The bucket goes while the re-opens are held, so every one of them fails on an absent stream.
+		if err := f.js.DeleteKeyValue(ctx, jobsBucket); err != nil {
+			t.Fatalf("delete bucket: %v", err)
+		}
+		close(held)
+
+		waitFor(t, "the first failed re-open", func() bool { return capture.count(reopenFailingRecord) > 0 })
+		time.Sleep(10 * watchReopenDelay)
+		if n := capture.count(reopenFailingRecord); n != 1 {
+			t.Fatalf("failing re-open records over ten retry intervals: got %d, want 1", n)
+		}
+		if n := capture.count(genMovedRecord); n != 1 {
+			t.Fatalf("generation move records for one cut subscription: got %d, want 1", n)
+		}
+		if n := capture.count(reopenedRecord); n != 0 {
+			t.Fatalf("replayed records while the bucket is absent: got %d, want 0", n)
+		}
+
+		if _, err := f.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+			Bucket:  jobsBucket,
+			History: 1,
+			Storage: jetstream.FileStorage,
+		}); err != nil {
+			t.Fatalf("recreate bucket: %v", err)
+		}
+		waitFor(t, "the watches to replay again", func() bool { return f.c.Synced(f.c.Generation()) })
+		if n := capture.count(reopenedRecord); n != 1 {
+			t.Fatalf("replayed records after the bucket returned: got %d, want 1", n)
+		}
+		if n := capture.count(reopenFailingRecord); n != 1 {
+			t.Fatalf("failing re-open records once the bucket returned: got %d, want 1", n)
+		}
+	})
+
+	t.Run("concurrent cuts report their moves in the order they were made", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		tap := newWatcherTap()
+		f.c.testWatchOpened = tap.record
+
+		// The generation is read inside the callback rather than passed to it,
+		// because a move that reports while another is still between its increment and its own report
+		// hands both of them the higher of the two.
+		var mu sync.Mutex
+		var seen []uint64
+		f.c.onGenerationMove = func() {
+			gen := f.c.Generation()
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, gen)
+		}
+
+		kv := f.view().Jobs
+		prefixes := []string{"job.", "active."}
+		for _, prefix := range prefixes {
+			ch, err := kv.Watch(ctx, prefix)
+			if err != nil {
+				t.Fatalf("watch %q: %v", prefix, err)
+			}
+			// Every replay of every round arrives on these channels,
+			// so a reader keeps them from filling and stalling the watch behind them.
+			go func() {
+				for range ch { //nolint:revive // the entries themselves decide nothing here
+				}
+			}()
+		}
+		first := f.c.Generation()
+		waitFor(t, "both watches to replay", func() bool { return f.c.Synced(first) })
+
+		// Both subscriptions close together in every round.
+		// Whichever watcher reaches its closed channel first moves the generation.
+		// The other moves it again whenever it reads its own closed channel before the broadcast the first move sent.
+		const rounds = 20
+		for range rounds {
+			gen := f.c.Generation()
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for _, prefix := range prefixes {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					tap.stop(prefix)
+				}()
+			}
+			close(start)
+			wg.Wait()
+			waitFor(t, "the cut to move the generation", func() bool { return f.c.Generation() > gen })
+			waitFor(t, "the watches to replay again", func() bool { return f.c.Synced(f.c.Generation()) })
+		}
+
+		last := f.c.Generation()
+		mu.Lock()
+		defer mu.Unlock()
+
+		if uint64(len(seen)) != last-first {
+			t.Fatalf("the callback ran %d times for %d moves, want one report each", len(seen), last-first)
+		}
+		for i := 1; i < len(seen); i++ {
+			if seen[i] <= seen[i-1] {
+				t.Fatalf("the callback reported generation %d after %d: a move reported out of its order "+
+					"ends the requests of the generation admitted after it", seen[i], seen[i-1])
+			}
+		}
+		// A round in which one watcher read the broadcast before its own closed channel moved the generation once,
+		// which orders nothing.
+		// The count is what says the rounds above produced the concurrent moves this case is about.
+		if last-first <= rounds {
+			t.Fatalf("%d cuts over %d rounds moved the generation %d times, want more: "+
+				"no round cut two watchers close enough together to move it twice", 2*rounds, rounds, last-first)
+		}
+	})
+
 	t.Run("the disconnected callback alone moves the generation", func(t *testing.T) {
 		f := startFixture(t)
 		kv := f.view().Jobs

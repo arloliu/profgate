@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -126,6 +127,13 @@ func startServerFixture(t *testing.T, mutate ...func(*server.Options)) *fixture 
 // fixtureClientUser and registers its cleanup.
 func (f *fixture) connectClient() *client {
 	f.t.Helper()
+	return f.connectClientLogged(testLogger())
+}
+
+// connectClientLogged is connectClient with a logger the test chose,
+// so a test can count the records the seam writes.
+func (f *fixture) connectClientLogged(log *slog.Logger) *client {
+	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
 	defer cancel()
 	c, err := connect(ctx, connectConfig{
@@ -133,7 +141,7 @@ func (f *fixture) connectClient() *client {
 		connectTimeout: callTimeout,
 		reconnectWait:  fixtureReconnectWait,
 		name:           "natskv-test",
-	}, testLogger())
+	}, log)
 	if err != nil {
 		f.t.Fatalf("seam connect: %v", err)
 	}
@@ -143,6 +151,97 @@ func (f *fixture) connectClient() *client {
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// logCapture keeps every record a client wrote, so a test can count the records of one message.
+type logCapture struct {
+	mu      sync.Mutex
+	records []string
+}
+
+// captureLogger returns a logger that keeps its records, beside testLogger, which discards them.
+func captureLogger() (*slog.Logger, *logCapture) {
+	c := &logCapture{}
+	return slog.New(&captureHandler{c: c}), c
+}
+
+// count returns how many records carried the message msg.
+func (c *logCapture) count(msg string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, m := range c.records {
+		if m == msg {
+			n++
+		}
+	}
+	return n
+}
+
+type captureHandler struct {
+	c *logCapture
+}
+
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	h.c.records = append(h.c.records, r.Message)
+	return nil
+}
+
+func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *captureHandler) WithGroup(string) slog.Handler { return h }
+
+// watcherTap keeps the live watcher of each prefix,
+// so a test can stop one and cut its subscription while the connection stays up.
+type watcherTap struct {
+	mu       sync.Mutex
+	watchers map[string]jetstream.KeyWatcher
+}
+
+func newWatcherTap() *watcherTap {
+	return &watcherTap{watchers: map[string]jetstream.KeyWatcher{}}
+}
+
+// record is the client's testWatchOpened hook.
+func (w *watcherTap) record(prefix string, kw jetstream.KeyWatcher) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.watchers[prefix] = kw
+}
+
+// cut stops the watcher currently open on prefix, which closes its subscription.
+func (w *watcherTap) cut(t *testing.T, prefix string) {
+	t.Helper()
+	w.mu.Lock()
+	kw := w.watchers[prefix]
+	w.mu.Unlock()
+	if kw == nil {
+		t.Fatalf("no watcher was opened on %q", prefix)
+	}
+	if err := kw.Stop(); err != nil {
+		t.Fatalf("stop the watcher on %q: %v", prefix, err)
+	}
+}
+
+// stop stops whatever watcher is open on prefix now, and reports whether there was one to stop.
+// It is cut without the test's failure:
+// a race that cuts two watchers at once runs off the test goroutine,
+// and a watcher whose subscription is already gone answers an error that decides nothing.
+func (w *watcherTap) stop(prefix string) bool {
+	w.mu.Lock()
+	kw := w.watchers[prefix]
+	w.mu.Unlock()
+	if kw == nil {
+		return false
+	}
+	//nolint:errcheck // stopping a watcher whose subscription is already gone is what a racing cut finds
+	_ = kw.Stop()
+
+	return true
 }
 
 // withUsers runs the server with an unrestricted admin user and a client
@@ -277,5 +376,14 @@ func nextEntry(t *testing.T, ch <-chan Entry) Entry {
 	case <-time.After(fixtureTimeout):
 		t.Fatalf("no watch entry within %s", fixtureTimeout)
 		return Entry{}
+	}
+}
+
+// drainToMarker reads a watch channel through its replay marker.
+func drainToMarker(t *testing.T, ch <-chan Entry) {
+	t.Helper()
+	e := nextEntry(t, ch)
+	for !e.Synced {
+		e = nextEntry(t, ch)
 	}
 }

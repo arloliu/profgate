@@ -369,6 +369,85 @@ func TestPreflightConnectionCallback(t *testing.T) {
 			return len(got) == 3 && got[2]
 		})
 	})
+
+	t.Run("OnGenerationMove runs for a watch cut and for a disconnect", func(t *testing.T) {
+		f := startServerFixture(t)
+		var mu sync.Mutex
+		var conns []bool
+		moves := 0
+		recordConn := func(up bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			conns = append(conns, up)
+		}
+		recordMove := func() {
+			mu.Lock()
+			defer mu.Unlock()
+			moves++
+		}
+		connSnapshot := func() []bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]bool(nil), conns...)
+		}
+		moveCount := func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return moves
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*fixtureTimeout)
+		defer cancel()
+		cl, err := Preflight(ctx, Options{
+			URL:                f.url(fixtureClientUser),
+			ConnectTimeout:     callTimeout,
+			OnConnectionChange: recordConn,
+			OnGenerationMove:   recordMove,
+		}, testInstanceID, testLogger())
+		if err != nil {
+			t.Fatalf("preflight: %v", err)
+		}
+		c, ok := cl.(*client)
+		if !ok {
+			t.Fatalf("Preflight returned %T, not *client", cl)
+		}
+		t.Cleanup(c.close)
+
+		tap := newWatcherTap()
+		c.testWatchOpened = tap.record
+		stores, err := cl.View(cl.Generation())
+		if err != nil {
+			t.Fatalf("view: %v", err)
+		}
+		ch, err := stores.Jobs.Watch(ctx, "g.")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+		drainToMarker(t, ch)
+
+		// Preflight's own probe watches end with the context they were opened under,
+		// which is this process closing a watch rather than a cut, so nothing has moved yet.
+		if n := moveCount(); n != 0 {
+			t.Fatalf("move callbacks before anything moved the generation: got %d, want 0", n)
+		}
+		gen := cl.Generation()
+
+		tap.cut(t, "g.")
+		waitFor(t, "the move callback for the watch cut", func() bool { return moveCount() == 1 })
+		if got := cl.Generation(); got != gen+1 {
+			t.Fatalf("generation after the cut: got %d, want %d", got, gen+1)
+		}
+		if got := connSnapshot(); len(got) != 1 || !got[0] {
+			t.Fatalf("the connection callback saw %v across a watch cut, want [true]", got)
+		}
+
+		f.stopServer()
+		waitFor(t, "the move callback for the disconnect", func() bool { return moveCount() == 2 })
+		waitFor(t, "the disconnect callback", func() bool {
+			got := connSnapshot()
+			return len(got) == 2 && !got[1]
+		})
+	})
 }
 
 // subjectTap is a nats.CustomDialer that records every subject the

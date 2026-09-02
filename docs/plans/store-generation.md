@@ -65,7 +65,7 @@ when the marker it just set makes `Synced(gen)` true while `reopening` stands.
 The retries at `watchReopenDelay` (`:28`) write nothing, a second watch failing its open writes nothing,
 and a process that has never re-opened writes nothing on its first replay.
 
-- [ ] **Write the tests, run them, and record which subtests were red**
+- [x] **Write the tests, run them, and record which subtests were red**
 
 `client_test.go`, as subtests of `TestGeneration` (`:312`), beside the restart subtest of `TestWatch` (`:272`):
 
@@ -87,7 +87,7 @@ because `internal/natskv` has no log capture today and every test there discards
 In `preflight_test.go`, beside `OnConnectionChange sees connect, outage, reconnect` (`:331`),
 `OnGenerationMove` runs for a disconnect and for a watch cut while `OnConnectionChange` records the outage alone.
 
-- [ ] **Land the move, the callback, and the two records, then validate and commit**
+- [x] **Land the move, the callback, and the two records, then validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/natskv/ && mise run lint && mise run test && mise run check
