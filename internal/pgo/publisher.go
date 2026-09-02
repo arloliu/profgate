@@ -12,6 +12,10 @@ import (
 	"github.com/arloliu/profgate/internal/natskv"
 )
 
+// ErrCapacityExhausted is what Reserve refuses with at the live-Collection ceiling.
+// The scheduler counts the refusal against the slot, and the on-demand route answers 429 capacity_exhausted.
+var ErrCapacityExhausted = errors.New("live collection ceiling reached")
+
 // createdBySchedule is the createdBy of a scheduled Collection.
 // A scheduled Collection has no requesting principal, and the field is a
 // principal everywhere else, so it names the scheduler rather than borrowing
@@ -98,20 +102,26 @@ func NewPublisher(caches *Caches, clock Clock, maxLive int, instance string, log
 // Reserve takes one reservation against the live-Collection ceiling, counting
 // the Services the caches show as live plus this replica's publications the
 // caches have not delivered anything for yet.
-// At or above the ceiling it refuses and writes nothing.
+// At or above the ceiling it refuses with ErrCapacityExhausted and writes nothing.
 // A Service the caches already show as live is refused by the caller, without
 // a reservation; Reserve measures the cluster, not the Service.
-func (p *Publisher) Reserve(ns, svc string) (*Reservation, bool) {
+// The count is a cache read and takes the caller's generation with it,
+// so a caller the caches have moved past is told the count cannot be made rather than refused for want of capacity.
+func (p *Publisher) Reserve(gen uint64, ns, svc string) (*Reservation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.caches.cachedLive()+len(p.held) >= p.maxLive {
-		return nil, false
+	live, ok := p.caches.cachedLive(gen)
+	if !ok {
+		return nil, fmt.Errorf("pgo: the caches have moved past generation %d: %w", gen, natskv.ErrUnavailable)
+	}
+	if live+len(p.held) >= p.maxLive {
+		return nil, ErrCapacityExhausted
 	}
 	r := &Reservation{p: p, ref: serviceRef{Namespace: ns, Service: svc}}
 	p.held = append(p.held, r)
 
-	return r, true
+	return r, nil
 }
 
 // Track binds the reservation to the Collection its publication created.

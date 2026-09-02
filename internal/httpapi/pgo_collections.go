@@ -410,7 +410,12 @@ func (s *server) serveCollectionList(
 	w http.ResponseWriter, q *request, sess *pgo.Session, query pgo.CollectionQuery,
 ) {
 	rt := q.route
-	views, more := sess.Collections(rt.namespace, rt.service, query)
+	views, more, err := sess.Collections(rt.namespace, rt.service, query)
+	if err != nil {
+		q.fail(w, errPGOUnavailable)
+
+		return
+	}
 	body := collectionsBody{Namespace: rt.namespace, Service: rt.service, Collections: make([]collectionView, 0, len(views))}
 	for _, v := range views {
 		body.Collections = append(body.Collections, collectionView{
@@ -488,7 +493,12 @@ func (s *server) serveCollectionCreate(
 	rt := q.route
 	// The override comes from the watched cache, which is read only behind the
 	// replay barrier, so configRevision is never 0 for a Service that has one.
-	stored, configRevision := sess.CachedOverride(rt.namespace, rt.service)
+	stored, configRevision, err := sess.CachedOverride(rt.namespace, rt.service)
+	if err != nil {
+		q.fail(w, errPGOUnavailable)
+
+		return
+	}
 	snapshot, violations := sess.Effective(stored, &body)
 
 	// What one key already stands for, read from the store on every request.
@@ -535,15 +545,26 @@ func (s *server) serveCollectionCreate(
 
 	// The cached check only spares a write that would lose the active create;
 	// the create is the decision, and a request whose cache lags simply loses it.
-	if sess.Live(rt.namespace, rt.service) {
+	live, err := sess.Live(rt.namespace, rt.service)
+	if err != nil {
+		q.fail(w, errPGOUnavailable)
+
+		return
+	}
+	if live {
 		q.fail(w, errCollectionInProgress)
 
 		return
 	}
 
-	res, ok := sess.Reserve(rt.namespace, rt.service)
-	if !ok {
+	res, rerr := sess.Reserve(rt.namespace, rt.service)
+	switch {
+	case errors.Is(rerr, pgo.ErrCapacityExhausted):
 		q.fail(w, errCapacityExhausted)
+
+		return
+	case rerr != nil:
+		q.fail(w, errPGOUnavailable)
 
 		return
 	}

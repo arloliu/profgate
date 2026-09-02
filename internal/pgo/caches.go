@@ -174,6 +174,12 @@ type Caches struct {
 	gen    [cacheCount]uint64
 	synced [cacheCount]bool
 
+	// client is the connection the caches are filled from, held from the attempt that opened them.
+	// A guarded read consults it because gen and synced move only when an entry arrives:
+	// between a generation move and the first entry under the new one they still name the generation left behind,
+	// and they still call its replay complete.
+	client natskv.Client
+
 	// jobPulse carries one wake-up after every job.* entry applied, so the
 	// worker can attempt a claim on delivery rather than waiting for its scan.
 	// It is buffered to one and never blocks the cache: a busy consumer sees
@@ -286,7 +292,7 @@ func (c *Caches) jobChanges() <-chan struct{} { return c.jobPulse }
 // so an attempt that failed partway through the set leaves the barrier shut until a whole set has replayed.
 func (c *Caches) Run(ctx context.Context, client natskv.Client) error {
 	gen := client.Generation()
-	c.clearSynced()
+	c.startAttempt(client)
 	stores, err := client.View(gen)
 	if err != nil {
 		return fmt.Errorf("pgo: open watched caches: %w", err)
@@ -328,13 +334,14 @@ func (c *Caches) Run(ctx context.Context, client natskv.Client) error {
 	return nil
 }
 
-// clearSynced drops the replay flag of every cache.
+// startAttempt records the connection this attempt fills the caches from and drops the replay flag of every cache.
 // It runs ahead of the view of an attempt rather than beside a watch,
 // so an attempt that opens nothing at all starts from cleared flags too.
 // The generations stay as they are, because apply resets a cache whose generation moved.
-func (c *Caches) clearSynced() {
+func (c *Caches) startAttempt(client natskv.Client) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.client = client
 	c.synced = [cacheCount]bool{}
 }
 
@@ -514,6 +521,28 @@ func (c *Caches) Synced(gen uint64) bool {
 	return true
 }
 
+// syncedLocked reports whether every named cache has applied its replay marker under gen
+// and gen is still the connection's current generation.
+// It is the guard of one read rather than of the whole barrier,
+// so a read consults only the caches it answers from.
+// The connection is consulted because a cache learns of a move only from the first entry delivered under it:
+// until that entry arrives the caches still carry the generation left behind and still call its replay complete,
+// which is a reader bound to that generation being answered from contents nothing will deliver again.
+// A Caches whose attempt has not started yet has no connection to compare against and answers no read.
+// It is called with c.mu held.
+func (c *Caches) syncedLocked(gen uint64, kinds ...cacheKind) bool {
+	if c.client == nil || c.client.Generation() != gen {
+		return false
+	}
+	for _, kind := range kinds {
+		if !c.synced[kind] || c.gen[kind] != gen {
+			return false
+		}
+	}
+
+	return true
+}
+
 // overrideSnapshot returns a copy of the policy overrides, keyed by Service.
 // The scheduler walks it every tick, so it is a snapshot rather than a lock
 // held across policy layering and store calls.
@@ -536,11 +565,17 @@ func (c *Caches) overrideSnapshot() map[serviceRef]cachedOverride {
 // an active key, or a nonterminal record.
 // It is what spares a write that would lose the active create; it decides
 // nothing, because the create itself is the decision.
-func (c *Caches) Live(ns, svc string) bool {
+// The second result is false when the job cache or the active cache has not applied its replay under gen,
+// which is a caller whose generation the caches have moved past.
+func (c *Caches) Live(gen uint64, ns, svc string) (bool, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Both caches, because liveLocked reads both maps.
+	if !c.syncedLocked(gen, cacheActive, cacheJobs) {
+		return false, false
+	}
 
-	return c.liveLocked(serviceRef{Namespace: ns, Service: svc})
+	return c.liveLocked(serviceRef{Namespace: ns, Service: svc}), true
 }
 
 // liveLocked answers Live with c.mu held.
@@ -559,9 +594,15 @@ func (c *Caches) liveLocked(ref serviceRef) bool {
 
 // cachedLive is the number of Services the caches show as live: the
 // cluster-wide live-Collection count as far as this replica has seen it.
-func (c *Caches) cachedLive() int {
+// The second result is false when the job cache or the active cache has not applied its replay under gen,
+// which is a caller whose generation the caches have moved past.
+func (c *Caches) cachedLive(gen uint64) (int, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Both caches, because the count reads both maps.
+	if !c.syncedLocked(gen, cacheActive, cacheJobs) {
+		return 0, false
+	}
 
 	live := make(map[serviceRef]struct{}, len(c.active)+len(c.jobs))
 	for ref := range c.active {
@@ -573,7 +614,7 @@ func (c *Caches) cachedLive() int {
 		}
 	}
 
-	return len(live)
+	return len(live), true
 }
 
 // nonterminalJobIDs lists the Collections the cache shows in a state they can
@@ -685,7 +726,9 @@ func compareListing(a, b CollectionPosition) int {
 // so a position naming a record the sweeper has deleted still names a place in the order.
 // The cache is the listing's source, so a Collection appears once its watch
 // has delivered it and not before.
-func (c *Caches) Collections(ns, svc string, q CollectionQuery) ([]CollectionView, bool) {
+// The third result is false when the job cache has not applied its replay under gen,
+// which is a caller whose generation the caches have moved past.
+func (c *Caches) Collections(gen uint64, ns, svc string, q CollectionQuery) ([]CollectionView, bool, bool) {
 	limit := q.Limit
 	if limit <= 0 || limit > MaxListCollections {
 		limit = MaxListCollections
@@ -693,6 +736,9 @@ func (c *Caches) Collections(ns, svc string, q CollectionQuery) ([]CollectionVie
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.syncedLocked(gen, cacheJobs) {
+		return nil, false, false
+	}
 
 	out := make([]CollectionView, 0, len(c.jobs))
 	for key, j := range c.jobs {
@@ -728,25 +774,30 @@ func (c *Caches) Collections(ns, svc string, q CollectionQuery) ([]CollectionVie
 	})
 
 	if len(out) > limit {
-		return out[:limit], true
+		return out[:limit], true, true
 	}
 
-	return out, false
+	return out, false, true
 }
 
 // Override returns a Service's stored policy override and the revision it was
 // delivered at, which is the configRevision a Collection created from it
 // records.
-func (c *Caches) Override(ns, svc string) (*PolicyOverride, uint64) {
+// The third result is false when the override cache has not applied its replay under gen,
+// which is a caller whose generation the caches have moved past.
+func (c *Caches) Override(gen uint64, ns, svc string) (*PolicyOverride, uint64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.syncedLocked(gen, cacheOverrides) {
+		return nil, 0, false
+	}
 
 	o, ok := c.overrides[overrideKey(ns, svc)]
 	if !ok {
-		return nil, 0
+		return nil, 0, true
 	}
 
-	return o.Stored.Policy, o.Revision
+	return o.Stored.Policy, o.Revision, true
 }
 
 // activeID returns the Collection named by active.<ns>.<svc> in the cache.

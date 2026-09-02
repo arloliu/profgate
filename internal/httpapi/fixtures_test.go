@@ -1045,6 +1045,33 @@ func (k *fakeKV) deliverLocked(e natskv.Entry) {
 	}
 }
 
+// reopenWatches replays every open watch under the current generation:
+// the keys the bucket holds, stamped with that generation, then the marker that ends a replay.
+// It is what the seam delivers after it re-opens a watch the generation moved out from under,
+// which is what makes a watched cache a rebuild rather than a patch.
+func (k *fakeKV) reopenWatches() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for _, w := range k.watches {
+		for _, key := range k.keysLocked(w.prefix) {
+			e := k.entries[key]
+			e.Generation = k.gen()
+			k.deliverToLocked(w, e)
+		}
+		k.deliverToLocked(w, natskv.Entry{Synced: true, Generation: k.gen()})
+	}
+}
+
+// deliverToLocked hands one entry to one watch, holding it back on a frozen one.
+func (k *fakeKV) deliverToLocked(w *fakeWatch, e natskv.Entry) {
+	if w.frozen {
+		w.pending = append(w.pending, e)
+
+		return
+	}
+	w.ch <- e
+}
+
 // keysLocked lists the live keys under prefix, in a stable order.
 func (k *fakeKV) keysLocked(prefix string) []string {
 	out := make([]string, 0, len(k.entries))
@@ -1619,6 +1646,16 @@ func newPGOHarness(t *testing.T, o pgoOpts, targets ...k8s.Target) *pgoHarness {
 	return p
 }
 
+// live is what the harness's caches show for one Service, under the generation the connection is on.
+// The generation is read fresh on every call,
+// so a predicate polling to convergence follows a move rather than holding the generation it started under.
+// A cache that has not replayed under that generation answers false, which is a poll that keeps waiting.
+func (p *pgoHarness) live(namespace, service string) bool {
+	live, ok := p.caches.Live(p.nats.Generation(), namespace, service)
+
+	return live && ok
+}
+
 // waitCache blocks until pred holds, so a test never drives a handler against
 // a cache that has not yet seen its own setup.
 func (p *pgoHarness) waitCache(t *testing.T, what string, pred func() bool) {
@@ -1666,7 +1703,7 @@ func (p *pgoHarness) seedRecord(t *testing.T, rec pgo.Record) pgo.Record {
 
 	p.nats.jobs.put(t, jobKeyPrefix+rec.ID, rec)
 	p.waitCache(t, "collection "+rec.ID, func() bool {
-		views, _ := p.caches.Collections(rec.Namespace, rec.Service, pgo.CollectionQuery{})
+		views, _, _ := p.caches.Collections(p.nats.Generation(), rec.Namespace, rec.Service, pgo.CollectionQuery{})
 		for _, v := range views {
 			if v.ID == rec.ID {
 				return true
@@ -1695,7 +1732,7 @@ func (p *pgoHarness) seedActive(t *testing.T, namespace, service, id string) {
 
 	p.nats.jobs.put(t, activeKeyPrefix+namespace+"."+service,
 		map[string]any{"id": id, "createdAt": pgoFixtureNow})
-	p.waitCache(t, "the active key of "+service, func() bool { return p.caches.Live(namespace, service) })
+	p.waitCache(t, "the active key of "+service, func() bool { return p.live(namespace, service) })
 }
 
 // seedOverride writes one Service's stored policy override and returns its revision.
@@ -1705,7 +1742,7 @@ func (p *pgoHarness) seedOverride(t *testing.T, override *pgo.PolicyOverride) ui
 	revision := p.nats.config.put(t, overrideKeyPrefix+fixtureNamespace+"."+fixtureService,
 		pgo.StoredOverride{Policy: override, UpdatedBy: "anonymous", UpdatedAt: pgoFixtureNow})
 	p.waitCache(t, "the policy override", func() bool {
-		_, rev := p.caches.Override(fixtureNamespace, fixtureService)
+		_, rev, _ := p.caches.Override(p.nats.Generation(), fixtureNamespace, fixtureService)
 
 		return rev == revision
 	})
@@ -1716,7 +1753,7 @@ func (p *pgoHarness) seedOverride(t *testing.T, override *pgo.PolicyOverride) ui
 // cachedState is the state the watched job cache holds for one Collection,
 // and the empty state for one it does not hold.
 func (p *pgoHarness) cachedState(id string) pgo.State {
-	views, _ := p.caches.Collections(fixtureNamespace, fixtureService, pgo.CollectionQuery{})
+	views, _, _ := p.caches.Collections(p.nats.Generation(), fixtureNamespace, fixtureService, pgo.CollectionQuery{})
 	for _, v := range views {
 		if v.ID == id {
 			return v.State
@@ -1775,6 +1812,76 @@ func (p *pgoHarness) doPGO(t *testing.T, method, target, body string, header htt
 // Nothing in these tests waits on wall-clock time,
 // so reaching it is a failure rather than a slow machine.
 const heldOpenTimeout = 5 * time.Second
+
+// generationHook is the seam a test moves the store generation through, mid-request.
+// The PGO step takes one session before the principal is resolved,
+// so an authenticator that runs first is inside a request that has bound its generation and has not yet read a cache.
+type generationHook struct {
+	next auth.Authenticator
+	once sync.Once
+	gap  func()
+}
+
+func (g *generationHook) Authenticate(
+	ctx context.Context, r *http.Request, cfg *config.Config,
+) (auth.Principal, error) {
+	g.once.Do(g.gap)
+
+	return g.next.Authenticate(ctx, r, cfg)
+}
+
+// moveGenerationDuringRequest arranges the gap a session's generation exists for.
+// On the next request, once its session is taken and before it reads a cache,
+// the connection moves the store generation and gap rebuilds the caches under the new one.
+// Every later request runs with the caches as that rebuild left them.
+func (p *pgoHarness) moveGenerationDuringRequest(t *testing.T, gap func(*testing.T)) {
+	t.Helper()
+
+	var next auth.Authenticator = auth.Disabled{}
+	if p.auth != nil {
+		next = p.auth
+	}
+	p.auth = &generationHook{next: next, gap: func() {
+		p.disconnect()
+		gap(t)
+	}}
+}
+
+// rebuildJobCaches deletes the named keys from the job bucket and rebuilds the caches over it,
+// which is what a replay under a moved generation leaves behind when the gap took those keys away.
+// The failed Collection written last is the sentinel the wait rests on:
+// its arrival proves the delete, the replay, and the marker ahead of it were all applied.
+// A failed record is no candidate for the latest walk and leaves the Service not live,
+// so it changes nothing any route under test decides.
+func (p *pgoHarness) rebuildJobCaches(t *testing.T, keys ...string) {
+	t.Helper()
+
+	for _, key := range keys {
+		p.nats.jobs.remove(t, key)
+	}
+	p.nats.jobs.reopenWatches()
+	sentinel := p.newRecord(pgo.StateFailed)
+	p.nats.jobs.put(t, jobKeyPrefix+sentinel.ID, sentinel)
+	p.waitCache(t, "the rebuilt job caches", func() bool { return p.cachedState(sentinel.ID) != "" })
+}
+
+// rebuildOverrideCache deletes the fixture Service's stored override and rebuilds the cache over the config bucket.
+// Another Service's override, written last, is the sentinel the wait rests on.
+// The job bucket is untouched, so a request whose override read is guarded is refused there
+// and one whose is not reaches the checks that follow it.
+func (p *pgoHarness) rebuildOverrideCache(t *testing.T) {
+	t.Helper()
+
+	p.nats.config.remove(t, overrideKeyPrefix+fixtureNamespace+"."+fixtureService)
+	p.nats.config.reopenWatches()
+	p.nats.config.put(t, overrideKeyPrefix+"other.other-api",
+		pgo.StoredOverride{Policy: &pgo.PolicyOverride{}, UpdatedBy: "anonymous", UpdatedAt: pgoFixtureNow})
+	p.waitCache(t, "the rebuilt override cache", func() bool {
+		_, revision, _ := p.caches.Override(p.nats.Generation(), "other", "other-api")
+
+		return revision != 0
+	})
+}
 
 // disconnect is the connection going down as the process sees it:
 // the generation moves, and the broadcast a held-open request selects on moves

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/natskv"
 )
@@ -96,6 +97,160 @@ func TestSessionWaitsForBothHalvesOfTheBarrier(t *testing.T) {
 	r.waitSynced()
 	if _, err := rt.Session(); err != nil {
 		t.Fatalf("Session once the caches replayed error = %v, want nil", err)
+	}
+}
+
+// TestSessionCacheReadsRefuseAMovedGeneration pins what a session's generation is for.
+// The caches a session reads are reset and rebuilt from a fresh replay whenever the store generation moves,
+// so a read that takes no generation answers from whatever that rebuild has put back,
+// which is an empty result while the rebuild is still running and a different bucket's contents once it is not.
+// Each read here is made after the generation the session bound was left behind,
+// and each answers ErrUnavailable rather than a result.
+// The two moves are the two states a read can arrive in.
+// One is the rebuild finished, where the caches carry the new generation.
+// The other is the rebuild not started, where no entry has arrived under the new generation
+// and the caches still carry the old one with its replay marked complete,
+// which is what a read of the cache alone cannot tell from a cache that is current.
+func TestSessionCacheReadsRefuseAMovedGeneration(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		// opts shapes the replica the read is made on.
+		opts replicaOpts
+		seed func(*pgoFixture, *replica)
+		read func(*Session) error
+	}{
+		{
+			name: "the stored override",
+			seed: func(f *pgoFixture, _ *replica) { f.setOverride("payment", "payment-api", enabledOverride()) },
+			read: func(s *Session) error {
+				_, _, err := s.CachedOverride("payment", "payment-api")
+
+				return err
+			},
+		},
+		{
+			name: "the collection listing",
+			seed: func(f *pgoFixture, _ *replica) { f.seedRecord("payment", "payment-api", StateCompleted) },
+			read: func(s *Session) error {
+				_, _, err := s.Collections("payment", "payment-api", CollectionQuery{})
+
+				return err
+			},
+		},
+		{
+			// Nothing is seeded, because a candidate makes the walk reach the store,
+			// whose view refuses a moved generation on its own.
+			// The walk that finds no candidate makes no store call at all,
+			// so without the guard it reports the Service as having no completed Collection,
+			// which is a 404 where the truth is that the caches cannot be read.
+			name: "the latest completed collection",
+			seed: func(*pgoFixture, *replica) {},
+			read: func(s *Session) error {
+				_, body, err := s.LatestCompleted(ctx, "payment", "payment-api")
+				if body != nil {
+					//nolint:errcheck // the reader is only closed so the walk leaves nothing open
+					_ = body.Close()
+				}
+
+				return err
+			},
+		},
+		{
+			name: "the cached live check",
+			seed: func(f *pgoFixture, _ *replica) { f.seedLiveCollection("payment", "payment-api", StateRunning) },
+			read: func(s *Session) error {
+				_, err := s.Live("payment", "payment-api")
+
+				return err
+			},
+		},
+		{
+			// The ceiling is one and the caches hold that one Service as live,
+			// so a count taken without the session's generation refuses the reservation for want of capacity,
+			// which the route answers 429 capacity_exhausted.
+			// The truth is that the count cannot be made at all.
+			name: "the reservation count",
+			opts: replicaOpts{limits: limitsWith(func(l *config.PGOLimits) { l.MaxLiveCollections = 1 })},
+			seed: func(f *pgoFixture, _ *replica) { f.seedLiveCollection("payment", "payment-api", StateRunning) },
+			read: func(s *Session) error {
+				res, err := s.Reserve("payment", "payment-api")
+				if res != nil {
+					res.Release()
+				}
+
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, move := range []struct {
+				name string
+				// move leaves the generation the session bound behind and returns the one that follows.
+				move func(*testing.T, *pgoFixture, *replica, uint64) uint64
+			}{
+				{
+					name: "the caches rebuilt under the generation that followed",
+					move: func(t *testing.T, f *pgoFixture, r *replica, _ uint64) uint64 {
+						t.Helper()
+
+						// The restart is the move: the disconnected callback leaves the generation behind,
+						// and every watch re-opens and replays under the new one.
+						f.stopServer()
+						waitFor(t, "the connection reported down", func() bool { return !r.client.Connected() })
+						f.restartServer()
+						r.waitSynced()
+
+						moved := r.client.Generation()
+						// The caches are whole again, under a generation this session never passed the barrier under,
+						// which is the case a read of them alone cannot tell from a cache that simply holds nothing.
+						if !r.caches.Synced(moved) {
+							t.Fatalf("the caches have not replayed under generation %d", moved)
+						}
+
+						return moved
+					},
+				},
+				{
+					name: "the caches still holding what the generation before them left",
+					move: func(t *testing.T, f *pgoFixture, r *replica, bound uint64) uint64 {
+						t.Helper()
+
+						// The server never comes back, so no watch re-opens and no entry arrives:
+						// every cache still carries the bound generation with its replay marked complete.
+						// The wait is on the move rather than on the connection,
+						// because nats.go reports the connection down before it runs the callback that moves it.
+						f.stopServer()
+						waitFor(t, "the generation to move", func() bool { return r.client.Generation() != bound })
+
+						if !r.caches.Synced(bound) {
+							t.Fatalf("the caches no longer carry generation %d, so an entry arrived under the move",
+								bound)
+						}
+
+						return r.client.Generation()
+					},
+				},
+			} {
+				t.Run(move.name, func(t *testing.T) {
+					f := startPGO(t)
+					r := f.newReplica("a", tc.opts)
+					r.waitSynced()
+					tc.seed(f, r)
+					sess := r.session(r.newRuntime())
+					bound := r.client.Generation()
+
+					moved := move.move(t, f, r, bound)
+					if moved == bound {
+						t.Fatalf("generation is still %d, want one the session did not bind", bound)
+					}
+
+					if err := tc.read(sess); !errors.Is(err, natskv.ErrUnavailable) {
+						t.Fatalf("read after the generation moved error = %v, want ErrUnavailable", err)
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -267,11 +422,11 @@ func TestCachesCollectionsListsNewestFirst(t *testing.T) {
 	other := f.seedRecord("payment", "other-api", StateCompleted)
 
 	r.waitCache("three collections", func(c *Caches) bool {
-		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+		views, _, _ := c.Collections(r.client.Generation(), "payment", "payment-api", CollectionQuery{})
 
 		return len(views) == 3
 	})
-	got, more := r.caches.Collections("payment", "payment-api", CollectionQuery{})
+	got, more, _ := r.caches.Collections(r.client.Generation(), "payment", "payment-api", CollectionQuery{})
 	if more {
 		t.Errorf("more = true, want false: the whole listing fits one page")
 	}
@@ -318,12 +473,12 @@ func TestCachesCollectionsOrderIsTotal(t *testing.T) {
 	}
 
 	r.waitCache("three collections", func(c *Caches) bool {
-		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+		views, _, _ := c.Collections(r.client.Generation(), "payment", "payment-api", CollectionQuery{})
 
 		return len(views) == 3
 	})
 
-	got, _ := r.caches.Collections("payment", "payment-api", CollectionQuery{})
+	got, _, _ := r.caches.Collections(r.client.Generation(), "payment", "payment-api", CollectionQuery{})
 	want := []string{"zzzzzzzzzzzzzzzzzzzz", "aaaaaaaaaaaaaaaaaaaa", "mmmmmmmmmmmmmmmmmmmm"}
 	for i, view := range got {
 		if view.ID != want[i] {
@@ -348,12 +503,12 @@ func TestCachesCollectionsPagesByValue(t *testing.T) {
 		})
 	}
 	r.waitCache("three collections", func(c *Caches) bool {
-		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+		views, _, _ := c.Collections(r.client.Generation(), "payment", "payment-api", CollectionQuery{})
 
 		return len(views) == 3
 	})
 
-	first, more := r.caches.Collections("payment", "payment-api", CollectionQuery{Limit: 2})
+	first, more, _ := r.caches.Collections(r.client.Generation(), "payment", "payment-api", CollectionQuery{Limit: 2})
 	if len(first) != 2 || !more {
 		t.Fatalf("first page = %d entries, more %v, want 2 and true", len(first), more)
 	}
@@ -362,12 +517,12 @@ func TestCachesCollectionsPagesByValue(t *testing.T) {
 
 	f.deleteKey(f.jobs, jobKey(last.ID))
 	r.waitCache("the deletion", func(c *Caches) bool {
-		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+		views, _, _ := c.Collections(r.client.Generation(), "payment", "payment-api", CollectionQuery{})
 
 		return len(views) == 2
 	})
 
-	rest, more := r.caches.Collections("payment", "payment-api", CollectionQuery{After: after})
+	rest, more, _ := r.caches.Collections(r.client.Generation(), "payment", "payment-api", CollectionQuery{After: after})
 	if len(rest) != 1 || more {
 		t.Fatalf("page after a deleted position = %d entries, more %v, want 1 and false: %+v", len(rest), more, rest)
 	}
@@ -391,7 +546,7 @@ func TestCachesCollectionsFilters(t *testing.T) {
 		rec.CreatedAt = slotBase
 	})
 	r.waitCache("both collections", func(c *Caches) bool {
-		views, _ := c.Collections("payment", "payment-api", CollectionQuery{})
+		views, _, _ := c.Collections(r.client.Generation(), "payment", "payment-api", CollectionQuery{})
 
 		return len(views) == 2
 	})
@@ -409,7 +564,7 @@ func TestCachesCollectionsFilters(t *testing.T) {
 			States: []State{StateCompleted}, Origin: OriginAPI}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := r.caches.Collections("payment", "payment-api", tc.query)
+			got, _, _ := r.caches.Collections(r.client.Generation(), "payment", "payment-api", tc.query)
 			if len(got) != tc.want {
 				t.Fatalf("entries = %d, want %d: %+v", len(got), tc.want, got)
 			}
@@ -446,7 +601,7 @@ func TestCachesCollectionsLimitsThePage(t *testing.T) {
 		{"a limit over the ceiling", MaxListCollections + 50, MaxListCollections},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, more := r.caches.Collections("payment", "payment-api", CollectionQuery{Limit: tc.limit})
+			got, more, _ := r.caches.Collections(r.client.Generation(), "payment", "payment-api", CollectionQuery{Limit: tc.limit})
 			if len(got) != tc.want {
 				t.Errorf("page = %d entries, want %d", len(got), tc.want)
 			}
@@ -465,18 +620,18 @@ func TestCachesOverrideCarriesItsRevision(t *testing.T) {
 	r := f.newReplica("a", replicaOpts{})
 	r.waitSynced()
 
-	if _, rev := r.caches.Override("payment", "payment-api"); rev != 0 {
+	if _, rev, _ := r.caches.Override(r.client.Generation(), "payment", "payment-api"); rev != 0 {
 		t.Errorf("revision without an override = %d, want 0", rev)
 	}
 
 	want := f.setOverride("payment", "payment-api", enabledOverride(withEvery(time.Hour)))
 	r.waitCache("the override", func(c *Caches) bool {
-		_, rev := c.Override("payment", "payment-api")
+		_, rev, _ := c.Override(r.client.Generation(), "payment", "payment-api")
 
 		return rev == want
 	})
 
-	override, rev := r.caches.Override("payment", "payment-api")
+	override, rev, _ := r.caches.Override(r.client.Generation(), "payment", "payment-api")
 	if rev != want {
 		t.Errorf("revision = %d, want %d", rev, want)
 	}

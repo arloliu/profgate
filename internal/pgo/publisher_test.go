@@ -23,9 +23,9 @@ func (r *replica) publishOne(
 	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
 	defer cancel()
 
-	res, ok := r.pub.Reserve(ns, svc)
-	if !ok {
-		return "", "", errCeilingRefused
+	res, err := r.pub.Reserve(r.client.Generation(), ns, svc)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %w", errCeilingRefused, err)
 	}
 	in := PublishInput{
 		Namespace: ns, Service: svc,
@@ -138,29 +138,33 @@ func TestReserveCeiling(t *testing.T) {
 	})
 	r.waitSynced()
 
-	first, ok := r.pub.Reserve("payment", "a")
-	if !ok {
-		t.Fatal("the first reservation was refused against an empty cache")
+	first, err := r.reserve("payment", "a")
+	if err != nil {
+		t.Fatalf("the first reservation against an empty cache was refused: %v", err)
 	}
-	if _, ok := r.pub.Reserve("payment", "b"); !ok {
-		t.Fatal("the second reservation was refused below the ceiling")
+	if _, err := r.reserve("payment", "b"); err != nil {
+		t.Fatalf("the second reservation below the ceiling was refused: %v", err)
 	}
-	if _, ok := r.pub.Reserve("payment", "c"); ok {
-		t.Fatal("a third reservation was granted at a ceiling of two")
+	if _, err := r.reserve("payment", "c"); !errors.Is(err, ErrCapacityExhausted) {
+		t.Fatalf("a third reservation at a ceiling of two = %v, want ErrCapacityExhausted", err)
 	}
 
 	first.Release()
-	third, ok := r.pub.Reserve("payment", "c")
-	if !ok {
-		t.Fatal("a reservation was refused after one was given back")
+	third, err := r.reserve("payment", "c")
+	if err != nil {
+		t.Fatalf("a reservation after one was given back was refused: %v", err)
 	}
 	third.Release()
 
 	// A Service the caches show as live counts against the same ceiling.
 	f.seedLiveCollection("payment", "d", StateRunning)
-	r.waitCache("sees the live service", func(c *Caches) bool { return c.cachedLive() == 1 })
-	if _, ok := r.pub.Reserve("payment", "e"); ok {
-		t.Fatal("a reservation was granted with one cached live collection and one reservation held")
+	r.waitCache("sees the live service", func(c *Caches) bool {
+		live, ok := c.cachedLive(r.client.Generation())
+
+		return ok && live == 1
+	})
+	if _, err := r.reserve("payment", "e"); !errors.Is(err, ErrCapacityExhausted) {
+		t.Fatalf("a reservation with one cached live collection and one held = %v, want ErrCapacityExhausted", err)
 	}
 	frozen.freeze()
 }
@@ -210,13 +214,17 @@ func TestReleaseRule(t *testing.T) {
 
 	t.Run("fresh reads finding nothing release it", func(t *testing.T) {
 		f := startPGO(t)
-		frozen := newArmedFreezer(cacheJobs, cacheActive)
+		// The reservation is taken behind the replay barrier, which is where every caller takes one,
+		// and the freeze that follows is what leaves the caches showing nothing of the publication.
+		frozen := newFreezer(cacheJobs, cacheActive)
 		r := f.newReplica("replica", replicaOpts{freezer: frozen})
+		r.waitSynced()
 
-		res, ok := r.pub.Reserve("payment", "payment-api")
-		if !ok {
-			t.Fatal("the reservation was refused")
+		res, err := r.reserve("payment", "payment-api")
+		if err != nil {
+			t.Fatalf("the reservation was refused: %v", err)
 		}
+		frozen.freeze()
 		res.Track(newID())
 		r.releaseResolved()
 		if got := r.pub.Reserved(); got != 0 {
@@ -226,15 +234,18 @@ func TestReleaseRule(t *testing.T) {
 
 	t.Run("a terminal record and another id release it", func(t *testing.T) {
 		f := startPGO(t)
-		frozen := newArmedFreezer(cacheJobs, cacheActive)
+		frozen := newFreezer(cacheJobs, cacheActive)
 		r := f.newReplica("replica", replicaOpts{freezer: frozen})
+		r.waitSynced()
 
+		res, err := r.reserve("payment", "payment-api")
+		if err != nil {
+			t.Fatalf("the reservation was refused: %v", err)
+		}
+		// Everything seeded from here is held at the gate, so the caches show none of it.
+		frozen.freeze()
 		mine := f.seedRecord("payment", "payment-api", StateFailed)
 		f.seedLiveCollection("payment", "payment-api", StateRunning)
-		res, ok := r.pub.Reserve("payment", "payment-api")
-		if !ok {
-			t.Fatal("the reservation was refused")
-		}
 		res.Track(mine)
 		r.releaseResolved()
 		if got := r.pub.Reserved(); got != 0 {
@@ -244,14 +255,16 @@ func TestReleaseRule(t *testing.T) {
 
 	t.Run("a nonterminal record holds it", func(t *testing.T) {
 		f := startPGO(t)
-		frozen := newArmedFreezer(cacheJobs, cacheActive)
+		frozen := newFreezer(cacheJobs, cacheActive)
 		r := f.newReplica("replica", replicaOpts{freezer: frozen})
+		r.waitSynced()
 
-		mine := f.seedRecord("payment", "payment-api", StateInitializing)
-		res, ok := r.pub.Reserve("payment", "payment-api")
-		if !ok {
-			t.Fatal("the reservation was refused")
+		res, err := r.reserve("payment", "payment-api")
+		if err != nil {
+			t.Fatalf("the reservation was refused: %v", err)
 		}
+		frozen.freeze()
+		mine := f.seedRecord("payment", "payment-api", StateInitializing)
 		res.Track(mine)
 		r.releaseResolved()
 		if got := r.pub.Reserved(); got != 1 {
@@ -261,8 +274,9 @@ func TestReleaseRule(t *testing.T) {
 
 	t.Run("an unavailable read holds it", func(t *testing.T) {
 		f := startPGO(t)
-		frozen := newArmedFreezer(cacheJobs, cacheActive)
+		frozen := newFreezer(cacheJobs, cacheActive)
 		r := f.newReplica("replica", replicaOpts{freezer: frozen})
+		r.waitSynced()
 
 		hook := &kvHook{after: func(op, _ string, err error) error {
 			if op == "get" {
@@ -271,10 +285,11 @@ func TestReleaseRule(t *testing.T) {
 
 			return err
 		}}
-		res, ok := r.pub.Reserve("payment", "payment-api")
-		if !ok {
-			t.Fatal("the reservation was refused")
+		res, err := r.reserve("payment", "payment-api")
+		if err != nil {
+			t.Fatalf("the reservation was refused: %v", err)
 		}
+		frozen.freeze()
 		res.Track(newID())
 
 		ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
@@ -371,7 +386,7 @@ func TestIndeterminateCreates(t *testing.T) {
 		if got := r.pub.Reserved(); got != 0 {
 			t.Fatalf("reservations held are %d after the cache delivered, want 0", got)
 		}
-		if !r.caches.Live("payment", "payment-api") {
+		if !r.live("payment", "payment-api") {
 			t.Fatal("the delivered record does not make the service live")
 		}
 	})
@@ -542,7 +557,7 @@ func TestKilledCreatorLeftovers(t *testing.T) {
 			r := f.newReplica("replacement", replicaOpts{})
 			r.waitSynced()
 			r.waitCache("sees the leftover", func(c *Caches) bool {
-				return len(c.overrideSnapshot()) == 1 && c.Live("payment", "payment-api") == tc.wantLive
+				return len(c.overrideSnapshot()) == 1 && r.live("payment", "payment-api") == tc.wantLive
 			})
 
 			r.tick()
@@ -551,8 +566,8 @@ func TestKilledCreatorLeftovers(t *testing.T) {
 			}
 
 			f.failRecord(leftover, ReasonNotPublished)
-			r.waitCache("sees the service free again", func(c *Caches) bool {
-				return !c.Live("payment", "payment-api")
+			r.waitCache("sees the service free again", func(*Caches) bool {
+				return !r.live("payment", "payment-api")
 			})
 			r.clock.Advance(time.Hour)
 			r.tick()

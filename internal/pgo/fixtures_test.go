@@ -684,6 +684,22 @@ func (r *replica) waitSynced() {
 	})
 }
 
+// live is what the replica's caches show for one Service, under the generation the replica reads through.
+// The generation is read fresh on every call,
+// so a predicate polling to convergence follows a move rather than holding the generation it started under.
+// A cache that has not replayed under that generation answers false, which is a poll that keeps waiting.
+func (r *replica) live(ns, svc string) bool {
+	live, ok := r.caches.Live(r.client.Generation(), ns, svc)
+
+	return live && ok
+}
+
+// reserve takes one reservation under the generation the replica reads through,
+// which is the generation a Session carries into the same call on the request path.
+func (r *replica) reserve(ns, svc string) (*Reservation, error) {
+	return r.pub.Reserve(r.client.Generation(), ns, svc)
+}
+
 // waitCache blocks until pred holds over the replica's caches, so a test never
 // calls a tick against a cache that has not yet seen its own setup.
 func (r *replica) waitCache(what string, pred func(*Caches) bool) {

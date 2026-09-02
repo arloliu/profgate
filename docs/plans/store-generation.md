@@ -101,7 +101,8 @@ so it moves the store generation, every watch re-opens under the new one, and `O
 
 **Files:** `internal/pgo/caches.go`, `internal/pgo/caches_test.go`.
 
-**Declare first:** `func (c *Caches) clearSynced()`, which sets all four `c.synced` entries false under `c.mu`.
+**Declare first:** `func (c *Caches) startAttempt(client natskv.Client)`,
+which records the connection this attempt fills the caches from and sets all four `c.synced` entries false under `c.mu`.
 `Caches.Run` (`caches.go:287`) calls it on the line between `gen := client.Generation()` (`:288`)
 and `stores, err := client.View(gen)` (`:289`),
 so an attempt that never opens a watch starts from cleared flags too —
@@ -125,16 +126,18 @@ that `wc.caches.Synced(wc.client.Generation())` is false between the two attempt
 set the four flags through a first attempt that reaches `Synced(gen)` and cancel it,
 then run the attempt whose view fails,
 and `wc.caches.Synced(wc.client.Generation())` is false afterwards.
-A `clearSynced` placed below the view failure's early return leaves that assertion red.
-A watch cut has no test in `internal/pgo`.
-The cut is driven through `client.testWatchOpened`, an unexported field of an unexported type in `internal/natskv`,
-which no test outside that package reaches,
-and deleting `PROFGATE_JOBS` through the fixture's `f.js` does not cut the watches over it promptly:
-the seam's own tests cut a watcher through that field and delete the bucket only to make the re-opens fail.
-Covering the cut from `internal/pgo` needs an exported seam in `internal/natskv`, which this task does not touch,
-so the rebuild from a replay under a moved generation stays covered at the seam by `TestGeneration`,
-and a bucket deleted or recreated under a running process is uncovered.
-Whether a re-open binds to a stream recreated under the handle the client holds is unverified for the same reason.
+A `startAttempt` placed below the view failure's early return leaves that assertion red.
+The cut itself is proved at the seam.
+`TestGeneration` in `internal/natskv` cuts a live watcher through `client.testWatchOpened`,
+an unexported field of an unexported type no test outside that package reaches,
+and watches the generation move, the watches re-open, and their replay carry the new generation.
+The rebuild that cut must cause is proved here against the same contract:
+`TestCachesRebuildOnAWatchCut` runs `Caches.Run` over a connection that delivers exactly what the seam promises —
+the generation moves, `OnGenerationMove` reports it, and every watch replays under the new generation —
+so a key deleted while the watches were down is absent once the barrier is open again,
+although no tombstone was ever delivered for it.
+A bucket deleted or recreated under a running process is still uncovered,
+and whether a re-open binds to a stream recreated under the handle the client holds is unverified.
 
 - [x] **Clear the flags, then validate and commit**
 
@@ -174,7 +177,7 @@ and `:538` (the live check a create makes) answer `q.fail(w, errPGOUnavailable)`
 the two `latest` routes need no new branch, because `serveLatestCollection` (`:910-919`) passes the error to
 `storeError` (`internal/httpapi/pgo.go:190-196`), which answers that for everything but `ErrKeyNotFound`.
 
-- [ ] **Write the tests, run them, and record which subtests were red**
+- [x] **Write the tests, run them, and record which subtests were red**
 
 `runtime_test.go`, beside `TestSessionWaitsForBothHalvesOfTheBarrier` (`:80`):
 `TestSessionCacheReadsRefuseAMovedGeneration`, a table over the four session reads.
@@ -193,7 +196,7 @@ the listing, `POST /collections` for the override and for the live check, and th
 and each answers `503 pgo_unavailable`;
 harness reads at `fixtures_test.go:1669`, `:1698`, `:1708`, and `:1719` take the generation with them.
 
-- [ ] **Guard the reads, map the refusal, then validate and commit**
+- [x] **Guard the reads, map the refusal, then validate and commit**
 
 ```bash
 mise exec -- go test -race ./internal/pgo/ ./internal/httpapi/ && mise run lint && mise run test && mise run check

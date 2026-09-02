@@ -99,6 +99,10 @@ func (r *Runtime) bound() bool { return r.bundle.Load() != nil }
 type Session struct {
 	b     *Bundle
 	store natskv.Stores
+	// gen is the store generation this session passed the barrier under.
+	// Every cache read it makes takes it,
+	// so a read arriving after those caches were reset is refused rather than answered from a cache that was emptied.
+	gen uint64
 	// moved is the store-generation broadcast this session captured when it was taken,
 	// and never a lookup made later.
 	moved <-chan struct{}
@@ -134,7 +138,7 @@ func (r *Runtime) Session() (*Session, error) {
 		return nil, fmt.Errorf("pgo: view of generation %d: %w", gen, err)
 	}
 
-	return &Session{b: b, store: store, moved: moved}, nil
+	return &Session{b: b, store: store, gen: gen, moved: moved}, nil
 }
 
 // Subscribe registers a channel pulsed for every job.<id> entry applied for id.
@@ -301,22 +305,48 @@ func (s *Session) DeleteOverride(ctx context.Context, ns, svc string, revision u
 // configRevision.
 // It is read only behind the replay barrier, so a Service that has an override
 // never yields a zero revision.
-func (s *Session) CachedOverride(ns, svc string) (*PolicyOverride, uint64) {
-	return s.b.Caches.Override(ns, svc)
+// It is natskv.ErrUnavailable once the caches have moved past this session's generation.
+func (s *Session) CachedOverride(ns, svc string) (*PolicyOverride, uint64, error) {
+	o, revision, ok := s.b.Caches.Override(s.gen, ns, svc)
+	if !ok {
+		return nil, 0, s.staleCaches()
+	}
+
+	return o, revision, nil
+}
+
+// staleCaches is what a cache read answers once the caches have been reset under a newer generation.
+// It wraps the error Session itself returns, so the routes map it to 503 pgo_unavailable already.
+func (s *Session) staleCaches() error {
+	return fmt.Errorf("pgo: caches have moved past generation %d: %w", s.gen, natskv.ErrUnavailable)
 }
 
 // Collections lists what the watched job cache holds for one Service, newest first:
 // the page the query asks for,
 // and whether the listing holds more entries behind it.
-func (s *Session) Collections(ns, svc string, q CollectionQuery) ([]CollectionView, bool) {
-	return s.b.Caches.Collections(ns, svc, q)
+// It is natskv.ErrUnavailable once the caches have moved past this session's generation.
+func (s *Session) Collections(ns, svc string, q CollectionQuery) ([]CollectionView, bool, error) {
+	views, more, ok := s.b.Caches.Collections(s.gen, ns, svc, q)
+	if !ok {
+		return nil, false, s.staleCaches()
+	}
+
+	return views, more, nil
 }
 
 // Live reports whether the caches already show the Service as holding a live
 // Collection.
 // It spares a write that would lose the active create; the create is the
 // decision.
-func (s *Session) Live(ns, svc string) bool { return s.b.Caches.Live(ns, svc) }
+// It is natskv.ErrUnavailable once the caches have moved past this session's generation.
+func (s *Session) Live(ns, svc string) (bool, error) {
+	live, ok := s.b.Caches.Live(s.gen, ns, svc)
+	if !ok {
+		return false, s.staleCaches()
+	}
+
+	return live, nil
+}
 
 // TakeToken takes one on-demand token from this replica's bucket and reports
 // whether there was one.
@@ -325,8 +355,12 @@ func (s *Session) Live(ns, svc string) bool { return s.b.Caches.Live(ns, svc) }
 func (s *Session) TakeToken() bool { return s.b.Bucket.Take() }
 
 // Reserve takes one reservation against the live-Collection ceiling.
-// A refusal is 429 capacity_exhausted and writes nothing.
-func (s *Session) Reserve(ns, svc string) (*Reservation, bool) { return s.b.Publisher.Reserve(ns, svc) }
+// ErrCapacityExhausted is 429 capacity_exhausted and writes nothing.
+// The count behind it is a cache read, so it takes this session's generation
+// and is natskv.ErrUnavailable once the caches have moved past it.
+func (s *Session) Reserve(ns, svc string) (*Reservation, error) {
+	return s.b.Publisher.Reserve(s.gen, ns, svc)
+}
 
 // Publish performs the three writes that publish a Collection, exactly as the
 // scheduler's publication does.
@@ -357,11 +391,16 @@ func (s *Session) OpenArtifact(ctx context.Context, object string) (io.ReadClose
 // The open is the confirmation,
 // so the reader a caller streams is the one the walk confirmed
 // and no second open can find the object gone.
+// It is natskv.ErrUnavailable when the caches have moved past this session's generation,
+// because the candidate list is the cache read this walk begins from.
 // It is natskv.ErrKeyNotFound when no candidate survives,
 // and a store that cannot be read is reported rather than an older Collection:
 // a store the gateway cannot read says nothing about which artifact is newest.
 func (s *Session) LatestCompleted(ctx context.Context, ns, svc string) (StoredRecord, io.ReadCloser, error) {
-	candidates, _ := s.b.Caches.Collections(ns, svc, CollectionQuery{})
+	candidates, _, ok := s.b.Caches.Collections(s.gen, ns, svc, CollectionQuery{})
+	if !ok {
+		return StoredRecord{}, nil, s.staleCaches()
+	}
 	for _, v := range candidates {
 		if v.State != StateCompleted {
 			continue

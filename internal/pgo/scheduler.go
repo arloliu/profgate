@@ -161,7 +161,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 	// In a stable order, so what a replica does when the ceiling refuses part
 	// of a pass is reproducible rather than a property of map iteration.
 	for _, ref := range sortedRefs(overrides) {
-		s.consider(ctx, jobs, ref, overrides[ref], now)
+		s.consider(ctx, jobs, gen, ref, overrides[ref], now)
 	}
 }
 
@@ -186,8 +186,9 @@ func sortedRefs[T any](refsOf map[serviceRef]T) []serviceRef {
 
 // consider runs one Service through the eligibility checks and, when it is
 // due, through the slot create and the publication.
+// It takes the generation its tick read, because the cached live check is a cache read and takes one.
 func (s *Scheduler) consider(
-	ctx context.Context, jobs natskv.KV, ref serviceRef, stored cachedOverride, now time.Time,
+	ctx context.Context, jobs natskv.KV, gen uint64, ref serviceRef, stored cachedOverride, now time.Time,
 ) {
 	policy := Effective(s.defaults, stored.Stored.Policy)
 	if !policy.Enabled {
@@ -207,16 +208,25 @@ func (s *Scheduler) consider(
 
 	// The cached check only spares a write that would lose; the active create
 	// is the decision, and a replica whose cache lags simply loses it.
-	if s.caches.Live(ref.Namespace, ref.Service) {
+	live, ok := s.caches.Live(gen, ref.Namespace, ref.Service)
+	if !ok {
+		// The caches moved past the generation this pass reads through, which ends it exactly as the barrier does.
+		return
+	}
+	if live {
 		s.recorder.ScheduleSlot(slotBusy)
 
 		return
 	}
 
-	res, ok := s.pub.Reserve(ref.Namespace, ref.Service)
-	if !ok {
+	res, err := s.pub.Reserve(gen, ref.Namespace, ref.Service)
+	switch {
+	case errors.Is(err, ErrCapacityExhausted):
 		s.recorder.ScheduleSlot(slotCapacity)
 
+		return
+	case err != nil:
+		// The caches moved past the generation this pass reads through, which ends it exactly as the barrier does.
 		return
 	}
 

@@ -2,8 +2,13 @@ package pgo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -304,3 +309,282 @@ type viewFailClient struct {
 }
 
 func (c viewFailClient) View(uint64) (natskv.Stores, error) { return natskv.Stores{}, c.err }
+
+// seamWatchBuffer sizes one fake watch's channel, which the seam's own watchBuffer mirrors.
+const seamWatchBuffer = 64
+
+// errSeamWatchOnly is what every seamStore call but Watch answers.
+var errSeamWatchOnly = errors.New("the seam fake serves watches")
+
+// seamClient is the store seam as Caches consumes it: a generation, two buckets, and the watches open over them.
+// It exists because the cut this file is about cannot be driven against a server from here.
+// The real cut is a subscription closing under a live connection,
+// which internal/natskv drives through an unexported field of an unexported type and proves at the seam;
+// what internal/pgo owns is the rebuild that cut must cause,
+// so this stands in for the seam and delivers exactly what the seam promises:
+// the generation moves, the move is reported, and every watch replays under the new generation.
+type seamClient struct {
+	config *seamStore
+	jobs   *seamStore
+
+	// onMove is Options.OnGenerationMove as cmd/profgate wires it.
+	onMove func()
+
+	mu       sync.Mutex
+	gen      uint64
+	revision uint64
+	watches  []*seamWatch
+}
+
+// seamStore is one bucket: the keys it holds, reached only through a watch.
+type seamStore struct {
+	c    *seamClient
+	keys map[string][]byte
+}
+
+// seamWatch is one open watch: the prefix it covers and the channel it delivers on.
+type seamWatch struct {
+	store  *seamStore
+	prefix string
+	ch     chan natskv.Entry
+}
+
+// newSeamClient returns a connection on generation 1 with two empty buckets.
+func newSeamClient() *seamClient {
+	c := &seamClient{gen: 1}
+	c.config = &seamStore{c: c, keys: map[string][]byte{}}
+	c.jobs = &seamStore{c: c, keys: map[string][]byte{}}
+
+	return c
+}
+
+func (c *seamClient) Connected() bool { return true }
+
+func (c *seamClient) Generation() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.gen
+}
+
+// Synced is the seam's own half of the barrier, which this fake holds open:
+// what the case is about is the half the caches themselves answer.
+func (c *seamClient) Synced(gen uint64) bool { return gen == c.Generation() }
+
+func (c *seamClient) View(gen uint64) (natskv.Stores, error) {
+	if gen != c.Generation() {
+		return natskv.Stores{}, fmt.Errorf("view of generation %d: %w", gen, natskv.ErrUnavailable)
+	}
+
+	return natskv.Stores{Config: c.config, Jobs: c.jobs}, nil
+}
+
+// put writes one value and delivers it to every watch that covers its key,
+// which is another replica's write reaching this one.
+func (c *seamClient) put(t *testing.T, store *seamStore, key string, value any) {
+	t.Helper()
+
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal %s: %v", key, err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.revision++
+	store.keys[key] = body
+	for _, w := range c.watches {
+		if w.store == store && strings.HasPrefix(key, w.prefix) {
+			w.ch <- natskv.Entry{Key: key, Value: body, Revision: c.revision, Generation: c.gen}
+		}
+	}
+}
+
+// remove takes one key out of a bucket and delivers nothing.
+// It is the change a cut watch misses:
+// no tombstone reaches the cache, so only a rebuild from the replay can lose the key.
+func (c *seamClient) remove(store *seamStore, key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(store.keys, key)
+}
+
+// cut is a watch subscription closing while the connection stays up.
+// The seam answers it by moving the store generation and reporting the move,
+// and every watch then re-opens and replays under the new generation, which replay delivers.
+func (c *seamClient) cut() {
+	c.mu.Lock()
+	c.gen++
+	c.mu.Unlock()
+	if c.onMove != nil {
+		c.onMove()
+	}
+}
+
+// replay is one re-opened watch delivering the bucket as it stands, then its fresh marker.
+// One prefix at a time, because the barrier closes only when the last of the four has replayed.
+func (c *seamClient) replay(prefix string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, w := range c.watches {
+		if w.prefix != prefix {
+			continue
+		}
+		for _, key := range slices.Sorted(maps.Keys(w.store.keys)) {
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			c.revision++
+			w.ch <- natskv.Entry{Key: key, Value: w.store.keys[key], Revision: c.revision, Generation: c.gen}
+		}
+		w.ch <- natskv.Entry{Synced: true, Generation: c.gen}
+	}
+}
+
+func (s *seamStore) Get(context.Context, string) (natskv.Entry, error) {
+	return natskv.Entry{}, errSeamWatchOnly
+}
+
+func (s *seamStore) Create(context.Context, string, []byte) (uint64, error) {
+	return 0, errSeamWatchOnly
+}
+
+func (s *seamStore) Update(context.Context, string, []byte, uint64) (uint64, error) {
+	return 0, errSeamWatchOnly
+}
+
+func (s *seamStore) Delete(context.Context, string, uint64) error { return errSeamWatchOnly }
+
+func (s *seamStore) Keys(context.Context, string) ([]string, error) { return nil, errSeamWatchOnly }
+
+// Watch registers one watch, replays the bucket into it, and ends it with the marker.
+func (s *seamStore) Watch(ctx context.Context, prefix string) (<-chan natskv.Entry, error) {
+	c := s.c
+	c.mu.Lock()
+	w := &seamWatch{store: s, prefix: prefix, ch: make(chan natskv.Entry, seamWatchBuffer)}
+	c.watches = append(c.watches, w)
+	c.mu.Unlock()
+
+	c.replay(prefix)
+
+	go func() {
+		<-ctx.Done()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		close(w.ch)
+		c.watches = slices.DeleteFunc(c.watches, func(open *seamWatch) bool { return open == w })
+	}()
+
+	return w.ch, nil
+}
+
+// cachePrefixes names the prefix each of the four caches is filled from, in the order Run opens them.
+var cachePrefixes = [cacheCount]string{overridePrefix, jobPrefix, activePrefix, slotPrefix}
+
+// TestCachesRebuildOnAWatchCut covers what a cut under a live connection leaves in the four caches.
+// The generation moves, the move is reported, and every watch replays under the new one,
+// so each cache is dropped and rebuilt rather than patched:
+// a key deleted while the watches were down is gone from the cache once the barrier is open again,
+// although no tombstone was ever delivered for it.
+// An apply that overlaid the replay onto what the cache already held would keep every deleted key
+// and pass every other assertion here.
+// The barrier is the other half: it stays shut until the last of the four markers,
+// so a reader never sees three rebuilt caches beside one that is still filling.
+func TestCachesRebuildOnAWatchCut(t *testing.T) {
+	client := newSeamClient()
+	rt := NewRuntime()
+	client.onMove = rt.MoveGeneration
+
+	logs := newLogCapture()
+	caches := NewCaches(logs.logger())
+
+	kept := newID()
+	gone := newID()
+	record := func(id string) Record {
+		return Record{
+			ID: id, Namespace: "payment", Service: "payment-api",
+			Origin: OriginSchedule, State: StateCompleted, CreatedAt: slotBase,
+		}
+	}
+	stored := StoredOverride{Policy: &PolicyOverride{}, UpdatedBy: "tester", UpdatedAt: slotBase}
+	client.put(t, client.config, overrideKey("payment", "payment-api"), stored)
+	client.put(t, client.config, overrideKey("payment", "other-api"), stored)
+	client.put(t, client.jobs, jobKey(kept), record(kept))
+	client.put(t, client.jobs, jobKey(gone), record(gone))
+	client.put(t, client.jobs, activeKey("payment", "payment-api"), activeValue{ID: kept, CreatedAt: slotBase})
+	client.put(t, client.jobs, slotKey("payment", "payment-api", slotBase), slotValue{RetainUntil: slotBase})
+	client.put(t, client.jobs, slotKey("payment", "other-api", slotBase), slotValue{RetainUntil: slotBase})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- caches.Run(ctx, client) }()
+
+	before := client.Generation()
+	waitFor(t, "the four caches to replay", func() bool { return caches.Synced(before) })
+
+	// The gap: three keys leave the buckets and no tombstone is delivered for any of them.
+	client.remove(client.jobs, jobKey(gone))
+	client.remove(client.jobs, activeKey("payment", "payment-api"))
+	client.remove(client.config, overrideKey("payment", "other-api"))
+	client.remove(client.jobs, slotKey("payment", "other-api", slotBase))
+
+	moved := rt.generationMoved()
+	client.cut()
+	after := client.Generation()
+	select {
+	case <-moved:
+	default:
+		t.Fatal("the cut did not report the move to the runtime")
+	}
+	if caches.Synced(after) {
+		t.Fatalf("the barrier is open under generation %d before any watch replayed under it", after)
+	}
+
+	// One watch at a time, so the barrier can be seen to wait for the last of them.
+	for i, prefix := range cachePrefixes {
+		kind := cacheKind(i)
+		client.replay(prefix)
+		waitFor(t, "the replay of "+prefix, func() bool {
+			caches.mu.Lock()
+			defer caches.mu.Unlock()
+
+			return caches.gen[kind] == after && caches.synced[kind]
+		})
+		if last := kind == cacheCount-1; caches.Synced(after) != last {
+			t.Fatalf("the barrier under generation %d is %v with %d of the four caches replayed",
+				after, !last, i+1)
+		}
+	}
+
+	if caches.Synced(before) {
+		t.Fatalf("the barrier is still open under generation %d, which the cut left behind", before)
+	}
+
+	// What the replay no longer carried is gone, and what it carried is there.
+	if _, revision, ok := caches.Override(after, "payment", "other-api"); !ok || revision != 0 {
+		t.Errorf("the override cache holds other-api at revision %d (ok=%v), deleted while the watch was down",
+			revision, ok)
+	}
+	if _, revision, ok := caches.Override(after, "payment", "payment-api"); !ok || revision == 0 {
+		t.Errorf("the override cache lost payment-api, which the replay carried (revision %d, ok=%v)", revision, ok)
+	}
+	views, _, ok := caches.Collections(after, "payment", "payment-api", CollectionQuery{})
+	if !ok {
+		t.Fatal("the collection listing is refused under the generation the caches replayed under")
+	}
+	if len(views) != 1 || views[0].ID != kept {
+		t.Errorf("the listing is %+v, want the one collection the replay carried", views)
+	}
+	if live, ok := caches.Live(after, "payment", "payment-api"); !ok || live {
+		t.Errorf("the caches show payment-api live (ok=%v), with its active key deleted and its record completed",
+			ok)
+	}
+	if slots := caches.slotEntries(); len(slots) != 1 {
+		t.Errorf("the slot cache holds %d keys, want the one the replay carried", len(slots))
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("Run returned %v on a cancelled context, want nil", err)
+	}
+}

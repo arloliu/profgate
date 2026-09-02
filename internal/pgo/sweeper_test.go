@@ -1002,11 +1002,11 @@ func TestReceiptKeyBelongsToNoOtherRule(t *testing.T) {
 		return c.hasJob(later) && ok && id == later
 	})
 
-	if r.caches.Live("payment", "payment-api") {
+	if r.live("payment", "payment-api") {
 		t.Error("a receipt makes its service look live")
 	}
-	if got := r.caches.cachedLive(); got != 1 {
-		t.Errorf("cachedLive is %d, want 1: only the record counts", got)
+	if got, ok := r.caches.cachedLive(r.client.Generation()); !ok || got != 1 {
+		t.Errorf("cachedLive is %d (ok=%v), want 1: only the record counts", got, ok)
 	}
 	for what, keys := range map[string][]string{
 		"job":    slices.Collect(maps.Keys(r.caches.jobEntries())),

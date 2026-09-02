@@ -243,6 +243,131 @@ func TestPGOUnavailableBehindTheBarrier(t *testing.T) {
 	}
 }
 
+// TestPGORoutesRefuseAMovedGeneration proves what the routes answer when the caches move under a request.
+// A session binds the generation it passed the barrier under,
+// and the watched caches are reset and rebuilt from a fresh replay whenever that generation moves,
+// so a route that read them without the session's generation would answer from the rebuild:
+// a listing that no longer holds the Collection, no override, no live Collection, no completed Collection.
+// Each of the five routes the three cache paths serve answers 503 pgo_unavailable instead.
+func TestPGORoutesRefuseAMovedGeneration(t *testing.T) {
+	// seedRecordKey seeds one Collection in the given state and names the key the gap deletes.
+	seedRecordKey := func(state pgo.State) func(*testing.T, *pgoHarness) []string {
+		return func(t *testing.T, h *pgoHarness) []string {
+			t.Helper()
+
+			return []string{jobKeyPrefix + h.seedRecord(t, h.newRecord(state)).ID}
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		// seed is what the caches hold when the request's session is taken,
+		// and it names the keys the gap takes away.
+		seed func(*testing.T, *pgoHarness) []string
+		// gap is the rebuild the caches go through while the request is inside the authenticator.
+		gap func(*testing.T, *pgoHarness, []string)
+	}{
+		{
+			name:   "the collection listing",
+			method: http.MethodGet,
+			path:   collectionsPath,
+			seed:   seedRecordKey(pgo.StatePending),
+			gap:    func(t *testing.T, h *pgoHarness, keys []string) { h.rebuildJobCaches(t, keys...) },
+		},
+		{
+			name:   "the override a create layers",
+			method: http.MethodPost,
+			path:   collectionsPath,
+			body:   `{}`,
+			seed: func(t *testing.T, h *pgoHarness) []string {
+				t.Helper()
+				h.seedOverride(t, &pgo.PolicyOverride{})
+
+				return nil
+			},
+			gap: func(t *testing.T, h *pgoHarness, _ []string) { h.rebuildOverrideCache(t) },
+		},
+		{
+			name:   "the live check a create makes",
+			method: http.MethodPost,
+			path:   collectionsPath,
+			body:   `{}`,
+			seed: func(t *testing.T, h *pgoHarness) []string {
+				t.Helper()
+				h.seedActive(t, fixtureNamespace, fixtureService, newFixtureID())
+
+				return []string{activeKeyPrefix + fixtureNamespace + "." + fixtureService}
+			},
+			gap: func(t *testing.T, h *pgoHarness, keys []string) { h.rebuildJobCaches(t, keys...) },
+		},
+		{
+			name:   "the latest collection",
+			method: http.MethodGet,
+			path:   latestPath,
+			seed: func(t *testing.T, h *pgoHarness) []string {
+				t.Helper()
+
+				return []string{jobKeyPrefix + h.completedRecord(t).ID}
+			},
+			gap: func(t *testing.T, h *pgoHarness, keys []string) { h.rebuildJobCaches(t, keys...) },
+		},
+		{
+			name:   "the latest profile",
+			method: http.MethodGet,
+			path:   latestProfilePath,
+			seed: func(t *testing.T, h *pgoHarness) []string {
+				t.Helper()
+
+				return []string{jobKeyPrefix + h.completedRecord(t).ID}
+			},
+			gap: func(t *testing.T, h *pgoHarness, keys []string) { h.rebuildJobCaches(t, keys...) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, move := range []struct {
+				name string
+				gap  func(*testing.T, *pgoHarness, []string)
+			}{
+				{
+					name: "the caches rebuilt under the generation that followed",
+					gap:  tc.gap,
+				},
+				{
+					// Nothing arrives under the new generation,
+					// so every cache still carries the one the session bound, with its replay marked complete.
+					// That is the state a read of the cache alone cannot tell from a cache that is current.
+					name: "the caches still holding what the generation before them left",
+					gap:  func(*testing.T, *pgoHarness, []string) {},
+				},
+			} {
+				t.Run(move.name, func(t *testing.T) {
+					h := newPGOHarness(t, pgoOpts{})
+					keys := tc.seed(t, h)
+					// What the bucket holds once the gap is over is what the request starts from.
+					// A gap that took the seeded active key away leaves none,
+					// and one that left it alone leaves the one the seed wrote.
+					var before int
+					h.moveGenerationDuringRequest(t, func(t *testing.T) {
+						move.gap(t, h, keys)
+						before = h.nats.jobs.countKeys(activeKeyPrefix)
+					})
+
+					got := h.doPGO(t, tc.method, tc.path, tc.body, clientHeaders(tc.method))
+
+					h.expectPGOError(t, got, http.StatusServiceUnavailable, "pgo_unavailable", "pgo_unavailable")
+					if after := h.nats.jobs.countKeys(activeKeyPrefix); after != before {
+						t.Errorf("the bucket holds %d active keys, want the %d it started from: "+
+							"a refused request writes nothing", after, before)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestPGORouteGrammar pins what the routes match: the identifier grammar
 // exactly, so a path carrying a separator or a traversal segment is a route
 // the gateway does not have rather than an identifier it reads.
