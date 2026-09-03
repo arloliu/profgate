@@ -1,6 +1,7 @@
 # Roadmap
 
-**Status:** In Progress
+**Status:** Done
+**Outcome:** `v0.5.0`; every item is shipped in it or withdrawn.
 
 > **How to read this document:** it orders the work that follows the console,
 > so that each item is taken up in turn and nothing is started out of order.
