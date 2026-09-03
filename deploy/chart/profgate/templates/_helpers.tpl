@@ -598,6 +598,70 @@ a Pod ever starts.
 {{- end -}}
 
 {{/*
+Reject an authentication mode the chart can see will not start.
+basic mode admits no request until auth.basic.users or auth.basic.usersFile carries a user,
+and oidc mode has no signing keys to check a token against until auth.oidc.issuer names the issuer.
+Startup validation refuses both,
+so refusing here ends the install instead of the Pod.
+Each value is read the way profgate.config assembles the file:
+the raw config block first,
+because mergeOverwrite copies a key present there over the structured key even when the raw value is empty,
+and the structured value only where the raw block is silent.
+The message names whichever key was read,
+so an operator is sent to the value that reaches the gateway.
+A name beginning PROFGATE_AUTH_ in extraEnv stops every check here.
+The binary applies those overrides on top of the merged file,
+the chart cannot read a valueFrom,
+and PROFGATE_AUTH_MODE moves which requirement applies at all,
+so a values file carrying one is left to startup validation rather than refused on a value the chart cannot see.
+*/}}
+{{- define "profgate.validateAuthMode" -}}
+{{- $skip := false -}}
+{{- range .Values.extraEnv -}}
+{{- if hasPrefix "PROFGATE_AUTH_" (.name | default "") -}}
+{{- $skip = true -}}
+{{- end -}}
+{{- end -}}
+{{- if not $skip -}}
+{{- $rawAuth := dig "auth" dict (.Values.config | default dict) -}}
+{{- if not (kindIs "map" $rawAuth) -}}{{- $rawAuth = dict -}}{{- end -}}
+{{- $mode := toString .Values.auth.mode -}}
+{{- if hasKey $rawAuth "mode" -}}{{- $mode = toString (get $rawAuth "mode") -}}{{- end -}}
+{{- if eq $mode "basic" -}}
+{{- $rawBasic := dig "basic" dict $rawAuth -}}
+{{- if not (kindIs "map" $rawBasic) -}}{{- $rawBasic = dict -}}{{- end -}}
+{{- $users := .Values.auth.basic.users -}}
+{{- $usersKey := "auth.basic.users" -}}
+{{- if hasKey $rawBasic "users" -}}
+{{- $users = get $rawBasic "users" -}}
+{{- $usersKey = "config.auth.basic.users" -}}
+{{- end -}}
+{{- $usersFile := .Values.auth.basic.usersFile -}}
+{{- $usersFileKey := "auth.basic.usersFile" -}}
+{{- if hasKey $rawBasic "usersFile" -}}
+{{- $usersFile = get $rawBasic "usersFile" -}}
+{{- $usersFileKey = "config.auth.basic.usersFile" -}}
+{{- end -}}
+{{- if and (empty $users) (empty $usersFile) -}}
+{{- fail (printf "%s and %s are both empty: basic mode admits no request until one of them carries a user, so set inline users or name a users file the Secret at auth.secret.mountPath mounts" $usersKey $usersFileKey) -}}
+{{- end -}}
+{{- else if eq $mode "oidc" -}}
+{{- $rawOIDC := dig "oidc" dict $rawAuth -}}
+{{- if not (kindIs "map" $rawOIDC) -}}{{- $rawOIDC = dict -}}{{- end -}}
+{{- $issuer := .Values.auth.oidc.issuer -}}
+{{- $issuerKey := "auth.oidc.issuer" -}}
+{{- if hasKey $rawOIDC "issuer" -}}
+{{- $issuer = get $rawOIDC "issuer" -}}
+{{- $issuerKey = "config.auth.oidc.issuer" -}}
+{{- end -}}
+{{- if empty $issuer -}}
+{{- fail (printf "%s is empty: oidc mode discovers the issuer's signing keys from that URL, so set it to the issuer the tokens come from" $issuerKey) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 One podDisruptionBudget bound, printed as what the budget renders: the
 normalized integer or the percentage string when the bound is set, or ""
 when the value is null or the empty string. A set bound has to be something

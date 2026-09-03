@@ -1,5 +1,6 @@
 {{- include "profgate.validateNoDerivedOverrides" . -}}
 {{- include "profgate.validateAuthSecret" . -}}
+{{- include "profgate.validateAuthMode" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

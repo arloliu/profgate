@@ -179,6 +179,16 @@ func authOIDCValues(t *testing.T) []string {
 	}
 }
 
+// oidcWithoutIssuer is authOIDCValues with the issuer left unset, the shape a
+// values file takes when the issuer arrives through extraEnv instead.
+func oidcWithoutIssuer() []string {
+	return []string{
+		"--set", "auth.mode=oidc",
+		"--set", "auth.oidc.audience=profgate",
+		"--set", "auth.oidc.mapping.defaultRealm=developer",
+	}
+}
+
 // authOIDCCAValues is authOIDCValues with auth.oidc.caKey naming a CA file
 // that exists on this machine, because config.Load opens it.
 func authOIDCCAValues(t *testing.T) (values []string, mountDir string) {
@@ -1662,6 +1672,40 @@ func TestChartConfigIsMergedAndParses(t *testing.T) {
 	// The basic and oidc value sets each render a configuration config.Load
 	// accepts, with the mounted files stubbed the same way tlsValues and
 	// pgoValues stub theirs.
+	// A user set and an issuer supplied only through the raw block are what the gateway reads,
+	// so an install that supplies them there has to render.
+	// A render-time refusal reading the structured value alone would reject a release that starts.
+	t.Run("basic users arrive through the raw config block", func(t *testing.T) {
+		values := []string{
+			"--set", "auth.mode=basic",
+			"--set", "auth.basic.allowPlaintext=true",
+			"--set-json", `config.auth.basic.users=[{"name":"alice","passwordHash":"$2a$12$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.","realm":"developer"}]`,
+		}
+		if dep := render[appsv1.Deployment](t, "deployment.yaml", values...); dep.Name == "" {
+			t.Error("the rendered Deployment has no name")
+		}
+		cfg := loadRenderedConfig(t, values...)
+		if cfg.Auth.Basic == nil || len(cfg.Auth.Basic.Users) != 1 || cfg.Auth.Basic.Users[0].Name != "alice" {
+			t.Errorf("auth.basic = %+v, want the raw block's single alice entry", cfg.Auth.Basic)
+		}
+	})
+
+	t.Run("the issuer arrives through the raw config block", func(t *testing.T) {
+		values := []string{
+			"--set", "auth.mode=oidc",
+			"--set", "auth.oidc.audience=profgate",
+			"--set", "auth.oidc.mapping.defaultRealm=developer",
+			"--set", "config.auth.oidc.issuer=https://issuer.example",
+		}
+		if dep := render[appsv1.Deployment](t, "deployment.yaml", values...); dep.Name == "" {
+			t.Error("the rendered Deployment has no name")
+		}
+		cfg := loadRenderedConfig(t, values...)
+		if cfg.Auth.OIDC == nil || cfg.Auth.OIDC.Issuer != "https://issuer.example" {
+			t.Errorf("auth.oidc = %+v, want the raw block's issuer", cfg.Auth.OIDC)
+		}
+	})
+
 	t.Run("auth basic loads", func(t *testing.T) {
 		values, _ := authBasicValues(t)
 		if cfg := loadRenderedConfig(t, values...); cfg.Auth.Mode != "basic" {
@@ -2580,6 +2624,25 @@ func TestChartAuth(t *testing.T) {
 		}
 	})
 
+	// Each mode names values it cannot start without,
+	// and the chart refuses the configuration while it renders,
+	// rather than handing the cluster a Pod that exits over it a moment later.
+	t.Run("basic with no users is refused", func(t *testing.T) {
+		stderr := renderFailure(t, "--set", "auth.mode=basic", "--set", "auth.basic.allowPlaintext=true")
+		want := "auth.basic.users and auth.basic.usersFile"
+		if !strings.Contains(stderr, want) {
+			t.Errorf("helm failed with %q, want it to contain %q", stderr, want)
+		}
+	})
+
+	t.Run("oidc with no issuer is refused", func(t *testing.T) {
+		stderr := renderFailure(t, "--set", "auth.mode=oidc")
+		want := "auth.oidc.issuer"
+		if !strings.Contains(stderr, want) {
+			t.Errorf("helm failed with %q, want it to contain %q", stderr, want)
+		}
+	})
+
 	t.Run("basic", func(t *testing.T) {
 		values, dir := authBasicValues(t)
 		cfg := loadRenderedConfig(t, values...)
@@ -2640,6 +2703,12 @@ func TestChartAuth(t *testing.T) {
 			if cfg.Auth.OIDC.CAFile != "" {
 				t.Errorf("auth.oidc.caFile = %q, want empty when auth.oidc.caKey is unset", cfg.Auth.OIDC.CAFile)
 			}
+
+			// The Deployment is where the mode's requirements are checked,
+			// so an oidc install renders it as well as its ConfigMap.
+			if dep := render[appsv1.Deployment](t, "deployment.yaml", authOIDCValues(t)...); dep.Name == "" {
+				t.Error("the rendered Deployment has no name")
+			}
 		})
 
 		t.Run("caKey set derives caFile", func(t *testing.T) {
@@ -2695,6 +2764,36 @@ func TestChartAuth(t *testing.T) {
 		want := "auth.secret.enabled must be true"
 		if !strings.Contains(stderr, want) {
 			t.Errorf("helm failed with %q, want it to contain %q", stderr, want)
+		}
+	})
+
+	// A PROFGATE_AUTH_ name in extraEnv reaches the gateway without reaching the ConfigMap,
+	// and the chart cannot read a valueFrom,
+	// so a mode carrying one is left to startup validation rather than guessed at.
+	t.Run("a literal issuer in extraEnv is not refused", func(t *testing.T) {
+		values := append(oidcWithoutIssuer(),
+			"--set-json", `extraEnv=[{"name":"PROFGATE_AUTH_OIDC_ISSUER","value":"https://issuer.example"}]`)
+		if dep := render[appsv1.Deployment](t, "deployment.yaml", values...); dep.Name == "" {
+			t.Error("the rendered Deployment has no name")
+		}
+	})
+
+	t.Run("a secret-backed issuer in extraEnv is not refused", func(t *testing.T) {
+		values := append(oidcWithoutIssuer(),
+			"--set-json", `extraEnv=[{"name":"PROFGATE_AUTH_OIDC_ISSUER","valueFrom":{"secretKeyRef":{"name":"issuer","key":"url"}}}]`)
+		if dep := render[appsv1.Deployment](t, "deployment.yaml", values...); dep.Name == "" {
+			t.Error("the rendered Deployment has no name")
+		}
+	})
+
+	// PROFGATE_AUTH_MODE decides which requirement applies at all,
+	// so the values the oidc refusal above is written for render once it is set.
+	t.Run("an auth mode in extraEnv is not refused", func(t *testing.T) {
+		dep := render[appsv1.Deployment](t, "deployment.yaml",
+			"--set", "auth.mode=oidc",
+			"--set-json", `extraEnv=[{"name":"PROFGATE_AUTH_MODE","value":"disabled"}]`)
+		if dep.Name == "" {
+			t.Error("the rendered Deployment has no name")
 		}
 	})
 
