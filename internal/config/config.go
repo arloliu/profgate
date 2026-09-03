@@ -81,7 +81,9 @@ type DiscoveryConfig struct {
 
 // PprofConfig names the default pprof port by number or by container-port name
 // and bounds what a request may name instead.
-// Port 0 means unset; normalization sets it to 6060 when PortName is also empty.
+// Port 0 is the loaded value of an absent key; normalization sets it to 6060 when PortName is also empty.
+// A written 0, in the file or in PROFGATE_PPROF_PORT, is refused before normalization,
+// so the min=0 tag admits only the absent key.
 // AllowedSelections is default-deny: an empty list admits only the configured default.
 type PprofConfig struct {
 	Port     int32  `yaml:"port"     env:"PPROF_PORT" validate:"min=0,max=65535"`
@@ -608,6 +610,18 @@ func Load(path string) (*Config, error) {
 		}
 		cfg.Discovery.Pprof.AllowedSelections = selections
 	}
+	// A loaded port of 0 is either an absent key or a written zero,
+	// and the struct cannot tell which, so the sources are read.
+	// The variable is read first because it beats the file:
+	// once set, its value is 0, since any other value either loaded or failed in fuda.
+	if cfg.Discovery.Pprof.Port == 0 {
+		if _, ok := os.LookupEnv("PROFGATE_PPROF_PORT"); ok {
+			return nil, fmt.Errorf("config: %s", pprofPortZeroMessage("PROFGATE_PPROF_PORT"))
+		}
+		if writesPprofPortZero(b) {
+			return nil, fmt.Errorf("config: %s: %s", path, pprofPortZeroMessage("discovery.pprof.port"))
+		}
+	}
 
 	normalize(&cfg)
 	if err := validate(&cfg); err != nil {
@@ -647,6 +661,40 @@ func refuseRemovedPprofKeys(b []byte) error {
 	}
 
 	return nil
+}
+
+// pprofPortZeroMessage is the one refusal for a written port of 0,
+// with the source that wrote it substituted: the file key or the environment variable.
+func pprofPortZeroMessage(source string) string {
+	return source + ": 0 is not a port (1-65535); omit it for the default " + strconv.Itoa(defaultPprofPort) + ", or set discovery.pprof.portName instead"
+}
+
+// writesPprofPortZero reports whether the file writes discovery.pprof.port with a value.
+// It is called only when the loaded port is 0 and no variable set it,
+// so a present key with a value is necessarily a written zero.
+// A null value leaves an int32 untouched, so it counts as the key not being written.
+// The walk is the one refuseRemovedPprofKeys makes, for the same reason:
+// mappingKeys resolves << while decoding, so a key carried in by an anchored mapping counts.
+// A file that fails to parse, or one whose value is not a mapping, was already refused by the strict decode.
+func writesPprofPortZero(b []byte) bool {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return false
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return false
+	}
+	node := *doc.Content[0]
+	for _, key := range []string{"discovery", "pprof"} {
+		child, ok := mappingKeys(node)[key]
+		if !ok {
+			return false
+		}
+		node = child
+	}
+	port, ok := mappingKeys(node)["port"]
+
+	return ok && port.Tag != "!!null"
 }
 
 // refuseRemovedPGOTarget fails when the file still sets pgo.defaults.target,

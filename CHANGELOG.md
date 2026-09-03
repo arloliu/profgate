@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a reader of the second line sees the state rather than a budget.
   The kustomize base drops from `1536Mi` to `512Mi` with it,
   so uncommenting its PGO block now means raising the limit too.
+- **BREAKING: `discovery.pprof.port: 0` is refused.**
+  It was read as "unset" and normalized to `6060`, or ignored beside a `portName`;
+  a configuration that writes it, in the file or as `PROFGATE_PPROF_PORT`, now fails at startup,
+  and omitting the key is how the default is taken.
 - **BREAKING: the chart validates `memoryLimitWithoutPGO` on both branches.**
   With `pgo.enabled` false the chart printed the value unchecked, so `512` rendered a limit of 512 bytes.
   Both branches now hold it to the one grammar, a whole number of `Mi` or `Gi`,

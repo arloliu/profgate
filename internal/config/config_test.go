@@ -433,6 +433,65 @@ func TestLoad(t *testing.T) {
 	})
 }
 
+// TestPprofPortZeroIsRefused covers the written zero:
+// discovery.pprof.port is 1-65535, and omitting the key is how the default is taken,
+// so a file or variable that writes 0 is refused instead of normalized to 6060
+// or read as "unset" beside a portName.
+// A null value counts as the key not being written,
+// and the variable decides over the file in both directions.
+func TestPprofPortZeroIsRefused(t *testing.T) {
+	// portZeroMessage is the one refusal, with the source that wrote the zero substituted.
+	portZeroMessage := func(source string) string {
+		return source + ": 0 is not a port (1-65535); omit it for the default 6060, or set discovery.pprof.portName instead"
+	}
+	fileMessage := func(name string) string {
+		return "config: " + fixture(name) + ": " + portZeroMessage("discovery.pprof.port")
+	}
+	envMessage := "config: " + portZeroMessage("PROFGATE_PPROF_PORT")
+	loadExact := func(t *testing.T, name, want string) {
+		t.Helper()
+		_, err := config.Load(fixture(name))
+		if err == nil || err.Error() != want {
+			t.Fatalf("Load(%q) error = %v, want %q", fixture(name), err, want)
+		}
+	}
+	loadPort := func(t *testing.T, name string, want int32) {
+		t.Helper()
+		cfg := loadOK(t, fixture(name))
+		if cfg.Discovery.Pprof.Port != want {
+			t.Fatalf("Load(%q) Port = %d, want %d", fixture(name), cfg.Discovery.Pprof.Port, want)
+		}
+	}
+
+	t.Run("a zero port in the file", func(t *testing.T) {
+		loadExact(t, "port-zero.yaml", fileMessage("port-zero.yaml"))
+	})
+	t.Run("a zero port beside a port name", func(t *testing.T) {
+		loadExact(t, "port-zero-with-name.yaml", fileMessage("port-zero-with-name.yaml"))
+	})
+	t.Run("a zero port from the environment", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_PORT", "0")
+		loadExact(t, "neither-port.yaml", envMessage)
+	})
+	t.Run("a zero variable over a valid file port", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_PORT", "0")
+		loadExact(t, "good.yaml", envMessage)
+	})
+	t.Run("a valid variable over a zero file port", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_PORT", "6061")
+		loadPort(t, "port-zero.yaml", 6061)
+	})
+	t.Run("a null port is absent", func(t *testing.T) {
+		loadPort(t, "port-null.yaml", 6060)
+	})
+	t.Run("an absent port still defaults", func(t *testing.T) {
+		loadPort(t, "neither-port.yaml", 6060)
+	})
+	t.Run("a zero allowedSelections entry keeps its own message", func(t *testing.T) {
+		loadErr(t, fixture("selections-port-zero.yaml"), "1-65535")
+	})
+}
+
 // TestPprofAllows covers the rule that decides whether a request may name a
 // port or a container-port name.
 // Three properties carry it:

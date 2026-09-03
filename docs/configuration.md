@@ -78,6 +78,13 @@ Exactly one of `pprof.port` and `pprof.portName` may be set;
 naming both is a validation error.
 When the file sets neither, `pprof.port` defaults to `6060` —
 the default exists only while `portName` is empty.
+`0` is not "unset": omitting the key is how the default is taken,
+and writing `pprof.port: 0`, or `PROFGATE_PPROF_PORT=0`, is a startup error,
+beside a `portName` or alone.
+A `null` value counts as the key omitted.
+`PROFGATE_PPROF_PORT` decides over the file in both directions:
+a valid variable loads over a file that writes `0`,
+and a variable holding `0` is refused over a file that writes a valid port.
 
 `port` connects to the same numbered port on every eligible Pod.
 `portName` instead resolves a named TCP container port per Pod,
