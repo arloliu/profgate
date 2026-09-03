@@ -7,7 +7,9 @@ a PodDisruptionBudget, and an optional NetworkPolicy.
 [`../../base`](../../base) is the same deployment as plain YAML with a kustomize base.
 Both are shipped surfaces and neither is a copy of the other:
 the chart templates what an external operator has to change,
-the base is what a repository already using kustomize patches.
+the base is what a repository already using kustomize patches,
+and the base's memory limit reserves the PGO-enabled figure with collection off,
+where the chart's follows the branch it renders.
 
 Releases go to GHCR as an OCI artifact,
 with `image.tag` defaulting to the release the chart was cut from:

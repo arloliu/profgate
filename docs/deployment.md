@@ -50,6 +50,8 @@ so the command above applies on a cluster that has never heard of Profgate.
 a repository whose namespaces are managed elsewhere removes `namespace.yaml` from `kustomization.yaml`'s `resources`.
 The base also hard-codes plain HTTP and PGO off;
 a repository using it is expected to patch the ConfigMap and Deployment with overlays of its own.
+The base pins a released image tag, which a checkout does not update;
+set the version this repository runs, or an image digest.
 The base applies only the gateway's own resources —
 its Namespace, ServiceAccount, ClusterRole and binding, ConfigMap, Deployment, Service,
 and the gateway NetworkPolicy the chart makes optional.
@@ -394,6 +396,9 @@ At the shipped ceilings the working set is 1Gi and the limit is 1536Mi;
 With PGO off the limit is `memoryLimitWithoutPGO` alone, 512Mi,
 which covers the runtime, the informer caches, and the interactive transfer buffers —
 the same term the enabled figure carries, because the gateway still costs it while it collects.
+The chart derives its limit from the branch it renders, so a chart install with PGO off gets 512Mi.
+The kustomize base reserves the PGO-enabled limit, 1536Mi, while shipping collection off,
+so uncommenting the ConfigMap's PGO block needs no second edit here.
 An explicit `resources.limits` replaces both paths and is rendered verbatim.
 
 `resources.requests` is rendered as written, and ships a CPU request of `100m`.

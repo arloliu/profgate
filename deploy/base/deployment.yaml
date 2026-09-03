@@ -28,7 +28,9 @@ spec:
         fsGroup: 65532
       containers:
         - name: profgate
-          image: ghcr.io/arloliu/profgate:latest
+          # A release does not rewrite this line.
+          # Set the version this repository runs.
+          image: ghcr.io/arloliu/profgate:v0.5.0
           args:
             - serve
             - --config
@@ -50,10 +52,11 @@ spec:
               port: ops
           resources:
             limits:
-              # The PGO working set this base's ConfigMap sizes, plus the
-              # gateway's own 512Mi footprint. `profgate config validate`
-              # prints both figures for a given configuration; raise this with
-              # any pgo.limits ceiling.
+              # PGO collection is off; the ConfigMap comments its block out.
+              # This reserves the limit that block would need, so
+              # uncommenting it needs no second edit here.
+              # The chart derives its limit from the branch it renders
+              # instead, so a chart install with PGO off gets 512Mi.
               memory: 1536Mi
           volumeMounts:
             - name: config

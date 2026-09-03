@@ -147,8 +147,15 @@ func TestDeployment(t *testing.T) {
 	}
 	c := podSpec.Containers[0]
 
-	if c.Image != "ghcr.io/arloliu/profgate:latest" {
-		t.Errorf("Image = %q, want ghcr.io/arloliu/profgate:latest", c.Image)
+	repo, tag, ok := strings.Cut(c.Image, ":")
+	if !ok {
+		t.Fatalf("Image = %q, want a repository:tag reference", c.Image)
+	}
+	if repo != "ghcr.io/arloliu/profgate" {
+		t.Errorf("Image repository = %q, want ghcr.io/arloliu/profgate", repo)
+	}
+	if tag == "" || tag == "latest" {
+		t.Errorf("Image tag = %q, want a pinned release tag, not latest", tag)
 	}
 
 	wantSecurityContext := &corev1.SecurityContext{
