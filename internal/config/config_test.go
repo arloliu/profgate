@@ -899,6 +899,19 @@ func TestLoadPGO(t *testing.T) {
 		t.Setenv("PROFGATE_PGO_LIMIT_MAX_EVERY", "10m")
 		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.maxEvery")
 	})
+	// Two shipped defaults sit on their own ceiling,
+	// so the ceiling cannot move down until the default moves first,
+	// and maxEvery ships at its own maximum and cannot move up at all;
+	// docs/configuration.md states the pairs and these cases hold the figures.
+	t.Run("max parallel below the default", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_PARALLEL", "3")
+		loadErr(t, fixture("pgo-full.yaml"),
+			"pgo.defaults.sampling.maxParallel 4 must be at most pgo.limits.maxParallel 3")
+	})
+	t.Run("max every above its maximum", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_EVERY", "25h")
+		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.maxEvery")
+	})
 	t.Run("max duration above cpu seconds", func(t *testing.T) {
 		t.Setenv("PROFGATE_PGO_LIMIT_MAX_DURATION", "120s")
 		loadErr(t, fixture("pgo-full.yaml"), "pgo.limits.maxDuration")

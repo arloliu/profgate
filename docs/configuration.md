@@ -428,7 +428,7 @@ the same value is judged the same way from either source.
 | `maxParallel` | `PROFGATE_PGO_LIMIT_MAX_PARALLEL` | `4` | `1` to `64` |
 | `minEvery` | `PROFGATE_PGO_LIMIT_MIN_EVERY` | `15m` | at least `1m` |
 | `maxEvery` | `PROFGATE_PGO_LIMIT_MAX_EVERY` | `24h` | at most `24h` |
-| `maxRetention` | `PROFGATE_PGO_LIMIT_MAX_RETENTION` | `24h` | `1m` to `720h` |
+| `maxRetention` | `PROFGATE_PGO_LIMIT_MAX_RETENTION` | `24h` | `1m` to `720h`; at most `pgo.jobRetention` less `1h`, which the shipped `168h` makes `167h` |
 | `maxSampleBytes` | `PROFGATE_PGO_LIMIT_MAX_SAMPLE_BYTES` | `16777216` | `1048576` to `268435456` |
 | `maxMergedBytes` | `PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES` | `33554432` | at most `1073741824` |
 | `maxTargetsPerRound` | `PROFGATE_PGO_LIMIT_MAX_TARGETS_PER_ROUND` | `32` | `1` to `256` |
@@ -484,7 +484,7 @@ Each value must obey the matching `pgo.limits` ceiling — the cross-key rules b
 | `sampling.duration` | `30s` | at least `1s`; at most `maxDuration` |
 | `sampling.rounds` | `2` | at least `1`; at most `maxRounds` |
 | `sampling.roundInterval` | `30s` | `0` to `10m` |
-| `sampling.replicas` | `all` | `all`, or a count from `1` to `maxTargetsPerRound` |
+| `sampling.replicas` | `all` | `all`, or a count from `1` to `maxTargetsPerRound`; the ceiling measures a count, not `all` |
 | `sampling.maxParallel` | `4` | at least `1`; at most `pgo.limits.maxParallel` |
 | `artifact.retention` | `24h` | at least `1m`; at most `maxRetention`; at least `schedule.every` |
 
@@ -505,6 +505,27 @@ until the next Collection replaces it;
 a shorter retention leaves the Service with nothing to download for the tail of every interval.
 The same rule judges every effective policy, not only the defaults:
 `PUT /pgo` and `POST /collections` refuse an override whose `artifact.retention` is under its `schedule.every`.
+
+#### Values that sit on their ceiling
+
+Four shipped values sit exactly on the ceiling that measures them,
+so narrowing that ceiling on its own is refused at startup:
+the value it measures has to move first, or in the same edit.
+Three are a default on its `pgo.limits` ceiling, or a `pgo.limits` ceiling on an interactive limit;
+the fourth is a ceiling that ships at its own maximum, which is a different shape.
+
+| Value | Its ceiling | Both ship at | What narrowing the ceiling costs |
+|---|---|---|---|
+| `sampling.maxParallel` | `pgo.limits.maxParallel` | `4` | `maxParallel: 3` is refused until the default moves first |
+| `artifact.retention` | `pgo.limits.maxRetention` | `24h` | `maxRetention: 23h` is refused until the default moves first |
+| `pgo.limits.maxDuration` | `limits.cpuSeconds` | `60s` on `60` | `cpuSeconds: 59` is refused while `pgo.enabled` is true, and not otherwise |
+| `pgo.limits.maxEvery` | its own maximum | `24h` | it cannot be raised at all |
+
+`pgo.limits.maxRetention` is the other way round:
+it can be narrowed once `artifact.retention` moves,
+and raising it toward its `720h` maximum needs `pgo.jobRetention` an hour above it,
+so `168h` is refused under the shipped `jobRetention` and `720h` needs `jobRetention: 721h` or more.
+`sampling.rounds` ships `2` under a `maxRounds` of `5` and has headroom.
 
 ## `ui`
 
