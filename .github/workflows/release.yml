@@ -104,3 +104,32 @@ jobs:
             echo
             echo "- \`oci://$CHARTS_REPO/profgate\` version \`$chart_version\`, appVersion \`$VERSION\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.ref_name }}
+      IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+      IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/profgate
+      CHARTS_REPO: ghcr.io/${{ github.repository_owner }}/charts
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create the GitHub Release
+        # The notes are the tag's CHANGELOG.md section plus the image and
+        # chart the publish job just pushed, so the release page and the
+        # registry name the same digest.
+        run: |
+          set -euo pipefail
+          scripts/release-notes.sh "$VERSION" "$IMAGE_DIGEST" > notes.md
+          gh release create "$VERSION" --verify-tag --title "$VERSION" --notes-file notes.md
+          {
+            echo "### Release"
+            echo
+            echo "- https://github.com/$REPO/releases/tag/$VERSION"
+          } >> "$GITHUB_STEP_SUMMARY"

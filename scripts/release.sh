@@ -4,10 +4,12 @@
 # The tag is the trigger: pushing v* starts .github/workflows/release.yml,
 # which runs the unit gates and the current end-to-end lane again and then
 # publishes the image to ghcr.io/arloliu/profgate and the chart to
-# oci://ghcr.io/arloliu/charts. This script publishes nothing. It checks what
-# a person cannot see at a glance -- an unpushed commit, a tag that already
-# exists, a red run on the commit being tagged -- and only then creates the
-# annotated tag and pushes it.
+# oci://ghcr.io/arloliu/charts,
+# then creates the GitHub Release with the notes scripts/release-notes.sh prints.
+# This script publishes nothing.
+# It checks what a person cannot see at a glance --
+# an unpushed commit, a tag that already exists, a red run on the commit being tagged --
+# and only then creates the annotated tag and pushes it.
 #
 # The e2e workflow ignores docs/**, .agents/**, *.md, AGENTS.md, CLAUDE.md,
 # and LICENSE,

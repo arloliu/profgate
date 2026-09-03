@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Every release tag gets a GitHub Release.**
+  The release workflow creates one after the image and chart are pushed,
+  with that version's changelog section, the image tag and digest, and the chart version as its notes.
+  `v0.4.0` and `v0.5.0` have releases written the same way by hand;
+  the tags before them already had one.
+
 ## [0.5.0] - 2026-09-03
 
 Adds a first-party command line, target exclusion diagnostics, and an HTTP contract automation can build on,
@@ -486,6 +496,7 @@ and PGO CPU-profile collection layered on top of it.
   frozen Kubernetes 1.23 and 1.24 images and the current Kubernetes release,
   matching the 1.23 compatibility baseline.
 
+[Unreleased]: https://github.com/arloliu/profgate/compare/v0.5.0...HEAD
 [0.5.0]: https://github.com/arloliu/profgate/releases/tag/v0.5.0
 [0.4.0]: https://github.com/arloliu/profgate/releases/tag/v0.4.0
 [0.3.0]: https://github.com/arloliu/profgate/releases/tag/v0.3.0

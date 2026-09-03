@@ -2107,6 +2107,9 @@ The image goes to `ghcr.io/arloliu/profgate` for `linux/amd64` and `linux/arm64`
 tagged with the tag and with `latest`, and its version is stamped into the binary from the tag.
 The chart goes to `oci://ghcr.io/arloliu/charts` with the tag as its `appVersion`
 and the tag without its leading `v` as its chart version.
+Once both are pushed, the workflow creates the GitHub Release for the tag,
+whose notes are that version's `CHANGELOG.md` section followed by the image tag, its digest, and the chart version,
+as `scripts/release-notes.sh` prints them.
 Consuming both from a network without egress to GHCR — through a proxy, as files, or from an internal mirror —
 is [`deploy/chart/profgate/README.md`](../../deploy/chart/profgate/README.md).
 
