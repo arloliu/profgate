@@ -74,7 +74,7 @@ An item may be reordered only by editing this list, never by starting later work
   Say which surface does what, and pin the tag.
 
 Spec: none.
-Shipped: on `docs/plan-install-path`, commits `d1b0cf2` through `80e37f8` plus the commit that carries the guides.
+Shipped: pull request #19.
 Why first: every item here is met in the first fifteen minutes, and each is a docs or template change.
 
 ### 2. Make `config validate` tell the truth
