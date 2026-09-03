@@ -224,7 +224,8 @@ and on the command line the 150 lines it would save are not worth OpenTelemetry 
 ## 5. What the roadmap does with this
 
 The roadmap proposed replacing the transport, cache, and discovery with a maintained library.
-That item is withdrawn on this evidence ([`docs/plans/roadmap.md`](../plans/roadmap.md)).
+That item was withdrawn on this evidence;
+the roadmap that carried it shipped as `v0.5.0` and left the tree.
 `docs/specs/auth.md` *Dependencies* says the opposite of the proposal and is `Accepted`;
 `000-agent-contract.md` ranks an accepted spec above a plan,
 and the roadmap's own preamble says an item that changes behavior first revises the spec it names.

@@ -143,7 +143,9 @@ seam 小是事實，但不代表內部 1,097 行自製 transport 是必要的；
 
 ## 三、建議優先序
 
-執行順序與進度以 [`docs/plans/roadmap.md`](../plans/roadmap.md) 為準。
+這份排序已全部執行或撤銷，結果是 `v0.5.0`（見 `CHANGELOG.md`）；
+承載它的 roadmap 已離開樹，
+依 [`finished-documents-leave-the-tree.md`](../decisions/finished-documents-leave-the-tree.md) 以 `git` 取回。
 
 1. 修 `docs/api.md` 「七條路由」；發布 `v0.4.0`（Auth + UI）。
 2. Chart 補 Ingress、PodMonitor、PrometheusRule、`resources.requests`。

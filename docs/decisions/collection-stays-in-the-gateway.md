@@ -105,7 +105,8 @@ which is the one cost the separation, and only the separation, removes.
   (`internal/httpapi/codes.go:90-92`).
 - The design is not discarded.
   [`pgo.md`](../specs/pgo.md) keeps every section that describes the separation,
-  and `docs/plans/roadmap.md` item 11 carries the deferral on its `Shipped:` line.
+  and this record is where the deferral lives;
+  the roadmap that carried it shipped as `v0.5.0` and left the tree.
 
 ## Revisit
 
