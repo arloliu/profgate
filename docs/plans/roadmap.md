@@ -63,7 +63,10 @@ An item may be reordered only by editing this list, never by starting later work
   in `basic` mode it promises a list of users and prints realms (`NOTES.txt:17-19,28,47-49`).
 - [ ] The upgrade section of `docs/deployment.md` names no breaking change and nothing in `README.md`,
   `docs/deployment.md`, or the chart README links `CHANGELOG.md`,
-  so a `0.4.x` install that never set `discovery.pprof.allowedSelections` narrows silently on upgrade.
+  so `0.5.0`'s five breaking changes reach an operator only by accident.
+  The port one is the trap: `discovery.pprof.allowedPorts` and `allowedPortNames` are removed,
+  so a `0.4.x` configuration that still sets either does not start,
+  and an empty `allowedSelections` admits only the configured default.
 - [ ] `README.md` does not link `docs/cli.md` or say the binary is also a client,
   and its quickstart gives no way to discover a namespace or a Service name.
 - [ ] `deploy/base/deployment.yaml` reserves 1536Mi with PGO off where the chart reserves 512Mi,
