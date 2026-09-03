@@ -1,0 +1,8 @@
+server: {opsListn: ":9090", tls: {opsListn: ":9090"}}
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

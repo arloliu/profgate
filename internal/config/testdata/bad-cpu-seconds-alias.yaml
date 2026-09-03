@@ -1,0 +1,11 @@
+server:
+  listen: &listen ":8080"
+limits:
+  cpuSeconds: *listen
+auth:
+  anonymousRealm: developer
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

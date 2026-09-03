@@ -1,0 +1,3 @@
+auth:
+  anonymousRealm: developer
+realms: {developer: {namespaces: ["*"], services: ["*"], profilse: ["*"]}, ops: {namespaces: ["*"], services: ["*"], profilse: ["*"]}}

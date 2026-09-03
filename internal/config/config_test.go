@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"errors"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/arloliu/profgate/internal/config"
 )
@@ -26,6 +29,17 @@ func loadErr(t *testing.T, path, want string) {
 	}
 	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("Load(%q) error = %q, want it to contain %q", path, err.Error(), want)
+	}
+}
+
+// loadErrExact loads path and fails the test unless the whole error is
+// "config: <path>: " followed by want, the shape every error about the file's content takes.
+func loadErrExact(t *testing.T, path, want string) {
+	t.Helper()
+	_, err := config.Load(path)
+	want = "config: " + path + ": " + want
+	if err == nil || err.Error() != want {
+		t.Fatalf("Load(%q) error = %v, want %q", path, err, want)
 	}
 }
 
@@ -92,13 +106,13 @@ func TestLoad(t *testing.T) {
 	})
 
 	t.Run("unknown top-level", func(t *testing.T) {
-		loadErr(t, fixture("unknown-top.yaml"), "line 1: unknown key extra")
+		loadErrExact(t, fixture("unknown-top.yaml"), "line 1: unknown key extra")
 	})
 	t.Run("unknown nested", func(t *testing.T) {
-		loadErr(t, fixture("unknown-nested.yaml"), "line 1: unknown key limits.foo")
+		loadErrExact(t, fixture("unknown-nested.yaml"), "line 1: unknown key limits.foo")
 	})
 	t.Run("unknown in realm", func(t *testing.T) {
-		loadErr(t, fixture("unknown-realm.yaml"), "line 3: unknown key realms.developer.profilse")
+		loadErrExact(t, fixture("unknown-realm.yaml"), "line 3: unknown key realms.developer.profilse")
 	})
 
 	t.Run("limit zero", func(t *testing.T) {
@@ -458,6 +472,24 @@ func TestDecodeErrorNamesTheKey(t *testing.T) {
 			want: "line 4: limits.cpuSeconds: cannot unmarshal !!str `abc` into int"},
 		{name: "a type mismatch in a flow mapping names the line", file: "bad-cpu-seconds-flow.yaml",
 			want: "line 3: cannot unmarshal !!str `abc` into int"},
+		// A merge writes its keys into the mapping that holds the <<,
+		// so the path is the destination's, and a key merged from an anchored mapping keeps that mapping's line.
+		{name: "an unknown key merged inline", file: "unknown-merge.yaml",
+			want: "line 3: unknown key server.opsListn"},
+		{name: "an unknown key merged from an anchor", file: "unknown-merge-anchor.yaml",
+			want: "line 1: unknown key base\ntestdata/unknown-merge-anchor.yaml: line 2: unknown key server.opsListn"},
+		// An aliased value is read at the key that writes the alias,
+		// on the line where the anchored value sits, which is the line the library reports.
+		{name: "an aliased value is named at the key that reads it", file: "bad-cpu-seconds-alias.yaml",
+			want: "line 2: limits.cpuSeconds: cannot unmarshal !!str `:8080` into int"},
+		// Two same-named unknown keys on one line are told apart by the block each sits in;
+		// where the blocks are of one shape, as two realms are, the name stands without a path.
+		{name: "two unknown keys on one line in different blocks", file: "unknown-flow-two-blocks.yaml",
+			want: "line 1: unknown key server.opsListn\ntestdata/unknown-flow-two-blocks.yaml: line 1: unknown key server.tls.opsListn"},
+		{name: "two unknown keys on one line in two realms", file: "unknown-flow-two-realms.yaml",
+			want: "line 3: unknown key profilse\ntestdata/unknown-flow-two-realms.yaml: line 3: unknown key profilse"},
+		{name: "a document that opens with ---", file: "unknown-server-doc.yaml",
+			want: "line 4: unknown key server.opsListn"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := fixture(tc.file)
@@ -477,6 +509,15 @@ func TestDecodeErrorNamesTheKey(t *testing.T) {
 	}
 	t.Run("a valid file still loads", func(t *testing.T) {
 		loadOK(t, fixture("pgo-full.yaml"))
+	})
+	// The rewritten message wraps the library's error rather than replacing it,
+	// so a caller matching on the error's type still can.
+	t.Run("the library's error stays the cause", func(t *testing.T) {
+		_, err := config.Load(fixture("unknown-server.yaml"))
+		var typeErr *yaml.TypeError
+		if !errors.As(err, &typeErr) {
+			t.Fatalf("Load() error = %v (%T), want a *yaml.TypeError in its chain", err, err)
+		}
 	})
 }
 
@@ -1548,10 +1589,10 @@ func TestLoadAuth(t *testing.T) {
 
 	t.Run("unknown keys", func(t *testing.T) {
 		t.Run("auth.basic.user", func(t *testing.T) {
-			loadErr(t, fixture("auth-basic-unknown.yaml"), "line 12: unknown key auth.basic.user")
+			loadErrExact(t, fixture("auth-basic-unknown.yaml"), "line 12: unknown key auth.basic.user")
 		})
 		t.Run("auth.oidc.browser.clientId", func(t *testing.T) {
-			loadErr(t, fixture("auth-browser-unknown.yaml"), "line 13: unknown key auth.oidc.browser.clientId")
+			loadErrExact(t, fixture("auth-browser-unknown.yaml"), "line 13: unknown key auth.oidc.browser.clientId")
 		})
 	})
 
@@ -1670,8 +1711,6 @@ func TestLoadOIDCCLI(t *testing.T) {
 			wantCLI: &config.OIDCCLI{ClientID: "profgate", Scopes: defaultScopes}},
 		{name: "under basic", file: "cli-basic.yaml", wantErr: []string{"auth.oidc must not be set"}},
 		{name: "under disabled", file: "cli-disabled.yaml", wantErr: []string{"auth.oidc must not be set"}},
-		{name: "unknown key", file: "cli-unknown.yaml",
-			wantErr: []string{"line 9: unknown key auth.oidc.cli.clientId"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if len(tc.wantErr) > 0 {
@@ -1694,6 +1733,10 @@ func TestLoadOIDCCLI(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("unknown key", func(t *testing.T) {
+		loadErrExact(t, fixture("cli-unknown.yaml"), "line 9: unknown key auth.oidc.cli.clientId")
+	})
 
 	// A scope error under cli names its own key; the browser key would send
 	// the operator to a block the file may not even carry.
@@ -1808,7 +1851,6 @@ func TestLoadUI(t *testing.T) {
 		// The decoder refuses the value before validation runs, so the message
 		// is the decoder's: it names the value it could not read as a boolean.
 		{name: "not boolean", file: "ui-not-bool.yaml", wantErr: "cannot unmarshal !!str `yes-please` into bool"},
-		{name: "unknown key", file: "ui-unknown.yaml", wantErr: "line 16: unknown key ui.path"},
 		{name: "under basic", file: "ui-basic.yaml", want: true},
 		{
 			name: "under oidc without browser", file: "ui-oidc.yaml",
@@ -1833,4 +1875,7 @@ func TestLoadUI(t *testing.T) {
 			}
 		})
 	}
+	t.Run("unknown key", func(t *testing.T) {
+		loadErrExact(t, fixture("ui-unknown.yaml"), "line 16: unknown key ui.path")
+	})
 }
