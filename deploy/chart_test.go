@@ -606,8 +606,12 @@ func TestChartMemoryLimitWithoutPGO(t *testing.T) {
 	t.Run("an override renders as the quantity it was given", func(t *testing.T) {
 		dep := render[appsv1.Deployment](t, "deployment.yaml", "--set", "memoryLimitWithoutPGO=1Gi")
 		want := resource.MustParse("1Gi")
-		if got := containerMemoryLimit(t, dep); got.Value() != want.Value() {
+		got := containerMemoryLimit(t, dep)
+		if got.Value() != want.Value() {
 			t.Errorf("resources.limits.memory = %s, want the override 1Gi", got.String())
+		}
+		if got.String() != "1Gi" {
+			t.Errorf("resources.limits.memory = %s, want the quantity rendered as 1Gi rather than a byte count", got.String())
 		}
 	})
 }
@@ -642,6 +646,18 @@ func TestChartMemoryLimitRejectsAnUnreadableBase(t *testing.T) {
 		out := renderFailure(t, "--set", "memoryLimitWithoutPGO=512")
 		if !strings.Contains(out, "memoryLimitWithoutPGO 512 must be a whole number of Mi or Gi") {
 			t.Errorf("helm's error does not name the unreadable base term:\n%s", out)
+		}
+	})
+
+	// An explicit resources.limits replaces the derived memory limit wholesale,
+	// so the render never reaches the base term this test otherwise refuses.
+	t.Run("an explicit limit skips the base term entirely", func(t *testing.T) {
+		dep := render[appsv1.Deployment](t, "deployment.yaml",
+			"--set", "resources.limits.memory=1Gi",
+			"--set", "memoryLimitWithoutPGO=512",
+		)
+		if got := containerMemoryLimit(t, dep); got.String() != "1Gi" {
+			t.Errorf("resources.limits.memory = %s, want the explicit override 1Gi", got.String())
 		}
 	})
 }
@@ -2851,6 +2867,19 @@ func TestChartAuth(t *testing.T) {
 			"--set-json", `extraEnv=[{"name":"PROFGATE_AUTH_MODE","value":"disabled"}]`)
 		if dep.Name == "" {
 			t.Error("the rendered Deployment has no name")
+		}
+	})
+
+	// A name that is not PROFGATE_AUTH_-prefixed must not stand the guard down:
+	// the loop skips validation only on a prefix match,
+	// so an unrelated variable leaves the oidc refusal in place.
+	t.Run("an unrelated extraEnv entry does not stand the guard down", func(t *testing.T) {
+		values := append(oidcWithoutIssuer(),
+			"--set-json", `extraEnv=[{"name":"PROFGATE_LOG_LEVEL","value":"debug"}]`)
+		stderr := renderFailure(t, values...)
+		want := "auth.oidc.issuer"
+		if !strings.Contains(stderr, want) {
+			t.Errorf("helm failed with %q, want it to contain %q", stderr, want)
 		}
 	})
 
