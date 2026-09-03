@@ -24,7 +24,7 @@ because what decides whether a document can still be trusted is its lifecycle, n
 | `decisions/` | One decision that is expensive to revisit, per file | Immutable once accepted; superseded rather than edited |
 | `investigations/` | An investigation frozen as of the day it ran | Immutable; superseded by a newer investigation or by a spec |
 
-`plans/` holds the roadmap that orders the work that comes next, while one is open.
+`plans/` holds [`plans/roadmap.md`](plans/roadmap.md), which orders the work that comes next.
 
 Working notes stay in `tmp/`, which is not tracked.
 They are byproducts of producing the documents above,
