@@ -1,6 +1,7 @@
 # `config validate` Tells the Truth
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** commits `d274f99` through `c2a773e` on `docs/plan-config-validate` carry the repairs; the commit that carries this line corrects the example.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.

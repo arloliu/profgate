@@ -722,10 +722,10 @@ pgo:
     minEvery: 15m
     maxEvery: 24h
     maxRetention: 24h
-    maxSampleBytes: 33554432
-    maxMergedBytes: 67108864
+    maxSampleBytes: 16777216
+    maxMergedBytes: 33554432
     maxTargetsPerRound: 32
-    maxActiveCollections: 2
+    maxActiveCollections: 1
     onDemandPerMinute: 10
     maxLiveCollections: 64
   defaults:

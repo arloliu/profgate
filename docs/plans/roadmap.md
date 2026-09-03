@@ -79,28 +79,32 @@ Why first: every item here is met in the first fifteen minutes, and each is a do
 
 ### 2. Make `config validate` tell the truth
 
-- [ ] `GatewayMemoryBytes` (`internal/config/config.go:541-556`) never reads `pgo.enabled`,
+- [x] `GatewayMemoryBytes` (`internal/config/config.go:541-556`) never reads `pgo.enabled`,
   so `config validate` prints a PGO-sized container limit for a gateway with PGO off,
   three times what the chart renders; `deploy/chart_test.go:604` already subtracts the working set to work around it.
   The code is the bug: with PGO off the limit is `memoryLimitWithoutPGO` alone, as `docs/deployment.md:390` says.
-- [ ] The "complete configuration" example in `docs/configuration.md:670-673` raises three `pgo.limits` values above the defaults
+- [x] The "complete configuration" example in `docs/configuration.md:670-673` raises three `pgo.limits` values above the defaults
   and the sentence at `:706` says every value is the shipped default.
-- [ ] YAML decode errors name a Go type instead of a key path and omit the file name every other error carries
+- [x] YAML decode errors name a Go type instead of a key path and omit the file name every other error carries
   (`field logLevl not found in type config.ServerConfig`), against the promise at `docs/configuration.md:14-17`.
-- [ ] `discovery.pprof.port: 0` is accepted as "unset" (`internal/config/config.go:87,722`)
+- [x] `discovery.pprof.port: 0` is accepted as "unset" (`internal/config/config.go:87,722`)
   where the doc says `1` to `65535`.
-- [ ] Eight documented `PROFGATE_AUTH_OIDC_{BROWSER,CLI}_*` overrides are dropped without a word
+- [x] Eight documented `PROFGATE_AUTH_OIDC_{BROWSER,CLI}_*` overrides are dropped without a word
   when the file lacks the block;
   `realms.<name>.profiles` refuses an entry without listing the eight accepted names.
   State the rule for pointer blocks in `docs/configuration.md:22-31`, and list the names.
-- [ ] Four shipped defaults sit on their own ceiling, so narrowing one ceiling fails startup until a second key moves;
+- [x] Four shipped defaults sit on their own ceiling, so narrowing one ceiling fails startup until a second key moves;
   `pgo.limits.maxRetention` documents a `720h` maximum that the shipped `jobRetention` caps at `167h`.
   Document the pairs.
 
-Spec: none; the memory rule is already stated in `docs/deployment.md` and the chart README.
-Shipped: not built yet.
+Spec: the configuration table in [`gateway.md`](../specs/gateway.md), which gives `discovery.pprof.port` as `1–65535`;
+the paragraph in [`pgo.md`](../specs/pgo.md) that describes what `config validate` prints
+and gives a gateway replica a static limit no `pgo.limits` key enters;
+and [`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md),
+which sizes the in-process collector as the gateway's footprint plus the working set.
+Shipped: pull request #20.
 Why here: `config validate` is the one tool an operator runs before every rollout,
-and today it disagrees with the chart.
+and it disagreed with the chart.
 
 ### 3. Give every CLI verb a `--help` and an honest table
 
