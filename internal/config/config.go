@@ -487,6 +487,13 @@ func Profiles() []string {
 	return slices.Clone(profileNames[:])
 }
 
+// profilesHint is the suffix a refused realms.<name>.profiles entry carries:
+// the eight profile names in order, then the wildcard,
+// built from profileNames so a ninth name cannot leave the message behind.
+func profilesHint() string {
+	return "; accepted: " + strings.Join(profileNames[:], ", ") + `, or "*"`
+}
+
 // SlogLevel is LogLevel as the level the JSON handler is built with.
 // The oneof tag is what pins the four names,
 // so an unknown one never reaches here and info is the unreachable fallback.
@@ -817,18 +824,22 @@ func validate(cfg *Config) error {
 		if !isDNSLabel(name) {
 			return fmt.Errorf("realms.%s: not a DNS-1123 label", name)
 		}
+		// profiles is the one list with a closed set,
+		// so its refusal names the entries it accepts;
+		// a DNS-1123 label has no list to print.
 		for _, list := range []struct {
 			key     string
 			entries []string
 			valid   func(string) bool
+			hint    string
 		}{
-			{"namespaces", realm.Namespaces, isDNSLabel},
-			{"services", realm.Services, isDNSLabel},
-			{"profiles", realm.Profiles, IsProfile},
+			{"namespaces", realm.Namespaces, isDNSLabel, ""},
+			{"services", realm.Services, isDNSLabel, ""},
+			{"profiles", realm.Profiles, IsProfile, profilesHint()},
 		} {
 			for _, entry := range list.entries {
 				if entry != "*" && !list.valid(entry) {
-					return fmt.Errorf("realms.%s.%s: invalid entry %q", name, list.key, entry)
+					return fmt.Errorf("realms.%s.%s: invalid entry %q%s", name, list.key, entry, list.hint)
 				}
 			}
 		}

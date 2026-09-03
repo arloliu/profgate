@@ -641,6 +641,30 @@ func TestProfiles(t *testing.T) {
 	}
 }
 
+// TestRealmEntryMessages covers the message a refused realm entry carries.
+// profiles is the one list with a closed set,
+// so its refusal names the eight names and the wildcard it accepts;
+// namespaces and services hold DNS-1123 labels, a set no message could list,
+// and their refusal names the entry alone.
+func TestRealmEntryMessages(t *testing.T) {
+	loadExact := func(t *testing.T, name, want string) {
+		t.Helper()
+		_, err := config.Load(fixture(name))
+		if err == nil || err.Error() != want {
+			t.Fatalf("Load(%q) error = %v, want %q", fixture(name), err, want)
+		}
+	}
+
+	t.Run("a profile entry is told the accepted names", func(t *testing.T) {
+		loadExact(t, "bad-profile.yaml", "config: "+fixture("bad-profile.yaml")+
+			`: realms.developer.profiles: invalid entry "heaap"; accepted: cpu, trace, heap, allocs, goroutine, mutex, block, threadcreate, or "*"`)
+	})
+	t.Run("a namespace entry keeps its message", func(t *testing.T) {
+		loadExact(t, "bad-entry.yaml", "config: "+fixture("bad-entry.yaml")+
+			`: realms.developer.namespaces: invalid entry "Bad_Name"`)
+	})
+}
+
 func TestLoadPGO(t *testing.T) {
 	t.Run("full example", func(t *testing.T) {
 		cfg := loadOK(t, fixture("pgo-full.yaml"))

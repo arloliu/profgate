@@ -4,4 +4,4 @@ realms:
   developer:
     namespaces: ["*"]
     services: ["*"]
-    profiles: ["nope"]
+    profiles: ["heaap"]

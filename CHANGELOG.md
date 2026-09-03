@@ -59,6 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The install notes describe the release that was rendered.**
   Basic mode's notes name where users come from instead of promising a list and printing the realms,
   and an Ingress in front of a TLS-enabled API port is warned about the backend-protocol setting it needs.
+- **A realm that names a profile wrong is told the names it may choose from.**
+  `realms.<name>.profiles: invalid entry "heaap"` was the whole message;
+  it now ends with the eight profile names in order and the `"*"` wildcard,
+  the one realm list whose accepted set is closed.
+  `namespaces` and `services` hold DNS-1123 labels and keep their message.
 
 ## [0.5.0] - 2026-09-03
 
