@@ -14,6 +14,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with that version's changelog section, the image tag and digest, and the chart version as its notes.
   `v0.4.0` and `v0.5.0` have releases written the same way by hand;
   the tags before them already had one.
+- **The guides link the changelog, and the README names the client.**
+  `README.md`, the deployment guide, and the chart README each link this file where a reader stands when it matters,
+  and the deployment guide's upgrade section restates `0.5.0`'s port-selection change there.
+  The README also names the `profgate` binary as a client, links its guide,
+  and its quickstart lists the namespaces and the Services a caller's realm admits before it asks for a profile.
+
+### Changed
+
+- **BREAKING: the chart validates `memoryLimitWithoutPGO` on both branches.**
+  With `pgo.enabled` false the chart printed the value unchecked, so `512` rendered a limit of 512 bytes.
+  Both branches now hold it to the one grammar, a whole number of `Mi` or `Gi`,
+  so a values file carrying `512`, `1500M`, or `0.5Gi` fails rendering where it rendered before.
+  An accepted value renders exactly what it rendered.
+
+### Fixed
+
+- **The chart refuses an authentication mode it can see will not start.**
+  `auth.mode: basic` with neither `auth.basic.users` nor `auth.basic.usersFile`,
+  and `auth.mode: oidc` with no `auth.oidc.issuer`,
+  each rendered a Deployment whose Pod exited at startup;
+  both now fail while the chart renders.
+  The raw `config:` block is read first for `auth.mode`, `auth.basic.users`, and `auth.oidc.issuer`,
+  so a value supplied only there is the one judged and the one named,
+  and any `PROFGATE_AUTH_`-prefixed entry in `extraEnv` switches both checks off,
+  because the environment can carry a value the chart cannot see.
+- **`kubectl apply -k deploy/base` works on a cluster that has never heard of Profgate.**
+  The base creates the `profgate` namespace its own resources name,
+  so `kubectl delete -k deploy/base` now removes that namespace and everything in it,
+  and a repository whose namespaces are managed elsewhere drops the entry from `resources`.
+  The base also pins the released image tag where it pinned `latest`.
+- **The install notes describe the release that was rendered.**
+  Basic mode's notes name where users come from instead of promising a list and printing the realms,
+  and an Ingress in front of a TLS-enabled API port is warned about the backend-protocol setting it needs.
 
 ## [0.5.0] - 2026-09-03
 
