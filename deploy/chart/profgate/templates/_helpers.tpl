@@ -603,12 +603,18 @@ basic mode admits no request until auth.basic.users or auth.basic.usersFile carr
 and oidc mode has no signing keys to check a token against until auth.oidc.issuer names the issuer.
 Startup validation refuses both,
 so refusing here ends the install instead of the Pod.
-Each value is read the way profgate.config assembles the file:
+auth.mode, auth.basic.users, and auth.oidc.issuer are each read the way profgate.config assembles the file:
 the raw config block first,
 because mergeOverwrite copies a key present there over the structured key even when the raw value is empty,
 and the structured value only where the raw block is silent.
 The message names whichever key was read,
 so an operator is sent to the value that reaches the gateway.
+A raw value is also judged for its type, the way profgate.natsURL judges nats.url:
+the gateway decodes the issuer into a string and the users key into a list,
+so a value of any other type renders a file it cannot read.
+auth.basic.usersFile is the exception, and is read from the structured value alone:
+profgate.validateNoDerivedOverrides refuses config.auth.basic.usersFile before this helper runs,
+because the users file mount follows the structured key.
 A name beginning PROFGATE_AUTH_ in extraEnv stops every check here.
 The binary applies those overrides on top of the merged file,
 the chart cannot read a valueFrom,
@@ -635,15 +641,12 @@ so a values file carrying one is left to startup validation rather than refused 
 {{- if hasKey $rawBasic "users" -}}
 {{- $users = get $rawBasic "users" -}}
 {{- $usersKey = "config.auth.basic.users" -}}
+{{- if and (not (kindIs "invalid" $users)) (not (kindIs "slice" $users)) -}}
+{{- fail (printf "config.auth.basic.users %v has type %s, not a list: basic mode reads a list of users, so set it as a list in the values file" $users (kindOf $users)) -}}
 {{- end -}}
-{{- $usersFile := .Values.auth.basic.usersFile -}}
-{{- $usersFileKey := "auth.basic.usersFile" -}}
-{{- if hasKey $rawBasic "usersFile" -}}
-{{- $usersFile = get $rawBasic "usersFile" -}}
-{{- $usersFileKey = "config.auth.basic.usersFile" -}}
 {{- end -}}
-{{- if and (empty $users) (empty $usersFile) -}}
-{{- fail (printf "%s and %s are both empty: basic mode admits no request until one of them carries a user, so set inline users or name a users file the Secret at auth.secret.mountPath mounts" $usersKey $usersFileKey) -}}
+{{- if and (empty $users) (empty .Values.auth.basic.usersFile) -}}
+{{- fail (printf "%s and auth.basic.usersFile are both empty: basic mode admits no request until one of them carries a user, so set inline users or name a users file the Secret at auth.secret.mountPath mounts" $usersKey) -}}
 {{- end -}}
 {{- else if eq $mode "oidc" -}}
 {{- $rawOIDC := dig "oidc" dict $rawAuth -}}
@@ -653,6 +656,9 @@ so a values file carrying one is left to startup validation rather than refused 
 {{- if hasKey $rawOIDC "issuer" -}}
 {{- $issuer = get $rawOIDC "issuer" -}}
 {{- $issuerKey = "config.auth.oidc.issuer" -}}
+{{- if and (not (kindIs "invalid" $issuer)) (not (kindIs "string" $issuer)) -}}
+{{- fail (printf "config.auth.oidc.issuer %v has type %s, not string: the gateway reads the issuer as a URL string, so quote it in the values file or set it with --set-string" $issuer (kindOf $issuer)) -}}
+{{- end -}}
 {{- end -}}
 {{- if empty $issuer -}}
 {{- fail (printf "%s is empty: oidc mode discovers the issuer's signing keys from that URL, so set it to the issuer the tokens come from" $issuerKey) -}}

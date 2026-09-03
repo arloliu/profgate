@@ -423,7 +423,12 @@ rather than starting a Pod that exits over a file it cannot open.
 `basic` mode with neither `auth.basic.users` nor `auth.basic.usersFile` set,
 and `oidc` mode with no `auth.oidc.issuer`,
 both fail at render time rather than rendering a Pod that exits at startup.
-The raw `config:` block is read first, so a value supplied only there is the one judged.
+The raw `config:` block is read first for `auth.mode`, `auth.basic.users`, and `auth.oidc.issuer`,
+so a value supplied only there is the one judged,
+and a value of the wrong type there fails rendering rather than reaching a gateway that cannot decode it.
+`auth.basic.usersFile` is not one of them:
+the chart refuses `config.auth.basic.usersFile` outright,
+because the Secret mount carries the file the structured key names.
 Any `PROFGATE_AUTH_`-prefixed entry in `extraEnv` switches both checks off,
 because the environment can carry a value the chart cannot see, and startup validation judges it instead.
 

@@ -2643,6 +2643,63 @@ func TestChartAuth(t *testing.T) {
 		}
 	})
 
+	// The raw config block is merged over the structured values,
+	// so a mode set only there is the mode the gateway reads,
+	// and it is the mode the requirement is chosen from.
+	t.Run("a basic mode in the raw config block is refused", func(t *testing.T) {
+		stderr := renderFailure(t, "--set", "config.auth.mode=basic")
+		want := "auth.basic.users"
+		if !strings.Contains(stderr, want) {
+			t.Errorf("helm failed with %q, want it to contain %q", stderr, want)
+		}
+	})
+
+	t.Run("a disabled mode in the raw config block wins", func(t *testing.T) {
+		dep := render[appsv1.Deployment](t, "deployment.yaml",
+			"--set", "auth.mode=basic",
+			"--set", "config.auth.mode=disabled")
+		if dep.Name == "" {
+			t.Error("the rendered Deployment has no name")
+		}
+	})
+
+	// A raw value of the wrong type renders a configuration file the gateway cannot decode,
+	// so the type is judged where the value is read.
+	t.Run("a non-string issuer in the raw config block is refused", func(t *testing.T) {
+		stderr := renderFailure(t,
+			"--set", "auth.mode=oidc",
+			"--set-json", "config.auth.oidc.issuer=123")
+		for _, want := range []string{"config.auth.oidc.issuer", "not string"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("helm failed with %q, want it to contain %q", stderr, want)
+			}
+		}
+	})
+
+	t.Run("a scalar users key in the raw config block is refused", func(t *testing.T) {
+		stderr := renderFailure(t,
+			"--set", "auth.mode=basic",
+			"--set", "auth.basic.allowPlaintext=true",
+			"--set-json", "config.auth.basic.users=1")
+		for _, want := range []string{"config.auth.basic.users", "not a list"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("helm failed with %q, want it to contain %q", stderr, want)
+			}
+		}
+	})
+
+	// An empty issuer supplied only in the raw block is judged there,
+	// so the message sends the operator to the key that reaches the gateway.
+	t.Run("an empty issuer in the raw config block names that key", func(t *testing.T) {
+		stderr := renderFailure(t,
+			"--set", "auth.mode=oidc",
+			"--set-string", "config.auth.oidc.issuer=")
+		want := "config.auth.oidc.issuer"
+		if !strings.Contains(stderr, want) {
+			t.Errorf("helm failed with %q, want it to contain %q", stderr, want)
+		}
+	})
+
 	t.Run("basic", func(t *testing.T) {
 		values, dir := authBasicValues(t)
 		cfg := loadRenderedConfig(t, values...)
