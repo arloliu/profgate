@@ -3,6 +3,7 @@
 package deploy_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -147,15 +148,8 @@ func TestDeployment(t *testing.T) {
 	}
 	c := podSpec.Containers[0]
 
-	repo, tag, ok := strings.Cut(c.Image, ":")
-	if !ok {
-		t.Fatalf("Image = %q, want a repository:tag reference", c.Image)
-	}
-	if repo != "ghcr.io/arloliu/profgate" {
-		t.Errorf("Image repository = %q, want ghcr.io/arloliu/profgate", repo)
-	}
-	if tag == "" || tag == "latest" {
-		t.Errorf("Image tag = %q, want a pinned release tag, not latest", tag)
+	if err := checkPinnedImage(c.Image); err != nil {
+		t.Error(err)
 	}
 
 	wantSecurityContext := &corev1.SecurityContext{
@@ -309,6 +303,68 @@ func TestDeployment(t *testing.T) {
 	}
 	if !authMount.ReadOnly {
 		t.Error("the authentication mount is writable, want readOnly")
+	}
+}
+
+// pinnedImageRepo is the repository the base's Deployment runs.
+const pinnedImageRepo = "ghcr.io/arloliu/profgate"
+
+// digestReference is the digest form of an image reference:
+// a repository, then @sha256: and the 64 hex digits of the digest.
+var digestReference = regexp.MustCompile(`^(.+)@sha256:[0-9a-f]{64}$`)
+
+// checkPinnedImage reports why an image reference does not pin a profgate build.
+// docs/deployment.md offers an operator both pinned forms, a release tag and an image digest,
+// so a reference in either form is accepted and only one that pins nothing is refused.
+func checkPinnedImage(image string) error {
+	var repo string
+	if strings.Contains(image, "@") {
+		match := digestReference.FindStringSubmatch(image)
+		if match == nil {
+			return fmt.Errorf("image %q: a digest reference is a repository, then @sha256: and 64 hex digits", image)
+		}
+		repo = match[1]
+	} else {
+		var (
+			tag string
+			ok  bool
+		)
+		repo, tag, ok = strings.Cut(image, ":")
+		if !ok || tag == "" {
+			return fmt.Errorf("image %q: want a repository:tag or a repository@sha256: digest reference", image)
+		}
+		if tag == "latest" {
+			return fmt.Errorf("image %q: want a pinned release tag, not latest", image)
+		}
+	}
+	if repo != pinnedImageRepo {
+		return fmt.Errorf("image %q names repository %q, want %s", image, repo, pinnedImageRepo)
+	}
+
+	return nil
+}
+
+// TestPinnedImage holds the two pinned forms docs/deployment.md offers an operator,
+// a release tag and an image digest,
+// against the two references that pin nothing.
+func TestPinnedImage(t *testing.T) {
+	tests := []struct {
+		name   string
+		image  string
+		pinned bool
+	}{
+		{"a release tag", "ghcr.io/arloliu/profgate:v0.5.0", true},
+		{"a digest", "ghcr.io/arloliu/profgate@sha256:" + strings.Repeat("ab", 32), true},
+		{"the latest tag", "ghcr.io/arloliu/profgate:latest", false},
+		{"neither a tag nor a digest", "ghcr.io/arloliu/profgate", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkPinnedImage(tc.image)
+			if (err == nil) != tc.pinned {
+				t.Errorf("checkPinnedImage(%q) = %v, want pinned %v", tc.image, err, tc.pinned)
+			}
+		})
 	}
 }
 
