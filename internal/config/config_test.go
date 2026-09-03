@@ -550,6 +550,15 @@ func TestPprofPortZeroIsRefused(t *testing.T) {
 			t.Fatalf("Load(%q) Port = %d, want %d", fixture(name), cfg.Discovery.Pprof.Port, want)
 		}
 	}
+	// loadPortName loads a fixture with PROFGATE_PPROF_PORT_NAME set to pprof
+	// and wants the name alone: a port of 0 left as it is, not filled with the default.
+	loadPortName := func(t *testing.T, name string) {
+		t.Helper()
+		cfg := loadOK(t, fixture(name))
+		if cfg.Discovery.Pprof.Port != 0 || cfg.Discovery.Pprof.PortName != "pprof" {
+			t.Fatalf("Load(%q) Pprof = %+v, want Port 0 and PortName pprof", fixture(name), cfg.Discovery.Pprof)
+		}
+	}
 
 	t.Run("a zero port in the file", func(t *testing.T) {
 		loadExact(t, "port-zero.yaml", fileMessage("port-zero.yaml"))
@@ -575,8 +584,31 @@ func TestPprofPortZeroIsRefused(t *testing.T) {
 	t.Run("an absent port still defaults", func(t *testing.T) {
 		loadPort(t, "neither-port.yaml", 6060)
 	})
+	// A port name from the variable is the other way to name the port,
+	// and it changes nothing about a written zero: the zero is still refused, from whichever source wrote it.
+	t.Run("an absent port beside a variable port name", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_PORT_NAME", "pprof")
+		loadPortName(t, "neither-port.yaml")
+	})
+	t.Run("a null port beside a variable port name", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_PORT_NAME", "pprof")
+		loadPortName(t, "port-null.yaml")
+	})
+	t.Run("a zero file port beside a variable port name", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_PORT_NAME", "pprof")
+		loadExact(t, "port-zero.yaml", fileMessage("port-zero.yaml"))
+	})
+	t.Run("a zero variable port beside a variable port name", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_PORT", "0")
+		t.Setenv("PROFGATE_PPROF_PORT_NAME", "pprof")
+		loadExact(t, "neither-port.yaml", envMessage)
+	})
+	t.Run("a zero variable port beside a file port name", func(t *testing.T) {
+		t.Setenv("PROFGATE_PPROF_PORT", "0")
+		loadExact(t, "name-only.yaml", envMessage)
+	})
 	t.Run("a zero allowedSelections entry keeps its own message", func(t *testing.T) {
-		loadErr(t, fixture("selections-port-zero.yaml"), "1-65535")
+		loadErrExact(t, fixture("selections-port-zero.yaml"), `discovery.pprof.allowedSelections: port "0": must be 1-65535 or "*"`)
 	})
 }
 
@@ -1790,6 +1822,7 @@ func TestOIDCOverridesNeedTheirBlock(t *testing.T) {
 	}
 	for _, file := range []struct{ name, file string }{
 		{"oidc mode without the block", "auth-oidc.yaml"},
+		{"basic mode without auth.oidc", "auth-basic.yaml"},
 		{"disabled mode without auth.oidc", "good.yaml"},
 	} {
 		t.Run(file.name, func(t *testing.T) {
@@ -1824,8 +1857,9 @@ func TestOIDCOverridesNeedTheirBlock(t *testing.T) {
 			t.Fatalf("auth.oidc.cli = %+v, want pkce true", cfg.Auth.OIDC.CLI)
 		}
 	})
-	// auth.basic is governed by auth.mode already, so its variables are outside the rule.
-	t.Run("a basic-mode variable is not refused", func(t *testing.T) {
+	// auth.basic is governed by auth.mode already, so its variables are outside the rule:
+	// one set under disabled mode, with no auth.basic block, loads.
+	t.Run("an auth.basic variable without the block is not refused", func(t *testing.T) {
 		t.Setenv("PROFGATE_AUTH_BASIC_MAX_CONCURRENT", "8")
 		loadOK(t, fixture("good.yaml"))
 	})
