@@ -30,6 +30,18 @@ func TestRun(t *testing.T) {
 			wantCode: 0,
 			// Exact, because the one grace period an operator sets is the
 			// gateway's own: enabling PGO adds no second figure to read.
+			// The file has no pgo block, so the container figure is the
+			// gateway's own footprint and the second line says why.
+			wantStdoutExact: "required terminationGracePeriodSeconds: 125\n" +
+				"pgo collection: disabled\n" +
+				"container memory bytes: 536870912\n",
+		},
+		{
+			name:     "validate good with collection on",
+			args:     []string{"config", "validate", "--config", "testdata/good-pgo.yaml"},
+			wantCode: 0,
+			// The working set at the shipped ceilings, and the container
+			// that holds it over the gateway's own 512 MiB.
 			wantStdoutExact: "required terminationGracePeriodSeconds: 125\n" +
 				"pgo working set bytes: 1073741824\n" +
 				"container memory bytes: 1610612736\n",

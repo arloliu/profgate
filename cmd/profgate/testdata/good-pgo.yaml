@@ -1,0 +1,24 @@
+server:
+  listen: ":8080"
+  opsListen: ":9090"
+discovery:
+  versionLabel: app.kubernetes.io/version
+  pprof:
+    port: 6060
+limits:
+  cpuSeconds: 60
+  traceSeconds: 60
+  maxConcurrentProfiles: 16
+auth:
+  mode: disabled
+  anonymousRealm: developer
+nats:
+  url: nats://nats.profgate.svc:4222
+  credsFile: testdata/nats.creds
+pgo:
+  enabled: true
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

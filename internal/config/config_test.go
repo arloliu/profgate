@@ -915,6 +915,20 @@ func TestPGOSizing(t *testing.T) {
 	}
 }
 
+// TestGatewayMemoryWithCollectionOff proves pgo.enabled alone moves the container figure:
+// with collection off the container is the gateway's own footprint,
+// while the working set the ceilings size is unchanged, because the chart mirrors that arithmetic.
+func TestGatewayMemoryWithCollectionOff(t *testing.T) {
+	t.Setenv("PROFGATE_PGO_ENABLED", "false")
+	cfg := loadOK(t, fixture("pgo-full.yaml"))
+	if got, want := cfg.PGOMemoryBytes(), int64(1<<30); got != want {
+		t.Fatalf("PGOMemoryBytes() = %d, want %d: the ceiling arithmetic does not read pgo.enabled", got, want)
+	}
+	if got, want := cfg.GatewayMemoryBytes(), int64(512<<20); got != want {
+		t.Fatalf("GatewayMemoryBytes() = %d, want %d: a gateway with collection off needs no merge budget", got, want)
+	}
+}
+
 // TestGatewayMemoryFollowsEveryCeiling proves the container figure moves with each ceiling
 // that sizes the working set, and that the base term does not.
 func TestGatewayMemoryFollowsEveryCeiling(t *testing.T) {

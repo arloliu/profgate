@@ -545,10 +545,15 @@ func (c *Config) PGOMemoryBytes() int64 {
 	return int64(l.MaxActiveCollections) * perCollection
 }
 
-// GatewayMemoryBytes is the container memory limit a collecting gateway needs:
-// the working set PGOMemoryBytes sizes, plus what the process costs before it decodes anything.
+// GatewayMemoryBytes is the container memory limit this configuration needs.
+// With collection off it is what the process costs before it decodes anything;
+// with collection on it is that footprint plus the working set PGOMemoryBytes sizes.
 // This is the figure the Deployment carries.
 func (c *Config) GatewayMemoryBytes() int64 {
+	if !c.PGO.Enabled {
+		return PGOGatewayBaseMemory
+	}
+
 	return PGOGatewayBaseMemory + c.PGOMemoryBytes()
 }
 

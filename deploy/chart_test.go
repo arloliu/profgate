@@ -616,19 +616,20 @@ func TestChartMemoryLimitWithoutPGO(t *testing.T) {
 	})
 }
 
-// TestChartBaseTermIsTheSameFigureBothWays holds the chart's memoryLimitWithoutPGO against the base term
-// the binary adds to the working set.
+// TestChartBaseTermIsTheSameFigureBothWays holds the chart's memoryLimitWithoutPGO against
+// the figure the binary sizes for the same collection-off configuration.
 // The two are the gateway's own footprint written twice, once in values.yaml and once in internal/config,
 // and this is what stops one of them moving without the other.
 func TestChartBaseTermIsTheSameFigureBothWays(t *testing.T) {
 	withoutPGO := containerMemoryLimit(t, render[appsv1.Deployment](t, "deployment.yaml"))
 
-	values := pgoValues(t)
-	cfg := loadRenderedConfig(t, values...)
-	baseTerm := cfg.GatewayMemoryBytes() - cfg.PGOMemoryBytes()
+	cfg := loadRenderedConfig(t)
+	if cfg.PGO.Enabled {
+		t.Fatal("the chart's default ConfigMap turned collection on; this test sizes the collection-off branch")
+	}
 
-	if got := withoutPGO.Value(); got != baseTerm {
-		t.Errorf("memoryLimitWithoutPGO is %d bytes and the binary's base term is %d; they are the same footprint", got, baseTerm)
+	if got, want := withoutPGO.Value(), cfg.GatewayMemoryBytes(); got != want {
+		t.Errorf("memoryLimitWithoutPGO is %d bytes and the binary sizes the same configuration at %d; they are the same footprint", got, want)
 	}
 }
 

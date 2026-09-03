@@ -57,9 +57,10 @@ data:
     #   enabled: true
     #   configAPI: enabled
     #
-    # Every pgo.limits ceiling then keeps the shipped default, which is what
-    # the 1536Mi memory limit in deployment.yaml is sized from: a 1Gi working
-    # set over the gateway's own 512Mi.
+    # Uncommenting the block also means raising the memory limit in
+    # deployment.yaml to 1536Mi: the 1Gi working set the shipped pgo.limits
+    # ceilings size, over the gateway's own 512Mi. That is the figure
+    # `profgate config validate` prints for the uncommented file.
     #
     # terminationGracePeriodSeconds stays at 125 with PGO on. A terminating
     # replica stops renewing the lease on every Collection it owns and waits

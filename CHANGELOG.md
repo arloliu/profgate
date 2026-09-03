@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: the container memory limit follows `pgo.enabled`.**
+  `profgate config validate` printed a merge budget for a gateway that never merges,
+  three times what the chart renders for the same file;
+  with collection off it now prints the gateway's own footprint alone,
+  and prints `pgo collection: disabled` in place of the `pgo working set bytes` line,
+  so a reader of the second line sees the state rather than a budget.
+  The kustomize base drops from `1536Mi` to `512Mi` with it,
+  so uncommenting its PGO block now means raising the limit too.
 - **BREAKING: the chart validates `memoryLimitWithoutPGO` on both branches.**
   With `pgo.enabled` false the chart printed the value unchecked, so `512` rendered a limit of 512 bytes.
   Both branches now hold it to the one grammar, a whole number of `Mi` or `Gi`,

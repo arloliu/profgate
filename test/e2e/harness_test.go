@@ -499,7 +499,8 @@ func (h *Harness) deployGateway(ctx context.Context) error {
 		return fmt.Errorf("get deployment %s: %w", gatewayDeployment, err)
 	}
 	cfg := gatewayConfig(gatewayConfigOptions{NATSURL: natsURL(gatewayNamespace), RealmPGO: true})
-	if err := h.apply(ctx, gatewayNamespace, "default", configPatch(gatewayConfigMap, cfg)); err != nil {
+	if err := h.apply(ctx, gatewayNamespace, "default",
+		configPatch(gatewayConfigMap, cfg), memoryLimitPatch(gatewayDeployment, pgoGatewayMemoryLimit)); err != nil {
 		return err
 	}
 	if existed {
@@ -935,6 +936,31 @@ spec:
             defaultMode: 0440
             optional: true
 `, deployment, credsSecret, filepath.Dir(credsFile)+"/", credsSecret, credsSecret)}
+}
+
+// pgoGatewayMemoryLimit is what `profgate config validate` prints for the configuration gatewayConfig writes with a NATS URL:
+// collection on with every sizing ceiling at its shipped default,
+// a 1Gi working set over the gateway's own 512Mi.
+// The base ships collection off at 512Mi.
+const pgoGatewayMemoryLimit = "1536Mi"
+
+// memoryLimitPatch raises the profgate container's memory limit on the named
+// Deployment to limit, for a gateway whose configuration turns collection on
+// over a base sized for collection off.
+func memoryLimitPatch(deployment, limit string) patch {
+	return patch{file: "memory-limit.yaml", kind: "Deployment", name: deployment, body: fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %s
+spec:
+  template:
+    spec:
+      containers:
+        - name: profgate
+          resources:
+            limits:
+              memory: %s
+`, deployment, limit)}
 }
 
 // configPatch replaces the configuration in the named gateway ConfigMap.

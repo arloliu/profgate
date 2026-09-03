@@ -79,7 +79,11 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 	}
 
 	_, _ = fmt.Fprintf(stdout, "required terminationGracePeriodSeconds: %d\n", int(cfg.RequiredGracePeriod().Seconds()))
-	_, _ = fmt.Fprintf(stdout, "pgo working set bytes: %d\n", cfg.PGOMemoryBytes())
+	if cfg.PGO.Enabled {
+		_, _ = fmt.Fprintf(stdout, "pgo working set bytes: %d\n", cfg.PGOMemoryBytes())
+	} else {
+		_, _ = fmt.Fprintln(stdout, "pgo collection: disabled")
+	}
 	_, _ = fmt.Fprintf(stdout, "container memory bytes: %d\n", cfg.GatewayMemoryBytes())
 	return 0
 }

@@ -397,8 +397,9 @@ With PGO off the limit is `memoryLimitWithoutPGO` alone, 512Mi,
 which covers the runtime, the informer caches, and the interactive transfer buffers —
 the same term the enabled figure carries, because the gateway still costs it while it collects.
 The chart derives its limit from the branch it renders, so a chart install with PGO off gets 512Mi.
-The kustomize base reserves the PGO-enabled limit, 1536Mi, while shipping collection off,
-so uncommenting the ConfigMap's PGO block needs no second edit here.
+The kustomize base ships collection off and reserves 512Mi,
+so uncommenting the ConfigMap's PGO block means raising the limit too,
+to the figure `config validate` prints for the edited file.
 An explicit `resources.limits` replaces both paths and is rendered verbatim.
 
 `resources.requests` is rendered as written, and ships a CPU request of `100m`.

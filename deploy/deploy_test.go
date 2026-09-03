@@ -879,6 +879,8 @@ func TestDeploymentGracePeriod(t *testing.T) {
 // sizing formula applied to the configuration this base actually ships,
 // so raising a pgo.limits ceiling in the ConfigMap without raising the limit
 // fails here instead of as an out-of-memory kill during a merge.
+// The base ships collection off,
+// so the figure it demands is the gateway's own footprint alone until the ConfigMap's PGO block is uncommented.
 func TestDeploymentMemoryLimit(t *testing.T) {
 	cm := decode[corev1.ConfigMap](t, "configmap.yaml")
 	body, ok := cm.Data["config.yaml"]

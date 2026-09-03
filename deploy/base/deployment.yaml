@@ -53,11 +53,10 @@ spec:
           resources:
             limits:
               # PGO collection is off; the ConfigMap comments its block out.
-              # This reserves the limit that block would need, so
-              # uncommenting it needs no second edit here.
-              # The chart derives its limit from the branch it renders
-              # instead, so a chart install with PGO off gets 512Mi.
-              memory: 1536Mi
+              # This is the gateway's own footprint. Turning collection on
+              # means raising this figure to what `profgate config validate`
+              # then prints: 1536Mi at the shipped pgo.limits ceilings.
+              memory: 512Mi
           volumeMounts:
             - name: config
               mountPath: /etc/profgate

@@ -428,8 +428,9 @@ it is a sizing rule, not a proof.
 | the gateway's own footprint | `512Mi` | nothing — it is a fixed term, not a multiplier |
 
 At the shipped ceilings the working set is `1 × (4 × 8 × 16 MiB + 2 × 8 × 32 MiB)`, which is 1 GiB,
-and the container limit is `512Mi + 1Gi`, which is `1536Mi`.
-`config validate` prints both, and the Helm chart renders the second as `limits.memory`.
+and with collection on the container limit is `512Mi + 1Gi`, which is `1536Mi`.
+`config validate` prints both when `pgo.enabled` is true,
+and the Helm chart renders the second as `limits.memory`.
 
 The gateway's own footprint is what the process costs before it decodes anything —
 the Go runtime, the informer caches, and `limits.maxConcurrentProfiles` transfer buffers —
@@ -576,11 +577,13 @@ Only when `pgo.enabled` is true:
 
 ## `profgate config validate`
 
+For a file that leaves collection off, such as the ConfigMap the kustomize base ships:
+
 ```console
 $ profgate config validate --config /etc/profgate/config.yaml
 required terminationGracePeriodSeconds: 125
-pgo working set bytes: 1073741824
-container memory bytes: 1610612736
+pgo collection: disabled
+container memory bytes: 536870912
 ```
 
 The command loads the file exactly as `serve` would — defaults, environment overrides,
@@ -600,7 +603,10 @@ On success it prints two deployment figures:
   otherwise it ends `failed` as `attempts_exhausted`.
 - The PGO working set and the container memory limit,
   from the arithmetic under [`pgo.limits`](#pgolimits).
-  The second is the number the Deployment carries.
+  The working-set line appears with collection on;
+  with collection off the line reads `pgo collection: disabled`
+  and the container limit is the gateway's own footprint alone.
+  The second figure is the number the Deployment carries.
 
 The other subcommands are `profgate version`, which prints the build version,
 `profgate auth hash`, which prints a bcrypt hash for `auth.basic.users` (see [`auth.basic`](#authbasic)), and

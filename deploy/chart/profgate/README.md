@@ -8,7 +8,7 @@ a PodDisruptionBudget, and an optional NetworkPolicy.
 Both are shipped surfaces and neither is a copy of the other:
 the chart templates what an external operator has to change,
 the base is what a repository already using kustomize patches,
-and the base's memory limit reserves the PGO-enabled figure with collection off,
+and the base's memory limit is the collection-off figure it ships,
 where the chart's follows the branch it renders.
 
 Releases go to GHCR as an OCI artifact,
@@ -125,6 +125,7 @@ and compares the rendered limit against the formula applied to that same configu
 
 The working set reads `pgo.limits` and never `pgo.enabled`,
 so applying it with collection off would ask for the memory a merge needs on a gateway that never merges.
+The binary's own figure follows `pgo.enabled` the same way, so the two agree on both branches.
 With `pgo.enabled: false` the limit is `memoryLimitWithoutPGO` on its own, 512Mi,
 which covers the runtime, the informer caches, and the transfer buffers of the interactive path.
 That term is in the enabled figure too: the gateway does not stop costing it when collection is on.
