@@ -1,6 +1,6 @@
 # Roadmap
 
-**Status:** Draft
+**Status:** Approved
 
 > **How to read this document:** it orders the work that follows `v0.5.0`,
 > so that each item is taken up in turn and nothing is started out of order.
