@@ -14,9 +14,10 @@ Check these three things first.
    Authentication is disabled, so every request is granted the realm named by
    auth.anonymousRealm, which is {{ .Values.auth.anonymousRealm }}. This release grants it:
 {{- else if eq .Values.auth.mode "basic" }}
-   Every request needs a user from the list below, sent as HTTP Basic
-   credentials. `profgate auth hash` turns a password into the passwordHash
-   each user carries.
+   Every request needs a user, sent as HTTP Basic credentials. Users come
+   from auth.basic.users and, when set, the mounted file below.
+   `profgate auth hash` turns a password into the passwordHash each user
+   carries.
 {{- if .Values.auth.basic.usersFile }}
    This release also reads users from a mounted file, at
    {{ .Values.auth.secret.mountPath }}. Create the Secret before this
@@ -25,7 +26,7 @@ Check these three things first.
      kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.auth.secret.existingSecret }} \
        --from-file=users.yaml
 {{- end }}
-   This release grants:
+   This release grants the realms below:
 {{- else }}
    Every request needs a bearer token {{ .Values.auth.oidc.issuer }} issued
    for audience {{ .Values.auth.oidc.audience }}.
@@ -78,6 +79,14 @@ Check these three things first.
    An Ingress routes to that port from:
 {{- range .Values.ingress.hosts }}
      {{ .host }}: {{ (default (list "/" "/ui/" "/auth/" "/v1/") .paths) | join " " }}
+{{- end }}
+{{- if include "profgate.tlsEnabled" . }}
+
+   The API port serves HTTPS, so the Ingress needs a backend-protocol
+   setting, or the controller speaks HTTP to an HTTPS listener and every
+   request fails. ingress-nginx reads the annotation
+   nginx.ingress.kubernetes.io/backend-protocol: HTTPS; other controllers
+   have their own.
 {{- end }}
 {{- end }}
 {{- if include "profgate.boolValue" (dict "key" "podMonitor.enabled" "value" .Values.podMonitor.enabled) }}

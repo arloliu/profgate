@@ -3087,6 +3087,7 @@ func TestChartAuthNotes(t *testing.T) {
 		values, dir := authBasicValues(t)
 		notes := renderNotes(t, values...)
 		for _, want := range []string{
+			"auth.basic.users",
 			"kubectl -n profgate create secret generic profgate-auth",
 			"--from-file=users.yaml",
 			dir,
@@ -3096,7 +3097,11 @@ func TestChartAuthNotes(t *testing.T) {
 				t.Errorf("NOTES does not contain %q:\n%s", want, notes)
 			}
 		}
-		for _, notWant := range []string{"Authentication is disabled", "auth.anonymousRealm"} {
+		for _, notWant := range []string{
+			"Authentication is disabled",
+			"auth.anonymousRealm",
+			"user from the list below",
+		} {
 			if strings.Contains(notes, notWant) {
 				t.Errorf("NOTES contains %q, want it absent in basic mode:\n%s", notWant, notes)
 			}
@@ -3123,6 +3128,38 @@ func TestChartAuthNotes(t *testing.T) {
 			if !strings.Contains(notes, want) {
 				t.Errorf("NOTES does not contain %q:\n%s", want, notes)
 			}
+		}
+	})
+}
+
+// TestChartIngressNotes holds the backend-protocol warning to the one configuration it applies to:
+// an Ingress in front of a TLS-enabled API port.
+// Printed anywhere else, it tells an operator to set an annotation that configuration does not need.
+func TestChartIngressNotes(t *testing.T) {
+	oneHost := []string{
+		"--set", "ingress.enabled=true",
+		"--set", "ingress.hosts[0].host=profgate.example.com",
+	}
+
+	t.Run("tls on", func(t *testing.T) {
+		values := append(slices.Clone(oneHost), tlsValues(t)...)
+		notes := renderNotes(t, values...)
+		if !strings.Contains(notes, "backend-protocol") {
+			t.Errorf("NOTES does not contain %q with ingress and tls both enabled:\n%s", "backend-protocol", notes)
+		}
+	})
+
+	t.Run("tls off", func(t *testing.T) {
+		notes := renderNotes(t, oneHost...)
+		if strings.Contains(notes, "backend-protocol") {
+			t.Errorf("NOTES contains %q with tls.enabled false:\n%s", "backend-protocol", notes)
+		}
+	})
+
+	t.Run("no ingress", func(t *testing.T) {
+		notes := renderNotes(t, tlsValues(t)...)
+		if strings.Contains(notes, "backend-protocol") {
+			t.Errorf("NOTES contains %q with ingress.enabled false:\n%s", "backend-protocol", notes)
 		}
 	})
 }
