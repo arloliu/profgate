@@ -12,7 +12,16 @@ and, under `basic` and `oidc` mode, the two files [`auth`](#auth) covers —
 `auth.basic.usersFile` and `auth.oidc.browser.cookieKeyFile`.
 
 A key the schema does not define is rejected at any nesting depth,
-and the process fails at startup naming the file.
+and the process fails at startup naming the file, the line, and the key path;
+a value of the wrong type is reported the same way, with the decoder's own text after the key:
+
+```text
+config: /etc/profgate/config.yaml: line 3: unknown key server.opsListn
+config: /etc/profgate/config.yaml: line 5: limits.cpuSeconds: cannot unmarshal !!str `abc` into int
+```
+
+Where several keys share one line, as a flow mapping such as `limits: {cpuSeconds: abc, traceSeconds: 60}` writes them,
+the message keeps the file and the line and names no key.
 A typo therefore surfaces as a startup failure, never as a silently ignored setting.
 Validation failures behave the same way: every error names the offending key.
 

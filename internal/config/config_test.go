@@ -92,13 +92,13 @@ func TestLoad(t *testing.T) {
 	})
 
 	t.Run("unknown top-level", func(t *testing.T) {
-		loadErr(t, fixture("unknown-top.yaml"), "field extra not found in type config.Config")
+		loadErr(t, fixture("unknown-top.yaml"), "line 1: unknown key extra")
 	})
 	t.Run("unknown nested", func(t *testing.T) {
-		loadErr(t, fixture("unknown-nested.yaml"), "field foo not found in type config.LimitsConfig")
+		loadErr(t, fixture("unknown-nested.yaml"), "line 1: unknown key limits.foo")
 	})
 	t.Run("unknown in realm", func(t *testing.T) {
-		loadErr(t, fixture("unknown-realm.yaml"), "field profilse not found in type config.Realm")
+		loadErr(t, fixture("unknown-realm.yaml"), "line 3: unknown key realms.developer.profilse")
 	})
 
 	t.Run("limit zero", func(t *testing.T) {
@@ -430,6 +430,53 @@ func TestLoad(t *testing.T) {
 	t.Run("drain delay out of range", func(t *testing.T) {
 		t.Setenv("PROFGATE_DRAIN_DELAY", "61s")
 		loadErr(t, fixture("good.yaml"), "server.drainDelay")
+	})
+}
+
+// TestDecodeErrorNamesTheKey pins the message of a file the strict decode refuses:
+// the file, the line, and the key path, so the operator reads what to fix
+// where the library named a Go type and no file.
+// A type mismatch keeps the library's own text after the key,
+// and where several keys share the line, as a flow mapping writes them,
+// the message keeps the file and the line and names no key rather than guessing one.
+func TestDecodeErrorNamesTheKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+		// want is the whole message after "config: <path>: ".
+		want string
+	}{
+		{name: "an unknown key in a nested block", file: "unknown-server.yaml",
+			want: "line 3: unknown key server.opsListn"},
+		{name: "an unknown key at the top level", file: "unknown-realmz.yaml",
+			want: "line 3: unknown key realmz"},
+		{name: "an unknown key inside a sequence element", file: "unknown-users-entry.yaml",
+			want: "line 8: unknown key auth.oidc.mapping.users[0].nam"},
+		{name: "two typos are both named", file: "unknown-two.yaml",
+			want: "line 2: unknown key server.opsListn\ntestdata/unknown-two.yaml: line 7: unknown key limits.cpuSecs"},
+		{name: "a type mismatch names the key", file: "bad-cpu-seconds.yaml",
+			want: "line 4: limits.cpuSeconds: cannot unmarshal !!str `abc` into int"},
+		{name: "a type mismatch in a flow mapping names the line", file: "bad-cpu-seconds-flow.yaml",
+			want: "line 3: cannot unmarshal !!str `abc` into int"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := fixture(tc.file)
+			_, err := config.Load(path)
+			if err == nil {
+				t.Fatalf("Load(%q) = nil error, want %q", path, tc.want)
+			}
+			if want := "config: " + path + ": " + tc.want; err.Error() != want {
+				t.Fatalf("Load(%q) error = %q, want %q", path, err.Error(), want)
+			}
+			// The library's wording is what the rewrite reads;
+			// its type name leaking through means the wording moved.
+			if strings.Contains(err.Error(), "not found in type") {
+				t.Errorf("Load(%q) error = %q, want no Go type name", path, err.Error())
+			}
+		})
+	}
+	t.Run("a valid file still loads", func(t *testing.T) {
+		loadOK(t, fixture("pgo-full.yaml"))
 	})
 }
 
@@ -1488,10 +1535,10 @@ func TestLoadAuth(t *testing.T) {
 
 	t.Run("unknown keys", func(t *testing.T) {
 		t.Run("auth.basic.user", func(t *testing.T) {
-			loadErr(t, fixture("auth-basic-unknown.yaml"), "field user not found in type config.BasicConfig")
+			loadErr(t, fixture("auth-basic-unknown.yaml"), "line 12: unknown key auth.basic.user")
 		})
 		t.Run("auth.oidc.browser.clientId", func(t *testing.T) {
-			loadErr(t, fixture("auth-browser-unknown.yaml"), "field clientId not found in type config.OIDCBrowser")
+			loadErr(t, fixture("auth-browser-unknown.yaml"), "line 13: unknown key auth.oidc.browser.clientId")
 		})
 	})
 
@@ -1611,7 +1658,7 @@ func TestLoadOIDCCLI(t *testing.T) {
 		{name: "under basic", file: "cli-basic.yaml", wantErr: []string{"auth.oidc must not be set"}},
 		{name: "under disabled", file: "cli-disabled.yaml", wantErr: []string{"auth.oidc must not be set"}},
 		{name: "unknown key", file: "cli-unknown.yaml",
-			wantErr: []string{"field clientId not found in type config.OIDCCLI"}},
+			wantErr: []string{"line 9: unknown key auth.oidc.cli.clientId"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if len(tc.wantErr) > 0 {
@@ -1748,7 +1795,7 @@ func TestLoadUI(t *testing.T) {
 		// The decoder refuses the value before validation runs, so the message
 		// is the decoder's: it names the value it could not read as a boolean.
 		{name: "not boolean", file: "ui-not-bool.yaml", wantErr: "cannot unmarshal !!str `yes-please` into bool"},
-		{name: "unknown key", file: "ui-unknown.yaml", wantErr: "field path not found in type config.UIConfig"},
+		{name: "unknown key", file: "ui-unknown.yaml", wantErr: "line 16: unknown key ui.path"},
 		{name: "under basic", file: "ui-basic.yaml", want: true},
 		{
 			name: "under oidc without browser", file: "ui-oidc.yaml",

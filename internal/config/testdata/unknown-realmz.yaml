@@ -1,0 +1,7 @@
+auth:
+  anonymousRealm: developer
+realmz:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

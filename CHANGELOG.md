@@ -68,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `realms.<name>.profiles: invalid entry "heaap"` was the whole message;
   it now ends with the eight profile names in order and the `"*"` wildcard,
   the one realm list whose accepted set is closed.
+- **A decode error names the file, the line, and the key path.**
+  A key the schema does not define was reported as `field opsListn not found in type config.ServerConfig`,
+  a Go type the operator has never seen, with no file named;
+  it now reads `config: /etc/profgate/config.yaml: line 3: unknown key server.opsListn`,
+  a value of the wrong type carries its key the same way,
+  and a line that names no single key keeps the file and the line.
   `namespaces` and `services` hold DNS-1123 labels and keep their message.
 
 ## [0.5.0] - 2026-09-03

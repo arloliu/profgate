@@ -594,7 +594,7 @@ func Load(path string) (*Config, error) {
 	dec.KnownFields(true)
 	var probe Config
 	if err := dec.Decode(&probe); err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+		return nil, fmt.Errorf("config: %w", nameDecodeErrorKeys(b, path, err))
 	}
 
 	v := validator.New()
@@ -777,6 +777,128 @@ func refuseRemovedPGOTarget(b []byte) error {
 	}
 
 	return nil
+}
+
+// nameDecodeErrorKeys rewrites the strict decode's error
+// so each entry names the file, the line, and the key path,
+// where the library names a Go type and no file.
+// The library reports one entry per problem, each opening with its document line,
+// and the key path is read back from the parsed document by that line:
+// an unknown key is the one key node on the line that carries the name the entry reports,
+// and a type mismatch is the one mapping key whose value sits on the line
+// and is the kind of node the entry names, a scalar, a mapping, or a sequence.
+// The value of a block mapping starts on the line of its first key,
+// so the kind is what tells a value from the mapping that holds it.
+// Several matches on one line, which a flow mapping writes,
+// or none, keep the entry as the library wrote it after the file and the line,
+// so the file is always named and no key is guessed.
+// The rewrite reads the library's wording, which it does not promise to keep;
+// the tests assert the rewritten form, so a change there fails them rather than restoring the old message.
+// An error that is not the library's entry list, a syntax error, gains the file alone.
+func nameDecodeErrorKeys(b []byte, path string, err error) error {
+	var typeErr *yaml.TypeError
+	if !errors.As(err, &typeErr) {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		doc = yaml.Node{} // the file parsed once already; an empty tree leaves every entry as the library wrote it
+	}
+	var keys, values []nodePath
+	collectNodePaths(&doc, "", &keys, &values)
+	lines := make([]string, 0, len(typeErr.Errors))
+	for _, entry := range typeErr.Errors {
+		lines = append(lines, path+": "+nameDecodeEntryKey(entry, keys, values))
+	}
+
+	return errors.New(strings.Join(lines, "\n"))
+}
+
+// nodePath is one node of the parsed document with the dotted key path that reaches it;
+// a sequence element carries its index, as in auth.oidc.mapping.users[0].name.
+type nodePath struct {
+	node *yaml.Node
+	path string
+}
+
+// collectNodePaths walks the document and records every mapping key node,
+// and every mapping value node under the path of its key.
+// Aliases are not followed: the anchored node is recorded where it is written.
+func collectNodePaths(node *yaml.Node, path string, keys, values *[]nodePath) {
+	switch node.Kind {
+	case yaml.DocumentNode:
+		for _, child := range node.Content {
+			collectNodePaths(child, path, keys, values)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key, value := node.Content[i], node.Content[i+1]
+			child := key.Value
+			if path != "" {
+				child = path + "." + key.Value
+			}
+			*keys = append(*keys, nodePath{node: key, path: child})
+			*values = append(*values, nodePath{node: value, path: child})
+			collectNodePaths(value, child, keys, values)
+		}
+	case yaml.SequenceNode:
+		for i, item := range node.Content {
+			collectNodePaths(item, path+"["+strconv.Itoa(i)+"]", keys, values)
+		}
+	case yaml.ScalarNode, yaml.AliasNode:
+	}
+}
+
+// nameDecodeEntryKey rewrites one entry of the library's list into one of three shapes:
+// "line N: unknown key <path>" for a key the schema does not define,
+// "line N: <path>: <the library's text>" for a value of the wrong type under one key,
+// and "line N: <the library's text>" when the line names no single key.
+func nameDecodeEntryKey(entry string, keys, values []nodePath) string {
+	lineText, rest, ok := strings.Cut(entry, ": ")
+	if !ok || !strings.HasPrefix(lineText, "line ") {
+		return entry
+	}
+	line, err := strconv.Atoi(strings.TrimPrefix(lineText, "line "))
+	if err != nil {
+		return entry
+	}
+	if after, found := strings.CutPrefix(rest, "field "); found {
+		if name, _, found := strings.Cut(after, " not found in type "); found {
+			if path, ok := uniqueNodePath(keys, line, func(n *yaml.Node) bool { return n.Value == name }); ok {
+				return fmt.Sprintf("line %d: unknown key %s", line, path)
+			}
+		}
+	}
+	if after, found := strings.CutPrefix(rest, "cannot unmarshal "); found {
+		tag, _, _ := strings.Cut(after, " ")
+		kind := yaml.ScalarNode
+		switch tag {
+		case "!!map":
+			kind = yaml.MappingNode
+		case "!!seq":
+			kind = yaml.SequenceNode
+		}
+		if path, ok := uniqueNodePath(values, line, func(n *yaml.Node) bool { return n.Kind == kind }); ok {
+			return fmt.Sprintf("line %d: %s: %s", line, path, rest)
+		}
+	}
+
+	return entry
+}
+
+// uniqueNodePath returns the path of the one recorded node on line that match accepts;
+// none or several is no path.
+func uniqueNodePath(candidates []nodePath, line int, match func(*yaml.Node) bool) (string, bool) {
+	var path string
+	var found int
+	for _, c := range candidates {
+		if c.node.Line == line && match(c.node) {
+			path = c.path
+			found++
+		}
+	}
+
+	return path, found == 1
 }
 
 // mappingKeys returns the keys a mapping node carries, merge keys resolved,

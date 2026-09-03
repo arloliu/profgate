@@ -1,0 +1,8 @@
+auth:
+  anonymousRealm: developer
+limits: {cpuSeconds: abc, traceSeconds: 60, maxConcurrentProfiles: 16}
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

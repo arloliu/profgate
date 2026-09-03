@@ -1,0 +1,12 @@
+server:
+  opsListn: ":9090"
+auth:
+  anonymousRealm: developer
+limits:
+  cpuSeconds: 60
+  cpuSecs: 60
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]

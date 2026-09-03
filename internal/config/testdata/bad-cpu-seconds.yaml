@@ -1,0 +1,9 @@
+auth:
+  anonymousRealm: developer
+limits:
+  cpuSeconds: abc
+realms:
+  developer:
+    namespaces: ["*"]
+    services: ["*"]
+    profiles: ["*"]
