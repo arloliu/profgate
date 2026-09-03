@@ -580,16 +580,26 @@ func TestChartBooleanTogglesAreValidated(t *testing.T) {
 // so applying it with collection off would ask for a merge budget on a gateway that never merges;
 // the chart renders memoryLimitWithoutPGO alone there, the way the base does.
 func TestChartMemoryLimitWithoutPGO(t *testing.T) {
-	dep := render[appsv1.Deployment](t, "deployment.yaml")
-	res := dep.Spec.Template.Spec.Containers[0].Resources
+	t.Run("shipped default", func(t *testing.T) {
+		dep := render[appsv1.Deployment](t, "deployment.yaml")
+		res := dep.Spec.Template.Spec.Containers[0].Resources
 
-	if len(res.Limits) != 1 {
-		t.Errorf("resources.limits = %v, want the memory limit alone", res.Limits)
-	}
-	want := resource.MustParse("512Mi")
-	if got := containerMemoryLimit(t, dep); got.Value() != want.Value() {
-		t.Errorf("resources.limits.memory = %s, want the chart's memoryLimitWithoutPGO %s", got.String(), want.String())
-	}
+		if len(res.Limits) != 1 {
+			t.Errorf("resources.limits = %v, want the memory limit alone", res.Limits)
+		}
+		want := resource.MustParse("512Mi")
+		if got := containerMemoryLimit(t, dep); got.Value() != want.Value() {
+			t.Errorf("resources.limits.memory = %s, want the chart's memoryLimitWithoutPGO %s", got.String(), want.String())
+		}
+	})
+
+	t.Run("an override renders as the quantity it was given", func(t *testing.T) {
+		dep := render[appsv1.Deployment](t, "deployment.yaml", "--set", "memoryLimitWithoutPGO=1Gi")
+		want := resource.MustParse("1Gi")
+		if got := containerMemoryLimit(t, dep); got.Value() != want.Value() {
+			t.Errorf("resources.limits.memory = %s, want the override 1Gi", got.String())
+		}
+	})
 }
 
 // TestChartBaseTermIsTheSameFigureBothWays holds the chart's memoryLimitWithoutPGO against the base term
@@ -611,10 +621,19 @@ func TestChartBaseTermIsTheSameFigureBothWays(t *testing.T) {
 // TestChartMemoryLimitRejectsAnUnreadableBase proves the base term is read as bytes rather than guessed.
 // A value the chart cannot convert fails the render instead of sizing the container from nothing.
 func TestChartMemoryLimitRejectsAnUnreadableBase(t *testing.T) {
-	out := renderFailure(t, append(pgoValues(t), "--set", "memoryLimitWithoutPGO=512MB")...)
-	if !strings.Contains(out, "memoryLimitWithoutPGO 512MB must be a whole number of Mi or Gi") {
-		t.Errorf("helm's error does not name the unreadable base term:\n%s", out)
-	}
+	t.Run("pgo on", func(t *testing.T) {
+		out := renderFailure(t, append(pgoValues(t), "--set", "memoryLimitWithoutPGO=512MB")...)
+		if !strings.Contains(out, "memoryLimitWithoutPGO 512MB must be a whole number of Mi or Gi") {
+			t.Errorf("helm's error does not name the unreadable base term:\n%s", out)
+		}
+	})
+
+	t.Run("pgo off", func(t *testing.T) {
+		out := renderFailure(t, "--set", "memoryLimitWithoutPGO=512")
+		if !strings.Contains(out, "memoryLimitWithoutPGO 512 must be a whole number of Mi or Gi") {
+			t.Errorf("helm's error does not name the unreadable base term:\n%s", out)
+		}
+	})
 }
 
 // TestChartResourcesOverride covers the opt-out: an explicit resources.limits

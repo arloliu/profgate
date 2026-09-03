@@ -303,6 +303,7 @@ limits:
 limits:
   memory: {{ include "profgate.gatewayMemoryBytes" . }}
 {{- else -}}
+{{- $_ := include "profgate.gatewayBaseMemoryBytes" . -}}
 limits:
   memory: {{ .Values.memoryLimitWithoutPGO }}
 {{- end -}}
