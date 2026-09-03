@@ -630,11 +630,55 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	if err := refuseOverridesWithoutBlock(&cfg); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+
 	normalize(&cfg)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// refuseOverridesWithoutBlock fails when a variable of auth.oidc.browser or auth.oidc.cli is set
+// while its block is absent from the file, in every auth.mode.
+// The loader never walks a nil pointer,
+// so such a variable lands nowhere and would vanish without a word.
+// Only the file opens the block,
+// because the browser block's presence is what creates the /auth/ routes and a variable must not open it.
+// The block named is the one the variable lands in, even when auth.oidc itself is absent,
+// since that block cannot be written without its parent.
+// Presence is what is refused, the empty value included.
+// The pointers are read before normalize, so a block normalize fills in does not count.
+func refuseOverridesWithoutBlock(cfg *Config) error {
+	var browser, cli bool
+	if cfg.Auth.OIDC != nil {
+		browser = cfg.Auth.OIDC.Browser != nil
+		cli = cfg.Auth.OIDC.CLI != nil
+	}
+	for _, o := range []struct {
+		variable string
+		block    string
+		present  bool
+	}{
+		{"PROFGATE_AUTH_OIDC_CLIENT_ID", "auth.oidc.browser", browser},
+		{"PROFGATE_AUTH_OIDC_CLIENT_SECRET_FILE", "auth.oidc.browser", browser},
+		{"PROFGATE_AUTH_OIDC_REDIRECT_URL", "auth.oidc.browser", browser},
+		{"PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE", "auth.oidc.browser", browser},
+		{"PROFGATE_AUTH_OIDC_SESSION_TTL", "auth.oidc.browser", browser},
+		{"PROFGATE_AUTH_OIDC_TRANSACTION_TTL", "auth.oidc.browser", browser},
+		{"PROFGATE_AUTH_OIDC_CLI_CLIENT_ID", "auth.oidc.cli", cli},
+		{"PROFGATE_AUTH_OIDC_CLI_PKCE", "auth.oidc.cli", cli},
+	} {
+		if o.present {
+			continue
+		}
+		if _, ok := os.LookupEnv(o.variable); ok {
+			return fmt.Errorf("%s is set but %s is absent; the variable overrides a key of that block and only the file opens it, so write the block (an empty mapping is enough) or unset the variable", o.variable, o.block)
+		}
+	}
+	return nil
 }
 
 // refuseRemovedPprofKeys fails when the file still sets discovery.pprof.allowedPorts

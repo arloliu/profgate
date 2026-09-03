@@ -1645,15 +1645,9 @@ func TestLoadOIDCCLI(t *testing.T) {
 	})
 
 	t.Run("env", func(t *testing.T) {
-		// The loader walks a pointer block only when the file creates it, so a
-		// variable alone cannot make an absent block look configured.
-		t.Run("clientID variable creates no block", func(t *testing.T) {
-			t.Setenv("PROFGATE_AUTH_OIDC_CLI_CLIENT_ID", "profgate")
-			cfg := loadOK(t, fixture("auth-oidc.yaml"))
-			if cfg.Auth.OIDC.CLI != nil {
-				t.Fatalf("auth.oidc.cli = %+v, want no block", *cfg.Auth.OIDC.CLI)
-			}
-		})
+		// The loader walks a pointer block only when the file creates it;
+		// a variable set while the block is absent is refused,
+		// which TestOIDCOverridesNeedTheirBlock covers.
 		t.Run("clientID variable differs from audience under id", func(t *testing.T) {
 			t.Setenv("PROFGATE_AUTH_OIDC_CLI_CLIENT_ID", "other")
 			loadErrAll(t, fixture("cli-empty.yaml"), "auth.oidc.cli.clientID", "auth.oidc.audience")
@@ -1665,6 +1659,72 @@ func TestLoadOIDCCLI(t *testing.T) {
 				t.Fatalf("auth.oidc.cli = %+v, want pkce true", *cfg.Auth.OIDC.CLI)
 			}
 		})
+	})
+}
+
+// TestOIDCOverridesNeedTheirBlock covers the eight variables that override a key of auth.oidc.browser or auth.oidc.cli.
+// The loader never walks a nil pointer,
+// so a variable set while its block is absent from the file lands nowhere;
+// it is refused instead, naming itself and the block, in every auth.mode.
+// The empty-block cases hold the refusal to the block's presence rather than the variable alone:
+// a file that opens the block with `{}` and configures it from the environment loads.
+func TestOIDCOverridesNeedTheirBlock(t *testing.T) {
+	message := func(variable, block string) string {
+		return "config: " + variable + " is set but " + block + " is absent; " +
+			"the variable overrides a key of that block and only the file opens it, " +
+			"so write the block (an empty mapping is enough) or unset the variable"
+	}
+	// Presence is what is refused, so one variable carries the empty value.
+	variables := []struct{ variable, block, value string }{
+		{"PROFGATE_AUTH_OIDC_CLIENT_ID", "auth.oidc.browser", "profgate"},
+		{"PROFGATE_AUTH_OIDC_CLIENT_SECRET_FILE", "auth.oidc.browser", ""},
+		{"PROFGATE_AUTH_OIDC_REDIRECT_URL", "auth.oidc.browser", "https://profgate.example/auth/callback"},
+		{"PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE", "auth.oidc.browser", fixture("cookie.key")},
+		{"PROFGATE_AUTH_OIDC_SESSION_TTL", "auth.oidc.browser", "1h"},
+		{"PROFGATE_AUTH_OIDC_TRANSACTION_TTL", "auth.oidc.browser", "2m"},
+		{"PROFGATE_AUTH_OIDC_CLI_CLIENT_ID", "auth.oidc.cli", "profgate"},
+		{"PROFGATE_AUTH_OIDC_CLI_PKCE", "auth.oidc.cli", "true"},
+	}
+	for _, file := range []struct{ name, file string }{
+		{"oidc mode without the block", "auth-oidc.yaml"},
+		{"disabled mode without auth.oidc", "good.yaml"},
+	} {
+		t.Run(file.name, func(t *testing.T) {
+			for _, tc := range variables {
+				t.Run(tc.variable, func(t *testing.T) {
+					t.Setenv(tc.variable, tc.value)
+					_, err := config.Load(fixture(file.file))
+					if want := message(tc.variable, tc.block); err == nil || err.Error() != want {
+						t.Fatalf("Load(%q) with %s set error = %v, want %q", fixture(file.file), tc.variable, err, want)
+					}
+				})
+			}
+		})
+	}
+
+	// `browser: {}` is not a valid block on its own;
+	// the required keys arrive through their variables, which is what the chart's extraEnv is for.
+	t.Run("an empty browser block accepts the override", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_OIDC_CLIENT_ID", "profgate")
+		t.Setenv("PROFGATE_AUTH_OIDC_REDIRECT_URL", "https://profgate.example/auth/callback")
+		t.Setenv("PROFGATE_AUTH_OIDC_COOKIE_KEY_FILE", fixture("cookie.key"))
+		t.Setenv("PROFGATE_AUTH_OIDC_SESSION_TTL", "1h")
+		cfg := loadOK(t, fixture("auth-browser-empty.yaml"))
+		if cfg.Auth.OIDC.Browser == nil || cfg.Auth.OIDC.Browser.SessionTTL != time.Hour {
+			t.Fatalf("auth.oidc.browser = %+v, want sessionTTL 1h", cfg.Auth.OIDC.Browser)
+		}
+	})
+	t.Run("an empty cli block accepts the override", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_OIDC_CLI_PKCE", "true")
+		cfg := loadOK(t, fixture("cli-empty.yaml"))
+		if cfg.Auth.OIDC.CLI == nil || !cfg.Auth.OIDC.CLI.PKCE {
+			t.Fatalf("auth.oidc.cli = %+v, want pkce true", cfg.Auth.OIDC.CLI)
+		}
+	})
+	// auth.basic is governed by auth.mode already, so its variables are outside the rule.
+	t.Run("a basic-mode variable is not refused", func(t *testing.T) {
+		t.Setenv("PROFGATE_AUTH_BASIC_MAX_CONCURRENT", "8")
+		loadOK(t, fixture("good.yaml"))
 	})
 }
 

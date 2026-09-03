@@ -30,6 +30,12 @@ so `server.logLevel` is `PROFGATE_LOG_LEVEL` and `discovery.pprof.port` is `PROF
 Two sections deliberately have no environment overrides: `realms` and `pgo.defaults`.
 They are policy, and policy is reviewed in the file, not injected around it.
 
+Four blocks exist only when the file writes them, and no environment variable creates one:
+`auth.basic`, `auth.oidc`, `auth.oidc.browser`, and `auth.oidc.cli`.
+A variable of `auth.oidc.browser` or `auth.oidc.cli` is a startup error whenever that block is absent,
+in every `auth.mode`, and the error names the variable and the block;
+an empty mapping — `browser: {}` — is enough to open the block for its variables to land in.
+
 ## `server`
 
 | Key | Environment variable | Default | Constraints |
@@ -318,6 +324,9 @@ mapping:
 
 Setting `oidc.browser` turns on the three `/auth/` routes and the authorization-code flow with PKCE;
 leaving it unset keeps `oidc` mode bearer-only, and a browser gets `401` like any other client without one.
+Only the file opens the block:
+one of its six variables set while `oidc.browser` is absent is a startup error
+([Environment Overrides](#environment-overrides)).
 It requires `server.tls`, because the session cookie carries `Secure` and a `__Host-` prefix,
 which a plaintext listener cannot set.
 `clientID` must equal `oidc.audience`, because the ID token the flow receives carries the client ID as `aud`
@@ -348,6 +357,9 @@ The presence of the block is what makes `GET /v1/auth` report a device login to 
 ([`cli.md`](cli.md)):
 an empty `auth.oidc.cli: {}` is valid and enables it with every default above,
 and without the block the route reports the mode alone and infers nothing from `oidc.browser`.
+Only the file opens the block:
+either of its two variables set while `oidc.cli` is absent is a startup error
+([Environment Overrides](#environment-overrides)).
 The three keys change nothing else:
 the gateway performs no device grant of its own and holds no client secret for the command line.
 `clientID` must equal `oidc.audience` under `tokenType: id` for the reason `browser.clientID` must:

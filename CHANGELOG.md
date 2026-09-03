@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It was read as "unset" and normalized to `6060`, or ignored beside a `portName`;
   a configuration that writes it, in the file or as `PROFGATE_PPROF_PORT`, now fails at startup,
   and omitting the key is how the default is taken.
+- **BREAKING: an `auth.oidc.browser` or `auth.oidc.cli` variable with no block to land in is refused.**
+  The eight `PROFGATE_AUTH_OIDC_*` variables of the two blocks were applied to a nil pointer and dropped without a word;
+  a deployment that exports one without opening the block in the file now fails at startup,
+  naming the variable and the block, whatever `auth.mode` it runs.
+  An empty mapping, `browser: {}` or `cli: {}`, is enough to open the block.
 - **BREAKING: the chart validates `memoryLimitWithoutPGO` on both branches.**
   With `pgo.enabled` false the chart printed the value unchecked, so `512` rendered a limit of 512 bytes.
   Both branches now hold it to the one grammar, a whole number of `Mi` or `Gi`,
