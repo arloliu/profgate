@@ -44,10 +44,14 @@ The base at [`deploy/base`](../deploy/base) applies the same Deployment as plain
 kubectl apply -k deploy/base
 ```
 
-It hard-codes the `profgate` namespace, plain HTTP, and PGO off;
+The base creates the `profgate` namespace,
+so the command above applies on a cluster that has never heard of Profgate.
+`kubectl delete -k deploy/base` therefore removes the namespace and everything in it;
+a repository whose namespaces are managed elsewhere removes `namespace.yaml` from `kustomization.yaml`'s `resources`.
+The base also hard-codes plain HTTP and PGO off;
 a repository using it is expected to patch the ConfigMap and Deployment with overlays of its own.
 The base applies only the gateway's own resources —
-its ServiceAccount, ClusterRole and binding, ConfigMap, Deployment, Service,
+its Namespace, ServiceAccount, ClusterRole and binding, ConfigMap, Deployment, Service,
 and the gateway NetworkPolicy the chart makes optional.
 The application-side NetworkPolicy example ships separately as
 [`deploy/networkpolicy-app-example.yaml`](../deploy/networkpolicy-app-example.yaml),

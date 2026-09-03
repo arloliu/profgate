@@ -560,6 +560,45 @@ func TestKustomizationListsEveryFile(t *testing.T) {
 	}
 }
 
+// namespacedManifest is the minimal shape TestNamespace needs from a base manifest:
+// its kind, so a cluster-scoped object can be skipped,
+// and the namespace it names.
+type namespacedManifest struct {
+	Kind     string `json:"kind"`
+	Metadata struct {
+		Namespace string `json:"namespace"`
+	} `json:"metadata"`
+}
+
+func TestNamespace(t *testing.T) {
+	ns := decode[corev1.Namespace](t, "namespace.yaml")
+	if ns.Name != "profgate" {
+		t.Errorf("namespace.yaml name = %q, want %q", ns.Name, "profgate")
+	}
+
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", baseDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch e.Name() {
+		case "kustomization.yaml", "namespace.yaml":
+			continue
+		}
+
+		m := decode[namespacedManifest](t, e.Name())
+		if m.Kind == "ClusterRole" || m.Kind == "ClusterRoleBinding" {
+			continue
+		}
+		if m.Metadata.Namespace != ns.Name {
+			t.Errorf("%s: metadata.namespace = %q, want %q", e.Name(), m.Metadata.Namespace, ns.Name)
+		}
+	}
+}
+
 // backtickedSubject matches one `subject` span of a Markdown table cell.
 var backtickedSubject = regexp.MustCompile("`([^`]+)`")
 
