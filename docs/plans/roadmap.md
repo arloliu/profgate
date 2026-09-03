@@ -46,35 +46,35 @@ An item may be reordered only by editing this list, never by starting later work
 
 ### 1. Make the install path hold on a fresh cluster
 
-- [ ] `kubectl apply -k deploy/base` fails on a cluster without a `profgate` namespace:
+- [x] `kubectl apply -k deploy/base` fails on a cluster without a `profgate` namespace:
   no Namespace object exists in `deploy/base/`, and every namespaced resource names one (`docs/deployment.md:44`).
   Add the Namespace to the base, or tell the reader to create it first.
-- [ ] The chart's `memoryLimitWithoutPGO` guard runs only on the PGO-on branch
+- [x] The chart's `memoryLimitWithoutPGO` guard runs only on the PGO-on branch
   (`deploy/chart/profgate/templates/_helpers.tpl:252-272`),
   and the PGO-off branch takes the value as written (`:302-308`);
   `--set memoryLimitWithoutPGO=512` on the default branch renders `memory: 512` bytes and the Pod is OOM-killed.
   Guard both branches and test the default one (`deploy/chart_test.go:613-616` covers only PGO on).
-- [ ] `auth.mode=basic` with no users and `auth.mode=oidc` with no issuer render a Deployment that crash-loops;
+- [x] `auth.mode=basic` with no users and `auth.mode=oidc` with no issuer render a Deployment that crash-loops;
   `ingress` without hosts and `pgo` without `nats.url` are refused at render time.
   Refuse the two auth cases the same way.
-- [ ] `NOTES.txt` says nothing about the backend-protocol annotation
+- [x] `NOTES.txt` says nothing about the backend-protocol annotation
   when `ingress.enabled` and `tls.enabled` are both set,
   though `values.yaml:69-74` and `docs/deployment.md:118-124` both warn that the Ingress fails without it;
   in `basic` mode it promises a list of users and prints realms (`NOTES.txt:17-19,28,47-49`).
-- [ ] The upgrade section of `docs/deployment.md` names no breaking change and nothing in `README.md`,
+- [x] The upgrade section of `docs/deployment.md` names no breaking change and nothing in `README.md`,
   `docs/deployment.md`, or the chart README links `CHANGELOG.md`,
   so `0.5.0`'s five breaking changes reach an operator only by accident.
   The port one is the trap: `discovery.pprof.allowedPorts` and `allowedPortNames` are removed,
   so a `0.4.x` configuration that still sets either does not start,
   and an empty `allowedSelections` admits only the configured default.
-- [ ] `README.md` does not link `docs/cli.md` or say the binary is also a client,
+- [x] `README.md` does not link `docs/cli.md` or say the binary is also a client,
   and its quickstart gives no way to discover a namespace or a Service name.
-- [ ] `deploy/base/deployment.yaml` reserves 1536Mi with PGO off where the chart reserves 512Mi,
+- [x] `deploy/base/deployment.yaml` reserves 1536Mi with PGO off where the chart reserves 512Mi,
   its comment describes a PGO block the ConfigMap comments out, and it pins `:latest`.
   Say which surface does what, and pin the tag.
 
 Spec: none.
-Shipped: not built yet.
+Shipped: on `docs/plan-install-path`, commits `d1b0cf2` through `80e37f8` plus the commit that carries the guides.
 Why first: every item here is met in the first fifteen minutes, and each is a docs or template change.
 
 ### 2. Make `config validate` tell the truth

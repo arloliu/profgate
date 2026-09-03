@@ -51,6 +51,13 @@ it stays in the foreground, so leave it running in another terminal:
 kubectl -n profgate port-forward svc/profgate 8080:8080
 ```
 
+List the namespaces the caller's realm admits, and the Services in one of them:
+
+```bash
+curl "http://localhost:8080/v1/namespaces"
+curl "http://localhost:8080/v1/namespaces/<ns>/services"
+```
+
 List the eligible Pods of a Service:
 
 ```bash
@@ -70,6 +77,8 @@ go tool pprof heap.pprof
 go tool pprof "http://localhost:8080/v1/namespaces/<ns>/services/<svc>/profiles/cpu?seconds=30"
 ```
 
+The `profgate` binary is also a client, and [docs/cli.md](docs/cli.md) is its guide.
+
 The one requirement on the application:
 its Pods must serve Go's `net/http/pprof` handlers on the configured default,
 `discovery.pprof.port` (6060 by default) or `discovery.pprof.portName`,
@@ -79,6 +88,7 @@ which is whatever `discovery.pprof.allowedSelections` admits by an exact entry o
 ## Documentation
 
 - [`docs/api.md`](docs/api.md) — the HTTP API: routes, parameters, errors.
+- [`docs/cli.md`](docs/cli.md) — the client: login, its verbs, and its exit codes.
 - [`docs/configuration.md`](docs/configuration.md) — the configuration file, environment overrides, realms.
 - [`docs/deployment.md`](docs/deployment.md) — running the gateway in a cluster.
 - [`docs/pgo.md`](docs/pgo.md) — collecting CPU profiles for Profile-Guided Optimization.
@@ -86,6 +96,7 @@ which is whatever `discovery.pprof.allowedSelections` admits by an exact entry o
 - [`deploy/chart/profgate/README.md`](deploy/chart/profgate/README.md) — the Helm chart and its values.
 - [`docs/specs/gateway.md`](docs/specs/gateway.md) and [`docs/specs/pgo.md`](docs/specs/pgo.md) —
   the accepted designs the gateway and PGO collection are built from.
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed in each release, and which changes are breaking.
 
 The guides track `main`;
 when running a released chart, read them at its tag: `https://github.com/arloliu/profgate/tree/vX.Y.Z/docs`.

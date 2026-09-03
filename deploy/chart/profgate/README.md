@@ -12,7 +12,8 @@ and the base's memory limit reserves the PGO-enabled figure with collection off,
 where the chart's follows the branch it renders.
 
 Releases go to GHCR as an OCI artifact,
-with `image.tag` defaulting to the release the chart was cut from:
+with `image.tag` defaulting to the release the chart was cut from;
+[`../../../CHANGELOG.md`](../../../CHANGELOG.md) names what each chart version changed.
 
 ```bash
 helm install profgate oci://ghcr.io/arloliu/charts/profgate --version X.Y.Z \
@@ -419,6 +420,12 @@ The chart never creates this Secret;
 Unlike the TLS certificate, this Secret is not optional once `auth.secret.enabled` is `true`:
 a missing Secret holds the Pod at mount time with an event naming it,
 rather than starting a Pod that exits over a file it cannot open.
+`basic` mode with neither `auth.basic.users` nor `auth.basic.usersFile` set,
+and `oidc` mode with no `auth.oidc.issuer`,
+both fail at render time rather than rendering a Pod that exits at startup.
+The raw `config:` block is read first, so a value supplied only there is the one judged.
+Any `PROFGATE_AUTH_`-prefixed entry in `extraEnv` switches both checks off,
+because the environment can carry a value the chart cannot see, and startup validation judges it instead.
 
 ## NATS credentials
 
@@ -502,7 +509,7 @@ and for any other rule set an operator would rather ship.
 | `podSecurityContext` | `{fsGroup: 65532}` | Pod security context; `fsGroup: null` renders no key. |
 | `securityContext` | hardened | Container security context. |
 | `resources.limits`, `.requests` | unset, `{cpu: 100m}` | `limits` replaces the derived memory limit; `requests` is rendered as written. No memory request, so it keeps tracking the limit. |
-| `memoryLimitWithoutPGO` | `512Mi` | The memory limit while `pgo.enabled` is false. |
+| `memoryLimitWithoutPGO` | `512Mi` | The memory limit while `pgo.enabled` is false. A whole number of `Mi` or `Gi`; anything else fails rendering, on both branches. |
 | `terminationGracePeriodSeconds` | `125` | Drain time before SIGKILL. |
 | `readinessProbe` | 10s period | Probe timings. There is no liveness probe. |
 | `extraEnv` | `[]` | `PROFGATE_`-prefixed overrides and anything else. |
@@ -515,8 +522,8 @@ and for any other rule set an operator would rather ship.
 | `server.drainDelay` | `5s` | The wait between `/readyz` turning 503 and the API listener closing. |
 | `auth.mode` | `disabled` | `disabled`, `basic`, or `oidc`. |
 | `auth.anonymousRealm` | `developer` | The realm every request gets while `auth.mode` is `disabled`. |
-| `auth.basic.users`, `.usersFile`, `.allowPlaintext`, `.maxConcurrent` | `[]`, `""`, `false`, `16` | Basic mode's user set; `usersFile` names a Secret data key. |
-| `auth.oidc.issuer`, `.audience`, `.tokenType`, `.usernameClaim`, `.groupsClaim`, `.caKey`, `.httpProxy` | empty, empty, `id`, `sub`, `groups`, `""`, `""` | oidc mode's issuer and how it reads a token; `caKey` names a Secret data key. |
+| `auth.basic.users`, `.usersFile`, `.allowPlaintext`, `.maxConcurrent` | `[]`, `""`, `false`, `16` | Basic mode's user set; `usersFile` names a Secret data key. Basic mode with both empty fails rendering. |
+| `auth.oidc.issuer`, `.audience`, `.tokenType`, `.usernameClaim`, `.groupsClaim`, `.caKey`, `.httpProxy` | empty, empty, `id`, `sub`, `groups`, `""`, `""` | oidc mode's issuer and how it reads a token; `caKey` names a Secret data key. oidc mode with no issuer fails rendering. |
 | `auth.oidc.mapping.users`, `.groups`, `.defaultRealm` | `[]`, `[]`, `""` | How a verified token maps to a realm. |
 | `auth.oidc.browser` | `{}` | The relying-party block that turns a login into a session cookie; empty renders no `auth.oidc.browser` block. See *Authentication*. |
 | `auth.oidc.cli.enabled` | `true` | Renders the `auth.oidc.cli` block, whose presence makes `GET /v1/auth` report a device login. Omitted, with a notice in the install notes, when `auth.oidc.browser.clientSecretFile` is set under `tokenType: id`, the pair the binary refuses. |

@@ -1,6 +1,7 @@
 # The Install Path Holds on a Fresh Cluster
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** commits `d1b0cf2` through `80e37f8` on `docs/plan-install-path` carry the repairs; the commit that carries this line links the guides.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.

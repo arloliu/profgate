@@ -581,6 +581,17 @@ kubectl -n profgate rollout status deploy/profgate
 `helm rollback profgate REVISION -n profgate` returns to the previous release when the new one misbehaves,
 with REVISION taken from `helm history profgate -n profgate`.
 
+`0.5.0` carries five breaking changes; [`../CHANGELOG.md`](../CHANGELOG.md) has all five.
+The one that meets an operator without any other change is port selection:
+`discovery.pprof.allowedPorts` and `allowedPortNames` are removed,
+with their `PROFGATE_*` variables,
+and a configuration that still sets either one does not start,
+with a message naming the replacement.
+The single list `discovery.pprof.allowedSelections` replaces them.
+An empty `allowedSelections` — the shipped default — admits only the configured `port` or `portName`,
+where an empty old allowlist admitted anything.
+`- port: "*"`, `- portName: "*"`, or both restore that open behavior, one wildcard per old list.
+
 Upgrades roll with `maxUnavailable: 0` and `maxSurge: 1`:
 no running replica leaves before its replacement is Ready.
 Combined with the readiness gate above,
