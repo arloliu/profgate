@@ -420,6 +420,9 @@ type artifactTarget struct {
 // It returns the resolved --output beside its failure,
 // which is "" while the settings have not been resolved.
 func (env *cmdEnv) download(ctx context.Context, in *invocation, output string) (string, error) {
+	if err := refuseFormatAsPath(output, "artifact"); err != nil {
+		return "", err
+	}
 	id, err := collectionID(in)
 	if err != nil {
 		return "", err

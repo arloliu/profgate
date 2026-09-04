@@ -77,6 +77,21 @@ func (f profileFlags) query() (url.Values, error) {
 	return q, nil
 }
 
+// refuseFormatAsPath refuses a -o of exactly json or yaml, before anything is fetched.
+// -o names the file the bytes are written to, so a format name there writes a pprof file called json,
+// which is never what the caller meant: --output is the flag that names a format.
+// what is what the file holds, a profile or an artifact.
+// The two values are all this refuses, so a caller who wants a file with one of those names writes -o ./json,
+// which is why the message names that spelling.
+func refuseFormatAsPath(output, what string) error {
+	if output != "json" && output != "yaml" {
+		return nil
+	}
+
+	return fmt.Errorf("%w: -o names the file the %s is written to, not a format; "+
+		"--output json is the format flag, and -o ./json writes a file named json", client.ErrUsage, what)
+}
+
 // target is the three headers the gateway adds to a forwarded profile,
 // saying who was profiled.
 type target struct {
@@ -90,6 +105,9 @@ type target struct {
 // It returns the resolved --output beside its failure,
 // which is "" while the settings have not been resolved.
 func (env *cmdEnv) profile(ctx context.Context, in *invocation, f profileFlags) (string, error) {
+	if err := refuseFormatAsPath(f.output, "profile"); err != nil {
+		return "", err
+	}
 	q, err := f.query()
 	if err != nil {
 		return "", err

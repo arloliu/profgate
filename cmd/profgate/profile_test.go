@@ -83,6 +83,42 @@ func TestProfileLocalRefusals(t *testing.T) {
 	}
 }
 
+// formatAsPath is the whole refusal a format name in -o earns, on profile.
+const formatAsPath = "profgate: usage: -o names the file the profile is written to, not a format; " +
+	"--output json is the format flag, and -o ./json writes a file named json\n"
+
+func TestProfileRefusesAFormatAsAPath(t *testing.T) {
+	for _, value := range []string{"json", "yaml"} {
+		t.Run(value, func(t *testing.T) {
+			te := newTestEnv(t)
+			code, dir := runProfile(t, te, refusingTransport(t), "payments/checkout", "cpu", "-o", value)
+			if code != 2 {
+				t.Fatalf("code = %d, want 2 (stderr=%q)", code, te.stderr.String())
+			}
+			if te.stderr.String() != formatAsPath {
+				t.Fatalf("stderr = %q, want %q", te.stderr.String(), formatAsPath)
+			}
+			entries, _ := os.ReadDir(dir)
+			if len(entries) != 0 {
+				t.Fatalf("the working directory holds %d entries, want none", len(entries))
+			}
+		})
+	}
+}
+
+// TestProfileAcceptsAnEscapedPath is what makes the refusal above a refusal of a format and not of a name.
+func TestProfileAcceptsAnEscapedPath(t *testing.T) {
+	te := newTestEnv(t)
+	code, dir := runProfile(t, te, &profileTransport{}, "payments/checkout", "cpu", "-o", "./json")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "json")) //nolint:gosec // a test reading the file it asked for
+	if err != nil || string(data) != profileBytes {
+		t.Fatalf("file = %q, %v; want the profile bytes", data, err)
+	}
+}
+
 func TestProfileSecondsAboveTheLimitIsSent(t *testing.T) {
 	te := newTestEnv(t)
 	var query string
