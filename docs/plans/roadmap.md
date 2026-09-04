@@ -108,51 +108,51 @@ and it disagreed with the chart.
 
 ### 3. Give every CLI verb a `--help` and an honest table
 
-- [ ] No client verb answers `--help`: the flag set writes to `io.Discard` (`cmd/profgate/client.go:300`)
+- [x] No client verb answers `--help`: the flag set writes to `io.Discard` (`cmd/profgate/client.go:300`)
   and nothing handles `flag.ErrHelp`, so `--help` prints `flag: help requested` and exits 2.
   The eleven global flags appear in no output the binary can produce.
   [`cli.md`](../specs/cli.md) *Help* gives the shape:
   `-h` and `--help` print the grammar line and the command's own flags on stdout and exit 0,
   the global flags beside a client verb's own and on no operator command line,
   one shape for every command line the binary has.
-- [ ] `profgate auth hash --help` prints `Password:` and waits on stdin forever (`cmd/profgate/auth.go:28-40`).
-- [ ] `-n` and `-o` are the kubectl reflexes; `-n` fails without naming `--namespace`,
-  and `-o json` on `profile` writes a pprof file named `json` (`cmd/profgate/profile.go:36`).
-  Name the long flag in the error;
-  a value of `json` or `yaml` for `-o` on `profile` and `download` is refused with the same hint.
-- [ ] `collection get` prints `round 0 of 1` for a completed Collection:
+- [x] `profgate auth hash --help` prints `Password:` and waits on stdin forever (`cmd/profgate/auth.go:28-40`).
+- [x] `-n` and `-o` are the kubectl reflexes; `-n` failed without naming `--namespace`,
+  and `-o json` on `profile` wrote a pprof file called `json`.
+  The error names the long flag,
+  and `-o json` or `-o yaml` on `profile` and `download` is refused before a request is sent.
+- [x] `collection get` prints `round 0 of 1` for a completed Collection:
   `progress.round` is a zero-based index (`internal/pgo/rounds.go:144-145`)
   and `cmd/profgate/collect.go:366` prints it raw.
   Its table drops `expiresAt`, `finishedAt`, `resolvedVersion`, and `artifact.bytes`,
   so nothing says how long `download` will still work.
-- [ ] `collect --wait` prints the receipt and the final record on stdout in table mode
+- [x] `collect --wait` prints the receipt and the final record on stdout in table mode
   and never prints the receipt under `--output json` (`cmd/profgate/collect.go:225-229`);
   `docs/cli.md:316` and [`cli.md`](../specs/cli.md) *Collections* both say only the final record goes to stdout.
   The receipt goes to stderr in both modes.
-- [ ] `targets --explain` on a Service whose selector matches no Pod prints two empty headers;
+- [x] `targets --explain` on a Service whose selector matches no Pod prints two empty headers;
   the table never shows `selectorMatched`, the number that separates "selects nothing" from "selected and all excluded".
-- [ ] Under `--output json` an error is still one text line on stderr and nothing on stdout (`cmd/profgate/exit.go:48`);
+- [x] Under `--output json` an error is still one text line on stderr and nothing on stdout (`cmd/profgate/exit.go:48`);
   a `2xx` with a body that is not an envelope prints `profgate: HTTP 200 OK` (`internal/client/client.go:168`);
   `services <unknown namespace>` prints a header and exits 0;
-  `collect --body` and `pgo policy set --file` name one concept twice.
+  `collect` and `pgo policy set` name one concept twice.
   [`cli.md`](../specs/cli.md) defines each: the envelope's bytes on stdout under `--output json`,
   a fixed line naming the status and nothing the response carried,
   the header and exit 0 kept as the honest rendering of a `200` with an empty list,
   which is what the gateway answers for a namespace it does not know — there is no `namespace_not_found` —
-  and `--file` as the one flag name.
-- [ ] Small wording: `logout` is silent on success and loud when nothing is cached;
+  and `--file` as the one flag name on both.
+- [x] Small wording: `logout` is silent on success and loud when nothing is cached;
   `login --context` creates a context and does not select it, and says nothing about `context use`;
   `context delete` of the current context is silent;
   an expired cached token still triggers the plaintext warning before "no valid token";
   the contexts-file refusal leaks `client.File`;
   `docs/cli.md:192` says `key: value` where the rendering is a tab.
-- [ ] Gateway messages the client relays verbatim name no next step where the client has a verb for it:
+- [x] Gateway messages the client relays verbatim name no next step where the client has a verb for it:
   `port_not_allowed`, `collection_in_progress`, `no_targets`, `pgo_disabled` (`internal/httpapi/server.go:448`).
   The gateway's text names the endpoint or the configuration key; the client stays verbatim.
 
 Spec: [`cli.md`](../specs/cli.md) for `--help`, the JSON error shape, the malformed-body message,
 the unknown-namespace answer, and the flag name; none for the rest.
-Shipped: not built yet.
+Shipped: pull request #21.
 Why here: the CLI is `v0.5.0`'s headline, and its first contact — `--help` — fails on every client verb.
 
 ### 4. Make the gauges and the alerts true, and write the runbook

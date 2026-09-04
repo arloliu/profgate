@@ -154,7 +154,13 @@ without it, a bare `<service>` is a usage error naming the flag and the context 
 `collections` lists and `collection` acts on one record,
 which is a plural that differs from its singular by one letter and is worth stating rather than hoping is obvious:
 the plural takes a Service, the singular takes an identifier, and each rejects the other's argument by grammar.
-An unknown verb, an unknown subverb, and an unknown flag each print the usage line and exit 2.
+An unknown verb, an unknown subverb, and an unknown flag each exit 2
+and print the grammar of the command line they were given:
+the bare binary's usage line where no verb was reached,
+the group's own line where no subverb matched,
+and the leaf's own line where one did.
+The cause stands above that line, except on an operator group,
+which prints its line alone whatever it was given.
 `-h` and `--help` are not among them: where they are a help argument they print help on stdout and exit 0 (*Help*).
 
 ### 2.2 Reserved names
@@ -1574,3 +1580,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Configuration*, *Changes to the accepted designs* | the chart renders `auth.oidc.cli` by default through `auth.oidc.cli.enabled`, and omits it beside a browser client secret under `tokenType: id`; the binary's opt-in is unchanged |
 | *Core decisions*, *Command grammar*, *Help*, *Reading*, *Collections*, *`pgo policy`*, *Output and exit codes*, *Failure scenarios*, *Testing* | a help argument prints help on stdout and exits 0 on every command line the binary has, and wins over positional and flag parsing; a refusal under `--output json` copies the envelope's bytes to stdout beside the one line on stderr; a response that is not envelope-shaped prints its status and nothing the response carried, and a `401` in that state still exits 3; a namespace the gateway does not know is the empty list it answers rather than a not-found the client invents, which no verb can tell from a typo; and the file flag of `collect` and `pgo policy set` is `--file` on both |
 | *Reading* | `targets --explain` prints `selectorMatched` as a row of its own, between the target list and the `REASON  COUNT` table, so a selector that matched no Pod no longer prints two empty headers indistinguishable from a selector whose Pods were all excluded |
+| *Command grammar* | an unknown verb, an unknown subverb, and an unknown flag print the grammar of the command line they were given — the bare binary's usage line, the group's own line, or the leaf's own — with the cause above it, and an operator group prints its line alone |

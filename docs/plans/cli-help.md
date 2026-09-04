@@ -1,6 +1,7 @@
 # Every Command Line Answers for Itself
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #21 carries the work; the commit that carries this line closes the plan.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
