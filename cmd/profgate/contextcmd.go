@@ -25,8 +25,9 @@ func contextVerb() verb {
 			{words: "delete", grammar: "context delete <name>", positionals: 1},
 		},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
+			// The context verb sends no request, so it can hold no envelope to copy.
 			if err := env.runContext(ctx, in); err != nil {
-				return fail(env, err)
+				return fail(env, "", err)
 			}
 			return exitOK
 		},

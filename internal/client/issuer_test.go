@@ -289,6 +289,10 @@ func TestDiscoverNon200(t *testing.T) {
 	if !errors.As(err, &se) || se.Status != http.StatusBadGateway {
 		t.Fatalf("err = %v, want a StatusError 502", err)
 	}
+	const want = "HTTP 502 Bad Gateway: the issuer could not complete the request"
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err.Error(), want)
+	}
 	if strings.Contains(err.Error(), "down") {
 		t.Fatalf("the error carries the body: %v", err)
 	}
@@ -463,6 +467,10 @@ func TestPostFormResponses(t *testing.T) {
 				if !errors.As(err, &se) || se.Status != http.StatusOK {
 					t.Fatalf("err = %v, want a StatusError 200", err)
 				}
+				const want = "HTTP 200 OK: body is not a token response"
+				if err.Error() != want {
+					t.Fatalf("err = %q, want %q", err.Error(), want)
+				}
 			},
 		},
 		{
@@ -510,6 +518,13 @@ func TestPostFormResponses(t *testing.T) {
 				var se *StatusError
 				if !errors.As(err, &se) || se.Status != http.StatusInternalServerError {
 					t.Fatalf("err = %v, want a StatusError 500", err)
+				}
+				const want = "HTTP 500 Internal Server Error: the issuer could not complete the request"
+				if err.Error() != want {
+					t.Fatalf("err = %q, want %q", err.Error(), want)
+				}
+				if strings.Contains(err.Error(), "server_error") {
+					t.Fatalf("the error carries the body: %v", err)
 				}
 			},
 		},

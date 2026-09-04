@@ -86,7 +86,7 @@ func (e *IssuerError) Error() string {
 	if e.Code != "" {
 		return "the issuer answered " + strconv.Itoa(e.Status) + ": " + e.Code
 	}
-	return "the issuer answered " + (&StatusError{Status: e.Status}).Error()
+	return "the issuer answered " + statusLine(e.Status)
 }
 
 // NewIssuer builds the Issuer;
@@ -225,7 +225,7 @@ func (i *Issuer) postForm(ctx context.Context, name, endpoint string, form url.V
 	}
 	var tr TokenResponse
 	if err := decodeOne(body, &tr); err != nil {
-		return TokenResponse{}, &StatusError{Status: http.StatusOK}
+		return TokenResponse{}, &StatusError{Status: http.StatusOK, Detail: "body is not a token response"}
 	}
 	return tr, nil
 }
@@ -269,7 +269,7 @@ func (i *Issuer) do(c *http.Client, req *http.Request, name string) ([]byte, err
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 		return nil, &IssuerError{Status: resp.StatusCode, Code: issuerCode(resp, body)}
 	}
-	return nil, &StatusError{Status: resp.StatusCode}
+	return nil, &StatusError{Status: resp.StatusCode, Detail: "the issuer could not complete the request"}
 }
 
 // issuerCode is the error member of an RFC 6749 error body, and the empty string when the body is anything else.

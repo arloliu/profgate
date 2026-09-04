@@ -456,10 +456,32 @@ An error is one line on stderr, `profgate:` followed by the gateway's envelope v
 profgate: seconds_exceeds_limit: effective duration 120s exceeds the limit of 60s
 ```
 
-A response that is not the envelope, such as HTML from an Ingress,
-prints `HTTP <status> <reason>` and nothing from its body.
+Under `--output json` the envelope's own bytes also go to stdout, copied and not rebuilt,
+so `jq .code` reads a refusal exactly as it reads every other answer.
+The line stays on stderr either way, and only a gateway refusal has bytes to copy:
+a transport failure, a response this client could not read as the envelope, and a usage error each leave stdout empty.
+
+A response this client could not read as the envelope prints one fixed line:
+
+```text
+profgate: HTTP 502 Bad Gateway: body is not a profgate JSON document
+```
+
+That is HTML from an Ingress, an empty body, truncated JSON,
+and a `2xx` from a JSON route whose body is not exactly one JSON document.
+The status and its standard reason are the whole message, the reason left out for a status that has none;
+no media type, no length, and no byte of the body is printed,
+because a response an Ingress produced was bounded by no realm.
+A `401` in that state exits 3 and every other status exits 1.
+A body that fills the client's response bound is a different failure and names the bound instead.
 A request that got no answer prints the transport error with the gateway's scheme, host, and port, and no path.
 A usage error prints its cause and the verb's grammar.
+
+A namespace the gateway does not know is not an error at all.
+The gateway observes no Namespace objects,
+so `profgate services <typo>` prints its `SERVICE` header, prints no row, writes nothing to stderr, and exits 0,
+the same answer an empty namespace gets.
+A namespace the caller's realm does not admit is `403 realm_denied`, exit 1, which is the answer that differs.
 
 | Code | Meaning |
 |---|---|
@@ -494,3 +516,5 @@ when it expires the command exits 3, and obtaining a new one is the job's own st
 `PROFGATE_USER` and `PROFGATE_PASSWORD` are the same shape for a `basic` gateway.
 Under `--output json`, `profile` and `download` still write bytes to their file
 and print their metadata as one JSON object on stderr.
+A refusal's envelope reaches stdout under `--output json` too,
+so one `jq` pipeline reads a `400` the way it reads a `200` and the exit code says which arrived.

@@ -125,13 +125,13 @@ func smokeVerbs(t *testing.T, got *smokeRun) []verb {
 			name: "smokewhoami", leaves: []leaf{{grammar: "smokewhoami"}},
 			run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 				record(in)
-				gw, _, err := env.gateway(ctx, in.globals)
+				gw, s, err := env.gateway(ctx, in.globals)
 				if err != nil {
-					return fail(env, err)
+					return fail(env, "", err)
 				}
 				body, _, err := gw.JSON(ctx, client.Request{Method: http.MethodGet, Path: "/v1/whoami"})
 				if err != nil {
-					return fail(env, err)
+					return fail(env, s.Output, err)
 				}
 				_, _ = env.stdout.Write(body)
 				return 0

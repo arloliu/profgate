@@ -104,8 +104,11 @@ func (c *Client) create(ctx context.Context, req Request) (Created, error) {
 		return Created{}, fmt.Errorf("%s: %w: %w", c.settings.Origin, errAnswerIncomplete, err)
 	}
 	var answer createdBody
-	if !json.Valid(raw) || decodeOne(raw, &answer) != nil || answer.ID == "" {
+	if !json.Valid(raw) || decodeOne(raw, &answer) != nil {
 		return Created{}, &StatusError{Status: resp.StatusCode}
+	}
+	if answer.ID == "" {
+		return Created{}, &StatusError{Status: resp.StatusCode, Detail: "the response carries no id"}
 	}
 	return Created{
 		ID:       answer.ID,

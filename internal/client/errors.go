@@ -19,23 +19,36 @@ type APIError struct {
 	Status  int
 	Code    string
 	Message string
+	Body    []byte // the envelope exactly as it arrived, for the --output json copy
 }
 
 func (e *APIError) Error() string {
 	return e.Code + ": " + e.Message
 }
 
-// StatusError is a response that is not the envelope: HTML from an Ingress,
-// an empty body, truncated JSON. It carries the status and nothing from the body.
+// StatusError is a response this client could not read as the gateway's envelope:
+// HTML from an Ingress, an empty body, truncated JSON, or a body that filled the response bound.
+// It carries the status and a clause of this client's own, and never a byte of the body.
 type StatusError struct {
 	Status int
+	Detail string // empty means "body is not a profgate JSON document"
 }
 
 func (e *StatusError) Error() string {
-	if reason := http.StatusText(e.Status); reason != "" {
-		return "HTTP " + strconv.Itoa(e.Status) + " " + reason
+	detail := e.Detail
+	if detail == "" {
+		detail = "body is not a profgate JSON document"
 	}
-	return "HTTP " + strconv.Itoa(e.Status)
+	return statusLine(e.Status) + ": " + detail
+}
+
+// statusLine is the status and its standard reason, "HTTP 502 Bad Gateway",
+// and the status alone for one http.StatusText has no reason for.
+func statusLine(status int) string {
+	if reason := http.StatusText(status); reason != "" {
+		return "HTTP " + strconv.Itoa(status) + " " + reason
+	}
+	return "HTTP " + strconv.Itoa(status)
 }
 
 // TransportError is a request that never got an answer.

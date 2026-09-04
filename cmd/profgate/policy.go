@@ -44,13 +44,15 @@ func pgoVerb() verb {
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			switch in.subverb {
 			case "policy set":
-				if err := env.setPolicy(ctx, in, f); err != nil {
-					return fail(env, err)
+				output, err := env.setPolicy(ctx, in, f)
+				if err != nil {
+					return fail(env, output, err)
 				}
 				return exitOK
 			case "policy delete":
-				if err := env.deletePolicy(ctx, in); err != nil {
-					return fail(env, err)
+				output, err := env.deletePolicy(ctx, in)
+				if err != nil {
+					return fail(env, output, err)
 				}
 				return exitOK
 			default:
@@ -176,60 +178,64 @@ func lostCondition(err error, service string) error {
 
 // setPolicy runs pgo policy set: the body from the flags, the read for
 // its ETag, and the one PUT under its condition, then the answer.
-func (env *cmdEnv) setPolicy(ctx context.Context, in *invocation, f policyFlags) error {
+// It returns the resolved --output beside its failure,
+// which is "" while the settings have not been resolved.
+func (env *cmdEnv) setPolicy(ctx context.Context, in *invocation, f policyFlags) (string, error) {
 	body, err := f.requestBody(in.fs)
 	if err != nil {
-		return err
+		return "", err
 	}
 	gw, s, err := env.gateway(ctx, in.globals)
 	if err != nil {
-		return err
+		return "", err
 	}
 	path, err := policyPath(in, s)
 	if err != nil {
-		return err
+		return s.Output, err
 	}
 	etag, err := readETag(ctx, gw, path)
 	if err != nil {
-		return err
+		return s.Output, err
 	}
 	h := conditional(etag)
 	h.Set("Content-Type", "application/json")
 	answer, _, err := gw.JSON(ctx, client.Request{Method: http.MethodPut, Path: path, Body: body, Header: h})
 	if err != nil {
-		return lostCondition(err, in.positionals[0])
+		return s.Output, lostCondition(err, in.positionals[0])
 	}
 	if s.Output == "json" {
 		_, err := env.stdout.Write(answer)
-		return err
+		return s.Output, err
 	}
-	return renderPolicy(env, answer)
+	return s.Output, renderPolicy(env, answer)
 }
 
 // deletePolicy runs pgo policy delete: the read for its ETag and the one
 // DELETE under its condition.
 // A Service on defaults alone sends no If-Match and the gateway answers
 // 404 pgo_override_not_found, which is reported as it came.
-func (env *cmdEnv) deletePolicy(ctx context.Context, in *invocation) error {
+// It returns the resolved --output beside its failure,
+// which is "" while the settings have not been resolved.
+func (env *cmdEnv) deletePolicy(ctx context.Context, in *invocation) (string, error) {
 	gw, s, err := env.gateway(ctx, in.globals)
 	if err != nil {
-		return err
+		return "", err
 	}
 	path, err := policyPath(in, s)
 	if err != nil {
-		return err
+		return s.Output, err
 	}
 	etag, err := readETag(ctx, gw, path)
 	if err != nil {
-		return err
+		return s.Output, err
 	}
 	resp, err := gw.Do(ctx, client.Request{Method: http.MethodDelete, Path: path, Header: conditional(etag)})
 	if err != nil {
-		return lostCondition(err, in.positionals[0])
+		return s.Output, lostCondition(err, in.positionals[0])
 	}
 	_ = resp.Body.Close()
 	_, _ = fmt.Fprintf(env.stderr, "deleted the policy override of %s\n", in.positionals[0])
-	return nil
+	return s.Output, nil
 }
 
 // renderPolicy prints the source, the effective policy one field per row,

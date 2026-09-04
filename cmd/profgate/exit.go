@@ -42,9 +42,19 @@ func unauthorized(err error) bool {
 }
 
 // fail prints the error as one stderr line and returns its exit code.
-// The envelope's code and message, the status line of a response that is not the envelope, and a transport error's origin each arrive verbatim in
-// the error itself.
-func fail(env *cmdEnv, err error) int {
+// The envelope's code and message,
+// the status line of a response this client could not read as the envelope,
+// and a transport error's origin each arrive verbatim in the error itself.
+//
+// Under --output json a gateway refusal's own envelope bytes go to stdout,
+// copied and not rebuilt:
+// only a refusal has bytes to copy, so every other failure leaves stdout empty.
+// output is the resolved --output, or "" where no settings were resolved.
+func fail(env *cmdEnv, output string, err error) int {
+	var ae *client.APIError
+	if output == "json" && errors.As(err, &ae) && len(ae.Body) > 0 {
+		_, _ = env.stdout.Write(ae.Body)
+	}
 	_, _ = fmt.Fprintf(env.stderr, "profgate: %v\n", err)
 	return exitCode(err)
 }

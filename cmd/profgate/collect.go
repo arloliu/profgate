@@ -49,8 +49,9 @@ func collectVerb() verb {
 			},
 		}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
-			if err := env.collect(ctx, in, f); err != nil {
-				return fail(env, err)
+			output, err := env.collect(ctx, in, f)
+			if err != nil {
+				return fail(env, output, err)
 			}
 			return exitOK
 		},
@@ -191,46 +192,48 @@ func positiveInt(flag, value string) (int, error) {
 // The client retries the create under the same key while its result is unknown.
 // A result still unknown when that window closes is reported once,
 // and the message says a Collection may already exist and how to find out.
-func (env *cmdEnv) collect(ctx context.Context, in *invocation, f collectFlags) error {
+// It returns the resolved --output beside its failure,
+// which is "" while the settings have not been resolved.
+func (env *cmdEnv) collect(ctx context.Context, in *invocation, f collectFlags) (string, error) {
 	if err := f.checkWaitFlags(); err != nil {
-		return err
+		return "", err
 	}
 	body, err := f.requestBody()
 	if err != nil {
-		return err
+		return "", err
 	}
 	gw, s, err := env.gateway(ctx, in.globals)
 	if err != nil {
-		return err
+		return "", err
 	}
 	ns, svc, err := address(in.positionals[0], s.Namespace)
 	if err != nil {
-		return err
+		return s.Output, err
 	}
 	key, err := client.NewKey(env.random)
 	if err != nil {
-		return err
+		return s.Output, err
 	}
 	created, err := gw.Create(ctx, ns, svc, body, key)
 	if err != nil {
 		if client.CreateIndeterminate(err) {
-			return fmt.Errorf("%w; a Collection may already have been created: run profgate collections %s/%s to find out", err, ns, svc)
+			return s.Output, fmt.Errorf("%w; a Collection may already have been created: run profgate collections %s/%s to find out", err, ns, svc)
 		}
-		return err
+		return s.Output, err
 	}
 	if !f.wait {
 		if s.Output == "json" {
 			_, err := env.stdout.Write(created.Body)
-			return err
+			return s.Output, err
 		}
-		return writeTable(env.stdout, env.terminal, nil, [][]string{{"id", created.ID}, {"state", created.State}})
+		return s.Output, writeTable(env.stdout, env.terminal, nil, [][]string{{"id", created.ID}, {"state", created.State}})
 	}
 	if s.Output != "json" {
 		if err := writeTable(env.stdout, env.terminal, nil, [][]string{{"id", created.ID}, {"state", created.State}}); err != nil {
-			return err
+			return s.Output, err
 		}
 	}
-	return env.wait(ctx, gw, s, created.ID, f)
+	return s.Output, env.wait(ctx, gw, s, created.ID, f)
 }
 
 // wait polls the record until it ends and prints it, then decides the exit:
@@ -310,8 +313,9 @@ func collectionVerb() verb {
 		},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			if in.subverb == "cancel" {
-				if err := env.cancel(ctx, in); err != nil {
-					return fail(env, err)
+				output, err := env.cancel(ctx, in)
+				if err != nil {
+					return fail(env, output, err)
 				}
 				return exitOK
 			}
@@ -340,24 +344,26 @@ func collectionID(in *invocation) (string, error) {
 
 // cancel runs collection cancel:
 // the one cancel, its retry of collection_initializing inside the client, and the updated record.
-func (env *cmdEnv) cancel(ctx context.Context, in *invocation) error {
+// It returns the resolved --output beside its failure,
+// which is "" while the settings have not been resolved.
+func (env *cmdEnv) cancel(ctx context.Context, in *invocation) (string, error) {
 	id, err := collectionID(in)
 	if err != nil {
-		return err
+		return "", err
 	}
 	gw, s, err := env.gateway(ctx, in.globals)
 	if err != nil {
-		return err
+		return "", err
 	}
 	body, err := gw.Cancel(ctx, id)
 	if err != nil {
-		return err
+		return s.Output, err
 	}
 	if s.Output == "json" {
 		_, err := env.stdout.Write(body)
-		return err
+		return s.Output, err
 	}
-	return renderCollection(env, body)
+	return s.Output, renderCollection(env, body)
 }
 
 // renderCollection prints the record's identifier, state, and origin, then
@@ -392,8 +398,9 @@ func downloadVerb() verb {
 			},
 		}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
-			if err := env.download(ctx, in, output); err != nil {
-				return fail(env, err)
+			mode, err := env.download(ctx, in, output)
+			if err != nil {
+				return fail(env, mode, err)
 			}
 			return exitOK
 		},
@@ -410,40 +417,42 @@ type artifactTarget struct {
 // download runs the verb:
 // the identifier grammar, the destination opened before the request, the fetch, and the metadata on stderr.
 // 410 artifact_gone and 409 collection_not_completed come back as the envelope, printed by the caller, with no file left behind.
-func (env *cmdEnv) download(ctx context.Context, in *invocation, output string) error {
+// It returns the resolved --output beside its failure,
+// which is "" while the settings have not been resolved.
+func (env *cmdEnv) download(ctx context.Context, in *invocation, output string) (string, error) {
 	id, err := collectionID(in)
 	if err != nil {
-		return err
+		return "", err
 	}
 	gw, s, err := env.gateway(ctx, in.globals)
 	if err != nil {
-		return err
+		return "", err
 	}
 	dest, err := env.openDestination(output, id+".pprof", false)
 	if err != nil {
-		return err
+		return s.Output, err
 	}
 	defer dest.cleanup()
 	resp, err := gw.Do(ctx, client.Request{Method: http.MethodGet, Path: client.CollectionPath(id) + "/profile"})
 	if err != nil {
 		dest.discard()
-		return err
+		return s.Output, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if err := dest.write(resp.Body); err != nil {
 		dest.discard()
-		return fmt.Errorf("%s: %w", s.Origin, err)
+		return s.Output, fmt.Errorf("%s: %w", s.Origin, err)
 	}
 	t := artifactTarget{Collection: resp.Header.Get("X-Pprof-Collection"), Version: resp.Header.Get("X-Pprof-Target-Version")}
 	if s.Output == "json" {
 		if err := json.NewEncoder(env.stderr).Encode(t); err != nil {
-			return err
+			return s.Output, err
 		}
 	} else if _, err := fmt.Fprintf(env.stderr, "collection: %s\nversion: %s\n", t.Collection, t.Version); err != nil {
-		return err
+		return s.Output, err
 	}
 	if dest.path != "" {
 		_, _ = fmt.Fprintf(env.stderr, "wrote %s\n", dest.path)
 	}
-	return nil
+	return s.Output, nil
 }
