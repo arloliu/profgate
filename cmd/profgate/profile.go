@@ -40,8 +40,9 @@ func profileVerb() verb {
 			},
 		}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
-			if err := env.profile(ctx, in, f); err != nil {
-				return fail(env, err)
+			output, err := env.profile(ctx, in, f)
+			if err != nil {
+				return fail(env, output, err)
 			}
 			return exitOK
 		},
@@ -86,17 +87,19 @@ type target struct {
 
 // profile runs the verb: the local refusals, the go lookup under --open,
 // the destination opened before the request, the fetch, and the viewer.
-func (env *cmdEnv) profile(ctx context.Context, in *invocation, f profileFlags) error {
+// It returns the resolved --output beside its failure,
+// which is "" while the settings have not been resolved.
+func (env *cmdEnv) profile(ctx context.Context, in *invocation, f profileFlags) (string, error) {
 	q, err := f.query()
 	if err != nil {
-		return err
+		return "", err
 	}
 	name := in.positionals[1]
 	if !slices.Contains(config.Profiles(), name) {
-		return fmt.Errorf("%w: %q is not a profile; the profiles are %s", client.ErrUsage, name, strings.Join(config.Profiles(), ", "))
+		return "", fmt.Errorf("%w: %q is not a profile; the profiles are %s", client.ErrUsage, name, strings.Join(config.Profiles(), ", "))
 	}
 	if f.open && f.output == "-" {
-		return fmt.Errorf("%w: -o - writes the profile to stdout and --open needs a file; pass one", client.ErrUsage)
+		return "", fmt.Errorf("%w: -o - writes the profile to stdout and --open needs a file; pass one", client.ErrUsage)
 	}
 	// go is resolved before anything is fetched:
 	// refusing here means no profile is collected and thrown away, and no message names a file
@@ -105,50 +108,50 @@ func (env *cmdEnv) profile(ctx context.Context, in *invocation, f profileFlags) 
 	if f.open {
 		goPath, err = env.lookPath("go")
 		if err != nil {
-			return fmt.Errorf("%w: --open runs go tool pprof, and go is not on PATH", client.ErrUsage)
+			return "", fmt.Errorf("%w: --open runs go tool pprof, and go is not on PATH", client.ErrUsage)
 		}
 	}
 	gw, s, err := env.gateway(ctx, in.globals)
 	if err != nil {
-		return err
+		return "", err
 	}
 	ns, svc, err := address(in.positionals[0], s.Namespace)
 	if err != nil {
-		return err
+		return s.Output, err
 	}
 	derived := fmt.Sprintf("%s-%s-%s-%s.pprof", ns, svc, name, env.now().UTC().Format("20060102T150405Z"))
 	dest, err := env.openDestination(f.output, derived, f.open)
 	if err != nil {
-		return err
+		return s.Output, err
 	}
 	defer dest.cleanup()
 	req := client.Request{Method: http.MethodGet, Path: servicePath(ns, svc) + "/profiles/" + url.PathEscape(name), Query: q}
 	resp, err := gw.Do(ctx, req)
 	if err != nil {
 		dest.discard()
-		return err
+		return s.Output, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if err := dest.write(resp.Body); err != nil {
 		dest.discard()
-		return fmt.Errorf("%s: %w", s.Origin, err)
+		return s.Output, fmt.Errorf("%s: %w", s.Origin, err)
 	}
 	if err := env.printTarget(s, resp.Header); err != nil {
-		return err
+		return s.Output, err
 	}
 	if dest.path != "" {
 		_, _ = fmt.Fprintf(env.stderr, "wrote %s\n", dest.path)
 	}
 	if !f.open {
-		return nil
+		return s.Output, nil
 	}
 	// The viewer is a child process rather than a replacement of this one,
 	// so the temporary directory can be removed when it exits; the context
 	// is what stops it when the command is cancelled.
 	if err := env.run(ctx, goPath, "tool", "pprof", "-http=:0", dest.path); err != nil {
-		return fmt.Errorf("go tool pprof: %w", err)
+		return s.Output, fmt.Errorf("go tool pprof: %w", err)
 	}
-	return nil
+	return s.Output, nil
 }
 
 // printTarget prints the three target headers on stderr: one line each, or one JSON object under --output json.

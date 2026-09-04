@@ -66,7 +66,7 @@ func TestErrorShapes(t *testing.T) {
 				t.Fatalf("APIError = %+v", ae)
 			}
 		}},
-		{"502 html", html, "HTTP 502 Bad Gateway", func(t *testing.T, err error) {
+		{"502 html", html, "HTTP 502 Bad Gateway: body is not a profgate JSON document", func(t *testing.T, err error) {
 			var se *StatusError
 			if !errors.As(err, &se) || se.Status != 502 {
 				t.Fatalf("not a StatusError 502: %v", err)
@@ -75,13 +75,13 @@ func TestErrorShapes(t *testing.T) {
 				t.Fatalf("body text leaked: %v", err)
 			}
 		}},
-		{"500 empty", empty, "HTTP 500 Internal Server Error", func(t *testing.T, err error) {
+		{"500 empty", empty, "HTTP 500 Internal Server Error: body is not a profgate JSON document", func(t *testing.T, err error) {
 			var se *StatusError
 			if !errors.As(err, &se) || se.Status != 500 {
 				t.Fatalf("not a StatusError 500: %v", err)
 			}
 		}},
-		{"200 truncated JSON", truncated, "HTTP 200 OK", func(t *testing.T, err error) {
+		{"200 truncated JSON", truncated, "HTTP 200 OK: body is not a profgate JSON document", func(t *testing.T, err error) {
 			var se *StatusError
 			if !errors.As(err, &se) || se.Status != 200 {
 				t.Fatalf("not a StatusError 200: %v", err)
@@ -292,4 +292,86 @@ func TestBasicCredentialRefusals(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEnvelopeShape pins the whole test the client applies to an error body:
+// application/json, one JSON object, a non-empty code, and an error that is a string.
+// Anything else is not the gateway's envelope, whatever it looks like.
+func TestEnvelopeShape(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		body        string
+		want        *APIError // nil means the body is not envelope-shaped
+	}{
+		{
+			name:        "a full envelope",
+			contentType: "application/json",
+			body:        `{"error":"the realm does not admit payments","code":"realm_denied"}`,
+			want:        &APIError{Status: 403, Code: "realm_denied", Message: "the realm does not admit payments"},
+		},
+		{name: "no error key", contentType: "application/json", body: `{"code":"realm_denied"}`},
+		{name: "a null error", contentType: "application/json", body: `{"code":"realm_denied","error":null}`},
+		{name: "an error that is not a string", contentType: "application/json", body: `{"code":"realm_denied","error":5}`},
+		{name: "a full envelope under text/plain", contentType: "text/plain", body: `{"error":"denied","code":"realm_denied"}`},
+		{name: "a JSON array", contentType: "application/json", body: `[{"error":"denied","code":"realm_denied"}]`},
+		{name: "no code key", contentType: "application/json", body: `{"error":"denied"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &http.Response{StatusCode: 403, Header: http.Header{"Content-Type": {tc.contentType}}}
+			got := decodeEnvelope(resp, []byte(tc.body))
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("decodeEnvelope(%s) = %+v, want nil", tc.body, got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("decodeEnvelope(%s) = nil, want %+v", tc.body, tc.want)
+			}
+			if got.Status != tc.want.Status || got.Code != tc.want.Code || got.Message != tc.want.Message {
+				t.Fatalf("decodeEnvelope = %+v, want %+v", got, tc.want)
+			}
+			if string(got.Body) != tc.body {
+				t.Fatalf("Body = %q, want the bytes as they arrived, %q", got.Body, tc.body)
+			}
+		})
+	}
+}
+
+// TestDoSurfacesTheBound proves a body that filled the response bound says so on both paths,
+// rather than being discarded into a bare status line:
+// those bytes were never read, so there is nothing to classify.
+func TestDoSurfacesTheBound(t *testing.T) {
+	oversized := strings.Repeat("x", maxResponseBytes+1)
+	answer := func(status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(oversized))
+		}
+	}
+	const bound = "body exceeds the 1048576-byte bound this client reads"
+	t.Run("Do", func(t *testing.T) {
+		c := serve(t, answer(http.StatusBadGateway), nil, nil)
+		resp, err := c.Do(context.Background(), Request{Method: http.MethodGet, Path: "/v1/namespaces"})
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Fatal("expected an error")
+		}
+		if err.Error() != "HTTP 502 Bad Gateway: "+bound {
+			t.Fatalf("message %q, want the bound named", err.Error())
+		}
+	})
+	t.Run("JSON", func(t *testing.T) {
+		c := serve(t, answer(http.StatusOK), nil, nil)
+		_, _, err := c.JSON(context.Background(), Request{Method: http.MethodGet, Path: "/v1/namespaces"})
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if err.Error() != "HTTP 200 OK: "+bound {
+			t.Fatalf("message %q, want the bound named", err.Error())
+		}
+	})
 }

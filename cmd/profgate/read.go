@@ -27,24 +27,24 @@ type reading struct {
 func (env *cmdEnv) read(ctx context.Context, in *invocation, r reading) int {
 	gw, s, err := env.gateway(ctx, in.globals)
 	if err != nil {
-		return fail(env, err)
+		return fail(env, "", err)
 	}
 	req, err := r.build(s, in)
 	if err != nil {
-		return fail(env, err)
+		return fail(env, s.Output, err)
 	}
 	body, _, err := gw.JSON(ctx, req)
 	if err != nil {
-		return fail(env, err)
+		return fail(env, s.Output, err)
 	}
 	if s.Output == "json" {
 		if _, err := env.stdout.Write(body); err != nil {
-			return fail(env, err)
+			return fail(env, s.Output, err)
 		}
 		return exitOK
 	}
 	if err := r.render(env, body); err != nil {
-		return fail(env, err)
+		return fail(env, s.Output, err)
 	}
 	return exitOK
 }
@@ -279,7 +279,7 @@ func loginVerb() verb {
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			pkceFlag, err := client.PKCEFlag(pkce, noPKCE)
 			if err != nil {
-				return fail(env, err)
+				return fail(env, "", err)
 			}
 			flags := client.LoginFlags{
 				Issuer: issuer, ClientID: clientID, TokenType: tokenType, IssuerCAFile: in.globals.issuerCAFile,
@@ -295,23 +295,23 @@ func loginVerb() verb {
 func (env *cmdEnv) login(ctx context.Context, g *globals, flags client.LoginFlags) int {
 	s, f, err := env.settings(g)
 	if err != nil {
-		return fail(env, err)
+		return fail(env, "", err)
 	}
 	path, err := client.ConfigPath(env.getenv)
 	if err != nil {
-		return fail(env, fmt.Errorf("%w: %w", client.ErrUsage, err))
+		return fail(env, s.Output, fmt.Errorf("%w: %w", client.ErrUsage, err))
 	}
 	store, err := env.store()
 	if err != nil {
-		return fail(env, err)
+		return fail(env, s.Output, err)
 	}
 	iss, err := env.issuer(g, s)
 	if err != nil {
-		return fail(env, err)
+		return fail(env, s.Output, err)
 	}
 	gw, err := client.New(client.Options{Settings: s, Transport: env.transport, Now: env.now, Verbose: env.verboseWriter(g), Warn: env.stderr})
 	if err != nil {
-		return fail(env, err)
+		return fail(env, s.Output, err)
 	}
 	_, err = client.Login(ctx, client.LoginInput{
 		Settings: s,
@@ -327,7 +327,7 @@ func (env *cmdEnv) login(ctx context.Context, g *globals, flags client.LoginFlag
 		File:     f,
 	})
 	if err != nil {
-		return fail(env, err)
+		return fail(env, s.Output, err)
 	}
 	return exitOK
 }
@@ -358,18 +358,18 @@ func logoutVerb() verb {
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			s, _, err := env.settings(in.globals)
 			if err != nil {
-				return fail(env, err)
+				return fail(env, "", err)
 			}
 			store, err := env.store()
 			if err != nil {
-				return fail(env, err)
+				return fail(env, s.Output, err)
 			}
 			iss, err := env.issuer(in.globals, s)
 			if err != nil {
-				return fail(env, err)
+				return fail(env, s.Output, err)
 			}
 			if err := client.Logout(ctx, client.LogoutInput{Settings: s, Issuer: iss, Store: store, Stdout: env.stdout, Stderr: env.stderr}); err != nil {
-				return fail(env, err)
+				return fail(env, s.Output, err)
 			}
 			return exitOK
 		},

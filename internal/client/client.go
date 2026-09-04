@@ -121,7 +121,11 @@ func (c *Client) Do(ctx context.Context, req Request) (*http.Response, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var failure error = &StatusError{Status: resp.StatusCode}
-	if body, err := readBounded(resp.Body); err == nil {
+	body, readErr := readBounded(resp.Body)
+	switch {
+	case errors.Is(readErr, errResponseTooLarge):
+		failure = boundFailure(resp.StatusCode)
+	case readErr == nil:
 		if e := decodeEnvelope(resp, body); e != nil {
 			failure = e
 		}
@@ -161,6 +165,9 @@ func (c *Client) JSON(ctx context.Context, req Request) ([]byte, http.Header, er
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := readBounded(resp.Body)
+	if errors.Is(err, errResponseTooLarge) {
+		return nil, nil, boundFailure(resp.StatusCode)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", c.settings.Origin, err)
 	}
@@ -218,6 +225,15 @@ func (c *Client) logRequest(r *http.Request, status int, start time.Time) {
 // so the same request would meet the same body again.
 var errResponseTooLarge = errors.New("response exceeds the bound")
 
+// boundFailure is what a body that filled the bound becomes on either path:
+// those bytes were never read, so there is nothing to classify.
+func boundFailure(status int) *StatusError {
+	return &StatusError{
+		Status: status,
+		Detail: fmt.Sprintf("body exceeds the %d-byte bound this client reads", maxResponseBytes),
+	}
+}
+
 // readBounded reads at most maxResponseBytes and refuses a body that fills
 // the bound rather than returning a prefix of it.
 func readBounded(body io.Reader) ([]byte, error) {
@@ -233,24 +249,28 @@ func readBounded(body io.Reader) ([]byte, error) {
 
 // envelope is the gateway's error body; details is present only on
 // port_not_allowed and no verb reads it.
+// Error is a pointer so that an absent key and a null both fail the shape,
+// which a plain string would read as the empty message.
 type envelope struct {
-	Error string `json:"error"`
-	Code  string `json:"code"`
+	Error *string `json:"error"`
+	Code  string  `json:"code"`
 }
 
-// decodeEnvelope returns the APIError a JSON error body carries, or nil when
-// the body is not the envelope: another content type, invalid JSON, or a
-// document without a code.
+// decodeEnvelope returns the APIError a JSON error body carries,
+// or nil when the body is not envelope-shaped:
+// another content type, something that is not one JSON object,
+// a document without a code, or one whose error is absent or not a string.
+// The APIError carries the bytes as they arrived, which is what --output json copies to stdout.
 func decodeEnvelope(resp *http.Response, body []byte) *APIError {
 	mediaType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
 	if strings.TrimSpace(strings.ToLower(mediaType)) != "application/json" {
 		return nil
 	}
 	var e envelope
-	if err := json.Unmarshal(body, &e); err != nil || e.Code == "" {
+	if err := json.Unmarshal(body, &e); err != nil || e.Code == "" || e.Error == nil {
 		return nil
 	}
-	return &APIError{Status: resp.StatusCode, Code: e.Code, Message: e.Error}
+	return &APIError{Status: resp.StatusCode, Code: e.Code, Message: *e.Error, Body: body}
 }
 
 type tokenCredential string

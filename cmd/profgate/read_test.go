@@ -478,3 +478,21 @@ func TestTargetsExplain(t *testing.T) {
 		}
 	})
 }
+
+// TestServicesUnknownNamespace records that a namespace the gateway does not know
+// is the empty list it answers and not a not-found this client invents:
+// the gateway observes no Namespace objects,
+// so an empty namespace and one that does not exist are one fact to it.
+func TestServicesUnknownNamespace(t *testing.T) {
+	te := newTestEnv(t)
+	code, _ := runRead(t, te, `{"namespace":"nope","services":[]}`+"\n", "services", "nope")
+	if code != exitOK {
+		t.Fatalf("code = %d, want %d (stderr=%q)", code, exitOK, te.stderr.String())
+	}
+	if te.stdout.String() != "SERVICE\n" {
+		t.Fatalf("stdout = %q, want the header alone", te.stdout.String())
+	}
+	if te.stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want it empty", te.stderr.String())
+	}
+}

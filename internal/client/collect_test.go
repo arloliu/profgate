@@ -123,6 +123,10 @@ func TestCreate(t *testing.T) {
 		if !errors.As(err, &se) || se.Status != http.StatusAccepted {
 			t.Fatalf("err = %v, want a StatusError 202", err)
 		}
+		const want = "HTTP 202 Accepted: the response carries no id"
+		if err.Error() != want {
+			t.Fatalf("err = %q, want %q", err.Error(), want)
+		}
 	})
 	t.Run("a 2xx that is not JSON is a status error", func(t *testing.T) {
 		c := serve(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -133,6 +137,10 @@ func TestCreate(t *testing.T) {
 		var se *StatusError
 		if !errors.As(err, &se) || se.Status != http.StatusOK {
 			t.Fatalf("err = %v, want a StatusError 200", err)
+		}
+		const want = "HTTP 200 OK: body is not a profgate JSON document"
+		if err.Error() != want {
+			t.Fatalf("err = %q, want %q", err.Error(), want)
 		}
 	})
 	t.Run("a refusal comes back as its envelope", func(t *testing.T) {

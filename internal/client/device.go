@@ -93,7 +93,7 @@ func (i *Issuer) Authorize(ctx context.Context, m Metadata, clientID string, sco
 	}
 	var dr deviceResponse
 	if err := decodeOne(body, &dr); err != nil {
-		return DeviceAuth{}, fmt.Errorf("device: %w", &StatusError{Status: http.StatusOK})
+		return DeviceAuth{}, fmt.Errorf("device: %w", &StatusError{Status: http.StatusOK, Detail: "body is not a device response"})
 	}
 	switch {
 	case dr.DeviceCode == "":

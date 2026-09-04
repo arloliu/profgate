@@ -182,7 +182,6 @@ func TestAuthorizeRefusals(t *testing.T) {
 		{"a response without a user code", `{"device_code":"c","verification_uri":"https://issuer.example/d","expires_in":600}`, "user_code"},
 		{"a response without a verification uri", `{"device_code":"c","user_code":"X","expires_in":600}`, "verification_uri"},
 		{"a response without expires_in", `{"device_code":"c","user_code":"X","verification_uri":"https://issuer.example/d"}`, "expires_in"},
-		{"a response that is not JSON", `<html>no</html>`, "200"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -196,6 +195,19 @@ func TestAuthorizeRefusals(t *testing.T) {
 				t.Fatalf("the error carries the body: %v", err)
 			}
 		})
+	}
+}
+
+func TestAuthorizeRefusesANonJSONBody(t *testing.T) {
+	f := deviceIssuer(t, 5)
+	f.rt.deviceBody = `<html>no</html>`
+	_, err := f.iss.Authorize(context.Background(), f.meta, "profgate-cli", nil, false)
+	const want = "device: HTTP 200 OK: body is not a device response"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if strings.Contains(err.Error(), "<html>") {
+		t.Fatalf("the error carries the body: %v", err)
 	}
 }
 

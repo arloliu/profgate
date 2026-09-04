@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: under `--output json` a gateway refusal writes its envelope to stdout.**
+  Stdout was empty on every failure, so a `jq` pipeline that read a `200` had nothing to read on a `400`;
+  the gateway's own bytes are now copied there, byte for byte and not rebuilt,
+  while the one line stays on stderr and the exit code is unchanged.
+  Only a refusal has an envelope to copy:
+  a transport failure, a response the client could not read as the envelope, and a usage error still leave stdout empty.
+  A script that treated any stdout byte as success now sees a refusal's document there.
 - **BREAKING: `pgo policy get` and `pgo policy delete` refuse the flags only `set` reads.**
   All three subverbs shared one flag set, so `--file`, `--enabled`, `--every`, `--jitter`,
   and the field flags of `collect` parsed on the two that never read them and were dropped without a word;
@@ -73,6 +80,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A response the client cannot read as the gateway's envelope says so.**
+  HTML from an Ingress, an empty body, truncated JSON,
+  and a `2xx` from a JSON route whose body is not one JSON document each printed `HTTP 502 Bad Gateway` alone,
+  a status with no account of why it was a failure;
+  each now prints `HTTP 502 Bad Gateway: body is not a profgate JSON document`,
+  still with no media type, no length, and no byte of the body.
+  A `401` in that state still exits 3 and every other status exits 1.
+- **An error body with no `error` key is no longer read as the envelope.**
+  A JSON document carrying a `code` and nothing else printed `code: ` with an empty message;
+  the client now requires `error` to be present and a string,
+  so such a body is one of the responses above and prints the fixed line.
+- **A response body that fills the client's bound names the bound.**
+  A non-`2xx` whose body exceeded the 1 MiB the client reads was reported as a bare status,
+  losing the one fact that explained it;
+  both read paths now print `body exceeds the 1048576-byte bound this client reads` beside the status.
 - **The chart refuses an authentication mode it can see will not start.**
   `auth.mode: basic` with neither `auth.basic.users` nor `auth.basic.usersFile`,
   and `auth.mode: oidc` with no `auth.oidc.issuer`,
