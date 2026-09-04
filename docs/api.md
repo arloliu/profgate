@@ -963,7 +963,7 @@ naming the inputs the caller has to change and nothing else:
 
 ```json
 {
-  "error": "port \"6062\" is not allowed by this gateway",
+  "error": "port \"6062\" is not allowed by this gateway; GET /v1/limits lists the admitted selections",
   "code": "port_not_allowed",
   "details": [{"field": "port", "code": "not_admitted", "message": "6062 is not an admitted selection"}]
 }

@@ -333,7 +333,7 @@ func TestCreateDoesNotRetryAnAnswerThatArrivedWhole(t *testing.T) {
 		step http.HandlerFunc
 	}{
 		{name: "a 202 whose body is complete and does not decode", step: answerJSON(http.StatusAccepted, `<html>accepted</html>`)},
-		{name: "429 collection_in_progress", step: answerJSON(http.StatusTooManyRequests, `{"error":"the service already has a live collection","code":"collection_in_progress"}`)},
+		{name: "429 collection_in_progress", step: answerJSON(http.StatusTooManyRequests, `{"error":"the service already has a live collection; GET /v1/namespaces/{namespace}/services/{service}/collections lists it","code":"collection_in_progress"}`)},
 		{name: "409 idempotency_mismatch", step: answerJSON(http.StatusConflict, `{"error":"the key names a different request","code":"idempotency_mismatch"}`)},
 		{name: "400 invalid_parameter", step: answerJSON(http.StatusBadRequest, `{"error":"a collection request sets neither enabled nor schedule","code":"invalid_parameter"}`)},
 	}

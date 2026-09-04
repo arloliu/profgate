@@ -194,6 +194,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it now reads `config: /etc/profgate/config.yaml: line 3: unknown key server.opsListn`,
   a value of the wrong type carries its key the same way,
   and a line that names no single key keeps the file and the line.
+- **Four refusals name where the next request goes.**
+  `port_not_allowed`, `no_targets`, `collection_in_progress`, and `pgo_disabled` said only what was refused,
+  leaving a caller to already know the gateway's shape to find the fix.
+  Each message keeps its status, its code, and its details, and now ends with a clause naming the next step:
+  `GET /v1/limits`, the targets route with `explain=true`, the collections route that lists the live one,
+  and the `pgo.enabled` configuration key, in that order.
 
 ## [0.5.0] - 2026-09-03
 

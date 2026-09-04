@@ -339,7 +339,7 @@ func TestCollectGatewayRefusals(t *testing.T) {
 		want   string
 	}{
 		{name: "409 idempotency_mismatch", status: http.StatusConflict, body: `{"error":"the key names a different request","code":"idempotency_mismatch"}`, want: "idempotency_mismatch: the key names a different request"},
-		{name: "429 collection_in_progress", status: http.StatusTooManyRequests, body: `{"error":"the service already has a live collection","code":"collection_in_progress"}`, want: "collection_in_progress: the service already has a live collection"},
+		{name: "429 collection_in_progress", status: http.StatusTooManyRequests, body: `{"error":"the service already has a live collection; GET /v1/namespaces/{namespace}/services/{service}/collections lists it","code":"collection_in_progress"}`, want: "collection_in_progress: the service already has a live collection; GET /v1/namespaces/{namespace}/services/{service}/collections lists it"},
 		{name: "400 invalid_parameter", status: http.StatusBadRequest, body: `{"error":"a collection request sets neither enabled nor schedule","code":"invalid_parameter"}`, want: "invalid_parameter: a collection request sets neither enabled nor schedule"},
 	}
 	for _, tc := range tests {
