@@ -81,6 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each sending the reader to that subverb's own page for what it takes.
   The operator command lines print those same two lines in place of `flag`'s own usage block,
   so `profgate serve --bogus` names the flag and then `usage: profgate serve --config <path>`.
+  The two operator groups print their own line as well:
+  `profgate config` reads `usage: profgate config validate` and `profgate auth` reads `usage: profgate auth hash`,
+  where each printed the bare binary's usage line, which names every command the binary has.
 - **BREAKING: the container memory limit follows `pgo.enabled`.**
   `profgate config validate` printed a merge budget for a gateway that never merges,
   three times what the chart renders for the same file;

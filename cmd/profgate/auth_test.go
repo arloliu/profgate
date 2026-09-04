@@ -129,15 +129,15 @@ func TestRunAuthHash(t *testing.T) {
 	})
 }
 
-// TestRunAuthUsage proves the top-level dispatch reaches auth and that the
-// usage line an operator sees names the subcommand.
+// TestRunAuthUsage proves the top-level dispatch reaches auth,
+// and that a line naming no subcommand prints the group's own grammar, as every other group does.
 func TestRunAuthUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"auth"}, &stdout, &stderr); code != 2 {
 		t.Fatalf("run(auth) code = %d, want 2", code)
 	}
-	if !strings.Contains(stderr.String(), "auth hash") {
-		t.Fatalf("stderr = %q, want the usage line to list auth hash", stderr.String())
+	if want := "usage: profgate auth hash\n"; stderr.String() != want {
+		t.Fatalf("stderr = %q, want exactly %q", stderr.String(), want)
 	}
 	if usage := usageLine(nil); usage != "usage: profgate <version|config validate|auth hash|serve> [flags]" {
 		t.Fatalf("usage = %q", usage)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -84,8 +85,11 @@ func TestProfileLocalRefusals(t *testing.T) {
 }
 
 // formatAsPath is the whole refusal a format name in -o earns, on profile.
-const formatAsPath = "profgate: usage: -o names the file the profile is written to, not a format; " +
-	"--output json is the format flag, and -o ./json writes a file named json\n"
+// The escape it names is the value the caller wrote, so -o yaml is told about ./yaml.
+func formatAsPath(value string) string {
+	return fmt.Sprintf("profgate: usage: -o names the file the profile is written to, not a format; "+
+		"--output json is the format flag, and -o ./%[1]s writes a file named %[1]s\n", value)
+}
 
 func TestProfileRefusesAFormatAsAPath(t *testing.T) {
 	for _, value := range []string{"json", "yaml"} {
@@ -95,8 +99,8 @@ func TestProfileRefusesAFormatAsAPath(t *testing.T) {
 			if code != 2 {
 				t.Fatalf("code = %d, want 2 (stderr=%q)", code, te.stderr.String())
 			}
-			if te.stderr.String() != formatAsPath {
-				t.Fatalf("stderr = %q, want %q", te.stderr.String(), formatAsPath)
+			if want := formatAsPath(value); te.stderr.String() != want {
+				t.Fatalf("stderr = %q, want %q", te.stderr.String(), want)
 			}
 			entries, _ := os.ReadDir(dir)
 			if len(entries) != 0 {

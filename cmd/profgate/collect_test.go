@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -1350,8 +1351,6 @@ func TestDownloadLocalRefusals(t *testing.T) {
 }
 
 func TestDownloadRefusesAFormatAsAPath(t *testing.T) {
-	const want = "profgate: usage: -o names the file the artifact is written to, not a format; " +
-		"--output json is the format flag, and -o ./json writes a file named json\n"
 	for _, value := range []string{"json", "yaml"} {
 		t.Run(value, func(t *testing.T) {
 			te := newTestEnv(t)
@@ -1359,6 +1358,9 @@ func TestDownloadRefusesAFormatAsAPath(t *testing.T) {
 			if code != 2 {
 				t.Fatalf("code = %d, want 2 (stderr=%q)", code, te.stderr.String())
 			}
+			// The escape the refusal names is the value the caller wrote, so -o yaml is told about ./yaml.
+			want := fmt.Sprintf("profgate: usage: -o names the file the artifact is written to, not a format; "+
+				"--output json is the format flag, and -o ./%[1]s writes a file named %[1]s\n", value)
 			if te.stderr.String() != want {
 				t.Fatalf("stderr = %q, want %q", te.stderr.String(), want)
 			}
