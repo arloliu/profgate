@@ -1,6 +1,7 @@
 // The Collection controls' rules, kept apart from the page so a test can run them:
 // whether each control exists, what each of the two requests carries,
-// what an answer to either does to the page, and the armed state that holds one attempt.
+// what an answer to either does to the page, the armed state that holds one attempt,
+// and the progress line a record's detail shows.
 // This module imports nothing and declares plain functions;
 // a Go test evaluates it in an ECMAScript interpreter with the trailing export cut off.
 // It spells no path: app.js hands in the route urls.js built.
@@ -358,4 +359,19 @@ function startNext(state, event) {
   return unchanged;
 }
 
-export { startOffered, cancelOffered, uuidFromBytes, startRequest, cancelRequest, startOutcome, cancelOutcome, retryAfterSeconds, startNext };
+// progressText is the line a record's detail shows for its progress:
+// the running round, the round count, and the two sample tallies.
+// The record carries round as a zero-based index, so the line adds one:
+// a completed three-round Collection reads round 3 of 3, which is what the command line prints for it.
+// A record whose owner has claimed no round yet carries a round count of zero,
+// and has no progress to show rather than a round of nothing, so the line is empty.
+function progressText(progress) {
+  const p = progress || {};
+  const rounds = count(p.rounds);
+  if (rounds <= 0) {
+    return "";
+  }
+  return `round ${count(p.round) + 1} of ${rounds}, samples ok ${count(p.samplesOK)}, failed ${count(p.samplesFailed)}`;
+}
+
+export { startOffered, cancelOffered, uuidFromBytes, startRequest, cancelRequest, startOutcome, cancelOutcome, retryAfterSeconds, startNext, progressText };

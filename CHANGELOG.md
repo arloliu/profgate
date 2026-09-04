@@ -47,9 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING: the round display counts from one.**
   `progress.round` is the zero-based index of the running round,
-  and both printers put it on the line beside the round count,
+  and every surface that showed it put it on the line beside the round count,
   so a completed three-round Collection read `round 2 of 3` and a starting one read `round 0 of 3`.
-  `collection get` and the progress lines `collect --wait` writes now read `round 3 of 3` and `round 1 of 3`.
+  `collection get` and the progress lines `collect --wait` writes now read `round 3 of 3` and `round 1 of 3`,
+  and the console's Collection detail counts the same way, so the two surfaces say one thing about one record.
+  That detail line now reads `-` until a round has been claimed,
+  where it read `round 0 of 0, samples ok 0, failed 0`, the shape the command line already leaves out.
   The document is unchanged: under `--output json` the record still carries the index the gateway stored.
 - **BREAKING: under `--output json` a gateway refusal writes its envelope to stdout.**
   Stdout was empty on every failure, so a `jq` pipeline that read a `200` had nothing to read on a `400`;

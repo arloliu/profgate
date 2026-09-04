@@ -24,6 +24,7 @@ var collectionModelFunctions = []string{
 	"cancelOutcome",
 	"retryAfterSeconds",
 	"startNext",
+	"progressText",
 }
 
 // abandonMessage is what the page says when an attempt no answer ever classified is dropped.
@@ -542,6 +543,42 @@ func TestCollectionModelRetryAfterSeconds(t *testing.T) {
 			got := callModel(t, vm, "retryAfterSeconds", tc.header)
 			if !sameJSON(t, got.Result, tc.want) {
 				t.Errorf("retryAfterSeconds(%v) = %s, want %d", tc.header, got.Result, tc.want)
+			}
+		})
+	}
+}
+
+// TestCollectionModelProgressText proves the detail's progress line counts rounds the way a person does,
+// which is the way the command line prints the same record.
+// The record stores the running round as a zero-based index,
+// so a completed three-round Collection carries two and has to read three of three.
+func TestCollectionModelProgressText(t *testing.T) {
+	cases := []struct {
+		name     string
+		progress any
+		want     string
+	}{
+		{"the first round of three", map[string]any{"round": 0, "rounds": 3, "samplesOK": 2, "samplesFailed": 0},
+			"round 1 of 3, samples ok 2, failed 0"},
+		{"the second round of three", map[string]any{"round": 1, "rounds": 3, "samplesOK": 4, "samplesFailed": 1},
+			"round 2 of 3, samples ok 4, failed 1"},
+		{"a completed three-round Collection", map[string]any{"round": 2, "rounds": 3, "samplesOK": 9, "samplesFailed": 0},
+			"round 3 of 3, samples ok 9, failed 0"},
+		{"one round", map[string]any{"round": 0, "rounds": 1, "samplesOK": 1, "samplesFailed": 0},
+			"round 1 of 1, samples ok 1, failed 0"},
+		{"a field the record left out counts as zero", map[string]any{"rounds": 2}, "round 1 of 2, samples ok 0, failed 0"},
+		{"no round claimed yet", map[string]any{"round": 0, "rounds": 0, "samplesOK": 0, "samplesFailed": 0}, ""},
+		{"no progress at all", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := loadCollectionModel(t)
+			got := callModel(t, vm, "progressText", tc.progress)
+			if !sameJSON(t, got.Result, tc.want) {
+				t.Errorf("progressText(%v) = %s, want %q", tc.progress, got.Result, tc.want)
+			}
+			if !got.Unchanged {
+				t.Errorf("progressText(%v) changed the record it was handed", tc.progress)
 			}
 		})
 	}
