@@ -51,6 +51,13 @@ const (
 	versionGrammar        = "version"
 )
 
+// configGrammar and authGrammar are the two operator groups' lines,
+// each derived from the one child beside it,
+// so a group's page and the usage error its own dispatch prints carry the same text.
+func configGrammar() string { return groupGrammar([]string{"config"}, []string{"validate"}) }
+
+func authGrammar() string { return groupGrammar([]string{"auth"}, []string{"hash"}) }
+
 // operatorHelpNodes is the operator half of the tree, which the verb table does not carry.
 // Every one of these command lines takes no global flag, so no page of theirs prints one:
 // the dispatcher hands an operator name to its own function before the global flag set exists.
@@ -67,7 +74,7 @@ func operatorHelpNodes() []helpNode {
 		{path: []string{"version"}, grammar: versionGrammar},
 		{
 			path:     []string{"config"},
-			grammar:  groupGrammar([]string{"config"}, []string{"validate"}),
+			grammar:  configGrammar(),
 			children: []string{"validate"},
 			// The union of the group's leaves, which is what the page walk steps over while standing here.
 			valueFlags: takesConfig,
@@ -78,7 +85,7 @@ func operatorHelpNodes() []helpNode {
 		},
 		{
 			path:    []string{"auth"},
-			grammar: groupGrammar([]string{"auth"}, []string{"hash"}), children: []string{"hash"},
+			grammar: authGrammar(), children: []string{"hash"},
 		},
 		{path: []string{"auth", "hash"}, grammar: "auth hash"},
 	}

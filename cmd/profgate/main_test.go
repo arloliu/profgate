@@ -74,6 +74,14 @@ func TestRun(t *testing.T) {
 			wantStderrExact: "profgate: flag provided but not defined: -bogus\n" +
 				"usage: profgate serve --config <path>\n",
 		},
+		// A group given no subverb prints its own grammar line, as every client group does,
+		// and not the bare binary's usage line, which names every command the binary has.
+		{
+			name:            "config names its subcommand",
+			args:            []string{"config"},
+			wantCode:        2,
+			wantStderrExact: "usage: profgate config validate\n",
+		},
 		{
 			name:     "config validate refuses an undefined flag",
 			args:     []string{"config", "validate", "--bogus"},

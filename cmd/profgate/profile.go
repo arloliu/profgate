@@ -82,14 +82,14 @@ func (f profileFlags) query() (url.Values, error) {
 // which is never what the caller meant: --output is the flag that names a format.
 // what is what the file holds, a profile or an artifact.
 // The two values are all this refuses, so a caller who wants a file with one of those names writes -o ./json,
-// which is why the message names that spelling.
+// and the message names the escape for the value it was given rather than a file the caller never asked for.
 func refuseFormatAsPath(output, what string) error {
 	if output != "json" && output != "yaml" {
 		return nil
 	}
 
 	return fmt.Errorf("%w: -o names the file the %s is written to, not a format; "+
-		"--output json is the format flag, and -o ./json writes a file named json", client.ErrUsage, what)
+		"--output json is the format flag, and -o ./%[3]s writes a file named %[3]s", client.ErrUsage, what, output)
 }
 
 // target is the three headers the gateway adds to a forwarded profile,

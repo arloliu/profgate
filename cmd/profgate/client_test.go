@@ -204,6 +204,25 @@ func TestDispatchGrammar(t *testing.T) {
 	}
 }
 
+// TestDispatchKeepsTheHintOffALineThatDefinesO proves the hint is suppressed by the command line's own flags.
+// profile registers -o for the file it writes,
+// so a line that spells -o correctly and mistypes another flag is told about the mistyped flag alone,
+// and never that -o is not a flag.
+func TestDispatchKeepsTheHintOffALineThatDefinesO(t *testing.T) {
+	te := newTestEnv(t)
+	args := []string{"profile", "payments/checkout", "cpu", "-o", "out.pprof", "--bogus"}
+	if code := dispatch(context.Background(), te.env, clientVerbs(), args); code != 2 {
+		t.Fatalf("dispatch(%v) = %d, want 2 (stderr=%q)", args, code, te.stderr.String())
+	}
+	got := te.stderr.String()
+	if !strings.Contains(got, "profgate: flag provided but not defined: -bogus\n") {
+		t.Fatalf("stderr = %q, want it to name -bogus", got)
+	}
+	if strings.Contains(got, "-o is not a flag") {
+		t.Fatalf("stderr = %q, want no -o hint: this command line registers -o", got)
+	}
+}
+
 // TestDispatchEveryVerbParses drives each registered client verb with its declared positional count and no gateway,
 // which reaches the verb's own code and never a usage error.
 func TestDispatchEveryVerbParses(t *testing.T) {

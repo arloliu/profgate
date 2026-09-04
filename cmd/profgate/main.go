@@ -66,7 +66,7 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	if len(args) == 0 || args[0] != "validate" {
-		_, _ = fmt.Fprintln(stderr, usageLine(clientVerbs()))
+		_, _ = fmt.Fprintf(stderr, "usage: profgate %s\n", configGrammar())
 		return 2
 	}
 
