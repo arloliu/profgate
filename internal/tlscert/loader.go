@@ -89,6 +89,7 @@ func New(opts Options) (*Loader, error) {
 // It carries no Certificates: a fixed certificate is one that never rotates,
 // and GetCertificate is what makes the rotation reach a handshake.
 func (l *Loader) TLSConfig() *tls.Config {
+	// #nosec G402 -- parseMinVersion returns TLS 1.2 or TLS 1.3 and nothing below either.
 	return &tls.Config{
 		GetCertificate: l.GetCertificate,
 		MinVersion:     l.minVersion,
