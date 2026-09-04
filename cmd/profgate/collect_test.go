@@ -1181,6 +1181,27 @@ func TestDownloadLocalRefusals(t *testing.T) {
 	}
 }
 
+func TestDownloadRefusesAFormatAsAPath(t *testing.T) {
+	const want = "profgate: usage: -o names the file the artifact is written to, not a format; " +
+		"--output json is the format flag, and -o ./json writes a file named json\n"
+	for _, value := range []string{"json", "yaml"} {
+		t.Run(value, func(t *testing.T) {
+			te := newTestEnv(t)
+			code, dir := runDownload(t, te, refusingTransport(t), "7h2k9m4p6r8t0v1w3x5y", "-o", value)
+			if code != 2 {
+				t.Fatalf("code = %d, want 2 (stderr=%q)", code, te.stderr.String())
+			}
+			if te.stderr.String() != want {
+				t.Fatalf("stderr = %q, want %q", te.stderr.String(), want)
+			}
+			entries, _ := os.ReadDir(dir)
+			if len(entries) != 0 {
+				t.Fatalf("the working directory holds %d entries, want none", len(entries))
+			}
+		})
+	}
+}
+
 func TestDownloadCancelledMidBodyRemovesThePartialFile(t *testing.T) {
 	te := newTestEnv(t)
 	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {

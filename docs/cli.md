@@ -281,6 +281,10 @@ a `--seconds` that is not a positive integer, and both port flags together.
 Without `-o`, the profile is written to `<namespace>-<service>-<profile>-<timestamp>.pprof` in the working directory,
 `payments-checkout-cpu-20260828T093012Z.pprof` for example.
 A binary body never reaches a terminal unless `-o -` asks for it.
+`-o` names a file and `--output` names the format,
+so `-o json` and `-o yaml` are refused before a request is sent:
+either would write a pprof file called `json`, which is what neither spelling means.
+`--output json` is the format flag, and `-o ./json` writes a file with that name.
 The file is opened before the request is sent, so an unwritable path is refused before a profile is collected,
 and a request that fails leaves no partial file behind.
 Which replica answered is printed on stderr from the response's target headers,
@@ -356,6 +360,9 @@ because it means the record is not claimable yet;
 to `<id>.pprof` in the working directory without `-o`, or to stdout under `-o -`,
 and prints the Collection and the version it profiled on stderr.
 `410 artifact_gone` and `409 collection_not_completed` print their envelope and exit 1, with no file left behind.
+Here too `-o` names a file and `--output` names the format,
+so `-o json` and `-o yaml` are refused before a request is sent,
+and `-o ./json` writes a file called `json`.
 
 ### `pgo policy`
 

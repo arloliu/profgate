@@ -77,9 +77,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Both branches now hold it to the one grammar, a whole number of `Mi` or `Gi`,
   so a values file carrying `512`, `1500M`, or `0.5Gi` fails rendering where it rendered before.
   An accepted value renders exactly what it rendered.
+- **BREAKING: `profile` and `download` refuse `-o json` and `-o yaml`.**
+  `-o` names the file the bytes are written to,
+  so a caller reaching for kubectl's output flag collected a profile,
+  wrote it to a pprof file called `json`, and was told that file had been written.
+  Both verbs now refuse those two values before a request is sent, naming `--output` as the format flag.
+  Nothing else is refused: `-o ./json` still writes a file called `json`.
 
 ### Fixed
 
+- **`-n` and `-o` name the flag this binary spells in full.**
+  Either of kubectl's two short flags, on a command line that defines neither,
+  failed with `flag provided but not defined` and nothing else;
+  a line naming `--namespace`, or `--output`, now stands between that cause and the usage line.
 - **A response the client cannot read as the gateway's envelope says so.**
   HTML from an Ingress, an empty body, truncated JSON,
   and a `2xx` from a JSON route whose body is not one JSON document each printed `HTTP 502 Bad Gateway` alone,

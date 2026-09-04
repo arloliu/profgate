@@ -219,18 +219,18 @@ func dispatch(ctx context.Context, env *cmdEnv, verbs []verb, args []string) int
 			printHelp(env.stdout, verbs, nodes[0])
 			return exitOK
 		}
-		return usageError(env, verbs, err)
+		return usageError(env, verbs, reflexHint(fs, leadingFlags(args)), err)
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		return usageError(env, verbs, nil)
+		return usageError(env, verbs, "", nil)
 	}
 	if isOperatorVerb(rest[0]) {
-		return usageError(env, verbs, fmt.Errorf("%s takes no global flags", rest[0]))
+		return usageError(env, verbs, "", fmt.Errorf("%s takes no global flags", rest[0]))
 	}
 	i := slices.IndexFunc(verbs, func(v verb) bool { return v.name == rest[0] })
 	if i < 0 {
-		return usageError(env, verbs, fmt.Errorf("unknown verb %q", rest[0]))
+		return usageError(env, verbs, "", fmt.Errorf("unknown verb %q", rest[0]))
 	}
 	v := verbs[i]
 	in, l, err := v.parse(g, rest[1:])
@@ -239,7 +239,8 @@ func dispatch(ctx context.Context, env *cmdEnv, verbs []verb, args []string) int
 			printHelp(env.stdout, verbs, *findNode(nodes, leafPath(v, l)))
 			return exitOK
 		}
-		_, _ = fmt.Fprintf(env.stderr, "profgate: %v\nusage: profgate %s [flags]\n", err, v.usageGrammar(l))
+		hint := reflexHint(l.flagsOver(v.name, g), rest[1:])
+		_, _ = fmt.Fprintf(env.stderr, "profgate: %v\n%susage: profgate %s [flags]\n", err, hint, v.usageGrammar(l))
 		return 2
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -264,13 +265,59 @@ func runOperator(args []string, env *cmdEnv) int {
 	}
 }
 
-// usageError prints the cause when there is one, then the usage line, and returns 2.
-func usageError(env *cmdEnv, verbs []verb, err error) int {
+// usageError prints the cause when there is one, then the hint the arguments earned, then the usage line, and returns 2.
+func usageError(env *cmdEnv, verbs []verb, hint string, err error) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(env.stderr, "profgate: %v\n", err)
 	}
+	_, _ = fmt.Fprint(env.stderr, hint)
 	_, _ = fmt.Fprintln(env.stderr, usageLine(verbs))
 	return 2
+}
+
+// reflexHint is the line an argument spelled the way kubectl spells it earns:
+// -n is kubectl's namespace flag and -o its output format flag,
+// and this binary spells the two --namespace and --output.
+// It reads the arguments themselves rather than what flag said about them,
+// so the line is this client's own wording,
+// and it stops where flag stops, at a bare "--".
+// fs is what the command line parses over,
+// so a -o the command line does define — the file profile and download write — earns no hint.
+func reflexHint(fs *flag.FlagSet, args []string) string {
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		switch name := flagName(arg); name {
+		case "n", "o":
+			if fs.Lookup(name) != nil {
+				continue
+			}
+			if name == "n" {
+				return "profgate: -n is not a flag; the namespace flag is --namespace\n"
+			}
+			return "profgate: -o is not a flag; the output format flag is --output\n"
+		}
+	}
+	return ""
+}
+
+// leadingFlags is the run of arguments the global flag set reads:
+// everything up to the first word that is neither a flag nor a value of one, which is where the verb begins.
+// The hint about a global flag is drawn from that run alone,
+// because a -o after the verb belongs to the verb and is judged against the verb's own flags.
+func leadingFlags(args []string) []string {
+	values := valueGlobals()
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") || arg == "--" {
+			return args[:i]
+		}
+		if !strings.Contains(arg, "=") && values[flagName(arg)] {
+			i++
+		}
+	}
+	return args
 }
 
 // subverbs is what the verb takes in place of a leaf's words, in the order the leaves are declared.
@@ -376,6 +423,18 @@ func (l leaf) flagSet(name string, g *globals) (*flag.FlagSet, *globals) {
 		l.flags(fs)
 	}
 	return fs, &merged
+}
+
+// flagsOver is the flag set the command line parses over, built for a reader rather than for a parse.
+// A nil leaf is a line that matched none, whose flags are the global ones alone.
+func (l *leaf) flagsOver(name string, g *globals) *flag.FlagSet {
+	var matched leaf
+	if l != nil {
+		matched = *l
+	}
+	fs, _ := matched.flagSet(name, g)
+
+	return fs
 }
 
 func pluralPositionals(n int) string {
