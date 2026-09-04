@@ -1115,8 +1115,8 @@ func TestLogout(t *testing.T) {
 		if _, ok := f.entry(); ok {
 			t.Fatal("the entry remains")
 		}
-		if f.stderr.Len() != 0 {
-			t.Fatalf("stderr = %q, want nothing", f.stderr.String())
+		if f.stderr.String() != "logged out of context prod\n" {
+			t.Fatalf("stderr = %q, want the line saying what was logged out of and no warning", f.stderr.String())
 		}
 		f.assertNoSecretPrinted()
 	})
@@ -1186,8 +1186,8 @@ func TestLogout(t *testing.T) {
 		if err := f.logout(); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(f.stdout.String(), "nothing") || !strings.Contains(f.stdout.String(), "prod") {
-			t.Fatalf("stdout = %q", f.stdout.String())
+		if !strings.Contains(f.stderr.String(), "nothing") || !strings.Contains(f.stderr.String(), "prod") {
+			t.Fatalf("stderr = %q", f.stderr.String())
 		}
 		if len(f.events) != 0 {
 			t.Fatalf("events = %v, want none", f.events)
@@ -1202,4 +1202,68 @@ func TestLoginWritersDefault(t *testing.T) {
 	if _, err := Login(context.Background(), in); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestLogoutSpeaks pins logout's two lines: both name what was acted on,
+// both go to stderr, and neither reaches stdout.
+func TestLogoutSpeaks(t *testing.T) {
+	t.Run("a deleted entry says which context it logged out of", func(t *testing.T) {
+		f := newLogin(t)
+		f.rt.noRevoke = true
+		if err := f.store.Write("prod", f.cached()); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.logout(); err != nil {
+			t.Fatal(err)
+		}
+		if f.stderr.String() != "logged out of context prod\n" {
+			t.Fatalf("stderr = %q, want the line naming the context", f.stderr.String())
+		}
+		if f.stdout.Len() != 0 {
+			t.Fatalf("stdout = %q, want nothing", f.stdout.String())
+		}
+	})
+
+	t.Run("no entry says nothing was cached, on stderr", func(t *testing.T) {
+		f := newLogin(t)
+		if err := f.logout(); err != nil {
+			t.Fatal(err)
+		}
+		if f.stderr.String() != "nothing is cached for context prod\n" {
+			t.Fatalf("stderr = %q, want the notice that nothing was cached", f.stderr.String())
+		}
+		if f.stdout.Len() != 0 {
+			t.Fatalf("stdout = %q, want nothing", f.stdout.String())
+		}
+	})
+}
+
+// TestLoginNamesContextUse pins the line a login under a context that is not
+// the selected one prints, and that a login under the selected one prints none.
+func TestLoginNamesContextUse(t *testing.T) {
+	const want = "context prod is not the selected context; select it with profgate context use prod\n"
+
+	t.Run("a context that is not selected names the command that selects it", func(t *testing.T) {
+		f := newLogin(t)
+		f.file = &File{Contexts: map[string]Context{"prod": f.settings.Context}}
+		if _, err := f.login(); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(f.stderr.String(), want) {
+			t.Fatalf("stderr = %q, want it to carry %q", f.stderr.String(), want)
+		}
+		if f.saved == nil || f.saved.CurrentContext != "" {
+			t.Fatalf("saved file = %+v, want currentContext untouched", f.saved)
+		}
+	})
+
+	t.Run("the selected context names nothing", func(t *testing.T) {
+		f := newLogin(t)
+		if _, err := f.login(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(f.stderr.String(), "context use") {
+			t.Fatalf("stderr = %q, want no line about context use", f.stderr.String())
+		}
+	})
 }

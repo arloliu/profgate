@@ -658,8 +658,12 @@ func TestDeleteContext(t *testing.T) {
 	t.Run("takes the lock, deletes the entry, then saves, and releases", func(t *testing.T) {
 		d := newDeleteFixture(t)
 		d.writeEntry(t)
-		if err := DeleteContext(ctx, d.f, "prod", d.store, d.save); err != nil {
+		cleared, err := DeleteContext(ctx, d.f, "prod", d.store, d.save)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if !cleared {
+			t.Fatal("cleared = false, want true: prod was the selected context")
 		}
 		if d.saves != 1 || !d.lockHeld || !d.entryGone {
 			t.Fatalf("saves = %d, lock held at save = %v, entry gone at save = %v; want one save under the lock after the deletion", d.saves, d.lockHeld, d.entryGone)
@@ -680,8 +684,12 @@ func TestDeleteContext(t *testing.T) {
 
 	t.Run("leaves currentContext alone when it names another entry", func(t *testing.T) {
 		d := newDeleteFixture(t)
-		if err := DeleteContext(ctx, d.f, "dev", d.store, d.save); err != nil {
+		cleared, err := DeleteContext(ctx, d.f, "dev", d.store, d.save)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if cleared {
+			t.Fatal("cleared = true, want false: prod is still selected")
 		}
 		if d.f.CurrentContext != "prod" {
 			t.Fatalf("currentContext = %q, want prod", d.f.CurrentContext)
@@ -690,7 +698,7 @@ func TestDeleteContext(t *testing.T) {
 
 	t.Run("succeeds with no cache entry", func(t *testing.T) {
 		d := newDeleteFixture(t)
-		if err := DeleteContext(ctx, d.f, "prod", d.store, d.save); err != nil {
+		if _, err := DeleteContext(ctx, d.f, "prod", d.store, d.save); err != nil {
 			t.Fatal(err)
 		}
 		if d.saves != 1 {
@@ -705,7 +713,7 @@ func TestDeleteContext(t *testing.T) {
 		if err := os.WriteFile(lock, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		err := DeleteContext(ctx, d.f, "prod", d.store, d.save)
+		_, err := DeleteContext(ctx, d.f, "prod", d.store, d.save)
 		if err == nil || !strings.Contains(err.Error(), lock) {
 			t.Fatalf("err = %v, want one naming %s", err, lock)
 		}
@@ -727,7 +735,7 @@ func TestDeleteContext(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(entry, "child"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		err := DeleteContext(ctx, d.f, "prod", d.store, d.save)
+		_, err := DeleteContext(ctx, d.f, "prod", d.store, d.save)
 		if err == nil || !strings.Contains(err.Error(), entry) {
 			t.Fatalf("err = %v, want one naming %s", err, entry)
 		}
@@ -746,7 +754,7 @@ func TestDeleteContext(t *testing.T) {
 		d := newDeleteFixture(t)
 		d.writeEntry(t)
 		d.saveErr = errors.New("write /home/alice/.config/profgate/config.yaml: disk full")
-		err := DeleteContext(ctx, d.f, "prod", d.store, d.save)
+		_, err := DeleteContext(ctx, d.f, "prod", d.store, d.save)
 		if err == nil || !strings.Contains(err.Error(), "/home/alice/.config/profgate/config.yaml") {
 			t.Fatalf("err = %v, want one naming the context file", err)
 		}
@@ -759,7 +767,7 @@ func TestDeleteContext(t *testing.T) {
 		d.saveErr = nil
 		// The caller reloads the file before running again; the entry is still in it because the save failed.
 		d.f = &File{CurrentContext: "prod", Contexts: map[string]Context{"prod": {Server: "https://a.example"}, "dev": {Server: "https://b.example"}}}
-		if err := DeleteContext(ctx, d.f, "prod", d.store, d.save); err != nil {
+		if _, err := DeleteContext(ctx, d.f, "prod", d.store, d.save); err != nil {
 			t.Fatalf("second run: %v", err)
 		}
 		if _, ok := d.f.Contexts["prod"]; ok || d.f.CurrentContext != "" {
@@ -769,7 +777,7 @@ func TestDeleteContext(t *testing.T) {
 
 	t.Run("a name with no entry is a usage error before the lock", func(t *testing.T) {
 		d := newDeleteFixture(t)
-		err := DeleteContext(ctx, d.f, "staging", d.store, d.save)
+		_, err := DeleteContext(ctx, d.f, "staging", d.store, d.save)
 		if !errors.Is(err, ErrUsage) || !strings.Contains(err.Error(), "staging") {
 			t.Fatalf("err = %v, want a usage error naming staging", err)
 		}
@@ -783,8 +791,22 @@ func TestDeleteContext(t *testing.T) {
 
 	t.Run("a nil file is a usage error", func(t *testing.T) {
 		d := newDeleteFixture(t)
-		if err := DeleteContext(ctx, nil, "prod", d.store, d.save); !errors.Is(err, ErrUsage) {
+		if _, err := DeleteContext(ctx, nil, "prod", d.store, d.save); !errors.Is(err, ErrUsage) {
 			t.Fatalf("err = %v, want a usage error", err)
 		}
 	})
+}
+
+// TestContextsFileKeyRefusal pins what a misspelled key in the contexts file is refused with:
+// the file, the line, and the key, and no name from this program's source.
+func TestContextsFileKeyRefusal(t *testing.T) {
+	path := writeYAML(t, t.TempDir(), "contexts:\n  prod:\n    server: https://a.example\nsrever: 1\n")
+	_, err := LoadFile(path)
+	if err == nil {
+		t.Fatal("LoadFile = nil error, want one naming the key")
+	}
+	want := path + ": line 4: srever is not a contexts-file key"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
 }

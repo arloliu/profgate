@@ -60,7 +60,8 @@ profgate context use prod
 
 The first command writes the context `prod` into the contexts file with the server,
 and records the authentication settings the gateway reported;
-the second makes it the current context, so later commands need no `--context` and no `--server`.
+it selects nothing, and says so on stderr, naming the second command.
+The second makes `prod` the current context, so later commands need no `--context` and no `--server`.
 `login --server <url>` with no context logs in as well, but writes no contexts file:
 the token is cached under an entry named after the gateway's origin, and each later command must name `--server` again.
 
@@ -183,13 +184,16 @@ profgate context delete <name>   # removes the entry and its token cache file
 
 `context show` prints the file's entry and never opens the token cache,
 so no token can reach the output.
+`context delete` says `deleted context <name>` on stderr,
+and a second line saying no context is selected when the name it removed was the selected one.
 
 ## The verbs
 
 Every verb prints the gateway's answer.
 `--output table` (the default) renders it:
 a listing as columns under a header line,
-and a single record as `key: value` lines.
+and a single record as two columns, the key and the value,
+which is a listing without its header line.
 Columns are space-padded when stdout is a terminal and tab-separated when it is not,
 so a pipe into `cut` behaves.
 An empty list prints its header and nothing else,
@@ -468,6 +472,8 @@ its ID token lives five minutes by default, and the client renews it silently fo
 
 `profgate logout` revokes the refresh token at the issuer when discovery publishes a revocation endpoint,
 then deletes the entry.
+It says which context or gateway it logged out of, or that nothing was cached for it,
+on stderr either way, because it fetches no document.
 A failed revocation is a warning and the deletion still happens;
 a failed deletion exits 1 and names the file that still holds the credential.
 Logout touches nothing on the gateway: a bearer token carries no server-side session to end.

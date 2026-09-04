@@ -343,8 +343,11 @@ func TestLogoutVerb(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
 	}
-	if !strings.Contains(te.stdout.String(), "nothing is cached for https://g.example:443") {
-		t.Fatalf("stdout = %q, want the notice that nothing was cached", te.stdout.String())
+	if !strings.Contains(te.stderr.String(), "nothing is cached for https://g.example:443") {
+		t.Fatalf("stderr = %q, want the notice that nothing was cached", te.stderr.String())
+	}
+	if te.stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want nothing", te.stdout.String())
 	}
 }
 

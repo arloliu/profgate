@@ -109,6 +109,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrote it to a pprof file called `json`, and was told that file had been written.
   Both verbs now refuse those two values before a request is sent, naming `--output` as the format flag.
   Nothing else is refused: `-o ./json` still writes a file called `json`.
+- **BREAKING: `logout` writes its two lines to stderr.**
+  Success printed nothing at all, so a logout that deleted a credential looked the same as one that did nothing,
+  and the notice that nothing was cached went to stdout, where a composed English sentence does not belong.
+  Both lines are now on stderr: `logged out of <context or gateway>` where an entry was deleted,
+  and `nothing is cached for <context or gateway>` where none was there.
+  A script reading `logout`'s stdout for that notice now reads nothing.
 - **BREAKING: `collect --file` replaces `collect --body`.**
   `collect` and `pgo policy set` named the same concept two ways: one JSON file sent as the whole request,
   in place of the field flags.
@@ -118,6 +124,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`login --context <name>` names the command that selects the context.**
+  `--context` says which context one command speaks through and selects nothing,
+  so a first login wrote the context and left every later command resolving the old one, without a word.
+  A login that recorded a context which is not the selected one now prints on stderr
+  `context <name> is not the selected context; select it with profgate context use <name>`.
+  Nothing is selected automatically: selecting would change what every later command does without being asked.
+- **`context delete` says what it deleted and what the deletion took with it.**
+  A successful delete printed nothing, so removing the selected context left no context selected and said so nowhere.
+  It now prints `deleted context <name>` on stderr,
+  and `no context is selected; select one with profgate context use` below it when that name was the selected one.
+- **The plaintext warning follows the credential it describes.**
+  Against a loopback `http://` gateway the warning was printed before the credential was resolved,
+  so a command with an expired cached token and no refresh token announced a credential it never sent.
+  The warning now prints after the credential is attached.
+  A non-loopback plaintext URL is still refused before either happens.
+- **A misspelled key in the contexts file is named without a Go type.**
+  `field srever not found in type client.File` told the reader about this program's source rather than their file;
+  the refusal now reads `<path>: line 4: srever is not a contexts-file key`.
+  An entry the rewrite does not recognize keeps the library's wording, after the file name.
+- **The client guide describes the rendering it has.**
+  It said a single record prints as `key: value` lines,
+  where the renderer writes the key and the value as two columns, tab-separated in a pipe and padded on a terminal,
+  which is a listing without its header line.
 - **`-n` and `-o` name the flag this binary spells in full.**
   Either of kubectl's two short flags, on a command line that defines neither,
   failed with `flag provided but not defined` and nothing else;
