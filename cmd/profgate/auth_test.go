@@ -107,6 +107,26 @@ func TestRunAuthHash(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("hash answers help", func(t *testing.T) {
+		want := "usage: profgate auth hash"
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"auth", "hash", "--help"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("run(auth hash --help) code = %d, want 0 (stderr=%q)", code, stderr.String())
+		}
+		if got := firstLine(stdout.String()); got != want {
+			t.Fatalf("usage line = %q, want %q", got, want)
+		}
+		// runAuth answers on its own, against a stdin that fails the test when it is read:
+		// the password prompt is inside the command help replaces.
+		var direct bytes.Buffer
+		if code := runAuth([]string{"hash", "--help"}, unreadableStdin{t}, &direct, &stderr); code != 0 {
+			t.Fatalf("runAuth(hash --help) code = %d, want 0 (stderr=%q)", code, stderr.String())
+		}
+		if got := firstLine(direct.String()); got != want {
+			t.Fatalf("usage line = %q, want %q", got, want)
+		}
+	})
 }
 
 // TestRunAuthUsage proves the top-level dispatch reaches auth and that the

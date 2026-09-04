@@ -30,21 +30,24 @@ const (
 func collectVerb() verb {
 	var f collectFlags
 	return verb{
-		name: "collect", positionals: 1,
-		grammar: "collect <ns>/<svc> [--duration <d>] [--rounds <n>] [--round-interval <d>] [--replicas all|<n>] [--max-parallel <n>] [--target-version <v>] [--retention <d>] [--body <path>] [--wait] [--poll-interval <d>] [--wait-timeout <d>]",
-		flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&f.duration, "duration", "", "how long each sample runs")
-			fs.StringVar(&f.rounds, "rounds", "", "how many rounds to sample")
-			fs.StringVar(&f.roundInterval, "round-interval", "", "the pause between rounds")
-			fs.StringVar(&f.replicas, "replicas", "", "how many Pods each round samples: all or a count")
-			fs.StringVar(&f.maxParallel, "max-parallel", "", "how many Pods are sampled at once")
-			fs.StringVar(&f.targetVersion, "target-version", "", "the binary version to profile")
-			fs.StringVar(&f.retention, "retention", "", "how long the merged profile is kept")
-			fs.StringVar(&f.body, "body", "", "send this JSON file as the request body instead of the field flags")
-			fs.BoolVar(&f.wait, "wait", false, "wait for the Collection to finish")
-			fs.DurationVar(&f.pollInterval, "poll-interval", defaultPollInterval, "how often --wait reads the record, 1s to 1m")
-			fs.DurationVar(&f.waitTimeout, "wait-timeout", defaultWaitTimeout, "how long --wait keeps reading, 1m to 24h")
-		},
+		name: "collect",
+		leaves: []leaf{{
+			grammar:     "collect <ns>/<svc> [--duration <d>] [--rounds <n>] [--round-interval <d>] [--replicas all|<n>] [--max-parallel <n>] [--target-version <v>] [--retention <d>] [--body <path>] [--wait] [--poll-interval <d>] [--wait-timeout <d>]",
+			positionals: 1,
+			flags: func(fs *flag.FlagSet) {
+				fs.StringVar(&f.duration, "duration", "", "how long each sample runs")
+				fs.StringVar(&f.rounds, "rounds", "", "how many rounds to sample")
+				fs.StringVar(&f.roundInterval, "round-interval", "", "the pause between rounds")
+				fs.StringVar(&f.replicas, "replicas", "", "how many Pods each round samples: all or a count")
+				fs.StringVar(&f.maxParallel, "max-parallel", "", "how many Pods are sampled at once")
+				fs.StringVar(&f.targetVersion, "target-version", "", "the binary version to profile")
+				fs.StringVar(&f.retention, "retention", "", "how long the merged profile is kept")
+				fs.StringVar(&f.body, "body", "", "send this JSON file as the request body instead of the field flags")
+				fs.BoolVar(&f.wait, "wait", false, "wait for the Collection to finish")
+				fs.DurationVar(&f.pollInterval, "poll-interval", defaultPollInterval, "how often --wait reads the record, 1s to 1m")
+				fs.DurationVar(&f.waitTimeout, "wait-timeout", defaultWaitTimeout, "how long --wait keeps reading, 1m to 24h")
+			},
+		}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			if err := env.collect(ctx, in, f); err != nil {
 				return fail(env, err)
@@ -268,7 +271,7 @@ func (env *cmdEnv) wait(ctx context.Context, gw *client.Client, s client.Setting
 // The plural takes a Service; an identifier in its place fails the address grammar before any request.
 func collectionsVerb() verb {
 	return verb{
-		name: "collections", positionals: 1, grammar: "collections <ns>/<svc>",
+		name: "collections", leaves: []leaf{{grammar: "collections <ns>/<svc>", positionals: 1}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			return env.read(ctx, in, reading{
 				build: func(s client.Settings, in *invocation) (client.Request, error) {
@@ -300,7 +303,11 @@ func collectionsVerb() verb {
 // a Service address included, is a usage error before any request.
 func collectionVerb() verb {
 	return verb{
-		name: "collection", subverbs: []string{"get", "cancel"}, positionals: 1, grammar: "collection get|cancel <id>",
+		name: "collection",
+		leaves: []leaf{
+			{words: "get", grammar: "collection get <id>", positionals: 1},
+			{words: "cancel", grammar: "collection cancel <id>", positionals: 1},
+		},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			if in.subverb == "cancel" {
 				if err := env.cancel(ctx, in); err != nil {
@@ -377,10 +384,13 @@ func renderCollection(env *cmdEnv, body []byte) error {
 func downloadVerb() verb {
 	var output string
 	return verb{
-		name: "download", positionals: 1, grammar: "download <id> [-o <path>]",
-		flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&output, "o", "", "write the artifact here; - writes it to stdout")
-		},
+		name: "download",
+		leaves: []leaf{{
+			grammar: "download <id> [-o <path>]", positionals: 1,
+			flags: func(fs *flag.FlagSet) {
+				fs.StringVar(&output, "o", "", "write the artifact here; - writes it to stdout")
+			},
+		}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			if err := env.download(ctx, in, output); err != nil {
 				return fail(env, err)

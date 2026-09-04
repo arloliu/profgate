@@ -25,17 +25,20 @@ import (
 func profileVerb() verb {
 	var f profileFlags
 	return verb{
-		name: "profile", positionals: 2,
-		grammar: "profile <ns>/<svc> <profile> [--seconds <n>] [--pod <name>] [--version <v>] [--port <n> | --port-name <name>] [-o <path>] [--open]",
-		flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&f.seconds, "seconds", "", "seconds, for cpu and trace")
-			fs.StringVar(&f.pod, "pod", "", "pin the exact Pod to profile")
-			fs.StringVar(&f.version, "version", "", "keep only Pods whose version label equals this value")
-			fs.StringVar(&f.port, "port", "", "the pprof port number, in place of the configured default")
-			fs.StringVar(&f.portName, "port-name", "", "the pprof container-port name, in place of the configured default")
-			fs.StringVar(&f.output, "o", "", "write the profile here; - writes it to stdout")
-			fs.BoolVar(&f.open, "open", false, "run go tool pprof -http=:0 on the profile")
-		},
+		name: "profile",
+		leaves: []leaf{{
+			grammar:     "profile <ns>/<svc> <profile> [--seconds <n>] [--pod <name>] [--version <v>] [--port <n> | --port-name <name>] [-o <path>] [--open]",
+			positionals: 2,
+			flags: func(fs *flag.FlagSet) {
+				fs.StringVar(&f.seconds, "seconds", "", "seconds, for cpu and trace")
+				fs.StringVar(&f.pod, "pod", "", "pin the exact Pod to profile")
+				fs.StringVar(&f.version, "version", "", "keep only Pods whose version label equals this value")
+				fs.StringVar(&f.port, "port", "", "the pprof port number, in place of the configured default")
+				fs.StringVar(&f.portName, "port-name", "", "the pprof container-port name, in place of the configured default")
+				fs.StringVar(&f.output, "o", "", "write the profile here; - writes it to stdout")
+				fs.BoolVar(&f.open, "open", false, "run go tool pprof -http=:0 on the profile")
+			},
+		}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			if err := env.profile(ctx, in, f); err != nil {
 				return fail(env, err)

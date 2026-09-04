@@ -1424,10 +1424,13 @@ profgate auth hash
 profgate version
 ```
 
+Every one of these command lines answers `-h` and `--help` on stdout and exits 0,
+under the one rule [`cli.md`](cli.md) *Help* states for the whole binary.
+
 Standard-library `flag` with hand-written subcommand dispatch.
 
 `serve` is the gateway this document describes.
-`collect` runs the PGO collection loops of [`pgo.md`](pgo.md) and opens no API listener;
+`collector` runs the PGO collection loops of [`pgo.md`](pgo.md) and opens no API listener;
 it reads the same configuration file, so `config validate` answers for both.
 
 The same binary carries the client verbs of [`cli.md`](cli.md) *The verbs* —
@@ -2742,3 +2745,11 @@ Updated with the implementation:
 [`docs/api.md`](../api.md), [`docs/authentication.md`](../authentication.md),
 [`docs/configuration.md`](../configuration.md), [`docs/keycloak-realm.json`](../keycloak-realm.json),
 and a client guide of its own, as [`cli.md`](cli.md) lists.
+
+Help on every command line —
+`-h` and `--help` printed on stdout with exit 0, the operator command lines included —
+amends the following text.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *CLI* | every command line listed there answers `-h` and `--help` on stdout and exits 0, under the rule [`cli.md`](cli.md) *Help* states; the process that runs the collection loops is `collector`, which the paragraph below the list already names, and not the client verb `collect` |

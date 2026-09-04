@@ -18,22 +18,28 @@ import (
 func pgoVerb() verb {
 	var f policyFlags
 	return verb{
-		name:        "pgo",
-		subverbs:    []string{"policy get", "policy set", "policy delete"},
-		positionals: 1,
-		grammar:     "pgo policy get|set|delete <ns>/<svc> [--file <path> | --enabled[=false] --every <d> --jitter <d> <field flags of collect>]",
-		flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&f.file, "file", "", "send this JSON file as the whole override instead of the flags")
-			fs.BoolVar(&f.enabled, "enabled", false, "whether the scheduler collects for the Service")
-			fs.StringVar(&f.every, "every", "", "how often the scheduler collects")
-			fs.StringVar(&f.jitter, "jitter", "", "how far each scheduled collection may drift")
-			fs.StringVar(&f.fields.duration, "duration", "", "how long each sample runs")
-			fs.StringVar(&f.fields.rounds, "rounds", "", "how many rounds to sample")
-			fs.StringVar(&f.fields.roundInterval, "round-interval", "", "the pause between rounds")
-			fs.StringVar(&f.fields.replicas, "replicas", "", "how many Pods each round samples: all or a count")
-			fs.StringVar(&f.fields.maxParallel, "max-parallel", "", "how many Pods are sampled at once")
-			fs.StringVar(&f.fields.targetVersion, "target-version", "", "the binary version to profile")
-			fs.StringVar(&f.fields.retention, "retention", "", "how long the merged profile is kept")
+		name: "pgo",
+		leaves: []leaf{
+			{words: "policy get", grammar: "pgo policy get <ns>/<svc>", positionals: 1},
+			{
+				words:       "policy set",
+				grammar:     "pgo policy set <ns>/<svc> [--file <path> | --enabled[=false] --every <d> --jitter <d> <field flags of collect>]",
+				positionals: 1,
+				flags: func(fs *flag.FlagSet) {
+					fs.StringVar(&f.file, "file", "", "send this JSON file as the whole override instead of the flags")
+					fs.BoolVar(&f.enabled, "enabled", false, "whether the scheduler collects for the Service")
+					fs.StringVar(&f.every, "every", "", "how often the scheduler collects")
+					fs.StringVar(&f.jitter, "jitter", "", "how far each scheduled collection may drift")
+					fs.StringVar(&f.fields.duration, "duration", "", "how long each sample runs")
+					fs.StringVar(&f.fields.rounds, "rounds", "", "how many rounds to sample")
+					fs.StringVar(&f.fields.roundInterval, "round-interval", "", "the pause between rounds")
+					fs.StringVar(&f.fields.replicas, "replicas", "", "how many Pods each round samples: all or a count")
+					fs.StringVar(&f.fields.maxParallel, "max-parallel", "", "how many Pods are sampled at once")
+					fs.StringVar(&f.fields.targetVersion, "target-version", "", "the binary version to profile")
+					fs.StringVar(&f.fields.retention, "retention", "", "how long the merged profile is kept")
+				},
+			},
+			{words: "policy delete", grammar: "pgo policy delete <ns>/<svc>", positionals: 1},
 		},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			switch in.subverb {

@@ -58,7 +58,7 @@ func getPath(path string) func(client.Settings, *invocation) (client.Request, er
 
 func whoamiVerb() verb {
 	return verb{
-		name: "whoami", grammar: "whoami",
+		name: "whoami", leaves: []leaf{{grammar: "whoami"}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			return env.read(ctx, in, reading{build: getPath("/v1/whoami"), render: renderWhoami})
 		},
@@ -93,7 +93,7 @@ func renderWhoami(env *cmdEnv, body []byte) error {
 
 func limitsVerb() verb {
 	return verb{
-		name: "limits", grammar: "limits",
+		name: "limits", leaves: []leaf{{grammar: "limits"}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			return env.read(ctx, in, reading{build: getPath("/v1/limits"), render: renderLimits})
 		},
@@ -126,7 +126,7 @@ func renderLimits(env *cmdEnv, body []byte) error {
 
 func namespacesVerb() verb {
 	return verb{
-		name: "namespaces", grammar: "namespaces",
+		name: "namespaces", leaves: []leaf{{grammar: "namespaces"}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			return env.read(ctx, in, reading{build: getPath("/v1/namespaces"), render: func(env *cmdEnv, body []byte) error {
 				n, err := client.Decode[client.NamespacesResponse](body)
@@ -141,7 +141,7 @@ func namespacesVerb() verb {
 
 func servicesVerb() verb {
 	return verb{
-		name: "services", positionals: 1, grammar: "services <namespace>",
+		name: "services", leaves: []leaf{{grammar: "services <namespace>", positionals: 1}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			return env.read(ctx, in, reading{
 				build: func(_ client.Settings, in *invocation) (client.Request, error) {
@@ -180,12 +180,15 @@ func targetsVerb() verb {
 	var port, portName string
 	var explain bool
 	return verb{
-		name: "targets", positionals: 1, grammar: "targets <ns>/<svc> [--port <n> | --port-name <name>] [--explain]",
-		flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&port, "port", "", "the pprof port number, in place of the configured default")
-			fs.StringVar(&portName, "port-name", "", "the pprof container-port name, in place of the configured default")
-			fs.BoolVar(&explain, "explain", false, "also print why the Service's other selected Pods are not targets")
-		},
+		name: "targets",
+		leaves: []leaf{{
+			grammar: "targets <ns>/<svc> [--port <n> | --port-name <name>] [--explain]", positionals: 1,
+			flags: func(fs *flag.FlagSet) {
+				fs.StringVar(&port, "port", "", "the pprof port number, in place of the configured default")
+				fs.StringVar(&portName, "port-name", "", "the pprof container-port name, in place of the configured default")
+				fs.BoolVar(&explain, "explain", false, "also print why the Service's other selected Pods are not targets")
+			},
+		}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			return env.read(ctx, in, reading{
 				build: func(s client.Settings, in *invocation) (client.Request, error) {
@@ -260,16 +263,19 @@ func loginVerb() verb {
 	var pkce, noPKCE bool
 	var timeout time.Duration
 	return verb{
-		name: "login", grammar: "login [--issuer <url>] [--client-id <id>] [--token-type id|access] [--scope <scope>]... [--pkce|--no-pkce] [--login-timeout <duration>]",
-		flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&issuer, "issuer", "", "the issuer, in place of what the gateway reports")
-			fs.StringVar(&clientID, "client-id", "", "the client identifier, in place of what the gateway reports")
-			fs.StringVar(&tokenType, "token-type", "", "id or access, in place of what the gateway reports")
-			fs.Var(&scopes, "scope", "a scope to ask for, repeatable, in place of what the gateway reports")
-			fs.BoolVar(&pkce, "pkce", false, "send a PKCE challenge with the device request")
-			fs.BoolVar(&noPKCE, "no-pkce", false, "send no PKCE challenge")
-			fs.DurationVar(&timeout, "login-timeout", 0, "how long to wait for the code to be entered, 1m to 30m (default 10m)")
-		},
+		name: "login",
+		leaves: []leaf{{
+			grammar: "login [--issuer <url>] [--client-id <id>] [--token-type id|access] [--scope <scope>]... [--pkce|--no-pkce] [--login-timeout <duration>]",
+			flags: func(fs *flag.FlagSet) {
+				fs.StringVar(&issuer, "issuer", "", "the issuer, in place of what the gateway reports")
+				fs.StringVar(&clientID, "client-id", "", "the client identifier, in place of what the gateway reports")
+				fs.StringVar(&tokenType, "token-type", "", "id or access, in place of what the gateway reports")
+				fs.Var(&scopes, "scope", "a scope to ask for, repeatable, in place of what the gateway reports")
+				fs.BoolVar(&pkce, "pkce", false, "send a PKCE challenge with the device request")
+				fs.BoolVar(&noPKCE, "no-pkce", false, "send no PKCE challenge")
+				fs.DurationVar(&timeout, "login-timeout", 0, "how long to wait for the code to be entered, 1m to 30m (default 10m)")
+			},
+		}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			pkceFlag, err := client.PKCEFlag(pkce, noPKCE)
 			if err != nil {
@@ -348,7 +354,7 @@ func (env *cmdEnv) basicPair(g *globals) (user, password string, err error) {
 
 func logoutVerb() verb {
 	return verb{
-		name: "logout", grammar: "logout",
+		name: "logout", leaves: []leaf{{grammar: "logout"}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			s, _, err := env.settings(in.globals)
 			if err != nil {

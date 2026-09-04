@@ -196,6 +196,26 @@ An empty list prints its header and nothing else,
 because the header is what tells a script the request succeeded.
 `--output json` copies the response body to stdout byte for byte, so `jq` sees the API's own contract.
 
+### Asking a command what it takes
+
+`-h` and `--help` print the command's grammar and its flags on stdout and exit 0,
+having sent no request and read no stdin,
+so `profgate collect --help | grep retention` works
+while a mistyped flag still leaves stdout empty for the shell that was going to consume it.
+The page is the deepest verb and subverb the line names, wherever the flag sits:
+`profgate --help profile` and `profgate profile --help` are the same request,
+and `profgate profile payments/checkout cpu --help` is that request too.
+Each subverb answers for itself and prints no sibling's flag,
+so `profgate pgo policy set --help` lists the eleven flags that command line takes
+and `profgate pgo policy get --help` lists none.
+A group prints the one word to add next and the subverbs it takes:
+`profgate pgo --help` prints `policy`, and `profgate pgo policy --help` prints `get`, `set`, and `delete`.
+A verb or subverb the binary does not have prints the bare binary's help,
+because a name nobody recognizes is what a person asks for help about.
+The operator command lines answer the same way — `profgate serve`, `config validate`, `auth hash`, and `version` —
+and print no global flag, because they accept none:
+`profgate auth hash --help` prints its grammar and reads no password.
+
 ### Reading
 
 ```sh
@@ -350,6 +370,7 @@ profgate pgo policy delete payments/checkout
 the update fields when an override is stored, and one `violation` line per field a ceiling would refuse.
 `set` takes `--file <path>` holding the whole override document,
 or `--enabled[=false]`, `--every`, `--jitter`, and the field flags of `collect`;
+`get` and `delete` take none of them, and refuse one with the flag named;
 it reads the policy first for its `ETag`, then sends one `PUT` conditioned on it,
 with no `If-Match` at all when no override was stored, which is what creates one.
 A `412` or `428` means the policy changed between the read and the write:

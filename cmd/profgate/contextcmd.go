@@ -16,11 +16,14 @@ import (
 // and delete removes an entry and its cache file under the entry's lock.
 func contextVerb() verb {
 	return verb{
-		name:        "context",
-		subverbs:    []string{"list", "show", "use", "delete"},
-		positionals: 1,
-		optional:    true, // show takes the current context when the name is absent; list takes none
-		grammar:     "context list|show [<name>]|use <name>|delete <name>",
+		name: "context",
+		leaves: []leaf{
+			{words: "list", grammar: "context list"},
+			// show takes the current context when the name is absent.
+			{words: "show", grammar: "context show [<name>]", positionals: 1, optional: true},
+			{words: "use", grammar: "context use <name>", positionals: 1},
+			{words: "delete", grammar: "context delete <name>", positionals: 1},
+		},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 			if err := env.runContext(ctx, in); err != nil {
 				return fail(env, err)
@@ -46,24 +49,15 @@ func (env *cmdEnv) runContext(ctx context.Context, in *invocation) error {
 	}
 	switch in.subverb {
 	case "list":
-		if name != "" {
-			return fmt.Errorf("%w: context list takes no positional; %q is one too many", client.ErrUsage, name)
-		}
 		return env.listContexts(f)
 	case "show":
 		return env.showContext(f, in.globals, name)
 	case "use":
-		if name == "" {
-			return fmt.Errorf("%w: context use takes one positional", client.ErrUsage)
-		}
 		if err := client.UseContext(f, name); err != nil {
 			return err
 		}
 		return client.SaveFile(path, f)
 	default:
-		if name == "" {
-			return fmt.Errorf("%w: context delete takes one positional", client.ErrUsage)
-		}
 		store, err := env.store()
 		if err != nil {
 			return err

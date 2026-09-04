@@ -92,8 +92,11 @@ func smokeVerbs(t *testing.T, got *smokeRun) []verb {
 	var seconds int
 	return []verb{
 		{
-			name: "smoke", positionals: 2, grammar: "smoke <ns>/<svc> <profile>",
-			flags: func(fs *flag.FlagSet) { fs.IntVar(&seconds, "seconds", 30, "") },
+			name: "smoke",
+			leaves: []leaf{{
+				grammar: "smoke <ns>/<svc> <profile>", positionals: 2,
+				flags: func(fs *flag.FlagSet) { fs.IntVar(&seconds, "seconds", 30, "") },
+			}},
 			run: func(_ context.Context, _ *cmdEnv, in *invocation) int {
 				record(in)
 				got.seconds = seconds
@@ -101,21 +104,25 @@ func smokeVerbs(t *testing.T, got *smokeRun) []verb {
 			},
 		},
 		{
-			name: "smokesub", subverbs: []string{"get", "cancel"}, positionals: 1, grammar: "smokesub get|cancel <id>",
+			name: "smokesub",
+			leaves: []leaf{
+				{words: "get", grammar: "smokesub get <id>", positionals: 1},
+				{words: "cancel", grammar: "smokesub cancel <id>", positionals: 1},
+			},
 			run: func(_ context.Context, _ *cmdEnv, in *invocation) int {
 				record(in)
 				return 0
 			},
 		},
 		{
-			name: "smokeopt", positionals: 1, optional: true, grammar: "smokeopt [<name>]",
+			name: "smokeopt", leaves: []leaf{{grammar: "smokeopt [<name>]", positionals: 1, optional: true}},
 			run: func(_ context.Context, _ *cmdEnv, in *invocation) int {
 				record(in)
 				return 0
 			},
 		},
 		{
-			name: "smokewhoami", grammar: "smokewhoami",
+			name: "smokewhoami", leaves: []leaf{{grammar: "smokewhoami"}},
 			run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
 				record(in)
 				gw, _, err := env.gateway(ctx, in.globals)
@@ -157,8 +164,8 @@ func TestDispatchGrammar(t *testing.T) {
 		{name: "subverb positional too many", args: []string{"smokesub", "get", "abc", "def"}, wantCode: 2, wantStderr: "usage: profgate smokesub"},
 		{name: "a flag before a positional", args: []string{"smoke", "--seconds", "30", "payments/checkout", "cpu"}, wantCode: 2, wantStderr: "flags follow the positionals"},
 		{name: "unknown verb", args: []string{"bogus"}, wantCode: 2, wantStderr: "usage: profgate <"},
-		{name: "unknown subverb", args: []string{"smokesub", "bogus", "abc"}, wantCode: 2, wantStderr: "usage: profgate smokesub get|cancel <id>"},
-		{name: "missing subverb", args: []string{"smokesub"}, wantCode: 2, wantStderr: "usage: profgate smokesub get|cancel <id>"},
+		{name: "unknown subverb", args: []string{"smokesub", "bogus", "abc"}, wantCode: 2, wantStderr: "usage: profgate smokesub get|cancel [flags]"},
+		{name: "missing subverb", args: []string{"smokesub"}, wantCode: 2, wantStderr: "usage: profgate smokesub get|cancel [flags]"},
 		{name: "unknown flag", args: []string{"smoke", "x/y", "cpu", "--bogus"}, wantCode: 2, wantStderr: "usage: profgate smoke <ns>/<svc> <profile>"},
 		{name: "unknown global flag before the verb", args: []string{"--bogus", "smoke", "x/y", "cpu"}, wantCode: 2, wantStderr: "usage: profgate <"},
 		{name: "a global flag before an operator verb", args: []string{"--server", "https://a.example", "version"}, wantCode: 2, wantStderr: "usage: profgate <"},
@@ -200,16 +207,15 @@ func TestDispatchEveryVerbParses(t *testing.T) {
 	for _, v := range clientVerbs() {
 		t.Run(v.name, func(t *testing.T) {
 			te := newTestEnv(t)
-			args := []string{v.name}
-			if len(v.subverbs) > 0 {
-				args = append(args, strings.Fields(v.subverbs[0])...)
-			}
-			for i := range v.positionals {
-				args = append(args, "positional"+string(rune('a'+i)))
-			}
-			code := dispatch(context.Background(), te.env, clientVerbs(), args)
-			if code == 2 && strings.Contains(te.stderr.String(), "usage: profgate") {
-				t.Fatalf("dispatch(%v) was a usage error: %q", args, te.stderr.String())
+			for _, l := range v.leaves {
+				args := append([]string{v.name}, strings.Fields(l.words)...)
+				for i := range l.positionals {
+					args = append(args, "positional"+string(rune('a'+i)))
+				}
+				code := dispatch(context.Background(), te.env, clientVerbs(), args)
+				if code == 2 && strings.Contains(te.stderr.String(), "usage: profgate") {
+					t.Fatalf("dispatch(%v) was a usage error: %q", args, te.stderr.String())
+				}
 			}
 		})
 	}
@@ -239,41 +245,43 @@ func TestVerbNamespaces(t *testing.T) {
 	}
 }
 
-// TestVerbFlagSets asserts over every verb's assembled flag set:
+// TestVerbFlagSets asserts over every command line's assembled flag set:
 // nothing disables verification, no flag's value is a token or a password,
-// and every verb carries the three flags that name where a credential is read from.
+// and every command line carries the three flags that name where a credential is read from.
 func TestVerbFlagSets(t *testing.T) {
 	var got smokeRun
 	verbs := append(clientVerbs(), smokeVerbs(t, &got)...)
 	for _, v := range verbs {
-		t.Run(v.name, func(t *testing.T) {
-			fs, _ := v.flagSet(&globals{})
-			names := map[string]bool{}
-			fs.VisitAll(func(f *flag.Flag) { names[f.Name] = true })
-			for name := range names {
-				lower := strings.ToLower(name)
-				for _, banned := range []string{"insecure", "skip", "verify"} {
-					if strings.Contains(lower, banned) {
-						t.Fatalf("verb %s registers --%s, which reads as a way to skip verification", v.name, name)
+		for _, l := range v.leaves {
+			t.Run(v.subject(l), func(t *testing.T) {
+				fs, _ := l.flagSet(v.name, &globals{})
+				names := map[string]bool{}
+				fs.VisitAll(func(f *flag.Flag) { names[f.Name] = true })
+				for name := range names {
+					lower := strings.ToLower(name)
+					for _, banned := range []string{"insecure", "skip", "verify"} {
+						if strings.Contains(lower, banned) {
+							t.Fatalf("verb %s registers --%s, which reads as a way to skip verification", v.name, name)
+						}
+					}
+					if strings.Contains(lower, "password") || strings.Contains(lower, "secret") {
+						t.Fatalf("verb %s registers --%s, whose value would be a credential", v.name, name)
+					}
+					// login's --token-type names id or access, never a token.
+					if strings.Contains(lower, "token") && name != "token-file" && name != "token-stdin" && name != "token-type" {
+						t.Fatalf("verb %s registers --%s; a token is read from a file or stdin, never a flag value", v.name, name)
 					}
 				}
-				if strings.Contains(lower, "password") || strings.Contains(lower, "secret") {
-					t.Fatalf("verb %s registers --%s, whose value would be a credential", v.name, name)
+				for _, want := range []string{"token-file", "token-stdin", "u"} {
+					if !names[want] {
+						t.Fatalf("verb %s lacks -%s", v.name, want)
+					}
 				}
-				// login's --token-type names id or access, never a token.
-				if strings.Contains(lower, "token") && name != "token-file" && name != "token-stdin" && name != "token-type" {
-					t.Fatalf("verb %s registers --%s; a token is read from a file or stdin, never a flag value", v.name, name)
+				if f := fs.Lookup("u"); f.Value.String() != "" {
+					t.Fatalf("-u defaults to %q, want empty", f.Value.String())
 				}
-			}
-			for _, want := range []string{"token-file", "token-stdin", "u"} {
-				if !names[want] {
-					t.Fatalf("verb %s lacks -%s", v.name, want)
-				}
-			}
-			if f := fs.Lookup("u"); f.Value.String() != "" {
-				t.Fatalf("-u defaults to %q, want empty", f.Value.String())
-			}
-		})
+			})
+		}
 	}
 }
 

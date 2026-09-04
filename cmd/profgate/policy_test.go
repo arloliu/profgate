@@ -321,8 +321,45 @@ func TestPolicyUnknownSubverbIsUsage(t *testing.T) {
 	for _, args := range [][]string{{"pgo", "policy", "bogus", "payments/checkout"}, {"pgo", "bogus"}, {"pgo"}} {
 		te := newTestEnv(t)
 		code := dispatch(context.Background(), te.env, clientVerbs(), args)
-		if code != 2 || !strings.Contains(te.stderr.String(), "usage: profgate pgo policy get|set|delete <ns>/<svc>") {
-			t.Fatalf("dispatch(%v) = %d, stderr = %q, want 2 and the verb's grammar", args, code, te.stderr.String())
+		if code != 2 || !strings.Contains(te.stderr.String(), "usage: profgate pgo policy") {
+			t.Fatalf("dispatch(%v) = %d, stderr = %q, want 2 and the group's line", args, code, te.stderr.String())
 		}
 	}
+}
+
+// TestPolicyGetRefusesSetFlags asserts each subverb takes the flags its own command line registers:
+// get and delete register none, so a flag only set registers is undefined on them.
+func TestPolicyGetRefusesSetFlags(t *testing.T) {
+	refused := []struct {
+		name string
+		args []string
+		flag string
+	}{
+		{name: "get with the file flag", args: []string{"pgo", "policy", "get", "payments/checkout", "--file", "p.json"}, flag: "-file"},
+		{name: "delete with the enabled flag", args: []string{"pgo", "policy", "delete", "payments/checkout", "--enabled"}, flag: "-enabled"},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEnv(t)
+			code := dispatch(context.Background(), te.env, clientVerbs(), tc.args)
+			if code != 2 {
+				t.Fatalf("dispatch(%v) = %d, want 2 (stderr=%q)", tc.args, code, te.stderr.String())
+			}
+			want := "flag provided but not defined: " + tc.flag
+			if !strings.Contains(te.stderr.String(), want) {
+				t.Fatalf("stderr = %q, want it to name %q", te.stderr.String(), want)
+			}
+		})
+	}
+	t.Run("set still takes the file flag", func(t *testing.T) {
+		te := newTestEnv(t)
+		path := filepath.Join(t.TempDir(), "p.json")
+		if err := os.WriteFile(path, []byte(`{"enabled":true}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		pt := &policyTransport{read: defaultsPolicyBody, write: answering(http.StatusOK, overridePolicyBody, "")}
+		if code := runPolicy(te, pt, "set", "payments/checkout", "--file", path); code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+		}
+	})
 }

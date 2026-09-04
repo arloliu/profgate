@@ -17,6 +17,7 @@ func TestRun(t *testing.T) {
 		wantStdout      []string
 		wantStdoutExact string
 		wantStderr      string
+		wantStderrExact string
 	}{
 		{
 			name:            "version",
@@ -63,6 +64,23 @@ func TestRun(t *testing.T) {
 			args:     nil,
 			wantCode: 2,
 		},
+		// Exact, because what these two lines replace is flag's own usage block:
+		// an operator command line prints the cause and its own grammar,
+		// the shape every other usage error takes.
+		{
+			name:     "serve refuses an undefined flag",
+			args:     []string{"serve", "--bogus"},
+			wantCode: 2,
+			wantStderrExact: "profgate: flag provided but not defined: -bogus\n" +
+				"usage: profgate serve --config <path>\n",
+		},
+		{
+			name:     "config validate refuses an undefined flag",
+			args:     []string{"config", "validate", "--bogus"},
+			wantCode: 2,
+			wantStderrExact: "profgate: flag provided but not defined: -bogus\n" +
+				"usage: profgate config validate --config <path>\n",
+		},
 	}
 
 	for _, tc := range tests {
@@ -82,6 +100,9 @@ func TestRun(t *testing.T) {
 			}
 			if tc.wantStderr != "" && !strings.Contains(stderr.String(), tc.wantStderr) {
 				t.Fatalf("run(%v) stderr = %q, want it to contain %q", tc.args, stderr.String(), tc.wantStderr)
+			}
+			if tc.wantStderrExact != "" && stderr.String() != tc.wantStderrExact {
+				t.Fatalf("run(%v) stderr = %q, want exactly %q", tc.args, stderr.String(), tc.wantStderrExact)
 			}
 		})
 	}
