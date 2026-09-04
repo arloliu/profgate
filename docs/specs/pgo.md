@@ -2925,14 +2925,17 @@ a collector cannot report its own absence, and the replicas that refuse work for
 It is `1` while that replica sees a fresh heartbeat and `0` otherwise (section 7.5),
 and it exists only when `pgo.enabled`.
 
-`profgate_pgo_synced` is the replay barrier as a gauge, the PGO counterpart of `profgate_discovery_synced`:
-`1` only when both halves hold for the current store generation —
+`profgate_pgo_synced` is the replay barrier as a gauge, and it tracks the current store generation:
+`1` only when both halves hold for that generation —
 every watch this process opened has replayed, and every cache has applied that replay —
 and `0` until then.
 It reads `0` from the moment the generation moves
 until the last watch has replayed and its cache has applied that replay,
 so it dips on every reconnect and stays down for as long as a bucket a watch needs is missing.
 It exists only when `pgo.enabled`.
+`profgate_discovery_synced` is not the gateway counterpart of this gauge:
+that gauge reports an initial informer sync alone and never returns to `0`
+(the gateway spec's *Metrics* section).
 
 Every one of them is on an ops listener, which no Service selects,
 so a scrape configuration has to reach both Deployments to see the whole picture —
@@ -3965,3 +3968,11 @@ Updated with the implementation:
 | `cmd/profgate` | `OnGenerationMove` wired to `Runtime.MoveGeneration`, `OnConnectionChange` left to the connection gauge, and `profgate_pgo_synced` fed from both halves of the barrier |
 | `docs/deployment.md` | `profgate_pgo_synced` in the metrics table and `ProfgatePGONotSynced` in the alert list |
 | `deploy/chart/profgate/values.yaml`, `templates/prometheusrule.yaml`, `README.md`, `deploy/chart_test.go` | the `ProfgatePGONotSynced` alert, rendered when `pgo.enabled`, and the test that pins the alert names the chart renders |
+
+The meaning `profgate_discovery_synced` carries — an initial informer sync alone,
+which never returns to `0` (the gateway spec's *Metrics* section) —
+amends the following text.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *Metrics* | `profgate_pgo_synced` tracks the current store generation, and the discovery gauge is not its counterpart |

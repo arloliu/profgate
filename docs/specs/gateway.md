@@ -1527,18 +1527,63 @@ and refuses to proxy (section 5.6), which is the correct behavior, not a reason 
 | `profgate_auth_file_reload_total` (counter) | `file` (`users`/`cookie_key`), `result` (`ok`/`failed`) |
 | `profgate_auth_cookie_key_info` (gauge) | `fingerprint`, `role` (`current`/`previous`) |
 
-The two TLS metrics exist only while `server.tls` is configured.
-`profgate_tls_certificate_expiry_seconds` holds the served leaf's `notAfter` as a Unix timestamp.
-A rotation that quietly stopped working is alertable from it,
+`profgate_discovery_synced` is `1` once every informer has completed its initial list, and `0` before that.
+It never returns to `0`:
+a cache that has synced stays synced,
+an API server that becomes unreachable afterwards leaves that cache serving what it holds (*Informers*),
+and a replica that has completed its initial sync reports `1` while it drains and until the process exits.
+A replica that receives `SIGTERM` before that sync never reports `1` at all.
+A rule reading `profgate_discovery_synced == 0` over a window therefore says
+that a replica has not finished its initial sync within that window, and nothing wider.
+It is not a readiness gauge.
+`/readyz` has four gates (*Health*, *Startup and shutdown*):
+the replica is not draining, its informers have synced,
+its issuer is discovered under `auth.mode` `oidc`,
+and its NATS preflight has passed under `pgo.enabled`.
+This gauge reports the informer gate and none of the other three.
+`/readyz` is the complete signal for all four,
+and the Deployment exposes it as the Pod readiness probe (*Build and Deployment*).
+A drain turns `/readyz` `503` until the process exits, and no metric reports it.
+An issuer that never answers holds `/readyz` at `503` until `auth.oidc.discoveryTimeout` ends the process,
+and the JWKS gauges describe the keys rather than report that gate.
+Two of the four gates can hold `503` with no deadline:
+the informer gate, whose preflight and sync each retry a transient failure for as long as it lasts,
+and the NATS preflight, which retries the same way while the connection is unavailable
+(*Startup and shutdown*, [`pgo.md`](pgo.md) *NATS stores*).
+Those sections name the failures that exit the process instead,
+so a `503` held by either of those gates means a replica still waiting, not one about to exit.
+`profgate_nats_connected` reports the NATS transport alone:
+it reads `1` as soon as the connection is up,
+while the preflight's bucket checks and probes are still running and `/readyz` is `503`,
+and it reads `0` for as long as that connection is down ([`pgo.md`](pgo.md)).
+
+`profgate_tls_reloads_total` has no series until the successful startup load or a later re-read records a result,
+and nothing records one unless `server.tls` is configured,
+so the counter is absent from `/metrics` on an install without TLS.
+`profgate_tls_certificate_expiry_seconds` is registered on every install and reads `NaN` until a certificate is loaded,
+as `profgate_oidc_jwks_age_seconds` reads `NaN` before the first key fetch.
+The text exposition carries `profgate_tls_certificate_expiry_seconds NaN`,
+so the series is there and `absent()` does not match it.
+Arithmetic on it stays `NaN` and the ordered comparisons filter it out,
+so an expiry threshold is inert until a certificate is served, rather than firing on an expiry at the epoch.
+`profgate_tls_certificate_expiry_seconds - time() < 604800` matches nothing while the gauge reads `NaN`.
+It matches from a week before expiry once the gauge holds a timestamp.
+Once a pair is loaded, the gauge holds the served leaf's `notAfter` as a Unix timestamp,
+and it moves only when a newly read pair is applied:
+a re-read that fails leaves the gauge on the certificate still being served and counts `result` `failed`.
+That pairing is what makes a rotation that quietly stopped working alertable
 while the certificate the gateway still serves is valid.
 
 `profgate_request_duration_seconds` uses buckets `0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300` seconds,
 wide enough for the durations `limits.cpuSeconds` and `limits.traceSeconds` allow (section 6.3)
 and the header deadline and overall budget built from them (section 6.4).
 
-Every label has a fixed value set:
+Every label but the cookie key fingerprint has a fixed value set:
 `profile` is the eight names or `none`, `code` takes the values in sections 6.4 and 6.5
 with upstream statuses bucketed as `upstream_<status>`.
+The fingerprint is the first eight hexadecimal digits of SHA-256 over a loaded key ([`auth.md`](auth.md)),
+so its values are not a closed set,
+and only the current key and the optional previous one carry a series.
 The `endpoint` values `namespaces`, `services`, `whoami`, `limits`, and `ui` belong to [`ui.md`](ui.md),
 with `profile` fixed to `none`;
 `ui` covers `/ui/`, every path under it, and `/`,
@@ -2753,3 +2798,22 @@ amends the following text.
 | File | Section | Change |
 |---|---|---|
 | `docs/specs/gateway.md` | *CLI* | every command line listed there answers `-h` and `--help` on stdout and exits 0, under the rule [`cli.md`](cli.md) *Help* states; the process that runs the collection loops is `collector`, which the paragraph below the list already names, and not the client verb `collect` |
+
+`profgate_tls_certificate_expiry_seconds` has no certificate to report on an install without TLS.
+`profgate_discovery_synced` does not report readiness.
+Their meanings amend the following text.
+The first table lists the edits made in the same change as this block;
+the second lists the documents and packages that carry the behavior once it is implemented.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *Metrics* | `profgate_discovery_synced` is the initial informer sync alone and never returns to `0`, the four `/readyz` gates it does not carry and what reports each; `profgate_tls_reloads_total` mints no series until the startup load or a later re-read records a result; `profgate_tls_certificate_expiry_seconds` is registered on every install and reads `NaN` until a certificate is loaded, and what `NaN` means to a PromQL rule; the cookie key fingerprint is the one label whose values are not a closed set |
+| `docs/specs/pgo.md` | *Metrics* | `profgate_pgo_synced` tracks the store generation and is not the counterpart of the discovery gauge, listed in that document's own amendment block |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `internal/metrics` | the expiry gauge seeded `NaN` where it is constructed, and a test pinning the initial exposition: the expiry gauge at `NaN` and `profgate_tls_reloads_total` with no series while its counter vector is empty |
+| `deploy/chart/profgate/templates/prometheusrule.yaml` | `ProfgateNotReady` says that a replica has not completed its initial discovery sync, not that it is not serving |
+| `docs/deployment.md` | the expiry gauge's row: `NaN` until a certificate is loaded |
