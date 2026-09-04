@@ -26,6 +26,12 @@ const (
 // The password never appears in any output: it is read without echo from a
 // terminal, and the only line printed is the hash.
 func runAuth(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// Help is answered here as well as before the dispatch reaches this function,
+	// because the password prompt is inside the command help replaces:
+	// a help argument must read no byte of stdin by either road.
+	if operatorHelp(stdout, "auth", args) {
+		return exitOK
+	}
 	if len(args) == 0 || args[0] != "hash" {
 		_, _ = fmt.Fprintln(stderr, usageLine(clientVerbs()))
 

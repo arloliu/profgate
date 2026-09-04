@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,21 +19,33 @@ import (
 	"github.com/arloliu/profgate/internal/client"
 )
 
-// verb is one client verb: its name, its subverbs, how many positionals it
-// takes, its own flags, and what it does with them.
+// leaf is one command line that runs:
+// the subverb words that name it under the verb,
+// the grammar line printed after "usage: profgate ",
+// how many positionals it takes,
+// and the flags it registers.
+// Every verb declares at least one:
+// a verb with no subverbs declares the one whose words are empty, which is the verb's own command line.
 // A subverb is one or more words,
 // so pgo declares "policy get" and its two siblings and the dispatcher matches all of them.
-// The dispatcher removes exactly the declared positionals from the front of
-// the arguments, parses everything after them over the global flags and the
-// verb's own, and hands run the result.
-type verb struct {
-	name        string
-	subverbs    []string
+type leaf struct {
+	words       string
+	grammar     string
 	positionals int
-	optional    bool   // one trailing positional may be absent: context show
-	grammar     string // the usage line after "profgate ": profile <ns>/<svc> <profile>
+	optional    bool // one trailing positional may be absent: context show
 	flags       func(fs *flag.FlagSet)
-	run         func(ctx context.Context, env *cmdEnv, in *invocation) int
+}
+
+// verb is one client verb:
+// its name, the command lines it runs, and what it does with what was parsed.
+// The dispatcher matches one leaf,
+// removes exactly that leaf's positionals from the front of the arguments,
+// parses everything after them over the global flags and the leaf's own,
+// and hands run the result.
+type verb struct {
+	name   string
+	leaves []leaf
+	run    func(ctx context.Context, env *cmdEnv, in *invocation) int
 }
 
 // invocation is one parsed command line: the subverb, the positionals, the
@@ -187,6 +200,13 @@ func usageLine(verbs []verb) string {
 // dispatch runs one command line:
 // an operator verb through its own function, and a client verb through the grammar of the design.
 func dispatch(ctx context.Context, env *cmdEnv, verbs []verb, args []string) int {
+	// Help answers the whole line:
+	// before the operator half, before the global flag set, and before any positional is stripped.
+	nodes := helpNodes(verbs)
+	if scanned, help := findHelp(args); help {
+		printHelp(env.stdout, verbs, helpTarget(nodes, scanned))
+		return exitOK
+	}
 	if len(args) > 0 && isOperatorVerb(args[0]) {
 		return runOperator(args, env)
 	}
@@ -195,6 +215,10 @@ func dispatch(ctx context.Context, env *cmdEnv, verbs []verb, args []string) int
 	fs.SetOutput(io.Discard)
 	g := globalFlags(fs)
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printHelp(env.stdout, verbs, nodes[0])
+			return exitOK
+		}
 		return usageError(env, verbs, err)
 	}
 	rest := fs.Args()
@@ -209,9 +233,13 @@ func dispatch(ctx context.Context, env *cmdEnv, verbs []verb, args []string) int
 		return usageError(env, verbs, fmt.Errorf("unknown verb %q", rest[0]))
 	}
 	v := verbs[i]
-	in, err := v.parse(g, rest[1:])
+	in, l, err := v.parse(g, rest[1:])
 	if err != nil {
-		_, _ = fmt.Fprintf(env.stderr, "profgate: %v\nusage: profgate %s [flags]\n", err, v.grammar)
+		if errors.Is(err, flag.ErrHelp) {
+			printHelp(env.stdout, verbs, *findNode(nodes, leafPath(v, l)))
+			return exitOK
+		}
+		_, _ = fmt.Fprintf(env.stderr, "profgate: %v\nusage: profgate %s [flags]\n", err, v.usageGrammar(l))
 		return 2
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -245,72 +273,120 @@ func usageError(env *cmdEnv, verbs []verb, err error) int {
 	return 2
 }
 
-// parse applies the grammar: the subverb, exactly the declared positionals,
-// then the flags.
-// A flag where a positional belongs, too few positionals, and anything left after the flags are each a usage error.
-func (v verb) parse(g *globals, args []string) (*invocation, error) {
-	in := &invocation{positionals: []string{}}
-	if len(v.subverbs) > 0 {
-		words := 0
-		for _, sub := range v.subverbs {
-			// A subverb may be more than one word: pgo policy get.
-			n := len(strings.Fields(sub))
-			if len(args) >= n && strings.Join(args[:n], " ") == sub {
-				in.subverb, words = sub, n
-				break
-			}
+// subverbs is what the verb takes in place of a leaf's words, in the order the leaves are declared.
+func (v verb) subverbs() []string {
+	words := make([]string, 0, len(v.leaves))
+	for _, l := range v.leaves {
+		if l.words != "" {
+			words = append(words, l.words)
 		}
-		if words == 0 {
-			return nil, fmt.Errorf("%s takes one of %s", v.name, strings.Join(v.subverbs, ", "))
-		}
-		args = args[words:]
 	}
-	for i := range v.positionals {
+	return words
+}
+
+// match is the leaf a command line names, and what is left after its words.
+// A leaf whose words are empty is the verb's own command line,
+// and matches whatever follows it.
+func (v verb) match(args []string) (leaf, []string, error) {
+	for _, l := range v.leaves {
+		n := len(strings.Fields(l.words))
+		if n == 0 {
+			return l, args, nil
+		}
+		if len(args) >= n && strings.Join(args[:n], " ") == l.words {
+			return l, args[n:], nil
+		}
+	}
+	return leaf{}, nil, fmt.Errorf("%s takes one of %s", v.name, strings.Join(v.subverbs(), ", "))
+}
+
+// subject is what a usage error names: the verb, and the leaf's words where it has any.
+func (v verb) subject(l leaf) string {
+	return strings.TrimSpace(v.name + " " + l.words)
+}
+
+// children is the distinct first word of every subverb the verb takes.
+func (v verb) children() []string {
+	var words []string
+	for _, l := range v.leaves {
+		if f := strings.Fields(l.words); len(f) > 0 && !slices.Contains(words, f[0]) {
+			words = append(words, f[0])
+		}
+	}
+	return words
+}
+
+// usageGrammar is the line a usage error prints:
+// the matched leaf's own, and the verb's group line where no leaf matched,
+// which names the subverbs and sends the reader to that subverb's page for what each of them takes.
+func (v verb) usageGrammar(l *leaf) string {
+	if l != nil {
+		return l.grammar
+	}
+	return groupGrammar([]string{v.name}, v.children())
+}
+
+// parse applies the grammar:
+// the subverb, exactly that leaf's positionals, then that leaf's flags.
+// The matched leaf comes back beside the invocation, and is nil where no leaf matched,
+// so the caller can print the line the command line names.
+// A flag where a positional belongs, too few positionals, and anything left after the flags are each a usage error.
+func (v verb) parse(g *globals, args []string) (*invocation, *leaf, error) {
+	l, args, err := v.match(args)
+	if err != nil {
+		return nil, nil, err
+	}
+	in := &invocation{subverb: l.words, positionals: []string{}}
+	for i := range l.positionals {
 		if len(args) == 0 {
-			if v.optional && i == v.positionals-1 {
+			if l.optional && i == l.positionals-1 {
 				break
 			}
-			return nil, fmt.Errorf("%s takes %s", v.name, pluralPositionals(v.positionals))
+			return nil, &l, fmt.Errorf("%s takes %s", v.subject(l), pluralPositionals(l.positionals))
 		}
 		if strings.HasPrefix(args[0], "-") {
-			if v.optional && i == v.positionals-1 {
+			if l.optional && i == l.positionals-1 {
 				break
 			}
-			return nil, fmt.Errorf("%q where a positional belongs: flags follow the positionals", args[0])
+			return nil, &l, fmt.Errorf("%q where a positional belongs: flags follow the positionals", args[0])
 		}
 		in.positionals = append(in.positionals, args[0])
 		args = args[1:]
 	}
-	fs, merged := v.flagSet(g)
+	fs, merged := l.flagSet(v.name, g)
 	in.globals = merged
 	if err := fs.Parse(args); err != nil {
-		return nil, err
+		return nil, &l, err
 	}
 	if fs.NArg() > 0 {
-		return nil, fmt.Errorf("%s takes %s; %q is one too many", v.name, pluralPositionals(v.positionals), fs.Arg(0))
+		return nil, &l, fmt.Errorf("%s takes %s; %q is one too many", v.subject(l), pluralPositionals(l.positionals), fs.Arg(0))
 	}
 	in.fs = fs
-	return in, nil
+	return in, &l, nil
 }
 
-// flagSet assembles the verb's flag set: the global flags over what the
-// leading occurrence said, then the verb's own.
-func (v verb) flagSet(g *globals) (*flag.FlagSet, *globals) {
-	fs := flag.NewFlagSet(v.name, flag.ContinueOnError)
+// flagSet assembles the leaf's flag set:
+// the global flags over what the leading occurrence said, then the leaf's own.
+func (l leaf) flagSet(name string, g *globals) (*flag.FlagSet, *globals) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	merged := *g
 	merged.register(fs)
-	if v.flags != nil {
-		v.flags(fs)
+	if l.flags != nil {
+		l.flags(fs)
 	}
 	return fs, &merged
 }
 
 func pluralPositionals(n int) string {
-	if n == 1 {
+	switch n {
+	case 0:
+		return "no positional"
+	case 1:
 		return "one positional"
+	default:
+		return fmt.Sprintf("%d positionals", n)
 	}
-	return fmt.Sprintf("%d positionals", n)
 }
 
 // address parses <namespace>/<service>, or <service> against the context's namespace, and is a usage error otherwise.

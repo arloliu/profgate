@@ -447,8 +447,45 @@ func TestContextSubverbs(t *testing.T) {
 		if code := runContext(te, "bogus"); code != 2 {
 			t.Fatalf("code = %d, want 2", code)
 		}
-		if !strings.Contains(te.stderr.String(), "usage: profgate context list|show [<name>]|use <name>|delete <name>") {
+		if !strings.Contains(te.stderr.String(), "usage: profgate context list|show|use|delete") {
 			t.Fatalf("stderr = %q, want the usage line", te.stderr.String())
 		}
 	})
+}
+
+// TestContextLeafPositionals asserts each context subverb takes the positionals of its own command line,
+// and that a usage error prints that subverb's grammar line below its cause.
+func TestContextLeafPositionals(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		cause   string
+		grammar string
+	}{
+		{
+			name: "list takes none", args: []string{"list", "foo"},
+			cause: `context list takes no positional; "foo" is one too many`, grammar: "usage: profgate context list",
+		},
+		{
+			name: "use takes a name", args: []string{"use"},
+			cause: "context use takes one positional", grammar: "usage: profgate context use <name>",
+		},
+		{
+			name: "delete takes a name", args: []string{"delete"},
+			cause: "context delete takes one positional", grammar: "usage: profgate context delete <name>",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEnv(t)
+			if code := runContext(te, tc.args...); code != 2 {
+				t.Fatalf("code = %d, want 2 (stderr=%q)", code, te.stderr.String())
+			}
+			for _, want := range []string{tc.cause, tc.grammar} {
+				if !strings.Contains(te.stderr.String(), want) {
+					t.Fatalf("stderr = %q, want it to contain %q", te.stderr.String(), want)
+				}
+			}
+		})
+	}
 }

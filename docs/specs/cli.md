@@ -1555,11 +1555,9 @@ so the exported realm reproduces a device login rather than only a browser one.
 
 ### 13.1 Required by this revision and not yet made
 
-The table above records edits that have been made.
-[`gateway.md`](gateway.md) *CLI* lists the operator command lines
-and does not say that every one of them answers `--help`;
-that sentence belongs there,
-`serve`, `collector`, `config validate`, `auth hash`, and `version` included.
+None.
+The table above records edits that have been made,
+and [`gateway.md`](gateway.md) *CLI* now says that every command line it lists answers `-h` and `--help`.
 
 ---
 

@@ -19,9 +19,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the deployment guide's upgrade section restates `0.5.0`'s port-selection change there.
   The README also names the `profgate` binary as a client, links its guide,
   and its quickstart lists the namespaces and the Services a caller's realm admits before it asks for a profile.
+- **Every command line answers `-h` and `--help`.**
+  The bare binary, each verb, each subverb, and each group that takes one print their grammar and their flags,
+  and so do the operator command lines `serve`, `config validate`, `auth hash`, and `version`.
+  Each page goes to stdout and exits 0, having sent no request and read no stdin:
+  `profgate auth hash --help` prints its grammar where it read a password before.
+  The page is the deepest verb and subverb the line names, wherever the flag sits,
+  each subverb prints only what its own command line takes,
+  an operator page prints no global flag because that half accepts none,
+  and a name the binary does not have prints the bare binary's help.
+  `profgate whoami --help` printed `flag: help requested` on stderr and exited 2.
 
 ### Changed
 
+- **BREAKING: `pgo policy get` and `pgo policy delete` refuse the flags only `set` reads.**
+  All three subverbs shared one flag set, so `--file`, `--enabled`, `--every`, `--jitter`,
+  and the field flags of `collect` parsed on the two that never read them and were dropped without a word;
+  each subverb now registers what its own command line takes,
+  and one of those flags beside `get` or `delete` is a usage error naming the flag.
+- **A usage error prints the grammar of the command line it was given.**
+  A `context` subverb printed its cause with no grammar line below it,
+  which every other verb's usage error already prints, and now prints its own:
+  `profgate context list foo` names `usage: profgate context list`.
+  A line that matched no subverb prints the group's line instead,
+  which names the subverbs and not their positionals,
+  so `profgate context` reads `usage: profgate context list|show|use|delete`
+  and `profgate pgo` reads `usage: profgate pgo policy`,
+  each sending the reader to that subverb's own page for what it takes.
+  The operator command lines print those same two lines in place of `flag`'s own usage block,
+  so `profgate serve --bogus` names the flag and then `usage: profgate serve --config <path>`.
 - **BREAKING: the container memory limit follows `pgo.enabled`.**
   `profgate config validate` printed a merge budget for a gateway that never merges,
   three times what the chart renders for the same file;

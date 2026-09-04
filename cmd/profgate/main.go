@@ -43,12 +43,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return dispatch(context.Background(), newEnv(os.Stdin, stdout, stderr), clientVerbs(), args)
 }
 
+// configPath registers the configuration-file flag that serve and config validate share,
+// so the one description both pages print lives in one place.
+func configPath(fs *flag.FlagSet) *string {
+	return fs.String("config", "", "path to the configuration file")
+}
+
 // runVersion prints the binary's version.
 func runVersion(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("version", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return operatorFlagError(stdout, stderr, []string{"version"}, versionGrammar, err)
 	}
 	_, _ = fmt.Fprintf(stdout, "profgate %s\n", version)
 	return 0
@@ -56,19 +62,22 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 
 // runConfig dispatches the "config" subcommands.
 func runConfig(args []string, stdout, stderr io.Writer) int {
+	if operatorHelp(stdout, "config", args) {
+		return exitOK
+	}
 	if len(args) == 0 || args[0] != "validate" {
 		_, _ = fmt.Fprintln(stderr, usageLine(clientVerbs()))
 		return 2
 	}
 
 	fs := flag.NewFlagSet("config validate", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	path := fs.String("config", "", "path to the configuration file")
+	fs.SetOutput(io.Discard)
+	path := configPath(fs)
 	if err := fs.Parse(args[1:]); err != nil {
-		return 2
+		return operatorFlagError(stdout, stderr, []string{"config", "validate"}, configValidateGrammar, err)
 	}
 	if *path == "" {
-		_, _ = fmt.Fprintln(stderr, "usage: profgate config validate --config <path>")
+		_, _ = fmt.Fprintf(stderr, "usage: profgate %s\n", configValidateGrammar)
 		return 2
 	}
 
@@ -91,13 +100,13 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 // runServe runs the gateway with its production dependencies until SIGINT or SIGTERM.
 func runServe(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	path := fs.String("config", "", "path to the configuration file")
+	fs.SetOutput(io.Discard)
+	path := configPath(fs)
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return operatorFlagError(stdout, stderr, []string{"serve"}, serveGrammar, err)
 	}
 	if *path == "" {
-		_, _ = fmt.Fprintln(stderr, "usage: profgate serve --config <path>")
+		_, _ = fmt.Fprintf(stderr, "usage: profgate %s\n", serveGrammar)
 		return 2
 	}
 
