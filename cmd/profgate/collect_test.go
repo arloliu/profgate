@@ -208,7 +208,7 @@ func (rt *retryTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		return answer()
 	}
 	rt.polls++
-	return jsonResponse(http.StatusOK, strings.ReplaceAll(waitRecord("completed", "", 1, 1, 1, 0), "7h2k9m4p6r8t0v1w3x5y", replayID)), nil
+	return jsonResponse(http.StatusOK, strings.ReplaceAll(waitRecord("completed", "", 0, 1, 1, 0), "7h2k9m4p6r8t0v1w3x5y", replayID)), nil
 }
 
 // keys is the Idempotency-Key of every create the transport saw.
@@ -461,6 +461,8 @@ const recordBody = `{"id":"7h2k9m4p6r8t0v1w3x5y","namespace":"payments","service
 
 const pendingRecordBody = `{"id":"7h2k9m4p6r8t0v1w3x5y","namespace":"payments","service":"checkout","origin":"api","state":"pending","attempt":0,"reason":"","resolvedVersion":"","progress":{"round":0,"rounds":0,"samplesOK":0,"samplesFailed":0},"manifest":null,"artifact":null,"createdAt":"2026-08-23T12:03:12Z","startedAt":null,"finishedAt":null,"expiresAt":null}` + "\n"
 
+const completedRecordBody = `{"id":"7h2k9m4p6r8t0v1w3x5y","namespace":"payments","service":"checkout","origin":"api","state":"completed","attempt":1,"reason":"","resolvedVersion":"1.42.3","progress":{"round":2,"rounds":3,"samplesOK":9,"samplesFailed":0},"manifest":null,"artifact":{"object":"collection/7h2k9m4p6r8t0v1w3x5y/1.pprof","bytes":184320},"createdAt":"2026-08-23T12:03:12Z","startedAt":"2026-08-23T12:03:20Z","finishedAt":"2026-08-23T12:09:44Z","expiresAt":"2026-08-30T12:09:44Z"}` + "\n"
+
 func TestCollectionsOneGET(t *testing.T) {
 	te := newTestEnv(t)
 	code, rt := runRead(t, te, collectionsBody, "collections", "payments/checkout")
@@ -547,21 +549,38 @@ func TestCollectionGetOneGET(t *testing.T) {
 	}
 }
 
+// A failed record carries two of the four end-of-life fields and not the other two,
+// so the table prints the two it has and skips the two it does not.
 func TestCollectionGetTable(t *testing.T) {
+	te := newTestEnv(t)
+	code, _ := runRead(t, te, recordBody, "collection", "get", "7h2k9m4p6r8t0v1w3x5y")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+	}
+	want := "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tfailed\norigin\tschedule\n" +
+		"progress\tround 2 of 2, 5 ok, 1 failed\nresolvedVersion\t1.42.3\nfinishedAt\t2026-08-23T13:03:12Z\nreason\tnot_claimed\n"
+	if te.stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", te.stdout.String(), want)
+	}
+}
+
+// The progress row counts the round a person counts,
+// so the first round of three reads one and the last reads three.
+func TestRenderCollectionRound(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
 		want string
 	}{
 		{
-			name: "a failed record prints its progress and reason",
-			body: recordBody,
-			want: "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tfailed\norigin\tschedule\nprogress\tround 1 of 2, 5 ok, 1 failed\nreason\tnot_claimed\n",
+			name: "the first round of three",
+			body: waitRecord("running", "", 0, 3, 1, 0),
+			want: "id\t7h2k9m4p6r8t0v1w3x5y\nstate\trunning\norigin\tapi\nprogress\tround 1 of 3, 1 ok, 0 failed\n",
 		},
 		{
-			name: "a pending record has no progress and no reason",
-			body: pendingRecordBody,
-			want: "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tpending\norigin\tapi\n",
+			name: "the last round of three",
+			body: waitRecord("running", "", 2, 3, 5, 0),
+			want: "id\t7h2k9m4p6r8t0v1w3x5y\nstate\trunning\norigin\tapi\nprogress\tround 3 of 3, 5 ok, 0 failed\n",
 		},
 	}
 	for _, tc := range tests {
@@ -575,6 +594,51 @@ func TestCollectionGetTable(t *testing.T) {
 				t.Fatalf("stdout = %q, want %q", te.stdout.String(), tc.want)
 			}
 		})
+	}
+}
+
+// A completed record prints the version it profiled, when it finished,
+// when the artifact expires, and how large that artifact is.
+func TestRenderCollectionCompleted(t *testing.T) {
+	te := newTestEnv(t)
+	code, _ := runRead(t, te, completedRecordBody, "collection", "get", "7h2k9m4p6r8t0v1w3x5y")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+	}
+	want := "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tcompleted\norigin\tapi\nprogress\tround 3 of 3, 9 ok, 0 failed\n" +
+		"resolvedVersion\t1.42.3\nfinishedAt\t2026-08-23T12:09:44Z\nexpiresAt\t2026-08-30T12:09:44Z\nartifactBytes\t184320\n"
+	if te.stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", te.stdout.String(), want)
+	}
+}
+
+// A pending record carries null for the artifact and the timestamps, and an empty version,
+// which decodes into the one record shape and prints none of the four rows.
+func TestRenderCollectionPending(t *testing.T) {
+	te := newTestEnv(t)
+	code, _ := runRead(t, te, pendingRecordBody, "collection", "get", "7h2k9m4p6r8t0v1w3x5y")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+	}
+	want := "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tpending\norigin\tapi\n"
+	if te.stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", te.stdout.String(), want)
+	}
+}
+
+// The rendering counts from one and the document does not:
+// --output json copies the gateway's bytes, so the wire round is still the index the gateway stored.
+func TestCollectionJSONIsUntouched(t *testing.T) {
+	te := newTestEnv(t)
+	code, _ := runRead(t, te, completedRecordBody, "collection", "get", "7h2k9m4p6r8t0v1w3x5y", "--output", "json")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+	}
+	if te.stdout.String() != completedRecordBody {
+		t.Fatalf("stdout = %q, want the body byte for byte", te.stdout.String())
+	}
+	if !strings.Contains(te.stdout.String(), `"round":2`) {
+		t.Fatalf("stdout = %q, want the stored index 2 that the table prints as round 3", te.stdout.String())
 	}
 }
 
@@ -730,13 +794,15 @@ func polling(bodies ...string) *pollTransport {
 	return pt
 }
 
-const createdTable = "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tpending\n"
+// waitReceipt is the two lines collect --wait prints to stderr before it polls,
+// in both output modes: the identifier and state the create returned.
+const waitReceipt = "id: 7h2k9m4p6r8t0v1w3x5y\nstate: pending\n"
 
 func TestCollectWaitCompleted(t *testing.T) {
 	te := newTestEnv(t)
 	clock := onClock(te)
 	start := clock.Now()
-	pt := polling(waitRecord("pending", "", 0, 0, 0, 0), waitRecord("running", "", 1, 2, 3, 0), waitRecord("completed", "", 2, 2, 6, 0))
+	pt := polling(waitRecord("pending", "", 0, 0, 0, 0), waitRecord("running", "", 0, 2, 3, 0), waitRecord("completed", "", 1, 2, 6, 0))
 	code := runCollect(te, pt, "payments/checkout", "--wait", "--poll-interval", "5s")
 	if code != 0 {
 		t.Fatalf("code = %d, want 0 (stderr=%q)", code, te.stderr.String())
@@ -752,17 +818,89 @@ func TestCollectWaitCompleted(t *testing.T) {
 	if got := clock.Now().Sub(start); got != 10*time.Second {
 		t.Fatalf("the clock advanced %s, want two intervals of 5s", got)
 	}
-	want := createdTable + "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tcompleted\norigin\tapi\nprogress\tround 2 of 2, 6 ok, 0 failed\n"
+	if !strings.HasPrefix(te.stderr.String(), waitReceipt) {
+		t.Fatalf("stderr = %q, want the receipt %q first", te.stderr.String(), waitReceipt)
+	}
+	want := "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tcompleted\norigin\tapi\nprogress\tround 2 of 2, 6 ok, 0 failed\n"
 	if te.stdout.String() != want {
 		t.Fatalf("stdout = %q, want %q", te.stdout.String(), want)
 	}
+}
+
+// TestCollectWaitReceiptStream asserts collect --wait sends its id/state receipt to stderr,
+// in both output modes,
+// and stdout carries the final record alone.
+func TestCollectWaitReceiptStream(t *testing.T) {
+	t.Run("table", func(t *testing.T) {
+		te := newTestEnv(t)
+		onClock(te)
+		pt := polling(waitRecord("completed", "", 0, 0, 0, 0))
+		code := runCollect(te, pt, "payments/checkout", "--wait")
+		if code != 0 {
+			t.Fatalf("code = %d, want 0 (stderr=%q)", code, te.stderr.String())
+		}
+		if te.stderr.String() != waitReceipt {
+			t.Fatalf("stderr = %q, want the receipt alone", te.stderr.String())
+		}
+		want := "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tcompleted\norigin\tapi\n"
+		if te.stdout.String() != want {
+			t.Fatalf("stdout = %q, want the final record alone with no id row before it", te.stdout.String())
+		}
+	})
+	t.Run("json", func(t *testing.T) {
+		te := newTestEnv(t)
+		onClock(te)
+		final := waitRecord("completed", "", 0, 0, 0, 0)
+		code := runCollect(te, polling(final), "payments/checkout", "--wait", "--output", "json")
+		if code != 0 {
+			t.Fatalf("code = %d, want 0 (stderr=%q)", code, te.stderr.String())
+		}
+		if te.stderr.String() != waitReceipt {
+			t.Fatalf("stderr = %q, want the receipt alone", te.stderr.String())
+		}
+		if te.stdout.String() != final {
+			t.Fatalf("stdout = %q, want exactly the final record's bytes", te.stdout.String())
+		}
+	})
+}
+
+// TestCollectWithoutWaitIsUnchanged asserts collect with no --wait still writes its receipt to stdout,
+// as a table in table mode and as the response's own bytes under --output json:
+// only the --wait path moves.
+func TestCollectWithoutWaitIsUnchanged(t *testing.T) {
+	t.Run("table", func(t *testing.T) {
+		te := newTestEnv(t)
+		code := runCollect(te, accepting(), "payments/checkout")
+		if code != 0 {
+			t.Fatalf("code = %d, want 0 (stderr=%q)", code, te.stderr.String())
+		}
+		if te.stdout.String() != "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tpending\n" {
+			t.Fatalf("stdout = %q, want the receipt as a table", te.stdout.String())
+		}
+		if te.stderr.String() != "" {
+			t.Fatalf("stderr = %q, want empty: the receipt is the document collect produced", te.stderr.String())
+		}
+	})
+	t.Run("json", func(t *testing.T) {
+		te := newTestEnv(t)
+		code := runCollect(te, accepting(), "payments/checkout", "--output", "json")
+		if code != 0 {
+			t.Fatalf("code = %d, want 0 (stderr=%q)", code, te.stderr.String())
+		}
+		if te.stdout.String() != acceptedBody {
+			t.Fatalf("stdout = %q, want the response bytes verbatim", te.stdout.String())
+		}
+		if te.stderr.String() != "" {
+			t.Fatalf("stderr = %q, want empty", te.stderr.String())
+		}
+	})
 }
 
 func TestCollectWaitDefaultsToTwoSeconds(t *testing.T) {
 	te := newTestEnv(t)
 	clock := onClock(te)
 	start := clock.Now()
-	code := runCollect(te, polling(waitRecord("running", "", 1, 1, 0, 0), waitRecord("completed", "", 1, 1, 1, 0)), "payments/checkout", "--wait")
+	code := runCollect(te, polling(waitRecord("running", "", 0, 1, 0, 0), waitRecord("completed", "", 0, 1, 1, 0)), "payments/checkout", "--wait")
 	if code != 0 {
 		t.Fatalf("code = %d, want 0 (stderr=%q)", code, te.stderr.String())
 	}
@@ -816,7 +954,7 @@ func TestCollectWaitMidPollRefusals(t *testing.T) {
 		start := clock.Now()
 		pt := &pollTransport{answers: []pollAnswer{
 			{status: http.StatusServiceUnavailable, body: `{"error":"the store is unavailable","code":"pgo_unavailable"}`},
-			{status: http.StatusOK, body: waitRecord("completed", "", 1, 1, 1, 0)},
+			{status: http.StatusOK, body: waitRecord("completed", "", 0, 1, 1, 0)},
 		}}
 		code := runCollect(te, pt, "payments/checkout", "--wait", "--poll-interval", "3s")
 		if code != 0 {
@@ -849,11 +987,11 @@ func TestCollectWaitMidPollRefusals(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("code = %d, want 1 (stderr=%q)", code, te.stderr.String())
 		}
-		if te.stdout.String() != createdTable {
-			t.Fatalf("stdout = %q, want the identifier and state printed before the denial", te.stdout.String())
+		if te.stdout.String() != "" {
+			t.Fatalf("stdout = %q, want empty: no final record was ever read", te.stdout.String())
 		}
-		if !strings.Contains(te.stderr.String(), "7h2k9m4p6r8t0v1w3x5y") || !strings.Contains(te.stderr.String(), "realm_denied: the realm does not admit pgo.read") {
-			t.Fatalf("stderr = %q, want the identifier and the denial", te.stderr.String())
+		if !strings.Contains(te.stderr.String(), waitReceipt) || !strings.Contains(te.stderr.String(), "realm_denied: the realm does not admit pgo.read") {
+			t.Fatalf("stderr = %q, want the receipt and the denial", te.stderr.String())
 		}
 	})
 }
@@ -904,14 +1042,14 @@ func TestCollectWaitInterrupted(t *testing.T) {
 func TestCollectWaitProgress(t *testing.T) {
 	te := newTestEnv(t)
 	onClock(te)
-	final := waitRecord("completed", "", 2, 2, 6, 1)
-	pt := polling(waitRecord("pending", "", 0, 0, 0, 0), waitRecord("running", "", 1, 2, 3, 0), waitRecord("running", "", 1, 2, 3, 0), final)
+	final := waitRecord("completed", "", 1, 2, 6, 1)
+	pt := polling(waitRecord("pending", "", 0, 0, 0, 0), waitRecord("running", "", 0, 2, 3, 0), waitRecord("running", "", 0, 2, 3, 0), final)
 	code := runCollect(te, pt, "payments/checkout", "--wait", "--output", "json")
 	if code != 0 {
 		t.Fatalf("code = %d, want 0 (stderr=%q)", code, te.stderr.String())
 	}
-	if te.stderr.String() != "round 1 of 2, 3 ok, 0 failed\nround 2 of 2, 6 ok, 1 failed\n" {
-		t.Fatalf("stderr = %q, want one progress line per change", te.stderr.String())
+	if te.stderr.String() != waitReceipt+"round 1 of 2, 3 ok, 0 failed\nround 2 of 2, 6 ok, 1 failed\n" {
+		t.Fatalf("stderr = %q, want the receipt then one progress line per change", te.stderr.String())
 	}
 	if te.stdout.String() != final {
 		t.Fatalf("stdout = %q, want the final record and nothing else under --output json", te.stdout.String())
@@ -973,7 +1111,7 @@ func TestCollectionCancel(t *testing.T) {
 		if pt.bodies[0] != "" {
 			t.Fatalf("body = %q, want none", pt.bodies[0])
 		}
-		want := "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tcancelled\norigin\tapi\nprogress\tround 1 of 3, 2 ok, 0 failed\nreason\tcancelled_by_api\n"
+		want := "id\t7h2k9m4p6r8t0v1w3x5y\nstate\tcancelled\norigin\tapi\nprogress\tround 2 of 3, 2 ok, 0 failed\nreason\tcancelled_by_api\n"
 		if te.stdout.String() != want {
 			t.Fatalf("stdout = %q, want the cancelled record %q", te.stdout.String(), want)
 		}

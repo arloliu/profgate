@@ -175,7 +175,8 @@ func oneColumn(values []string) [][]string {
 // targetsVerb is GET .../targets with --port or --port-name,
 // which the gateway needs in order to decide eligibility;
 // both together is a usage error before any request.
-// --explain sends explain=true and prints the excluded rows under their own header below the list.
+// --explain sends explain=true and prints how many Pods the selector matched,
+// then the excluded rows under their own header, both below the list.
 func targetsVerb() verb {
 	var port, portName string
 	var explain bool
@@ -186,7 +187,7 @@ func targetsVerb() verb {
 			flags: func(fs *flag.FlagSet) {
 				fs.StringVar(&port, "port", "", "the pprof port number, in place of the configured default")
 				fs.StringVar(&portName, "port-name", "", "the pprof container-port name, in place of the configured default")
-				fs.BoolVar(&explain, "explain", false, "also print why the Service's other selected Pods are not targets")
+				fs.BoolVar(&explain, "explain", false, "also print how many Pods the selector matched and why the rest are not targets")
 			},
 		}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
@@ -225,6 +226,13 @@ func targetsVerb() verb {
 					}
 					if !explain {
 						return nil
+					}
+					if _, err := fmt.Fprintln(env.stdout); err != nil {
+						return err
+					}
+					matched := [][]string{{"selectorMatched", fmt.Sprint(r.SelectorMatched)}}
+					if err := writeTable(env.stdout, env.terminal, nil, matched); err != nil {
+						return err
 					}
 					if _, err := fmt.Fprintln(env.stdout); err != nil {
 						return err

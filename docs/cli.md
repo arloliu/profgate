@@ -224,7 +224,7 @@ profgate limits                        # the duration limits, the profiles, the 
 profgate namespaces                    # NAMESPACE
 profgate services payments             # SERVICE
 profgate targets payments/checkout     # POD  NODE  VERSION
-profgate targets payments/checkout --explain  # the same, plus REASON  COUNT
+profgate targets payments/checkout --explain  # the same, plus selectorMatched and REASON  COUNT
 ```
 
 ```text
@@ -240,13 +240,18 @@ pgo         read
 `targets` takes `--port <n>` or `--port-name <name>`,
 which the gateway needs in order to decide which Pods are eligible under that port;
 both together is a usage error before any request.
-`--explain` sends `explain=true` and prints a second table below the target list,
-`REASON  COUNT`, one row per reason the gateway counted, in the order it sent them:
+`--explain` sends `explain=true` and prints two more things below the target list:
+`selectorMatched`, how many Pods the selector matched, whether or not it is zero,
+and then `REASON  COUNT`, one row per reason the gateway counted, in the order it sent them.
+Two empty headers alone could not tell "the selector matched no Pod" apart from
+"it matched Pods and every one was excluded"; the count between them does:
 
 ```text
 $ profgate targets payments/checkout --explain
 POD                       NODE      VERSION
 checkout-5f7c9d8b6-abcde  worker-1  1.42.0
+
+selectorMatched  3
 
 REASON            COUNT
 pod_not_ready     1
@@ -336,8 +341,11 @@ and naming `profgate collections <ns>/<svc>` as the way to find out.
 `--wait` polls the record every `--poll-interval` (2s by default, 1s to 1m)
 until it reaches `completed`, `failed`, `cancelled`, or `expired`,
 or `--wait-timeout` (30m by default, 1m to 24h) passes.
-Each change in progress prints `round <n> of <m>, <ok> ok, <failed> failed` on stderr,
-and the final record goes to stdout.
+Under `--wait` the `id` and `state` collect prints move to stderr, as `id: <id>` and `state: <state>`,
+in both output modes and before the first poll.
+Each change in progress prints `round <n> of <m>, <ok> ok, <failed> failed` on stderr too,
+where `n` counts from one, so the first round of three reads `round 1 of 3` and the last reads `round 3 of 3`.
+The final record goes to stdout alone, as a table or as the response's own JSON bytes under `--output json`.
 `completed` exits 0;
 `failed` and `cancelled` exit 1 with the record's `reason`;
 `expired` exits 1 saying the artifact's retention elapsed before it was downloaded;
@@ -352,6 +360,14 @@ and `collection cancel` is what stops the work.
 `collections` takes a Service and lists its records newest first, `ID  STATE  ORIGIN  CREATED`.
 `collection get` and `collection cancel` take an identifier,
 20 lowercase Crockford base32 characters, and refuse anything else before a request is sent.
+Each prints the record one field per line:
+`id`, `state`, and `origin` always;
+`progress` once a round has been claimed, counting from one as the wait's own lines do;
+then `resolvedVersion`, `finishedAt`, `expiresAt`, and `artifactBytes`,
+each printed only by a record that carries it, so `expiresAt` says how long `download` will still work;
+and `reason` last, which only a failed or cancelled record has.
+The artifact's object name is not printed, because it is a store key and nothing a caller can act on.
+`--output json` prints the gateway's document instead, where `progress.round` is the index the gateway stored.
 `cancel` retries `409 collection_initializing` once a second for up to ten seconds,
 because it means the record is not claimable yet;
 `409 collection_terminal` is reported as it came.

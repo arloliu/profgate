@@ -98,12 +98,24 @@ type CollectionSummary struct {
 }
 
 // CollectionRecord is GET /v1/collections/{id}: the fields the table prints of the full stored record.
+// The gateway sends finishedAt and expiresAt as a timestamp or as null,
+// and each is kept as the string it sent, so one shape decodes a record that has ended and one that has not.
 type CollectionRecord struct {
-	ID       string             `json:"id"`
-	State    string             `json:"state"`
-	Origin   string             `json:"origin"`
-	Reason   string             `json:"reason"`
-	Progress CollectionProgress `json:"progress"`
+	ID              string              `json:"id"`
+	State           string              `json:"state"`
+	Origin          string              `json:"origin"`
+	Reason          string              `json:"reason"`
+	Progress        CollectionProgress  `json:"progress"`
+	ResolvedVersion string              `json:"resolvedVersion"`
+	FinishedAt      string              `json:"finishedAt"`
+	ExpiresAt       string              `json:"expiresAt"`
+	Artifact        *CollectionArtifact `json:"artifact"`
+}
+
+// CollectionArtifact is the merged profile a completed record names.
+type CollectionArtifact struct {
+	Object string `json:"object"`
+	Bytes  int64  `json:"bytes"`
 }
 
 // CollectionProgress is the owner's last checkpoint; all zero until the

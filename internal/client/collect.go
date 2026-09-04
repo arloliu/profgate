@@ -228,7 +228,8 @@ func (c *Client) Wait(ctx context.Context, id string, interval, timeout time.Dur
 			}
 			if rec.Progress != last && rec.Progress.Rounds > 0 {
 				last = rec.Progress
-				_, _ = fmt.Fprintf(w, "round %d of %d, %d ok, %d failed\n", last.Round, last.Rounds, last.SamplesOK, last.SamplesFailed)
+				// The record stores the running round as a zero-based index; the line counts it as a person does.
+				_, _ = fmt.Fprintf(w, "round %d of %d, %d ok, %d failed\n", last.Round+1, last.Rounds, last.SamplesOK, last.SamplesFailed)
 			}
 			switch rec.State {
 			case StateCompleted, StateFailed, StateCancelled, StateExpired:
