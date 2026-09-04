@@ -323,7 +323,8 @@ go build -pgo=merged.pprof ./cmd/yourapp
 The request body comes from `--duration`, `--rounds`, `--round-interval`, `--replicas all|<n>`,
 `--max-parallel`, `--target-version`, and `--retention`,
 each absent from the body when its flag is not given, so the Service's effective policy decides it;
-`--body <path>` sends a JSON file as the whole body instead and excludes the field flags.
+`--file <path>` sends a JSON file as the whole body instead and excludes the field flags,
+the same flag `pgo policy set` takes.
 The PGO routes need `pgo.enabled` on the gateway and the realm's `pgo.collect` flag.
 
 Every `collect` mints one `Idempotency-Key` and sends it on every attempt of that invocation.

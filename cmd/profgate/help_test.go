@@ -71,11 +71,11 @@ func clientHelpCases() []helpCase {
 		{
 			name: "collect", args: []string{"collect"},
 			usage: "usage: profgate collect <ns>/<svc> [--duration <d>] [--rounds <n>] [--round-interval <d>] " +
-				"[--replicas all|<n>] [--max-parallel <n>] [--target-version <v>] [--retention <d>] [--body <path>] " +
+				"[--replicas all|<n>] [--max-parallel <n>] [--target-version <v>] [--retention <d>] [--file <path>] " +
 				"[--wait] [--poll-interval <d>] [--wait-timeout <d>]",
 			flags: []string{
 				"duration", "rounds", "round-interval", "replicas", "max-parallel", "target-version",
-				"retention", "body", "wait", "poll-interval", "wait-timeout",
+				"retention", "file", "wait", "poll-interval", "wait-timeout",
 			},
 		},
 		{name: "collections", args: []string{"collections"}, usage: "usage: profgate collections <ns>/<svc>"},
@@ -299,7 +299,7 @@ func TestHelpWinsOverParsing(t *testing.T) {
 		{name: "too few positionals", args: []string{"profile", "--help"}, usage: "usage: profgate profile <ns>/<svc> <profile> [--seconds <n>] [--pod <name>] [--version <v>] [--port <n> | --port-name <name>] [-o <path>] [--open]"},
 		{name: "missing subverb", args: []string{"collection", "--help"}, usage: "usage: profgate collection get|cancel"},
 		{name: "after the positionals", args: []string{"profile", "payments/checkout", "cpu", "--help"}, usage: "usage: profgate profile <ns>/<svc> <profile> [--seconds <n>] [--pod <name>] [--version <v>] [--port <n> | --port-name <name>] [-o <path>] [--open]"},
-		{name: "after a flag with a value", args: []string{"collect", "payments/checkout", "--duration", "30s", "--help"}, usage: "usage: profgate collect <ns>/<svc> [--duration <d>] [--rounds <n>] [--round-interval <d>] [--replicas all|<n>] [--max-parallel <n>] [--target-version <v>] [--retention <d>] [--body <path>] [--wait] [--poll-interval <d>] [--wait-timeout <d>]"},
+		{name: "after a flag with a value", args: []string{"collect", "payments/checkout", "--duration", "30s", "--help"}, usage: "usage: profgate collect <ns>/<svc> [--duration <d>] [--rounds <n>] [--round-interval <d>] [--replicas all|<n>] [--max-parallel <n>] [--target-version <v>] [--retention <d>] [--file <path>] [--wait] [--poll-interval <d>] [--wait-timeout <d>]"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

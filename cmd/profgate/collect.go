@@ -24,7 +24,7 @@ const (
 )
 
 // collectVerb is POST .../collections: the body from the field flags or
-// --body, one idempotency key per invocation, and the identifier and state
+// --file, one idempotency key per invocation, and the identifier and state
 // the answer carried, then under --wait the poll of the record until it
 // ends.
 func collectVerb() verb {
@@ -32,7 +32,7 @@ func collectVerb() verb {
 	return verb{
 		name: "collect",
 		leaves: []leaf{{
-			grammar:     "collect <ns>/<svc> [--duration <d>] [--rounds <n>] [--round-interval <d>] [--replicas all|<n>] [--max-parallel <n>] [--target-version <v>] [--retention <d>] [--body <path>] [--wait] [--poll-interval <d>] [--wait-timeout <d>]",
+			grammar:     "collect <ns>/<svc> [--duration <d>] [--rounds <n>] [--round-interval <d>] [--replicas all|<n>] [--max-parallel <n>] [--target-version <v>] [--retention <d>] [--file <path>] [--wait] [--poll-interval <d>] [--wait-timeout <d>]",
 			positionals: 1,
 			flags: func(fs *flag.FlagSet) {
 				fs.StringVar(&f.duration, "duration", "", "how long each sample runs")
@@ -42,7 +42,7 @@ func collectVerb() verb {
 				fs.StringVar(&f.maxParallel, "max-parallel", "", "how many Pods are sampled at once")
 				fs.StringVar(&f.targetVersion, "target-version", "", "the binary version to profile")
 				fs.StringVar(&f.retention, "retention", "", "how long the merged profile is kept")
-				fs.StringVar(&f.body, "body", "", "send this JSON file as the request body instead of the field flags")
+				fs.StringVar(&f.file, "file", "", "send this JSON file as the request body instead of the field flags")
 				fs.BoolVar(&f.wait, "wait", false, "wait for the Collection to finish")
 				fs.DurationVar(&f.pollInterval, "poll-interval", defaultPollInterval, "how often --wait reads the record, 1s to 1m")
 				fs.DurationVar(&f.waitTimeout, "wait-timeout", defaultWaitTimeout, "how long --wait keeps reading, 1m to 24h")
@@ -61,7 +61,7 @@ func collectVerb() verb {
 // collectFlags is what the collect verb's own flags said, each field flag
 // as typed so a refusal can quote it.
 type collectFlags struct {
-	duration, rounds, roundInterval, replicas, maxParallel, targetVersion, retention, body string
+	duration, rounds, roundInterval, replicas, maxParallel, targetVersion, retention, file string
 	wait                                                                                   bool
 	pollInterval, waitTimeout                                                              time.Duration
 }
@@ -77,7 +77,7 @@ func (f collectFlags) checkWaitFlags() error {
 	return nil
 }
 
-// fieldFlagSet reports whether any field flag is set, which --body excludes.
+// fieldFlagSet reports whether any field flag is set, which --file excludes.
 func (f collectFlags) fieldFlagSet() bool {
 	for _, v := range []string{f.duration, f.rounds, f.roundInterval, f.replicas, f.maxParallel, f.targetVersion, f.retention} {
 		if v != "" {
@@ -88,19 +88,19 @@ func (f collectFlags) fieldFlagSet() bool {
 }
 
 // requestBody is the create's body:
-// the file under --body, or the field flags as the override shape of the Collection routes, each flag validated locally and a flag left unset absent,
+// the file under --file, or the field flags as the override shape of the Collection routes, each flag validated locally and a flag left unset absent,
 // so the effective policy decides it.
 func (f collectFlags) requestBody() ([]byte, error) {
-	if f.body != "" {
+	if f.file != "" {
 		if f.fieldFlagSet() {
-			return nil, fmt.Errorf("%w: --body sends a file as the whole request; pass it without the field flags", client.ErrUsage)
+			return nil, fmt.Errorf("%w: --file sends a file as the whole request; pass it without the field flags", client.ErrUsage)
 		}
-		data, err := os.ReadFile(f.body)
+		data, err := os.ReadFile(f.file)
 		if err != nil {
-			return nil, fmt.Errorf("%w: --body: %w", client.ErrUsage, err)
+			return nil, fmt.Errorf("%w: --file: %w", client.ErrUsage, err)
 		}
 		if !json.Valid(data) {
-			return nil, fmt.Errorf("%w: --body %s is not a JSON document", client.ErrUsage, f.body)
+			return nil, fmt.Errorf("%w: --file %s is not a JSON document", client.ErrUsage, f.file)
 		}
 		return data, nil
 	}

@@ -109,6 +109,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrote it to a pprof file called `json`, and was told that file had been written.
   Both verbs now refuse those two values before a request is sent, naming `--output` as the format flag.
   Nothing else is refused: `-o ./json` still writes a file called `json`.
+- **BREAKING: `collect --file` replaces `collect --body`.**
+  `collect` and `pgo policy set` named the same concept two ways: one JSON file sent as the whole request,
+  in place of the field flags.
+  `collect` now takes `--file <path>`, the name `pgo policy set` already used;
+  `--body` is gone, and no alias is registered for it.
+  A script that still sends `--body` now exits 2, `flag provided but not defined: -body`.
 
 ### Fixed
 
