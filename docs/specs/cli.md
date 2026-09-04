@@ -73,8 +73,9 @@ and prints the gateway's answers as tables or as the gateway's own JSON.
 8. **Rendering stays with `go tool pprof`.**
    `--open` writes the profile and runs `go tool pprof -http=:0` on it; the client draws nothing.
 9. **Fail loud, and print the gateway's words.**
-   An error prints the envelope's `code` and `error` unchanged;
-   a response that is not the envelope prints its status and nothing from its body.
+   An error prints the envelope's `code` and `error` unchanged,
+   and under `--output json` the envelope's own bytes go to stdout beside that line;
+   a response that is not envelope-shaped prints its status and nothing the response carried.
    Exit codes separate "the gateway refused" from "you typed it wrong" from "log in"
    (*Output and exit codes*).
 
@@ -111,8 +112,9 @@ which is what makes the two flag positions work without a parser of our own:
 the global set stops at the verb, and the verb's set starts after the verb's positionals.
 The global flags are the ones *Resolution* lists —
 they describe which gateway is being talked to, not what is being asked of it —
-and each verb registers them again alongside its own,
+and each client verb registers them again alongside its own,
 so `--server` is accepted in either position and the later occurrence wins.
+An operator command line accepts none of them (*Help*).
 Every other flag belongs to one verb.
 The rest of the grammar is fixed rather than discovered:
 **each verb declares how many positionals it takes,
@@ -153,6 +155,7 @@ without it, a bare `<service>` is a usage error naming the flag and the context 
 which is a plural that differs from its singular by one letter and is worth stating rather than hoping is obvious:
 the plural takes a Service, the singular takes an identifier, and each rejects the other's argument by grammar.
 An unknown verb, an unknown subverb, and an unknown flag each print the usage line and exit 2.
+`-h` and `--help` are not among them: where they are a help argument they print help on stdout and exit 0 (*Help*).
 
 ### 2.2 Reserved names
 
@@ -167,6 +170,81 @@ That rule is why a user's own login is `login` rather than `auth login`,
 and why the client's file is reached through `context` rather than `config set-context`:
 `auth hash` mints a bcrypt hash for `auth.basic.users` and `config validate` reads a gateway configuration file,
 and reusing either name would damage the meaning it already carries.
+
+### 2.3 Help
+
+`-h` and `--help` print help on stdout and exit 0.
+The bare binary prints the usage line and the global flags.
+A leaf command line prints its grammar line and its flags.
+A group — a name that takes a subverb — prints its grammar line and the subverbs it takes.
+
+One shape covers every command line the binary has:
+the bare binary,
+the twenty client leaves of *The verbs* — its rows, with the `context` row's four subverbs counted on their own —
+the four client groups `collection`, `pgo`, `pgo policy`, and `context`,
+and the operator command lines of *Reserved names*.
+A client command line prints the global flags of *Resolution* beside its own,
+because a client verb accepts those in either position.
+An operator command line prints only the flags it accepts and no global flag, because it accepts none:
+the dispatcher hands an operator name to its own function before the global flag set exists,
+and an operator name behind a global flag is a usage error naming that rule.
+
+| Operator command line | Help prints |
+|---|---|
+| `profgate serve` | the grammar line and `--config <path>` |
+| `profgate version` | the grammar line; the command takes no flag |
+| `profgate config` | the grammar line and its one subverb, `validate` |
+| `profgate config validate` | the grammar line and `--config <path>` |
+| `profgate auth` | the grammar line and its one subverb, `hash` |
+| `profgate auth hash` | the grammar line; the command takes no flag |
+| `profgate collector` | no grammar line: the bare binary's help beside a help argument, and exit 2 without one |
+
+`collector` names no implementation yet (*Reserved names*), so it has no grammar line to print;
+the bare binary's help is the answer any name the binary does not run gets.
+The operator command lines are in this rule because they are in this binary:
+a user meets one command line, not two halves,
+and a `--help` that answers `profgate whoami` and not `profgate serve` reads as a broken binary.
+`profgate auth hash --help` prints help and reads no password,
+because help is answered before the verb runs and the prompt is inside the verb.
+
+**Help wins over every other reading of the command line.**
+The dispatcher looks for a help argument before it strips positionals and before any flag set parses.
+An argument is that one when its name — what follows one or two leading dashes, up to an `=` — is `h` or `help`,
+which is the rule `flag` itself applies:
+`-h`, `--h`, `-help`, `--help`, and `--help=<anything>` are one flag to it and have to be one here.
+The page printed is the deepest verb and subverb the line names, wherever the help argument sits,
+so `profgate --help profile` and `profgate profile --help` are the same request.
+`profgate profile --help` therefore prints the `profile` grammar,
+not the too-few-positionals error of *Command grammar*,
+and `profgate collection --help` prints the `collection` group, not the missing-subverb error.
+A line whose verb, or whose subverb, is not one the binary has prints the bare binary's help and exits 0:
+help answers the whole line, and a name nobody recognizes is what a person asks for help about.
+
+**The search stops at a bare `--`**, because `flag` stops there,
+and a line the search and the flag set read differently is a line nobody can predict.
+The cost of the search is that a help spelling cannot be handed to a flag as a separated value:
+`--file --help` is help, because the search runs before any flag set sees the line.
+The attached form reaches it, because the name before the `=` is `file` and not `help`,
+so `--file=--help` sends a file named `--help` and `-o=--help` writes to one.
+`flag.ErrHelp` from any flag set is the same answer,
+so a line the search does not reach still prints help rather than `flag: help requested` with exit 2.
+
+| Command line | Answer |
+|---|---|
+| `profgate` | the usage line on stderr, exit 2: a bare line asks for nothing, and help is what a help argument asks for |
+| `profgate --help` | the bare binary's help on stdout, exit 0 |
+| `profgate --help profile`, `profgate profile --help` | the `profile` help on stdout, exit 0 |
+| `profgate profile payments/checkout cpu --help` | the `profile` help on stdout, exit 0, and no request |
+| `profgate collect payments/checkout --duration 30s --help` | the `collect` help on stdout, exit 0, and no request |
+| `profgate --help=0` | the bare binary's help on stdout, exit 0; the value is not read |
+| `profgate collect payments/checkout -- --help` | not help: one argument too many, a usage error on stderr, exit 2 |
+| `profgate collect payments/checkout --file=--help` | not help: `--file` receives the path `--help` |
+| `profgate frobnicate --help` | the bare binary's help on stdout, exit 0 |
+
+Help goes to stdout because it is what the command asked for,
+and a usage error goes to stderr with exit 2 because something else was asked for and could not be given.
+That split is what lets `profgate collect --help | grep retention` work
+while a mistyped flag still leaves stdout empty for the shell that was going to consume it.
 
 ---
 
@@ -697,6 +775,21 @@ so a pipe into `cut` behaves and a terminal reads.
 An empty list prints its header and nothing else, never "no results",
 because the header is what tells a script the request succeeded.
 
+**A namespace the gateway does not know is that same empty list.**
+The gateway observes no Namespace objects,
+so "the namespace exists and holds no Service" and "the namespace does not exist" are one fact to it,
+and the Service list answers `200` with an empty `services` for both ([`ui.md`](ui.md) *The realm filter*).
+There is no `namespace_not_found` to surface, and the client invents none:
+a not-found decided here would be a judgement the gateway did not make,
+which is what *Core decisions* refuses.
+`profgate services <typo>` therefore prints its header, prints no row, writes nothing to stderr, and exits 0.
+A namespace the caller's realm does not admit is the other answer, `403 realm_denied`,
+identical for a namespace that exists and one that does not ([`ui.md`](ui.md) *Errors*).
+The client cannot separate a syntactically valid typo from an empty namespace.
+`profgate whoami` prints the realm's configured lists as they are written,
+which exposes a misspelled explicit entry;
+a realm whose list is `*` carries no inventory to check a name against.
+
 `targets` takes `--port` or `--port-name`,
 which the gateway needs in order to decide eligibility (gateway *List targets*).
 It also takes `--explain`, which sends `explain=true` and prints the `excluded` rows beside the list:
@@ -771,8 +864,14 @@ the cancel with no body, because [`pgo.md`](pgo.md) *Request media type* refuses
 `collect` builds the request body of [`pgo.md`](pgo.md) *Create a Collection* from
 `--duration`, `--rounds`, `--round-interval`, `--replicas`, `--max-parallel`, `--target-version`, and `--retention`;
 a flag left unset is absent from the body, so the Service's effective policy decides it.
-`--body <path>` sends a JSON file instead and is mutually exclusive with the field flags,
+`--file <path>` sends a JSON file instead and is mutually exclusive with the field flags,
 which is how a field this client does not name yet is still sendable.
+`pgo policy set` takes the same flag under the same name (*`pgo policy`*), because it is the same concept:
+the value is a path, and the field flags build a request body too,
+so what distinguishes this way of asking is the file and not the body.
+This renames a shipped flag:
+`collect --body` is removed and replaced by `collect --file`, no alias is accepted,
+and `pgo policy set --file` is unchanged.
 The `202` prints the identifier and the state.
 
 **The identifier survives a lost response.**
@@ -851,7 +950,7 @@ because that status means "not yet claimable, retry" rather than "no" ([`pgo.md`
 `get` prints the body of [`pgo.md`](pgo.md) *Policy* and, under `--output table`,
 the effective policy with the source and any violations.
 
-`set` takes `--file <path>` holding the override document,
+`set` takes `--file <path>` holding the override document — the same flag `collect` takes (*Collections*) —
 or the field flags of `collect` plus `--enabled` and `--every`/`--jitter`.
 It then:
 
@@ -884,16 +983,53 @@ Under `json`, a verb that maps to one route copies that route's body to stdout u
 and print their metadata as JSON on stderr.
 Nothing is re-encoded, so `jq` sees the API's contract and not this client's idea of it.
 
-Errors go to stderr in one line:
+Errors go to stderr in one line, under either `--output`:
 
 ```text
 profgate: seconds_exceeds_limit: effective duration 120s exceeds the limit of 60s
 ```
 
 The `code` and the `error` string come from the gateway's envelope verbatim (gateway *Errors*).
-A response that is not the envelope — HTML from an Ingress, an empty body, truncated JSON —
-prints `HTTP <status> <reason>` and **nothing from the body**,
-the same rule the console follows for the same reason ([`ui.md`](ui.md) *Errors*).
+**Under `--output json` the envelope's own bytes also go to stdout**, copied and not rebuilt,
+so `jq .code` reads a refusal exactly as it reads every other answer
+and the promise that stdout carries the API's bytes holds for a `400` as much as for a `200`.
+The line stays on stderr for the person reading the terminal:
+the two streams have two audiences, and the exit code says which happened either way.
+Only a gateway refusal has bytes to copy, so stdout stays empty for every other failure —
+a transport error and a response that is not envelope-shaped carry no envelope,
+a usage error is decided before any request is sent,
+and composing one would put a `code` on stdout that no gateway ever sent.
+
+**Envelope-shaped** is the whole test the client applies to an error body:
+the response's `Content-Type` is `application/json`,
+and the body is one JSON object with a non-empty string `code` and a string `error`,
+`details` optional and every other field ignored (gateway *Errors*).
+The word is "envelope-shaped" and not "the envelope"
+because the client cannot prove that an Ingress did not imitate the gateway's shape;
+what it can decide is whether the bytes read like the contract, and it decides only that.
+The console applies the same test for the same reason ([`ui.md`](ui.md) *Errors*).
+
+Two answers are the same failure.
+One is a non-`2xx` whose body is not envelope-shaped: HTML from an Ingress, an empty body, truncated JSON.
+The other is a `2xx` from a route that answers JSON whose body is not exactly one valid JSON document.
+Both print one fixed line:
+
+```text
+profgate: HTTP 502 Bad Gateway: body is not a profgate JSON document
+```
+
+The status and its reason are the whole message;
+the reason is the standard text for that status, and is left out for a status that has none.
+**No response header, no body byte, and nothing derived from either is printed** —
+not the media type, not a length, not a prefix.
+A response an Ingress produced was bounded by no realm,
+so anything read out of it is a fact the caller's realm never admitted, which is what *Security* refuses,
+and it is the rule the console follows for the same reason ([`ui.md`](ui.md) *Errors*).
+A `401` in this state exits 3, because a login is still the thing that might fix it;
+every other status exits 1.
+A `2xx` carrying one JSON document is the answer the verb prints, and not this failure.
+A body that fills the client's response bound is a different failure and says so, naming the bound:
+those bytes were never read, so there is nothing to classify.
 A rejected request — DNS failure, refused connection, TLS failure —
 prints the transport error with the URL's scheme, host, and port, and no path.
 
@@ -904,6 +1040,8 @@ prints the transport error with the URL's scheme, host, and port, and no path.
 | 2 | usage: an unknown verb or flag, a bad positional, a local validation failure, a missing configuration |
 | 3 | authentication is needed: no usable token, a refresh the issuer refused, or `401 unauthenticated` |
 
+A help argument exits 0 on every command line the binary has, because printing help is what that command asked for;
+*Help* says what counts as one, and where the search for it stops.
 Exit 3 is separate from exit 1 so that a script can re-run `profgate login` on it without parsing a message.
 `403 realm_denied` is exit 1, not 3:
 a new login changes nothing when the realm is the thing refusing.
@@ -953,8 +1091,14 @@ and it does not turn a `403` into a probe.
 
 | Event | Behavior |
 |---|---|
+| `-h` or `--help` anywhere before a bare `--` | the command's help on stdout, or the bare binary's when the verb is not one; exit 0; no request is sent |
 | No context, no `--server` | exit 2 naming `--server` and `profgate context use` |
 | Context names a server that does not resolve | exit 1 with the transport error, scheme, host, and port |
+| A non-`2xx` whose body is not envelope-shaped, or a JSON route's `2xx` that is not one JSON document | the status and its reason, nothing the response carried, and exit 1 |
+| A `401` whose body is not envelope-shaped | the same line, and exit 3: a login is still the thing that might fix it |
+| A `2xx` carrying one JSON document | the success path: the verb prints it, and no diagnostic is written |
+| A gateway refusal under `--output json` | the envelope's bytes on stdout, the one-line form on stderr, and the exit code the refusal already had |
+| `services` for a namespace the gateway does not know | the header, no rows, and exit 0: the gateway answers `200` with an empty list |
 | A credential would go to a non-loopback `http://` server | exit 2 before the request, naming the URL and `https://` |
 | A credential goes to a loopback `http://` server | sent, with one warning line on stderr |
 | Cached entry's `origin` differs from the resolved gateway | the token is not sent; exit 3 naming the context and both origins |
@@ -1184,12 +1328,40 @@ The security and recovery cases come first: their absence is a defect rather tha
   `payments/checkout` resolves, a bare `checkout` resolves only with a context namespace,
   and `a/b/c` is a usage error, as *Command grammar* says;
   an unknown verb, an unknown subverb, and an unknown flag each exit 2.
+- **Help.**
+  A table over every command line the binary has —
+  the bare binary,
+  the client leaves of *The verbs* with the `context` subverbs counted on their own,
+  the client groups `collection`, `pgo`, `pgo policy`, and `context`,
+  and every operator command line: `serve`, `collector`, `version`, `config`, `config validate`, `auth`, `auth hash` —
+  asserts that `-h` and `--help` each write help to stdout and exit 0 against a refusing round tripper,
+  a leaf printing its grammar line and its flags and a group printing its subverbs,
+  with the global flags on every client line and on no operator line;
+  `-h`, `--h`, `-help`, `--help`, and `--help=0` are the same request on each of them;
+  `profgate --help profile` and `profgate profile --help` print the same page;
+  `profgate profile --help` prints help and not the too-few-positionals error,
+  and `profgate collection --help` prints help and not the missing-subverb error;
+  `--help` after `--` is one argument too many and exits 2, while `--file=--help` reaches the flag as a path;
+  an unrecognized verb and an unrecognized subverb print the bare binary's help and exit 0 beside a help argument,
+  and exit 2 without one;
+  the binary with no argument at all writes the usage line to stderr and exits 2;
+  `profgate auth hash --help` prints help against a stdin that fails the test when it is read;
+  no output carries `flag: help requested`, and no help path writes to stderr.
 - **Reserved names.**
   The dispatcher's client verb set and its operator verb set are disjoint,
   asserted over the two lists rather than by reading the switch.
 - **Errors and exit codes.**
   Each envelope prints `code: error`;
-  an HTML body, an empty body, and truncated JSON each print `HTTP <status> <reason>` and no body text;
+  a JSON object without a `code`, and a well-formed envelope under `text/plain`,
+  are each not envelope-shaped;
+  an HTML body, an empty body, truncated JSON, and a `2xx` that is not JSON each print the same fixed line,
+  `HTTP <status> <reason>: body is not a profgate JSON document`, and nothing else,
+  asserted against a response whose headers and body a metadata-printing client would have quoted;
+  a `401` in that state exits 3 and every other status exits 1,
+  while a `200` carrying one JSON document is the success path and prints the body;
+  a body that fills the response bound names the bound instead;
+  under `--output json` a refusal writes the envelope's bytes to stdout byte for byte and the one line to stderr,
+  while a transport failure, a response that is not envelope-shaped, and a usage error each leave stdout empty;
   `401` exits 3, `403 realm_denied` exits 1, a transport failure exits 1, a bad flag exits 2;
   the transport error line carries no path.
 - **Basic refusals.**
@@ -1201,6 +1373,8 @@ The security and recovery cases come first: their absence is a defect rather tha
   no verb's flag set contains a flag that disables verification.
 - **Output.** For each read verb, `--output json` writes the response body byte for byte;
   the table form of an empty list prints its header only;
+  a Service list of `[]` for a namespace prints that header, writes nothing to stderr, and exits 0,
+  and a `403 realm_denied` for a namespace the realm denies exits 1;
   a terminal and a pipe produce padded and tab-separated columns respectively.
 
 Unit, in `internal/httpapi`, over `/v1/auth`:
@@ -1382,7 +1556,10 @@ so the exported realm reproduces a device login rather than only a browser one.
 ### 13.1 Required by this revision and not yet made
 
 The table above records edits that have been made.
-This document requires no edit it has not made; the list is empty.
+[`gateway.md`](gateway.md) *CLI* lists the operator command lines
+and does not say that every one of them answers `--help`;
+that sentence belongs there,
+`serve`, `collector`, `config validate`, `auth hash`, and `version` included.
 
 ---
 
@@ -1394,3 +1571,4 @@ Edits made to this document after it was accepted, each in the change that made 
 |---|---|
 | *Collections*, *Failure table*, *Testing*, *Changes to the accepted designs* | the Idempotency-Key contract this document reads exists in [`pgo.md`](pgo.md) *Create a Collection*: a replay answers `{id, state}` with a `Location` rather than the record, `--wait` needs `pgo.read` to poll what it names, a mismatch is decided on the effective policy snapshot, and `collect` and `collection cancel` send `Content-Type: application/json` |
 | *Configuration*, *Changes to the accepted designs* | the chart renders `auth.oidc.cli` by default through `auth.oidc.cli.enabled`, and omits it beside a browser client secret under `tokenType: id`; the binary's opt-in is unchanged |
+| *Core decisions*, *Command grammar*, *Help*, *Reading*, *Collections*, *`pgo policy`*, *Output and exit codes*, *Failure scenarios*, *Testing* | a help argument prints help on stdout and exits 0 on every command line the binary has, and wins over positional and flag parsing; a refusal under `--output json` copies the envelope's bytes to stdout beside the one line on stderr; a response that is not envelope-shaped prints its status and nothing the response carried, and a `401` in that state still exits 3; a namespace the gateway does not know is the empty list it answers rather than a not-found the client invents, which no verb can tell from a typo; and the file flag of `collect` and `pgo policy set` is `--file` on both |
