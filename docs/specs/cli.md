@@ -757,6 +757,8 @@ POD                              NODE       VERSION
 checkout-7c8f8c9b9-xabcd         worker-07  1.42.3
 checkout-7c8f8c9b9-ylmno         worker-03  1.42.3
 
+selectorMatched  5
+
 REASON                  COUNT
 pod_not_ready           2
 port_name_not_declared  1
@@ -792,10 +794,11 @@ a realm whose list is `*` carries no inventory to check a name against.
 
 `targets` takes `--port` or `--port-name`,
 which the gateway needs in order to decide eligibility (gateway *List targets*).
-It also takes `--explain`, which sends `explain=true` and prints the `excluded` rows beside the list:
-one row per reason with its count, in the order the response holds them,
-after a blank line and under their own header,
-so the list keeps its shape for a script and the reasons read below it.
+It also takes `--explain`, which sends `explain=true` and prints two things beside the list, each after a blank line:
+`selectorMatched`, a key-and-value row naming how many Pods the selector matched, whether or not it is zero,
+and then the `excluded` rows under their own header,
+one row per reason with its count, in the order the response holds them.
+The list keeps its shape for a script, and the count and the reasons read below it.
 Under `--output json` the body is copied through as it is for every other reading verb,
 `selectorMatched` and `excluded` included.
 The flag is the whole addition: the verb still issues one `GET`,
@@ -1570,3 +1573,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Collections*, *Failure table*, *Testing*, *Changes to the accepted designs* | the Idempotency-Key contract this document reads exists in [`pgo.md`](pgo.md) *Create a Collection*: a replay answers `{id, state}` with a `Location` rather than the record, `--wait` needs `pgo.read` to poll what it names, a mismatch is decided on the effective policy snapshot, and `collect` and `collection cancel` send `Content-Type: application/json` |
 | *Configuration*, *Changes to the accepted designs* | the chart renders `auth.oidc.cli` by default through `auth.oidc.cli.enabled`, and omits it beside a browser client secret under `tokenType: id`; the binary's opt-in is unchanged |
 | *Core decisions*, *Command grammar*, *Help*, *Reading*, *Collections*, *`pgo policy`*, *Output and exit codes*, *Failure scenarios*, *Testing* | a help argument prints help on stdout and exits 0 on every command line the binary has, and wins over positional and flag parsing; a refusal under `--output json` copies the envelope's bytes to stdout beside the one line on stderr; a response that is not envelope-shaped prints its status and nothing the response carried, and a `401` in that state still exits 3; a namespace the gateway does not know is the empty list it answers rather than a not-found the client invents, which no verb can tell from a typo; and the file flag of `collect` and `pgo policy set` is `--file` on both |
+| *Reading* | `targets --explain` prints `selectorMatched` as a row of its own, between the target list and the `REASON  COUNT` table, so a selector that matched no Pod no longer prints two empty headers indistinguishable from a selector whose Pods were all excluded |

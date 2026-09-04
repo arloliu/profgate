@@ -432,7 +432,7 @@ func ok(n int) []int {
 
 func TestWait(t *testing.T) {
 	t.Run("pending then running then completed polls at the interval", func(t *testing.T) {
-		a := &answers{statuses: ok(3), bodies: []string{recordJSON("pending", "", 0, 0, 0, 0), recordJSON("running", "", 1, 2, 3, 0), recordJSON("completed", "", 2, 2, 6, 0)}}
+		a := &answers{statuses: ok(3), bodies: []string{recordJSON("pending", "", 0, 0, 0, 0), recordJSON("running", "", 0, 2, 3, 0), recordJSON("completed", "", 1, 2, 6, 0)}}
 		c, clock := pollClient(t, a.ServeHTTP)
 		start := clock.Now()
 		rec, body, err := c.Wait(context.Background(), "7h2k9m4p6r8t0v1w3x5y", 5*time.Second, time.Hour, io.Discard)
@@ -458,7 +458,7 @@ func TestWait(t *testing.T) {
 		}
 	})
 	t.Run("progress lines follow the record's progress", func(t *testing.T) {
-		a := &answers{statuses: ok(4), bodies: []string{recordJSON("pending", "", 0, 0, 0, 0), recordJSON("running", "", 1, 2, 3, 0), recordJSON("running", "", 1, 2, 3, 0), recordJSON("completed", "", 2, 2, 6, 1)}}
+		a := &answers{statuses: ok(4), bodies: []string{recordJSON("pending", "", 0, 0, 0, 0), recordJSON("running", "", 0, 2, 3, 0), recordJSON("running", "", 0, 2, 3, 0), recordJSON("completed", "", 1, 2, 6, 1)}}
 		c, _ := pollClient(t, a.ServeHTTP)
 		var progress bytes.Buffer
 		if _, _, err := c.Wait(context.Background(), "7h2k9m4p6r8t0v1w3x5y", time.Second, time.Hour, &progress); err != nil {
@@ -497,7 +497,7 @@ func TestWait(t *testing.T) {
 		}
 	})
 	t.Run("503 pgo_unavailable is retried", func(t *testing.T) {
-		a := &answers{statuses: []int{http.StatusServiceUnavailable, http.StatusOK}, bodies: []string{`{"error":"the store is unavailable","code":"pgo_unavailable"}`, recordJSON("completed", "", 1, 1, 1, 0)}}
+		a := &answers{statuses: []int{http.StatusServiceUnavailable, http.StatusOK}, bodies: []string{`{"error":"the store is unavailable","code":"pgo_unavailable"}`, recordJSON("completed", "", 0, 1, 1, 0)}}
 		c, clock := pollClient(t, a.ServeHTTP)
 		start := clock.Now()
 		rec, _, err := c.Wait(context.Background(), "7h2k9m4p6r8t0v1w3x5y", 3*time.Second, time.Hour, io.Discard)
@@ -550,6 +550,21 @@ func TestWait(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The progress stream counts the round a person counts,
+// so the first checkpoint of a three-round Collection reads one rather than the stored index.
+func TestWaitStreamRound(t *testing.T) {
+	a := &answers{statuses: ok(2), bodies: []string{recordJSON("running", "", 0, 3, 1, 0), recordJSON("completed", "", 2, 3, 5, 0)}}
+	c, _ := pollClient(t, a.ServeHTTP)
+	var progress bytes.Buffer
+	if _, _, err := c.Wait(context.Background(), "7h2k9m4p6r8t0v1w3x5y", time.Second, time.Hour, &progress); err != nil {
+		t.Fatal(err)
+	}
+	want := "round 1 of 3, 1 ok, 0 failed\nround 3 of 3, 5 ok, 0 failed\n"
+	if progress.String() != want {
+		t.Fatalf("progress = %q, want %q: the first round of three reads one", progress.String(), want)
+	}
 }
 
 func TestCancel(t *testing.T) {

@@ -228,10 +228,8 @@ func (env *cmdEnv) collect(ctx context.Context, in *invocation, f collectFlags) 
 		}
 		return s.Output, writeTable(env.stdout, env.terminal, nil, [][]string{{"id", created.ID}, {"state", created.State}})
 	}
-	if s.Output != "json" {
-		if err := writeTable(env.stdout, env.terminal, nil, [][]string{{"id", created.ID}, {"state", created.State}}); err != nil {
-			return s.Output, err
-		}
+	if _, err := fmt.Fprintf(env.stderr, "id: %s\nstate: %s\n", created.ID, created.State); err != nil {
+		return s.Output, err
 	}
 	return s.Output, env.wait(ctx, gw, s, created.ID, f)
 }
@@ -366,9 +364,12 @@ func (env *cmdEnv) cancel(ctx context.Context, in *invocation) (string, error) {
 	return s.Output, renderCollection(env, body)
 }
 
-// renderCollection prints the record's identifier, state, and origin, then
-// its progress once a round has been claimed and its reason when it has one,
-// which only a failed or cancelled record does.
+// renderCollection prints the record's identifier, state, and origin,
+// then its progress once a round has been claimed,
+// then the version it profiled, when it finished, when its artifact expires, and how large that artifact is,
+// each printed only by a record that carries it,
+// and last its reason when it has one, which only a failed or cancelled record does.
+// The artifact's object name is not printed: it is a store key, and nothing a caller can act on.
 func renderCollection(env *cmdEnv, body []byte) error {
 	rec, err := client.Decode[client.CollectionRecord](body)
 	if err != nil {
@@ -376,7 +377,16 @@ func renderCollection(env *cmdEnv, body []byte) error {
 	}
 	rows := [][]string{{"id", rec.ID}, {"state", rec.State}, {"origin", rec.Origin}}
 	if p := rec.Progress; p.Rounds > 0 {
-		rows = append(rows, []string{"progress", fmt.Sprintf("round %d of %d, %d ok, %d failed", p.Round, p.Rounds, p.SamplesOK, p.SamplesFailed)})
+		// The record stores the running round as a zero-based index; the row counts it as a person does.
+		rows = append(rows, []string{"progress", fmt.Sprintf("round %d of %d, %d ok, %d failed", p.Round+1, p.Rounds, p.SamplesOK, p.SamplesFailed)})
+	}
+	for _, r := range [][2]string{{"resolvedVersion", rec.ResolvedVersion}, {"finishedAt", rec.FinishedAt}, {"expiresAt", rec.ExpiresAt}} {
+		if r[1] != "" {
+			rows = append(rows, []string{r[0], r[1]})
+		}
+	}
+	if rec.Artifact != nil {
+		rows = append(rows, []string{"artifactBytes", strconv.FormatInt(rec.Artifact.Bytes, 10)})
 	}
 	if rec.Reason != "" {
 		rows = append(rows, []string{"reason", rec.Reason})

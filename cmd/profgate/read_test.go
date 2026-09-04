@@ -385,28 +385,28 @@ func TestTargetsExplain(t *testing.T) {
 		{
 			name: "counted reasons print in the order the body listed them",
 			body: explainBody,
-			want: "POD\tNODE\tVERSION\ncheckout-1\tworker-07\t1.42.3\n\nREASON\tCOUNT\npod_not_ready\t2\nport_name_not_declared\t1\n",
+			want: "POD\tNODE\tVERSION\ncheckout-1\tworker-07\t1.42.3\n\nselectorMatched\t4\n\nREASON\tCOUNT\npod_not_ready\t2\nport_name_not_declared\t1\n",
 		},
 		{
 			name:     "on a terminal both tables pad",
 			body:     explainBody,
 			terminal: true,
-			want:     "POD         NODE       VERSION\ncheckout-1  worker-07  1.42.3\n\nREASON                  COUNT\npod_not_ready           2\nport_name_not_declared  1\n",
+			want:     "POD         NODE       VERSION\ncheckout-1  worker-07  1.42.3\n\nselectorMatched  4\n\nREASON                  COUNT\npod_not_ready           2\nport_name_not_declared  1\n",
 		},
 		{
 			name: "excluded absent prints the second header alone",
 			body: `{"namespace":"payments","service":"checkout","targets":[]}`,
-			want: "POD\tNODE\tVERSION\n\nREASON\tCOUNT\n",
+			want: "POD\tNODE\tVERSION\n\nselectorMatched\t0\n\nREASON\tCOUNT\n",
 		},
 		{
 			name: "excluded empty prints the second header alone",
 			body: `{"namespace":"payments","service":"checkout","targets":[],"selectorMatched":0,"excluded":[]}`,
-			want: "POD\tNODE\tVERSION\n\nREASON\tCOUNT\n",
+			want: "POD\tNODE\tVERSION\n\nselectorMatched\t0\n\nREASON\tCOUNT\n",
 		},
 		{
 			name: "a reason outside the vocabulary prints as it arrived",
 			body: `{"namespace":"payments","service":"checkout","targets":[],"selectorMatched":1,"excluded":[{"reason":"quarantined_by_operator","count":1}]}`,
-			want: "POD\tNODE\tVERSION\n\nREASON\tCOUNT\nquarantined_by_operator\t1\n",
+			want: "POD\tNODE\tVERSION\n\nselectorMatched\t1\n\nREASON\tCOUNT\nquarantined_by_operator\t1\n",
 		},
 	}
 	for _, tc := range tables {
@@ -475,6 +475,36 @@ func TestTargetsExplain(t *testing.T) {
 		}
 		if te.stdout.String() != "" {
 			t.Fatalf("stdout = %q, want nothing", te.stdout.String())
+		}
+	})
+}
+
+// TestTargetsExplainNamesTheSelector records that the count of Pods the
+// selector matched prints as its own row between the target list and the
+// REASON table, including when it is zero:
+// that is the number that tells "the selector selected no Pod"
+// apart from "it selected Pods and every one was excluded", which two empty headers cannot.
+func TestTargetsExplainNamesTheSelector(t *testing.T) {
+	te := newTestEnv(t)
+	code, _ := runRead(t, te, explainBody, "targets", "payments/checkout", "--explain")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+	}
+	want := "POD\tNODE\tVERSION\ncheckout-1\tworker-07\t1.42.3\n\nselectorMatched\t4\n\nREASON\tCOUNT\npod_not_ready\t2\nport_name_not_declared\t1\n"
+	if te.stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", te.stdout.String(), want)
+	}
+
+	t.Run("a selector that matched nothing still prints its zero", func(t *testing.T) {
+		te := newTestEnv(t)
+		body := `{"namespace":"payments","service":"checkout","targets":[],"selectorMatched":0,"excluded":[]}`
+		code, _ := runRead(t, te, body, "targets", "payments/checkout", "--explain")
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+		}
+		want := "POD\tNODE\tVERSION\n\nselectorMatched\t0\n\nREASON\tCOUNT\n"
+		if te.stdout.String() != want {
+			t.Fatalf("stdout = %q, want %q", te.stdout.String(), want)
 		}
 	})
 }

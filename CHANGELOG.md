@@ -29,9 +29,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an operator page prints no global flag because that half accepts none,
   and a name the binary does not have prints the bare binary's help.
   `profgate whoami --help` printed `flag: help requested` on stderr and exited 2.
+- **`collection get` prints what a record's end depends on.**
+  `resolvedVersion`, `finishedAt`, `expiresAt`, and `artifactBytes` were in the gateway's document
+  and dropped by the table that read it,
+  so the table said neither which binary was profiled nor how long `download` will still work.
+  Each row is printed only by a record that carries it,
+  and the artifact's object name is not printed, because it is a store key and nothing a caller can act on.
+- **`targets --explain` names how many Pods the selector matched.**
+  A Service whose selector matched no Pod
+  and one whose selector matched Pods that were all excluded both printed two empty headers,
+  with nothing to tell them apart;
+  a `selectorMatched` row now prints between the target list and the `REASON  COUNT` table,
+  the count the gateway already sent and no renderer read.
+  It prints whether or not it is zero, and only beside `--explain`; without the flag nothing changes.
 
 ### Changed
 
+- **BREAKING: the round display counts from one.**
+  `progress.round` is the zero-based index of the running round,
+  and both printers put it on the line beside the round count,
+  so a completed three-round Collection read `round 2 of 3` and a starting one read `round 0 of 3`.
+  `collection get` and the progress lines `collect --wait` writes now read `round 3 of 3` and `round 1 of 3`.
+  The document is unchanged: under `--output json` the record still carries the index the gateway stored.
 - **BREAKING: under `--output json` a gateway refusal writes its envelope to stdout.**
   Stdout was empty on every failure, so a `jq` pipeline that read a `200` had nothing to read on a `400`;
   the gateway's own bytes are now copied there, byte for byte and not rebuilt,
@@ -44,6 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the field flags of `collect` parsed on the two that never read them and were dropped without a word;
   each subverb now registers what its own command line takes,
   and one of those flags beside `get` or `delete` is a usage error naming the flag.
+- **BREAKING: `collect --wait` sends its receipt to stderr.**
+  Table mode printed `id` and `state` to stdout before polling,
+  so a `--wait` run left two documents on stdout once the final record arrived;
+  `--output json` printed no receipt at all, so a `jq` caller had no identifier until the record did.
+  Both modes now print `id: <id>` and `state: <state>` to stderr before the first poll,
+  and stdout carries the final record alone, table or JSON.
+  `collect` without `--wait` is unchanged: there the receipt is the document the command produced.
 - **A usage error prints the grammar of the command line it was given.**
   A `context` subverb printed its cause with no grammar line below it,
   which every other verb's usage error already prints, and now prints its own:
