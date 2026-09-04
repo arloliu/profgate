@@ -32,6 +32,7 @@ import {
   startOutcome,
   cancelOutcome,
   startNext,
+  progressText,
 } from "./collectionmodel.js";
 
 const html = htm.bind(h);
@@ -1308,10 +1309,7 @@ class App extends Component {
           <dd>${text(c.state)}</dd>
           ${showReason ? html`<dt>reason</dt><dd>${text(c.reason)}</dd>` : null}
           <dt>progress</dt>
-          <dd>
-            round ${text(progress.round)} of ${text(progress.rounds)}, samples ok ${text(progress.samplesOK)}, failed
-            ${text(progress.samplesFailed)}
-          </dd>
+          <dd>${progressText(progress) || "-"}</dd>
           <dt>createdBy</dt>
           <dd>${text(c.createdBy)}</dd>
           <dt>createdAt</dt>
