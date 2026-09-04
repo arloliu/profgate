@@ -110,9 +110,11 @@ and it disagreed with the chart.
 
 - [ ] No client verb answers `--help`: the flag set writes to `io.Discard` (`cmd/profgate/client.go:300`)
   and nothing handles `flag.ErrHelp`, so `--help` prints `flag: help requested` and exits 2.
-  The ten global flags appear in no output the binary can produce.
-  `docs/specs/cli.md:155` makes an unknown flag a usage error and never mentions `--help`;
-  the revision says `--help` on any verb prints the grammar and the flags and exits 0, one shape for all eighteen verbs.
+  The eleven global flags appear in no output the binary can produce.
+  [`cli.md`](../specs/cli.md) *Help* gives the shape:
+  `-h` and `--help` print the grammar line and the command's own flags on stdout and exit 0,
+  the global flags beside a client verb's own and on no operator command line,
+  one shape for every command line the binary has.
 - [ ] `profgate auth hash --help` prints `Password:` and waits on stdin forever (`cmd/profgate/auth.go:28-40`).
 - [ ] `-n` and `-o` are the kubectl reflexes; `-n` fails without naming `--namespace`,
   and `-o json` on `profile` writes a pprof file named `json` (`cmd/profgate/profile.go:36`).
@@ -125,17 +127,19 @@ and it disagreed with the chart.
   so nothing says how long `download` will still work.
 - [ ] `collect --wait` prints the receipt and the final record on stdout in table mode
   and never prints the receipt under `--output json` (`cmd/profgate/collect.go:225-229`);
-  `docs/cli.md:316` and `docs/specs/cli.md:827` both say only the final record goes to stdout.
+  `docs/cli.md:316` and [`cli.md`](../specs/cli.md) *Collections* both say only the final record goes to stdout.
   The receipt goes to stderr in both modes.
 - [ ] `targets --explain` on a Service whose selector matches no Pod prints two empty headers;
   the table never shows `selectorMatched`, the number that separates "selects nothing" from "selected and all excluded".
-- [ ] Under `--output json` an error is still one text line on stderr and nothing on stdout (`docs/specs/cli.md:881-893`);
-  a `2xx` with a body that is not an envelope prints `profgate: HTTP 200 OK` (`docs/specs/cli.md:894-895`);
+- [ ] Under `--output json` an error is still one text line on stderr and nothing on stdout (`cmd/profgate/exit.go:48`);
+  a `2xx` with a body that is not an envelope prints `profgate: HTTP 200 OK` (`internal/client/client.go:168`);
   `services <unknown namespace>` prints a header and exits 0;
   `collect --body` and `pgo policy set --file` name one concept twice.
-  The revision settles each: an error envelope on stdout under `--output json`,
-  a message that names the malformed body, a `404 namespace_not_found` the gateway already answers surfaced rather than swallowed,
-  and one flag name.
+  [`cli.md`](../specs/cli.md) defines each: the envelope's bytes on stdout under `--output json`,
+  a fixed line naming the status and nothing the response carried,
+  the header and exit 0 kept as the honest rendering of a `200` with an empty list,
+  which is what the gateway answers for a namespace it does not know — there is no `namespace_not_found` —
+  and `--file` as the one flag name.
 - [ ] Small wording: `logout` is silent on success and loud when nothing is cached;
   `login --context` creates a context and does not select it, and says nothing about `context use`;
   `context delete` of the current context is silent;
