@@ -348,6 +348,77 @@ func TestCollectionCreateWhileOneIsLive(t *testing.T) {
 	}
 }
 
+// TestRefusalsNameTheNextStep proves that a refusal whose remedy lives at another route says so:
+// each of the four messages below keeps its code and gains a clause naming where to look,
+// so a caller does not have to already know the gateway's shape to find it.
+func TestRefusalsNameTheNextStep(t *testing.T) {
+	cases := []struct {
+		name   string
+		code   string
+		clause string
+		do     func(t *testing.T) *httptest.ResponseRecorder
+	}{
+		{
+			name:   "port_not_allowed",
+			code:   "port_not_allowed",
+			clause: "GET /v1/limits lists the admitted selections",
+			do: func(t *testing.T) *httptest.ResponseRecorder {
+				h := newHarness(baseTarget())
+
+				return h.do(t, http.MethodGet, profilePath+"heap?port=7000")
+			},
+		},
+		{
+			name:   "no_targets",
+			code:   "no_targets",
+			clause: "GET /v1/namespaces/{namespace}/services/{service}/targets?explain=true counts the reasons",
+			do: func(t *testing.T) *httptest.ResponseRecorder {
+				h := newHarness()
+
+				return h.do(t, http.MethodGet, profilePath+"heap")
+			},
+		},
+		{
+			name:   "collection_in_progress",
+			code:   "collection_in_progress",
+			clause: "GET /v1/namespaces/{namespace}/services/{service}/collections lists it",
+			do: func(t *testing.T) *httptest.ResponseRecorder {
+				h := newPGOHarness(t, pgoOpts{})
+				rec := h.seedRecord(t, h.newRecord(pgo.StateRunning))
+				h.seedActive(t, fixtureNamespace, fixtureService, rec.ID)
+
+				return h.doPGO(t, http.MethodPost, collectionsPath, `{}`, jsonType())
+			},
+		},
+		{
+			name:   "pgo_disabled",
+			code:   "pgo_disabled",
+			clause: "the gateway's pgo.enabled is false",
+			do: func(t *testing.T) *httptest.ResponseRecorder {
+				h := newPGOHarness(t, pgoOpts{})
+				h.configure(func(cfg *config.Config) { cfg.PGO.Enabled = false })
+
+				return h.doPGO(t, http.MethodPost, collectionsPath, `{}`, jsonType())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := tc.do(t)
+
+			code, message := errorBodyOf(t, rec)
+			if code != tc.code {
+				t.Fatalf("code = %q, want %q", code, tc.code)
+			}
+			want := "; " + tc.clause
+			if !strings.HasSuffix(message, want) {
+				t.Errorf("message = %q, want it to end in %q", message, want)
+			}
+		})
+	}
+}
+
 // TestCollectionCreateAtTheLiveCeiling proves the live-Collection ceiling is
 // answered before any write.
 func TestCollectionCreateAtTheLiveCeiling(t *testing.T) {

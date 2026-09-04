@@ -30,7 +30,7 @@ var (
 	errCollectionInProgress = &requestError{
 		status:  http.StatusTooManyRequests,
 		code:    CodeCollectionInProgress,
-		message: "the service already has a live collection",
+		message: "the service already has a live collection; GET /v1/namespaces/{namespace}/services/{service}/collections lists it",
 	}
 	errRateLimited = &requestError{
 		status:  http.StatusTooManyRequests,

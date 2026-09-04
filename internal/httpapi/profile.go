@@ -359,7 +359,7 @@ func portNotAllowed(field, sent string) *requestError {
 	return &requestError{
 		status:  http.StatusBadRequest,
 		code:    CodePortNotAllowed,
-		message: fmt.Sprintf("port %q is not allowed by this gateway", sent),
+		message: fmt.Sprintf("port %q is not allowed by this gateway; GET /v1/limits lists the admitted selections", sent),
 		details: []errorDetail{paramFault(detailNotAdmitted, field, sent+" is not an admitted selection")},
 	}
 }
@@ -394,7 +394,7 @@ func selectTarget(targets []k8s.Target, params profileParams, choose func(n int)
 		return k8s.Target{}, &requestError{
 			status:  http.StatusServiceUnavailable,
 			code:    CodeNoTargets,
-			message: "service has no eligible targets",
+			message: "service has no eligible targets; GET /v1/namespaces/{namespace}/services/{service}/targets?explain=true counts the reasons",
 		}
 	}
 

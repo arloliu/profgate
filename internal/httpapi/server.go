@@ -445,7 +445,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var sess *pgo.Session
 	if rt.kind.isPGO() {
 		if !cfg.PGO.Enabled {
-			q.fail(w, &requestError{status: http.StatusNotImplemented, code: CodePGODisabled, message: "pgo collection is not enabled"})
+			q.fail(w, &requestError{status: http.StatusNotImplemented, code: CodePGODisabled, message: "pgo collection is not enabled; the gateway's pgo.enabled is false"})
 
 			return
 		}
