@@ -152,7 +152,7 @@ func TestCollectBody(t *testing.T) {
 			}
 		})
 	}
-	t.Run("--body sends the file", func(t *testing.T) {
+	t.Run("--file sends the file", func(t *testing.T) {
 		te := newTestEnv(t)
 		ct := accepting()
 		path := filepath.Join(t.TempDir(), "body.json")
@@ -160,7 +160,7 @@ func TestCollectBody(t *testing.T) {
 		if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if code := runCollect(te, ct, "payments/checkout", "--body", path); code != 0 {
+		if code := runCollect(te, ct, "payments/checkout", "--file", path); code != 0 {
 			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
 		}
 		if ct.bodies[0] != file {
@@ -383,9 +383,9 @@ func TestCollectLocalRefusals(t *testing.T) {
 		args       []string
 		wantStderr []string
 	}{
-		{name: "--body beside a field flag", args: []string{"--body", jsonPath, "--rounds", "2"}, wantStderr: []string{"--body"}},
-		{name: "--body that is not JSON", args: []string{"--body", notJSON}, wantStderr: []string{"body.yaml", "JSON"}},
-		{name: "--body that does not exist", args: []string{"--body", filepath.Join(dir, "missing.json")}, wantStderr: []string{"missing.json"}},
+		{name: "--file beside a field flag", args: []string{"--file", jsonPath, "--rounds", "2"}, wantStderr: []string{"--file"}},
+		{name: "--file that is not JSON", args: []string{"--file", notJSON}, wantStderr: []string{"body.yaml", "JSON"}},
+		{name: "--file that does not exist", args: []string{"--file", filepath.Join(dir, "missing.json")}, wantStderr: []string{"missing.json"}},
 		{name: "--duration not a duration", args: []string{"--duration", "thirty"}, wantStderr: []string{"--duration", "thirty"}},
 		{name: "--duration zero", args: []string{"--duration", "0s"}, wantStderr: []string{"--duration", "0s"}},
 		{name: "--rounds zero", args: []string{"--rounds", "0"}, wantStderr: []string{"--rounds", "0"}},
@@ -410,6 +410,36 @@ func TestCollectLocalRefusals(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCollectBodyFlagIsGone asserts --body registers no alias for --file:
+// the removed spelling is refused as an unknown flag, before any request.
+func TestCollectBodyFlagIsGone(t *testing.T) {
+	te := newTestEnv(t)
+	code := runCollect(te, refusingTransport(t), "payments/checkout", "--body", "/dev/null")
+	if code != 2 {
+		t.Fatalf("code = %d, want 2 (stderr=%q)", code, te.stderr.String())
+	}
+	if !strings.Contains(te.stderr.String(), "flag provided but not defined: -body") {
+		t.Fatalf("stderr = %q, want flag provided but not defined: -body", te.stderr.String())
+	}
+}
+
+// TestCollectFileTakesAHelpSpelling asserts the attached form reaches --file
+// as a path rather than as help: the name before the = is file,
+// so the flag receives the literal value --help and the refusal names that file.
+func TestCollectFileTakesAHelpSpelling(t *testing.T) {
+	te := newTestEnv(t)
+	code := runCollect(te, refusingTransport(t), "payments/checkout", "--file=--help")
+	if code != 2 {
+		t.Fatalf("code = %d, want 2 (stderr=%q)", code, te.stderr.String())
+	}
+	if !strings.Contains(te.stderr.String(), "--file") || !strings.Contains(te.stderr.String(), "--help") {
+		t.Fatalf("stderr = %q, want --file naming the file --help", te.stderr.String())
+	}
+	if te.stdout.String() != "" {
+		t.Fatalf("stdout = %q, want nothing: this is not help", te.stdout.String())
 	}
 }
 
