@@ -180,6 +180,9 @@ func (c *Client) JSON(ctx context.Context, req Request) ([]byte, http.Header, er
 // build assembles the request and attaches the credential under the
 // plaintext rule: only an https:// URL, or a loopback http:// URL with one
 // warning line each time.
+// A non-loopback plaintext URL is refused before the credential is asked for,
+// and the warning follows the credential it describes,
+// so a request that never obtained one announces nothing.
 func (c *Client) build(ctx context.Context, req Request) (*http.Request, error) {
 	u := c.settings.Server.JoinPath(req.Path)
 	u.RawQuery = req.Query.Encode()
@@ -201,11 +204,11 @@ func (c *Client) build(ctx context.Context, req Request) (*http.Request, error) 
 	if err != nil {
 		return nil, err
 	}
-	if loopback {
-		_, _ = fmt.Fprintf(c.warn, "profgate: warning: sending a credential over plaintext to %s\n", u)
-	}
 	if err := c.credential.Apply(ctx, r); err != nil {
 		return nil, err
+	}
+	if loopback {
+		_, _ = fmt.Fprintf(c.warn, "profgate: warning: sending a credential over plaintext to %s\n", u)
 	}
 	return r, nil
 }

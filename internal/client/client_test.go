@@ -375,3 +375,76 @@ func TestDoSurfacesTheBound(t *testing.T) {
 		}
 	})
 }
+
+// TestPlaintextWarningFollowsTheCredential pins the order of the loopback warning
+// and the credential it describes:
+// a credential that is never obtained is never announced.
+func TestPlaintextWarningFollowsTheCredential(t *testing.T) {
+	obtained := time.Date(2026, 8, 28, 9, 30, 12, 0, time.UTC)
+	now := func() time.Time { return obtained.Add(time.Hour) }
+
+	// build serves one loopback http:// gateway, which is what httptest
+	// listens on, with e as the only cached entry.
+	build := func(t *testing.T, e Entry) (*Client, *bytes.Buffer, *int) {
+		t.Helper()
+		requests := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("{}\n"))
+		}))
+		t.Cleanup(srv.Close)
+		store, _, _ := testStore(t)
+		s := settingsFor(t, srv.URL)
+		s.CacheName = "prod"
+		e.Origin = s.Origin
+		if err := store.Write("prod", e); err != nil {
+			t.Fatal(err)
+		}
+		iss, err := NewIssuer(IssuerOptions{Now: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var warn bytes.Buffer
+		c, err := New(Options{Settings: s, Credential: CachedCredential(store, iss, s, now), Now: now, Warn: &warn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c, &warn, &requests
+	}
+
+	t.Run("an expired entry with no refresh token warns about nothing", func(t *testing.T) {
+		e := testEntry()
+		e.ExpiresAt = obtained.Add(time.Minute)
+		e.RefreshToken = ""
+		c, warn, requests := build(t, e)
+		_, _, err := c.JSON(context.Background(), Request{Method: http.MethodGet, Path: "/v1/whoami"})
+		if !errors.Is(err, ErrLoginNeeded) {
+			t.Fatalf("err = %v, want %v", err, ErrLoginNeeded)
+		}
+		if warn.Len() != 0 {
+			t.Fatalf("warning = %q, want none: no credential was sent", warn.String())
+		}
+		if *requests != 0 {
+			t.Fatalf("requests = %d, want 0", *requests)
+		}
+	})
+
+	t.Run("a usable entry warns and sends the request", func(t *testing.T) {
+		e := testEntry()
+		e.ExpiresAt = obtained.Add(2 * time.Hour)
+		c, warn, requests := build(t, e)
+		if _, _, err := c.JSON(context.Background(), Request{Method: http.MethodGet, Path: "/v1/whoami"}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(warn.String(), "profgate: warning: sending a credential over plaintext to http://127.0.0.1:") {
+			t.Fatalf("warning = %q, want the loopback warning", warn.String())
+		}
+		if !strings.HasSuffix(warn.String(), "/v1/whoami\n") {
+			t.Fatalf("warning = %q, want it to name the request's URL", warn.String())
+		}
+		if *requests != 1 {
+			t.Fatalf("requests = %d, want 1", *requests)
+		}
+	})
+}

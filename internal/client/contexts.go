@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -119,12 +120,72 @@ func LoadFile(path string) (*File, error) {
 	dec.KnownFields(true)
 	var f File
 	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, nameDecodeErrorKeys(path, err)
 	}
 	if err := validateFile(&f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &f, nil
+}
+
+// nameDecodeErrorKeys rewrites the strict decode's error so an unknown key names the file, the line, and the key,
+// and never the Go type the decoder matched the file against,
+// which is a fact about this program's source and not about the reader's file.
+// The error the decoder returns is a *yaml.TypeError whose Errors are the entries,
+// and an unknown-key entry reads "line <n>: field <name> not found in type <T>";
+// the rewrite reads that wording, which the library does not promise to keep,
+// so the tests assert the rewritten form and fail rather than restore the old message.
+// No node walk is needed:
+// the keys of File, Context, and AuthSnap are distinct from one another,
+// so the name the entry carries is the key to print.
+// An error that is not the library's entry list, a syntax error, gains the file alone.
+func nameDecodeErrorKeys(path string, err error) error {
+	var typeErr *yaml.TypeError
+	if !errors.As(err, &typeErr) {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	lines := make([]string, 0, len(typeErr.Errors))
+	for _, entry := range typeErr.Errors {
+		lines = append(lines, path+": "+nameDecodeEntryKey(entry))
+	}
+
+	return &decodeError{message: strings.Join(lines, "\n"), cause: err}
+}
+
+// decodeError is the strict decode's error with its entries rewritten;
+// the library's error stays the cause, so errors.As still reaches the *yaml.TypeError.
+type decodeError struct {
+	message string
+	cause   error
+}
+
+func (e *decodeError) Error() string { return e.message }
+
+func (e *decodeError) Unwrap() error { return e.cause }
+
+// nameDecodeEntryKey rewrites one unknown-key entry into
+// "line <n>: <name> is not a contexts-file key",
+// and returns an entry whose wording it does not recognize unchanged,
+// so nothing is lost where the library says something else.
+func nameDecodeEntryKey(entry string) string {
+	lineText, rest, ok := strings.Cut(entry, ": ")
+	if !ok || !strings.HasPrefix(lineText, "line ") {
+		return entry
+	}
+	line, err := strconv.Atoi(strings.TrimPrefix(lineText, "line "))
+	if err != nil {
+		return entry
+	}
+	after, found := strings.CutPrefix(rest, "field ")
+	if !found {
+		return entry
+	}
+	name, _, found := strings.Cut(after, " not found in type ")
+	if !found {
+		return entry
+	}
+
+	return fmt.Sprintf("line %d: %s is not a contexts-file key", line, name)
 }
 
 // SaveFile writes the contexts file through the atomic write.
@@ -187,25 +248,30 @@ func UseContext(f *File, name string) error {
 // when the save fails the credential is already gone,
 // and running again completes the removal
 // because Delete treats a missing entry as done.
-func DeleteContext(ctx context.Context, f *File, name string, s *Store, save func(*File) error) (err error) {
+// cleared reports that the deleted name was the selected one,
+// which is read only where err is nil,
+// so what the command says is composed where the streams are.
+func DeleteContext(ctx context.Context, f *File, name string, s *Store, save func(*File) error) (cleared bool, err error) {
 	if err := requireContext(f, name); err != nil {
-		return err
+		return false, err
 	}
 	release, err := s.Lock(ctx, name)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
 		err = errors.Join(err, release())
 	}()
 	if err := s.Delete(name); err != nil {
-		return err
+		return false, err
 	}
 	delete(f.Contexts, name)
 	if f.CurrentContext == name {
 		f.CurrentContext = ""
+		cleared = true
 	}
-	return save(f)
+
+	return cleared, save(f)
 }
 
 // requireContext is the usage error for a name the file does not hold.

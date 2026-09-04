@@ -59,12 +59,28 @@ func (env *cmdEnv) runContext(ctx context.Context, in *invocation) error {
 		}
 		return client.SaveFile(path, f)
 	default:
-		store, err := env.store()
-		if err != nil {
-			return err
-		}
-		return client.DeleteContext(ctx, f, name, store, func(f *client.File) error { return client.SaveFile(path, f) })
+		return env.deleteContext(ctx, f, path, name)
 	}
+}
+
+// deleteContext removes the context and its cache entry and says what it did:
+// the deletion always, and the selection that went with it when the name was the selected one.
+// Both lines are on stderr, because the command produced no document.
+func (env *cmdEnv) deleteContext(ctx context.Context, f *client.File, path, name string) error {
+	store, err := env.store()
+	if err != nil {
+		return err
+	}
+	cleared, err := client.DeleteContext(ctx, f, name, store, func(f *client.File) error { return client.SaveFile(path, f) })
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(env.stderr, "deleted context %s\n", name)
+	if cleared {
+		_, _ = fmt.Fprintln(env.stderr, "no context is selected; select one with profgate context use")
+	}
+
+	return nil
 }
 
 // listContexts prints one row per context in name order, the current one

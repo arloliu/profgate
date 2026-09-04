@@ -56,8 +56,8 @@ type LogoutInput struct {
 	Settings Settings
 	Issuer   *Issuer
 	Store    *Store
-	Stdout   io.Writer // the notice that nothing was cached
-	Stderr   io.Writer // the revocation warning
+	Stdout   io.Writer // nothing: logout fetches no document
+	Stderr   io.Writer // the revocation warning and the line saying what happened
 }
 
 // AuthDiagnostic wraps a 401 answered to a token the client believes valid with the issuer and the client identifier the token was obtained for,
@@ -354,8 +354,10 @@ func loginBasic(ctx context.Context, in LoginInput) (Whoami, error) {
 	return w, nil
 }
 
-// recordLogin makes the selected context's auth block the snapshot the login used and writes the file;
+// recordLogin makes the named context's auth block the snapshot the login used and writes the file;
 // --server alone with no context writes nothing.
+// The name is not selected: --context says which context this one command speaks through,
+// so a name that is not the selected one gets a line on stderr naming the command that selects it.
 // The cache entry stays when the write fails: the login succeeded and the
 // snapshot did not record it.
 func recordLogin(in LoginInput, snap AuthSnap) error {
@@ -369,6 +371,10 @@ func recordLogin(in LoginInput, snap AuthSnap) error {
 	f.RecordLogin(in.Settings, snap)
 	if err := in.SaveFile(f); err != nil {
 		return fmt.Errorf("the login succeeded and its token is cached, but the contexts file was not updated: %w", err)
+	}
+	if in.Settings.ContextName != f.CurrentContext {
+		_, _ = fmt.Fprintf(in.Stderr, "context %s is not the selected context; select it with profgate context use %s\n",
+			in.Settings.ContextName, in.Settings.ContextName)
 	}
 	return nil
 }
@@ -402,6 +408,8 @@ func unauthorized(err error) bool {
 // A revocation failure is a warning, because a local credential outliving a
 // failed revocation is the worse outcome; a deletion failure says the
 // credential remains and names the file.
+// Both outcomes, the deletion and the entry that was not there, are reported on stderr:
+// logout fetches no document, so nothing it says belongs on stdout.
 func Logout(ctx context.Context, in LogoutInput) (err error) {
 	if in.Stdout == nil {
 		in.Stdout = io.Discard
@@ -424,7 +432,7 @@ func Logout(ctx context.Context, in LogoutInput) (err error) {
 		return err
 	}
 	if !ok {
-		_, _ = fmt.Fprintf(in.Stdout, "nothing is cached for %s\n", in.Settings.describe())
+		_, _ = fmt.Fprintf(in.Stderr, "nothing is cached for %s\n", in.Settings.describe())
 		return nil
 	}
 	if e.RefreshToken != "" {
@@ -433,6 +441,7 @@ func Logout(ctx context.Context, in LogoutInput) (err error) {
 	if err := in.Store.Delete(name); err != nil {
 		return fmt.Errorf("the credential remains on disk; remove %s: %w", in.Store.path(name, ".json"), err)
 	}
+	_, _ = fmt.Fprintf(in.Stderr, "logged out of %s\n", in.Settings.describe())
 	return nil
 }
 

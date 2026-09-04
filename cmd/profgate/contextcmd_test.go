@@ -489,3 +489,44 @@ func TestContextLeafPositionals(t *testing.T) {
 		})
 	}
 }
+
+// TestContextDeleteSpeaks pins what a successful delete says on stderr, and
+// that clearing the selection is said as well.
+func TestContextDeleteSpeaks(t *testing.T) {
+	t.Run("a context that was not selected says what was deleted", func(t *testing.T) {
+		te := newTestEnv(t)
+		writeContextFile(t, te, threeContexts)
+		if code := runContext(te, "delete", "staging"); code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+		}
+		if te.stderr.String() != "deleted context staging\n" {
+			t.Fatalf("stderr = %q, want the line naming what was deleted", te.stderr.String())
+		}
+		if te.stdout.Len() != 0 {
+			t.Fatalf("stdout = %q, want nothing", te.stdout.String())
+		}
+	})
+
+	t.Run("the selected context says the selection is gone", func(t *testing.T) {
+		te := newTestEnv(t)
+		writeContextFile(t, te, threeContexts)
+		if code := runContext(te, "delete", "prod"); code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, te.stderr.String())
+		}
+		want := "deleted context prod\nno context is selected; select one with profgate context use\n"
+		if te.stderr.String() != want {
+			t.Fatalf("stderr = %q, want %q", te.stderr.String(), want)
+		}
+	})
+
+	t.Run("a name the file does not hold says only the refusal", func(t *testing.T) {
+		te := newTestEnv(t)
+		writeContextFile(t, te, threeContexts)
+		if code := runContext(te, "delete", "nope"); code != 2 {
+			t.Fatalf("code = %d, stderr = %q; want 2", code, te.stderr.String())
+		}
+		if strings.Contains(te.stderr.String(), "deleted context") {
+			t.Fatalf("stderr = %q, want no deletion line", te.stderr.String())
+		}
+	})
+}
