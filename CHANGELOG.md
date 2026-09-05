@@ -202,6 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the pool grew with every Pod ever profiled.
   The transport now keeps at most 100 idle connections and closes one idle for 90 seconds,
   the standard transport's values; two per Pod, as before.
+  A client fetching several short profiles from one Pod still reuses its connection.
 - **A request body that arrives slowly is refused after ten seconds.**
   A PGO route read its JSON body with no bound once the headers were in,
   so a body sent one byte at a time held a handler goroutine for as long as the client chose,
@@ -213,7 +214,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The deadline is now set when a request with a body enters the handler,
   so a refused request whose body never arrives no longer holds the connection.
   The bound is a constant, as the header bound is; there is no key for it.
-  A client fetching several short profiles from one Pod still reuses its connection.
 - **An idle connection is closed after two minutes, and `net/http`'s own lines are JSON on stdout.**
   A keep-alive connection that sent nothing after its last request was held until the process exited;
   both listeners now close it after 120 seconds.

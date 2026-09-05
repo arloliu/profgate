@@ -469,16 +469,24 @@ Two tests, one per package, both on real sockets.
 | Test | What it asserts, and how it fails today |
 |---|---|
 | `TestDo/a client that stops reading is cut at the budget`, `internal/proxy/proxy_test.go` | an `httptest.Server` whose handler calls `f.p.Do` under `context.WithTimeout(r.Context(), 500*time.Millisecond)` and sends the outcome and the elapsed time on a channel; the upstream (`f.upstream`, `:98-105`) writes 64 KiB chunks with a `Flush` after each until its request context ends; the client is a raw `net.Dial` that writes a `GET`, reads until the blank line that ends the headers, and then holds the socket open without reading. `Do` returns within 1.5 seconds with `upstream_stream_failed`, committed. Today `Do` does not return while the socket is held: the loopback buffers fill within milliseconds and `w.Write` blocks with no deadline, so the test's wait of 3 seconds expires and the blocked write ends only at cleanup when the client's socket closes |
-| `TestProfileProxy/a client that stops reading releases its slot`, `internal/httpapi/server_test.go`, beside the committed-stream-failure test at `:714-772` | `h.gate = admit.New(1)` (`internal/httpapi/fixtures_test.go:456`), `h.upstream = proxy.New(proxy.Options{})`, a `newTrap` upstream (`:407-435`) streaming as above, `setBudgetGrace(handler, 500*time.Millisecond)`, `httptest.NewServer(handler)`; the same raw client. Within 2 seconds: `h.gate.TryAcquire()` succeeds (`internal/admit/gate.go:22-29`), the audit record is `upstream_stream_failed` (the `h.audits` poll at `:753-767`), and `h.rec.snapshot()`'s in-flight count is 0 (`:769-771`). Today the slot never comes back while the socket is held, because `release()` is deferred at `internal/httpapi/server.go:709` and the handler is blocked in the write |
+| `TestProxyOutcomes/a client that stops reading releases its slot`, `internal/httpapi/server_test.go`, beside the committed-stream-failure test at `:714-772` | `h.gate = admit.New(1)` (`internal/httpapi/fixtures_test.go:456`), `h.upstream = proxy.New(proxy.Options{})`, a `newTrap` upstream (`:407-435`) streaming as above, `setBudgetGrace(handler, 500*time.Millisecond)`, `httptest.NewServer(handler)`; the same raw client. Within 2 seconds: `h.gate.TryAcquire()` succeeds (`internal/admit/gate.go:22-29`), the audit record is `upstream_stream_failed` (the `h.audits` poll at `:753-767`), and `h.rec.snapshot()`'s in-flight count is 0 (`:769-771`). Today the slot never comes back while the socket is held, because `release()` is deferred at `internal/httpapi/server.go:709` and the handler is blocked in the write |
+
+| `TestDo/an HTTP/2 stream reset at the budget is upstream_stream_failed`, `internal/proxy/proxy_test.go` | an `httptest` server with `EnableHTTP2` started by `StartTLS`, whose handler calls `f.p.Do` under a context that carries the budget's end and no timer, so the write deadline's stream reset is the only thing that fires at the end; the upstream commits 64 KiB and then holds; the client reads the headers through `srv.Client()` and stops. `Do` returns `upstream_stream_failed`, committed. Without a classification of a cancellation at or after the budget's end it returns `client_gone`: under HTTP/2 the deadline resets the stream rather than failing a write, the reset cancels the request context, and the cancellation reaches the upstream read |
+
+Both stalled-client rows hand `Do` a writer that records `SetWriteDeadline` and forwards it to the connection,
+and assert the recorded deadline is the budget's end read from `ctx.Deadline()`;
+a wrong deadline fails them where a missing one only stalls them.
 
 The red state:
 
 ```bash
 go test -race -count=1 ./internal/proxy/ -run 'TestDo/a_client_that_stops_reading'
-go test -race -count=1 ./internal/httpapi/ -run 'TestProfileProxy/a_client_that_stops_reading'
+go test -race -count=1 ./internal/httpapi/ -run 'TestProxyOutcomes/a_client_that_stops_reading'
+go test -race -count=1 ./internal/proxy/ -run 'TestDo/an_HTTP/2_stream_reset'
 ```
 
-Both time out on their own waits and report the handler still blocked.
+The first two time out on their own waits and report the handler still blocked;
+the third reports `client_gone`.
 
 - [x] **Arm the deadline at commit and say so**
 
@@ -579,7 +587,7 @@ sending the headers `doPGO` sends (`:1814-1830`) by hand over a raw `net.Conn`.
 The red state:
 
 ```bash
-go test -race -count=1 ./internal/httpapi/ -run 'TestDecodeBody/a_body_that_drips|TestDecodeBody/a_claimed_body'
+go test -race -count=1 ./internal/httpapi/ -run 'TestPGOBodiesAreBounded/a_body_that_drips|TestPGOBodiesAreBounded/a_claimed_body'
 ```
 
 Both report the client's read timing out with no response.
@@ -873,13 +881,13 @@ the counter is a `CounterVec` on `result` (`internal/metrics/prometheus.go:58-60
 | Test | What it asserts, and how it fails today |
 |---|---|
 | `TestConfirm/caller cancelled`, `internal/k8s/confirm_test.go`, beside `api timeout` (`:257-280`) | the same blocking `get` reactor; the context is `context.WithCancel`, cancelled from the test once the reactor has been entered; `Confirm` returns within a second with an error for which `errors.Is(err, context.Canceled)` holds and `errors.Is(err, ErrDiscoveryUnavailable)` does not. Today it returns `ErrDiscoveryUnavailable` with the cause flattened into text. `api timeout` stays green: `DeadlineExceeded` is still `unavailable` |
-| `TestProfileProxy/a client gone during confirmation is client_gone`, `internal/httpapi/server_test.go` | `fakeDiscovery` (`internal/httpapi/fixtures_test.go:151-159`) gains a `confirmBlocks bool` under which `Confirm` waits on `ctx.Done()` and returns `ctx.Err()`; the request is built with `httptest.NewRequestWithContext` under a cancellable context, run on a goroutine, and cancelled once `confirmCalls` reads 1; then: the body is empty, the audit record has status 0 and code `client_gone` (`h.expectAudit`, `:711`), and the second value of `h.rec.snapshot()` (`:371`), the confirm results, is exactly `["client_gone"]`. Today the response is `503 discovery_unavailable` and the results are `["unavailable"]` |
+| `TestProxyOutcomes/a client gone during confirmation is client_gone`, `internal/httpapi/server_test.go` | `fakeDiscovery` (`internal/httpapi/fixtures_test.go:151-159`) gains a `confirmBlocks bool` under which `Confirm` waits on `ctx.Done()` and returns `ctx.Err()`; the request is built with `httptest.NewRequestWithContext` under a cancellable context, run on a goroutine, and cancelled once `confirmCalls` reads 1; then: the body is empty, the audit record has status 0 and code `client_gone` (`h.expectAudit`, `:711`), and the second value of `h.rec.snapshot()` (`:371`), the confirm results, is exactly `["client_gone"]`. Today the response is `503 discovery_unavailable` and the results are `["unavailable"]` |
 
 The red state:
 
 ```bash
 go test -race -count=1 ./internal/k8s/ -run 'TestConfirm/caller_cancelled'
-go test -race -count=1 ./internal/httpapi/ -run 'TestProfileProxy/a_client_gone_during_confirmation'
+go test -race -count=1 ./internal/httpapi/ -run 'TestProxyOutcomes/a_client_gone_during_confirmation'
 ```
 
 - [x] **Return the cancellation and say so**
@@ -1049,23 +1057,24 @@ which is the interval before `Close` the mechanism exists for.
 
 | Test | What it asserts, and how it fails today |
 |---|---|
-| `TestProfileProxy/the drain cut mid-stream is drain_expired, a closed socket is client_gone`, `internal/httpapi/server_test.go` | `proxy.New` over a streaming `newTrap`; the raw client reads the headers and keeps draining the body on a goroutine, so nothing but the cut ends the stream. After the cut: the audit record, polled as at `:753-767`, is `drain_expired`, the metrics row is `drain_expired`, and the client's read ends in `io.ErrUnexpectedEOF`, the truncation the abort produces. The mirror closes the client's socket instead: `client_gone`. Today the first says `client_gone`, and the client's read ends cleanly |
-| `TestProfileProxy/the drain cut during confirmation audits drain_expired and counts client_gone` | the blocking `fakeDiscovery.Confirm` of the previous task, the request over the socket; after the cut: the audit record is status 0 `drain_expired`, the confirm results in `h.rec.snapshot()` are exactly `["client_gone"]`, and the client reads zero bytes before `io.EOF`. Today the audit says `client_gone`, and the client reads an empty `200` |
+| `TestProxyOutcomes/the drain cut mid-stream is drain_expired, a closed socket is client_gone`, `internal/httpapi/server_test.go` | `proxy.New` over a streaming `newTrap`; the raw client reads the headers and keeps draining the body on a goroutine, so nothing but the cut ends the stream. After the cut: the audit record, polled as at `:753-767`, is `drain_expired`, the metrics row is `drain_expired`, and the client's read ends in `io.ErrUnexpectedEOF`, the truncation the abort produces. The mirror closes the client's socket instead: `client_gone`. Today the first says `client_gone`, and the client's read ends cleanly |
+| `TestProxyOutcomes/the drain cut during confirmation audits drain_expired and counts client_gone` | the blocking `fakeDiscovery.Confirm` of the previous task, the request over the socket; after the cut: the audit record is status 0 `drain_expired`, the confirm results in `h.rec.snapshot()` are exactly `["client_gone"]`, and the client reads zero bytes before `io.EOF`. Today the audit says `client_gone`, and the client reads an empty `200` |
 | `TestAStoreCallHeldAcrossTheDrainCutWritesNothing`, `internal/httpapi/pgo_collections_test.go` | `fakeKV.Get` (`internal/httpapi/fixtures_test.go:932-953`) ignores its context today and signals nothing when it is entered; the fake gains a `blockUntilCancelled bool` under which `Get` closes a per-fixture `getStarted` channel and then waits on `ctx.Done()` and returns `ctx.Err()`; the request is `GET` of a seeded Collection over the socket, which reaches `readCollection` (`internal/httpapi/pgo.go:131-136`); the test receives from `getStarted` before it cancels the drain context, so the call is held across the cut and not merely preceded by it; after the cut: the client reads zero bytes before `io.EOF` and the audit record is `drain_expired`. Today the store's error is mapped to `503 pgo_unavailable` (`:177-178`) and the client reads that envelope |
 | `TestADownloadCutByTheDrainIsTruncated` | a seeded completed Collection with an object the fake store serves in pieces, held mid-copy the same way, over the socket; the client reads the headers and drains; after the cut: `io.ErrUnexpectedEOF` on the client and `drain_expired` in the audit record, the row the download's outcome table carries (`docs/specs/pgo.md:2474`). Today `client_gone` and a body that ends cleanly |
 | `TestAuthRoutes/an exchange held across the drain cut writes nothing`, `internal/httpapi/auth_test.go` | `fakeRoutes` (`:64-80`) gains a `blockUntilCancelled bool` under which `ServeAuth` closes an entered channel, waits on `r.Context().Done()`, and then writes `503 auth_unavailable` with `ReasonExchange`, the answer the browser gives a cancelled exchange (`internal/auth/browser.go:364-368`); the request is `GET /auth/callback` over the socket; the test receives from the entered channel, cuts, and asserts the client reads zero bytes before `io.EOF`, the audit record is `route=auth_callback`, status 0, `drain_expired`, and no `AuthFailure` was recorded. Today the client reads the `503` envelope and the audit says `auth_unavailable` |
-| `TestServeAuth/a token exchange held across the drain bound is drain_expired`, `cmd/profgate/serve_test.go` | `testIssuer` (`:2022-2057`) gains a `/token` case that, under a `holdToken` flag, waits on its request context and answers nothing; the gateway runs the browser flow with `limits{cpu: 1, trace: 1}` as `drain bound` does; a raw TLS client fetches `/auth/login`, keeps the transaction cookie and the `state` of the `Location`, and sends `GET /auth/callback?code=x&state=<state>` with the cookie, holding the socket; `gw.stopOnce()`; after the bound the cut cancels the exchange, the issuer's held request ends with it, the client reads zero bytes before `io.EOF`, and the `request` record with `route` `auth_callback` carries `drain_expired`. Today the record carries `auth_unavailable`, because the cancelled exchange is answered `503` in the interval before `Close`. The subtest takes 31 seconds, as `drain bound` does |
+| `TestProxyOutcomes/a timeout that lands with the drain cut is drain_expired`, `internal/httpapi/server_test.go` | an upstream that waits for the budget to end, signals, and answers `upstream_timeout` before headers only once the test lets it; `setBudgetGrace(handler, 100*time.Millisecond)`; the test cuts between the expiry and the answer, with the socket open. The client reads zero bytes before `io.EOF` and the audit record is status 0 `drain_expired`. Without an abort after `Do` for a cut request the handler returns normally, `net/http` writes an empty `200`, and the record keeps `upstream_timeout` |
+| `TestAStoreCallHeldWhenTheClientLeavesIsClientGone`, `internal/httpapi/pgo_collections_test.go` | the held `Get` of the row above; the client closes its socket instead of the cut. The audit record is status 0 `client_gone`, the metrics row is `client_gone`, and the handler wrote neither a status nor a byte, read through a writer that records both. Without the cancellation check in `fail` the cancelled call is answered `503 pgo_unavailable` to a socket nobody reads and audited so |
+| `TestAuthRoutes/an exchange held when the client leaves is client_gone`, `internal/httpapi/auth_test.go` | the held `ServeAuth` of the row above; the client closes its socket instead of the cut. The audit record is `route=auth_callback`, status 0, `client_gone`, no `AuthFailure` is recorded, and the route wrote nothing. Without the check at the `/auth/` boundary the record says `auth_unavailable` and an authentication failure is counted |
+| `TestServePGO/a store call held across the drain bound is drain_expired`, `cmd/profgate/serve_test.go` | the gateway runs with `limits{cpu: 1, trace: 1}` over a jobs store whose `Get` waits for its context; a raw client sends `GET` of a Collection over a socket it holds, the test waits for the store to be entered, then `gw.stopOnce()`; after the bound the client reads zero bytes before `io.EOF` and the `request` record for that Collection carries status 0 and `drain_expired`. Today the record carries `pgo_unavailable` and the client reads that envelope. The row shortens the drain's slack to two seconds through `serveDeps.drainSlack` and takes three. It stands where two rows could not be built. `TestServe/drain bound` cannot assert the cut's cause in `fakeUpstream.Do`: the request budget of effective duration plus 30 seconds always ends before the drain bound of the longest duration plus 30 seconds, so the upstream sees `DeadlineExceeded` and never the cut. A token exchange held across the drain bound cannot be observed in `cmd/profgate`: the exchange runs under `issuerRequestTimeout`, ten seconds, which answers `503 auth_unavailable` long before the bound |
 | `TestAClientThatLeavesMidWaitIsAudited` (`:3067-3082`) and the existing download cancel | unchanged and green: a cancel with no cause is still `client_gone` |
-| `TestServe/drain bound` (`cmd/profgate/serve_test.go:1021-1043`) | `fakeUpstream.Do` (`:113-120`) records `context.Cause(ctx)` when its context ends before `release` and keeps blocking on `release`, so every drain row keeps the timing it has; the subtest asserts the recorded cause is `httpapi.ErrDrainExpired` after exit. Today it is `context.Canceled`: `Close` cancels with no cause |
 
 The red state:
 
 ```bash
-go test -race -count=1 ./internal/httpapi/ -run 'TestProfileProxy/the_drain_cut|HeldAcrossTheDrainCut|CutByTheDrain|TestAuthRoutes/an_exchange'
-go test -race -count=1 ./cmd/profgate/ -run 'TestServe/drain_bound|TestServeAuth/a_token_exchange'
+go test -race -count=1 ./internal/httpapi/ -run 'TestProxyOutcomes/the_drain_cut|HeldAcrossTheDrainCut|CutByTheDrain|TestAuthRoutes/an_exchange'
+go test -race -count=1 ./internal/httpapi/ -run 'TestProxyOutcomes/a_timeout_that_lands|HeldWhenTheClientLeaves|TestAuthRoutes/an_exchange_held_when'
+go test -race -count=1 ./cmd/profgate/ -run 'TestServePGO/a_store_call_held'
 ```
-
-The last two take 31 seconds each.
 
 - [x] **Classify the cut and say so**
 

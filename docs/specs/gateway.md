@@ -2931,4 +2931,4 @@ Updated with the implementation:
 | `internal/httpapi` | the read deadline armed at the handler's entry for every request with a body, again around `decodeBody` and `rejectBody`, and retained after a failed read; the drain cause read on every route so a drain cut is `drain_expired`; `drain_expired` in the audit-only list of `codes.go` and its test |
 | `internal/k8s` | `klog.SetSlogLogger` before the client is built; a client gone during `Confirm` returned as a cancellation, not `ErrDiscoveryUnavailable` |
 | `internal/metrics` | `client_gone` as a `result` of `profgate_confirm_total` |
-| `cmd/profgate` | `IdleTimeout` and `ErrorLog` at `error` on both servers; the drain context every API request derives from, cancelled with the `drain_expired` cause when the bound ends; every fatal startup path takes the shutdown mode that skips `server.drainDelay` |
+| `cmd/profgate` | `IdleTimeout` and `ErrorLog` at `error` on both servers; the drain context every API request derives from, cancelled with the `drain_expired` cause when the bound ends; the fatal startup paths still take `drainEndpoints`, and the delay is spent only once `/readyz` has answered 200 |

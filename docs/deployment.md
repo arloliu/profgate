@@ -424,6 +424,8 @@ On SIGTERM the gateway drains in this order:
 2. The gateway waits `server.drainDelay` (default 5s) with the API listener still open,
    the window the EndpointSlice controllers and every kube-proxy get to stop routing new requests here.
    The image is distroless and runs no preStop hook, so the gateway waits in process.
+   Only a replica that has been ready spends this wait:
+   nothing was ever routed to one whose `/readyz` never answered 200, so it exits without the delay.
 3. Two drains run in parallel:
    the API drain, bounded by the longer of `limits.cpuSeconds` and `limits.traceSeconds` plus 30 seconds,
    and the Collection drain, which stops renewing the lease on every Collection this replica owns
