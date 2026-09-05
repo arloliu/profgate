@@ -210,6 +210,9 @@ topologySpreadConstraints: []
 # container port the Deployment declares.
 # With networkPolicy.enabled, opsFromNamespaces has to name the namespace the
 # scraper runs in, or the scrape is refused.
+# The rendered scrape drops the endpoint target label the operator writes from
+# that port name, because it would otherwise displace the endpoint label the
+# gateway sets on profgate_requests_total to exported_endpoint.
 podMonitor:
   enabled: false
   interval: 30s

@@ -24,4 +24,15 @@ spec:
     - port: ops
       path: /metrics
       interval: {{ .Values.podMonitor.interval | quote }}
+      # prometheus-operator writes a target label named endpoint holding the
+      # port name above, always ops here, and the gateway sets an endpoint
+      # label of its own on profgate_requests_total. Without this drop the
+      # target label wins and the gateway's value is renamed to
+      # exported_endpoint, so a query scoped endpoint="profile" matches
+      # nothing. A relabeling runs before the scrape, so the collision never
+      # arises; a metric relabeling runs after the rename and would leave the
+      # name gone from both sides.
+      relabelings:
+        - action: labeldrop
+          regex: endpoint
 {{- end }}

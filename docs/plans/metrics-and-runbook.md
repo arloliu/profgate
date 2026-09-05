@@ -730,7 +730,7 @@ Where a Prometheus scrapes those Pods from a configuration of its own,
 it attaches whatever target labels that configuration writes,
 and the gateway's `endpoint` collides there only if that configuration sets one.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 `TestChartPodMonitor` (`deploy/chart_test.go:963`) gains a third subtest beside `off by default` and `on`,
 because the file keeps one test per template.
@@ -754,7 +754,7 @@ go test ./deploy/ -run 'TestChartPodMonitor'
 The rendered endpoint carries no relabelings, so the new subtest fails on an empty list.
 The `off by default` and `on` subtests pass before and after.
 
-- [ ] **Drop the target label, and say so where the scrape is documented**
+- [x] **Drop the target label, and say so where the scrape is documented**
 
 The template gains the `relabelings` block above,
 with a comment saying what the operator writes, what the gateway sets,
@@ -777,7 +777,7 @@ a dashboard or rule reading `exported_endpoint` stops matching and reads `endpoi
 and `up{endpoint="ops"}` and the other per-scrape series lose a label whose value was always `ops`.
 The kustomize install renders no `PodMonitor` and is unchanged.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 helm template deploy/chart/profgate --set podMonitor.enabled=true \

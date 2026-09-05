@@ -486,6 +486,9 @@ It selects Pods rather than a Service, because the ops port is absent from the S
 so the endpoint names the container port rather than a Service port.
 With `networkPolicy.enabled`, `opsFromNamespaces` has to name the namespace the scraper runs in,
 or the scrape is refused before it reaches the port.
+The rendered `PodMonitor` drops the `endpoint` target label prometheus-operator writes from that port name,
+so the `endpoint` label in the table above reaches a query under that name instead of `exported_endpoint`;
+`up` and the other per-scrape series carry no `endpoint` as a result.
 
 `prometheusRule.enabled` (default `false`) renders a `PrometheusRule` over metrics from the table above:
 `ProfgateNotReady` on `profgate_discovery_synced == 0`,

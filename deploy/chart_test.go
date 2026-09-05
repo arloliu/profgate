@@ -947,9 +947,13 @@ type podMonitor struct {
 			MatchNames []string `json:"matchNames"`
 		} `json:"namespaceSelector"`
 		PodMetricsEndpoints []struct {
-			Port     string `json:"port"`
-			Path     string `json:"path"`
-			Interval string `json:"interval"`
+			Port        string `json:"port"`
+			Path        string `json:"path"`
+			Interval    string `json:"interval"`
+			Relabelings []struct {
+				Action string `json:"action"`
+				Regex  string `json:"regex"`
+			} `json:"relabelings"`
 		} `json:"podMetricsEndpoints"`
 	} `json:"spec"`
 }
@@ -1012,6 +1016,29 @@ func TestChartPodMonitor(t *testing.T) {
 			if got := pm.Spec.Selector.MatchLabels[key]; got != want {
 				t.Errorf("selector.matchLabels[%q] = %q, want the Deployment's %q", key, got, want)
 			}
+		}
+	})
+
+	// prometheus-operator writes a target label named endpoint holding the port name,
+	// which displaces the endpoint label the gateway sets on profgate_requests_total to exported_endpoint.
+	// The drop has to be a relabeling and not a metric relabeling:
+	// the first runs before the scrape, so no collision arises,
+	// while the second runs after the rename and would leave the name gone from both sides.
+	t.Run("drops the operator's endpoint target label", func(t *testing.T) {
+		pm := render[podMonitor](t, "podmonitor.yaml", "--set", "podMonitor.enabled=true")
+
+		if len(pm.Spec.PodMetricsEndpoints) != 1 {
+			t.Fatalf("podMetricsEndpoints = %+v, want exactly one", pm.Spec.PodMetricsEndpoints)
+		}
+		relabelings := pm.Spec.PodMetricsEndpoints[0].Relabelings
+		if len(relabelings) != 1 {
+			t.Fatalf("podMetricsEndpoints[0].relabelings = %+v, want exactly one", relabelings)
+		}
+		if relabelings[0].Action != "labeldrop" {
+			t.Errorf("relabelings[0].action = %q, want labeldrop", relabelings[0].Action)
+		}
+		if relabelings[0].Regex != "endpoint" {
+			t.Errorf("relabelings[0].regex = %q, want the label name the gateway exports, endpoint", relabelings[0].Regex)
 		}
 	})
 }

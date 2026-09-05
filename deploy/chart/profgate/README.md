@@ -480,6 +480,11 @@ The endpoint therefore names the container port the Deployment declares rather t
 With `networkPolicy.enabled`, `networkPolicy.opsFromNamespaces` has to name the namespace the scraper runs in,
 or the scrape is refused before it reaches the port.
 
+The rendered `PodMonitor` drops the `endpoint` target label prometheus-operator writes from that port name,
+so `profgate_requests_total`'s own `endpoint` reaches a query under that name instead of `exported_endpoint`.
+`up` and the other per-scrape series carry no `endpoint` as a result;
+its value was always the constant `ops`, since this `PodMonitor` declares one endpoint.
+
 `prometheusRule.enabled` renders a `PrometheusRule` with alerts over metrics the gateway already exports,
 three always and a fourth only when `pgo.enabled`:
 

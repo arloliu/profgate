@@ -134,6 +134,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The alert now names that gate, names the three readiness gates it does not report,
   and says that the gauge is also `0` while an issuer or a Kubernetes preflight keeps the informers from starting.
   The expression, the window, and the severity are unchanged.
+- **BREAKING: the chart's `PodMonitor` drops the `endpoint` target label.**
+  prometheus-operator writes one from the port name, the gateway sets its own `endpoint` on
+  `profgate_requests_total`,
+  and with `honorLabels` unset the scrape renamed the gateway's value to `exported_endpoint`,
+  so no query or rule scoped `endpoint="profile"` matched anything.
+  The target label is now dropped before the scrape and the gateway's value arrives as `endpoint`.
+  On an install already running `podMonitor.enabled: true`,
+  a dashboard or rule reading `exported_endpoint` stops matching and reads `endpoint` instead,
+  and `up{endpoint="ops"}` and the other per-scrape series lose a label whose value was always `ops`.
+  The kustomize install renders no `PodMonitor` and is unchanged.
 
 ### Fixed
 
