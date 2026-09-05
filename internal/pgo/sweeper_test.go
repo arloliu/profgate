@@ -701,8 +701,12 @@ func TestSweeperProbeCleanup(t *testing.T) {
 		r.clock.Set(newest.Add(orphanAge + 2*skewMargin))
 		sweepNow(t, r.newSweeper())
 
-		if got := r.logs.with("pgo: listing probe keys failed"); len(got) != 1 {
+		got := r.logs.with("pgo: listing probe keys failed")
+		if len(got) != 1 {
 			t.Fatalf("probe-listing records are %v, want one", got)
+		}
+		if bucket := got[0].Attrs["bucket"]; bucket != "PROFGATE_CONFIG" {
+			t.Fatalf("the record names bucket %v, want PROFGATE_CONFIG, the name the store has in NATS", bucket)
 		}
 		if got := r.recorder.storeFailureRows(); len(got) != 1 || got[storeOpProbeList] != 1 {
 			t.Fatalf("store failure rows are %v, want one %s", got, storeOpProbeList)

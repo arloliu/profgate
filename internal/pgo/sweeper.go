@@ -428,10 +428,12 @@ func (s *Sweeper) sweepActive(ctx context.Context, jobs natskv.KV) {
 func (s *Sweeper) sweepProbes(
 	ctx context.Context, stores natskv.Stores, objects []natskv.ObjectInfo, listed bool, now time.Time,
 ) {
+	// name is the bucket as NATS administration and the preflight's records name it;
+	// internal/natskv keeps the names unexported.
 	buckets := []struct {
 		name string
 		kv   natskv.KV
-	}{{name: "config", kv: stores.Config}, {name: "jobs", kv: stores.Jobs}}
+	}{{name: "PROFGATE_CONFIG", kv: stores.Config}, {name: "PROFGATE_JOBS", kv: stores.Jobs}}
 	for _, b := range buckets {
 		keys, err := b.kv.Keys(ctx, probeKeyPrefix)
 		if err != nil {
