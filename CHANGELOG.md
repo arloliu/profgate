@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `selectorMatched` row now prints between the target list and the `REASON  COUNT` table,
   the count the gateway already sent and no renderer read.
   It prints whether or not it is zero, and only beside `--explain`; without the flag nothing changes.
+- **The deployment guide names every value the `code` label takes.**
+  The forty envelope codes by the tables that hold them, the eight audit-only outcomes in full,
+  and the `upstream_<status>` family;
+  and it says that `profgate_confirm_total` and `profgate_profiles_in_flight` count the interactive path alone.
 
 ### Changed
 

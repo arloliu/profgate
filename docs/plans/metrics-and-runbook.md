@@ -1292,7 +1292,7 @@ and records nothing: `grep -rn "Recorder.Confirm\|ProfilesInFlight(" internal/ c
 So a Collection's samples confirm their targets and are counted by neither metric,
 and a reader who takes either for a total under-counts every sample the collection loops ran.
 
-- [ ] **Write it where the label is documented**
+- [x] **Write it where the label is documented**
 
 `docs/deployment.md`, after the `endpoint` paragraph at `:472-476`:
 the three families above, with the eight listed and the forty pointed at by document.
@@ -1309,7 +1309,7 @@ The forty envelope codes by the tables that hold them, the eight audit-only outc
 and the `upstream_<status>` family;
 and it says that `profgate_confirm_total` and `profgate_profiles_in_flight` count the interactive path alone.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/deployment.md CHANGELOG.md

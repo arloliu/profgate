@@ -451,8 +451,8 @@ All metrics are on the ops port at `/metrics`.
 |---|---|---|---|
 | `profgate_requests_total` | counter | `endpoint`, `profile`, `code` | Completed `/v1` requests |
 | `profgate_request_duration_seconds` | histogram | `profile` | Duration of completed `/v1` requests |
-| `profgate_confirm_total` | counter | `result` | Pod confirmation attempts |
-| `profgate_profiles_in_flight` | gauge | | Profile fetches currently in progress |
+| `profgate_confirm_total` | counter | `result` | Pod confirmation attempts, on the interactive profile path |
+| `profgate_profiles_in_flight` | gauge | | Profile fetches currently in progress, on the interactive profile path |
 | `profgate_discovery_synced` | gauge | | 1 once the initial discovery sync has completed; never back to 0 |
 | `profgate_collections_total` | counter | `result` | Collections, by terminal result |
 | `profgate_collection_samples_total` | counter | `result` | Collection worker samples |
@@ -476,6 +476,22 @@ All metrics are on the ops port at `/metrics`.
 `profile` is `none` for all five.
 `ui`'s `code` is one of `ok`, `route_unknown`, `method_not_allowed`, or `internal_error` —
 a closed set derived from the status the console wrote, not the raw HTTP status.
+
+The `code` label's value set is closed apart from one family, so a query can match it on an exact value.
+Forty values are registered envelope codes;
+[specs/gateway.md](specs/gateway.md) and [specs/pgo.md](specs/pgo.md) *Errors* hold the tables that name them,
+and `/v1/openapi.json` serves the same set.
+`collector_unavailable` is one of the forty and no route in this build answers it, so it never appears on a series.
+Eight more values reach this label and the audit log but never an error envelope:
+`ok`, `upstream_stream_failed`, `internal_error`, `auth_redirect`,
+`cas_contended`, `artifact_stream_failed`, `client_gone`, and `cancelled`.
+`auth_redirect` is the browser navigation sent to login;
+it is not a failure and is not counted in `profgate_auth_failures_total`.
+The last family, `upstream_<status>`, is minted from any upstream response of `400` and above,
+so its members are HTTP statuses rather than a fixed list.
+`profgate_confirm_total` and `profgate_profiles_in_flight` count the interactive profile path alone:
+a Collection's own confirmation attempts are counted by neither one,
+and a Collection's worker samples are counted instead by `profgate_collection_samples_total`.
 
 `podMonitor.enabled` (default `false`) renders a prometheus-operator `PodMonitor` for that port.
 It is off by default because it needs the `monitoring.coreos.com` custom resource definitions
