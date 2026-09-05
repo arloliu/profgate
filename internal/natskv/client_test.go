@@ -903,7 +903,7 @@ func TestObjects(t *testing.T) {
 		}
 	})
 
-	t.Run("a 2 MiB object drained over ten seconds returns every byte", func(t *testing.T) {
+	t.Run("a 2 MiB object drained over three seconds returns every byte", func(t *testing.T) {
 		f := startFixture(t)
 		f.c.callTimeout = time.Second
 		data := f.putBytes(t, "slow.pprof", 2<<20)
@@ -912,7 +912,7 @@ func TestObjects(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get: %v", err)
 		}
-		// 64 reads of 32 KiB, 150 milliseconds apart: about ten seconds for a reader whose deadline is one.
+		// 64 reads of 32 KiB, 45 milliseconds apart: about three seconds for a reader whose deadline is one.
 		got := make([]byte, 0, len(data))
 		buf := make([]byte, 32<<10)
 		for {
@@ -924,7 +924,7 @@ func TestObjects(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read after %d bytes: %v", len(got), err)
 			}
-			time.Sleep(150 * time.Millisecond)
+			time.Sleep(45 * time.Millisecond)
 		}
 		if err := r.Close(); err != nil {
 			t.Fatalf("close: %v", err)
@@ -934,7 +934,7 @@ func TestObjects(t *testing.T) {
 		}
 	})
 
-	t.Run("a reader that holds one chunk for ten seconds is not failed", func(t *testing.T) {
+	t.Run("a reader that holds one chunk for three seconds is not failed", func(t *testing.T) {
 		f := startFixture(t)
 		f.c.callTimeout = time.Second
 		name, data, s := stalledAt(t, f, 2)
@@ -947,7 +947,8 @@ func TestObjects(t *testing.T) {
 		if _, err := io.ReadFull(r, first); err != nil {
 			t.Fatalf("read chunk 1: %v", err)
 		}
-		time.Sleep(10 * time.Second)
+		// The pump is held before its next pull for three times the deadline.
+		time.Sleep(3 * f.c.callTimeout)
 		s.free()
 		rest, err := io.ReadAll(r)
 		if err != nil {
