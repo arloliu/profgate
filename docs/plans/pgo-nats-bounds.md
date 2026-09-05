@@ -607,7 +607,7 @@ which the orphan rule removes.
 `failure` (`:427-440`) gains `jetstream.ErrAsyncPublishTimeout` among the errors it maps to `ErrUnavailable`.
 `pre` and `post` stay as they are.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Four subtests of `TestObjects` and one of `TestSweeperOrphanObjects`.
 `fixtures_test.go` gains `gatedReader`, an `io.Reader` over a byte slice that delivers one 128 KiB chunk
@@ -634,7 +634,7 @@ The red state:
 go test -race -count=1 ./internal/natskv/ -run 'TestObjects/a_put_that_takes_six_seconds|TestObjects/a_put_whose_acknowledgements'
 ```
 
-- [ ] **Pass the context through and say so**
+- [x] **Pass the context through and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **An upload follows the collector's work context.**
@@ -644,7 +644,7 @@ The upload now runs under the owner's work context, whose cutoff the committed l
 nats.go bounds each chunk's acknowledgement by its own five seconds,
 so a store that stops acknowledging still fails the attempt.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/natskv/client.go internal/natskv/natskv.go CHANGELOG.md

@@ -331,6 +331,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bytes follow the request, so a slow client is served to the end,
   and a store that stops delivering ends the stream one deadline into the wait,
   audited `artifact_stream_failed` as before.
+- **An upload follows the collector's work context.**
+  The seam bounded the whole `Put` of a merged profile at five seconds,
+  so an artifact the store could not take in that time failed the Collection `artifact_store_failed`.
+  The upload now runs under the owner's work context, whose cutoff the committed lease sets;
+  nats.go bounds each chunk's acknowledgement by its own five seconds,
+  so a store that stops acknowledging still fails the attempt.
 
 ## [0.5.0] - 2026-09-03
 

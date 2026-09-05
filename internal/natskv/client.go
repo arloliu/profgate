@@ -446,11 +446,13 @@ func (ws *watchState) syncedUnder(gen uint64) bool {
 
 // failure maps timeouts and connection errors to ErrUnavailable and leaves
 // every other error as it came, for the caller to wrap.
+// ErrAsyncPublishTimeout is the acknowledgement timer a Put runs under a context with no deadline.
 func failure(err error) error {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded),
 		errors.Is(err, context.Canceled),
 		errors.Is(err, nats.ErrTimeout),
+		errors.Is(err, jetstream.ErrAsyncPublishTimeout),
 		errors.Is(err, nats.ErrConnectionClosed),
 		errors.Is(err, nats.ErrConnectionDraining),
 		errors.Is(err, nats.ErrNoResponders),
@@ -834,13 +836,19 @@ func (v *objView) post() error {
 	return v.c.genCheck(v.gen)
 }
 
+// Put uploads r under name, bounded by the caller's context and by nothing of the seam's.
+// When that context carries no deadline,
+// nats.go bounds the metadata read and each chunk's acknowledgement by its own five seconds,
+// so a store that stops acknowledging still fails the upload.
+// A cancelled upload is ErrUnavailable, and whether an object stands under the name is then indeterminate:
+// nats.go publishes the metadata before it waits for the last acknowledgements,
+// and its cleanup of the partial object runs under the same cancelled context.
+// Such an object carries the attempt's name and no record names it, so the sweeper's orphan rule removes it.
 func (v *objView) Put(ctx context.Context, name string, r io.Reader) error {
 	if err := v.pre(); err != nil {
 		return err
 	}
-	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
-	defer cancel()
-	_, err := v.obs.Put(cctx, jetstream.ObjectMeta{Name: name}, r)
+	_, err := v.obs.Put(ctx, jetstream.ObjectMeta{Name: name}, r)
 	if perr := v.post(); perr != nil {
 		return perr
 	}

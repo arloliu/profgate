@@ -2,6 +2,7 @@ package pgo
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -309,6 +310,53 @@ func TestSweeperOrphanObjects(t *testing.T) {
 		}
 		if got := r.recorder.sweeperDeletes(); len(got) != 0 {
 			t.Fatalf("sweeper deletes are %v, want none", got)
+		}
+	})
+
+	t.Run("an upload that outlived its acknowledgement is swept", func(t *testing.T) {
+		f := startPGO(t)
+		pod := newPodServer(t, "pod-a", "1.42.3", fixtureProfile(t, "cpu-a.pprof"))
+		id := f.seedClaimable("payment", "payment-api", roundsPolicy)
+		object := fmt.Sprintf("%s-1.pprof", id)
+
+		// The object lands and the seam reports the upload unavailable,
+		// which is what an acknowledgement lost after the last chunk leaves:
+		// the attempt fails naming nothing, and the object stands under the attempt's name.
+		hook := &kvHook{}
+		hook.setAfter(func(op, key string, err error) error {
+			if op == "put" && key == object && err == nil {
+				return natskv.ErrUnavailable
+			}
+
+			return err
+		})
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+
+		w := r.newRoundsWorker(newTestRounds(t, roundsOpts{
+			discovery: newFakeDiscovery(pod.target), clock: r.clock, recorder: r.recorder, logs: r.logs,
+		}))
+		scanNow(t, w)
+		waitFor(t, "the collection failed", func() bool { return f.record(id).State == StateFailed })
+		rec := f.record(id)
+		if rec.Reason != ReasonArtifactStoreFailed || rec.Artifact != nil {
+			t.Fatalf("record failed %q naming %+v, want %q naming nothing", rec.Reason, rec.Artifact, ReasonArtifactStoreFailed)
+		}
+		if got := f.readObject(r, object); len(got) == 0 {
+			t.Fatalf("the object %s is empty, want the merged profile", object)
+		}
+
+		r.clock.Set(f.objectModTime(r, object).Add(orphanAge + 2*skewMargin))
+		sweepNow(t, r.newSweeper())
+
+		if got := f.objectNames(r); len(got) != 0 {
+			t.Fatalf("the bucket still holds %v, want the unacknowledged upload gone", got)
+		}
+		if got := r.recorder.sweeperDeletes(); got[sweepOrphan] != 1 {
+			t.Fatalf("sweeper deletes are %v, want one orphan", got)
 		}
 	})
 }

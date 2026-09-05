@@ -384,6 +384,74 @@ func (f *fixture) putBytes(t *testing.T, name string, n int) []byte {
 // chunkSize is nats.go's default object chunk, which every put here uses.
 const chunkSize = 128 << 10
 
+// patternBytes returns n bytes of the pattern putBytes stores.
+func patternBytes(n int) []byte {
+	data := make([]byte, n)
+	for i := range data {
+		data[i] = byte(i*31 + 7)
+	}
+	return data
+}
+
+// gatedReader is an io.Reader over a byte slice that delivers one chunk,
+// holds the next Read until free is called, and then delivers the rest one chunk per Read.
+// nats.go reads its source synchronously and consults its context only between chunks,
+// so a test waits on held before it intervenes and releases the gate before it measures any return time.
+type gatedReader struct {
+	data []byte
+	off  int
+	// held is closed once a Read has reached the gate: one chunk is published and the metadata read has been answered.
+	held     chan struct{}
+	heldOnce sync.Once
+	release  chan struct{}
+	once     sync.Once
+}
+
+func newGatedReader(data []byte) *gatedReader {
+	return &gatedReader{data: data, held: make(chan struct{}), release: make(chan struct{})}
+}
+
+// free opens the gate; it is safe to call more than once.
+func (g *gatedReader) free() {
+	g.once.Do(func() { close(g.release) })
+}
+
+func (g *gatedReader) Read(p []byte) (int, error) {
+	if g.off >= len(g.data) {
+		return 0, io.EOF
+	}
+	if g.off > 0 {
+		g.heldOnce.Do(func() { close(g.held) })
+		<-g.release
+	}
+	n := copy(p[:min(len(p), chunkSize)], g.data[g.off:])
+	g.off += n
+	return n, nil
+}
+
+// pausingReader delivers its bytes one chunk per Read and sleeps pause after each of the first pauses chunks,
+// which is a source slower than a deadline the upload must not carry.
+type pausingReader struct {
+	data   []byte
+	off    int
+	chunks int
+	pauses int
+	pause  time.Duration
+}
+
+func (r *pausingReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p[:min(len(p), chunkSize)], r.data[r.off:])
+	r.off += n
+	r.chunks++
+	if r.chunks <= r.pauses {
+		time.Sleep(r.pause)
+	}
+	return n, nil
+}
+
 // rewriteDigest republishes the object's metadata with the digest of other bytes,
 // so the chunks stored under it no longer sum to what the metadata claims.
 func (f *fixture) rewriteDigest(t *testing.T, name string, other []byte) {

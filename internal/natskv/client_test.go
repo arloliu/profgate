@@ -1004,6 +1004,158 @@ func TestObjects(t *testing.T) {
 		}
 	})
 
+	t.Run("a put that takes six seconds under a context with no deadline lands", func(t *testing.T) {
+		f := startFixture(t)
+		obs := f.view().Artifacts
+		data := patternBytes(512 << 10)
+
+		// Four chunks, the reader pausing two seconds after each of the first three:
+		// a source slower than the seam's call deadline, under a context that carries none.
+		start := time.Now()
+		err := obs.Put(context.Background(), "slow-put.pprof", &pausingReader{data: data, pauses: 3, pause: 2 * time.Second})
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("put after %s: %v", elapsed, err)
+		}
+		if elapsed < 6*time.Second {
+			t.Fatalf("put took %s, the reader alone paused for six seconds", elapsed)
+		}
+		r, err := obs.Get(t.Context(), "slow-put.pprof")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		got, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if !bytes.Equal(got, data) {
+			t.Fatalf("object bytes differ: got %d bytes, want %d", len(got), len(data))
+		}
+	})
+
+	t.Run("a put cancelled mid-upload is ErrUnavailable and the name is usable again", func(t *testing.T) {
+		f := startFixture(t)
+		obs := f.view().Artifacts
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		gated := newGatedReader(patternBytes(512 << 10))
+		result := make(chan error, 1)
+		go func() { result <- obs.Put(ctx, "cancelled.pprof", gated) }()
+		<-gated.held
+		cancel()
+		gated.free()
+		released := time.Now()
+		select {
+		case err := <-result:
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("cancelled put: got %v, want ErrUnavailable", err)
+			}
+			if elapsed := time.Since(released); elapsed > time.Second {
+				t.Fatalf("cancelled put returned %s after the release, want within a second", elapsed)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("the cancelled put did not return within a second of the release")
+		}
+
+		other := []byte("the second upload under the same name")
+		if err := obs.Put(t.Context(), "cancelled.pprof", bytes.NewReader(other)); err != nil {
+			t.Fatalf("second put: %v", err)
+		}
+		r, err := obs.Get(t.Context(), "cancelled.pprof")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		got, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if !bytes.Equal(got, other) {
+			t.Fatalf("object bytes are %q, want the second upload", got)
+		}
+	})
+
+	t.Run("a put whose acknowledgements are withheld fails while the connection stays up", func(t *testing.T) {
+		f := startServerFixture(t)
+		tap := f.connectTapped()
+		obs := f.view().Artifacts
+		gen := f.c.Generation()
+		// A cutoff a minute out, set by a timer rather than a deadline, as the work context's is.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		cutoff := time.AfterFunc(time.Minute, cancel)
+		defer cutoff.Stop()
+
+		gated := newGatedReader(patternBytes(512 << 10))
+		result := make(chan error, 1)
+		go func() { result <- obs.Put(ctx, "withheld.pprof", gated) }()
+		// One chunk is published and the metadata read has been answered;
+		// from here the server's acknowledgements never reach the client.
+		<-gated.held
+		tap.setDropInbox(true)
+		t.Cleanup(func() { tap.setDropInbox(false) })
+		gated.free()
+		released := time.Now()
+		select {
+		case err := <-result:
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("put with acknowledgements withheld: got %v, want ErrUnavailable", err)
+			}
+			if elapsed := time.Since(released); elapsed > 20*time.Second {
+				t.Fatalf("put failed %s after the release, want within twenty seconds", elapsed)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatalf("the put did not fail within twenty seconds of the release")
+		}
+		if !f.c.Connected() {
+			t.Fatalf("the connection is down after a put whose acknowledgements were withheld")
+		}
+		if got := f.c.Generation(); got != gen {
+			t.Fatalf("generation moved from %d to %d while the connection stayed up", gen, got)
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("the caller's context ended before the put failed")
+		}
+		tap.setDropInbox(false)
+	})
+
+	t.Run("a put whose server goes away fails before a caller's cutoff a minute out", func(t *testing.T) {
+		f := startFixture(t)
+		obs := f.view().Artifacts
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		cutoff := time.AfterFunc(time.Minute, cancel)
+		defer cutoff.Stop()
+
+		gated := newGatedReader(patternBytes(512 << 10))
+		result := make(chan error, 1)
+		go func() { result <- obs.Put(ctx, "gone.pprof", gated) }()
+		<-gated.held
+		f.stopServer()
+		gated.free()
+		released := time.Now()
+		select {
+		case err := <-result:
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("put against a stopped server: got %v, want ErrUnavailable", err)
+			}
+			if elapsed := time.Since(released); elapsed > 20*time.Second {
+				t.Fatalf("put failed %s after the release, want within twenty seconds", elapsed)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatalf("the put did not fail within twenty seconds of the release")
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("the caller's context ended before the put failed")
+		}
+	})
+
 	t.Run("chunks whose digest is not the metadata's fail the last read rather than EOF", func(t *testing.T) {
 		f := startFixture(t)
 		data := f.putBytes(t, "forged.pprof", 300<<10)

@@ -454,9 +454,48 @@ func TestPreflightConnectionCallback(t *testing.T) {
 // subjectTap is a nats.CustomDialer that records every subject the
 // connection publishes to by reading PUB and HPUB frames off the wire —
 // the NATS analogue of the gateway's recording transport.
+// On demand it also withholds every frame the server sends to an inbox,
+// which is how a store that stops acknowledging looks from the client while the connection stays up.
 type subjectTap struct {
-	mu       sync.Mutex
-	subjects map[string]struct{}
+	mu        sync.Mutex
+	subjects  map[string]struct{}
+	dropInbox bool
+}
+
+// setDropInbox turns the withholding of inbox frames on or off.
+// While it is on, a MSG or HMSG frame whose subject begins with _INBOX. is dropped whole, payload included,
+// and every other frame passes; a JetStream acknowledgement is such a frame, addressed to the publisher's inbox.
+func (s *subjectTap) setDropInbox(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropInbox = on
+}
+
+func (s *subjectTap) droppingInbox() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dropInbox
+}
+
+// connectTapped connects the fixture's seam client through a subjectTap and returns the tap.
+func (f *fixture) connectTapped() *subjectTap {
+	f.t.Helper()
+	tap := &subjectTap{}
+	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+	defer cancel()
+	c, err := connect(ctx, connectConfig{
+		url:            f.url(fixtureClientUser),
+		connectTimeout: callTimeout,
+		reconnectWait:  fixtureReconnectWait,
+		name:           "natskv-tap",
+		dialer:         tap,
+	}, testLogger())
+	if err != nil {
+		f.t.Fatalf("seam connect through the tap: %v", err)
+	}
+	f.t.Cleanup(c.close)
+	f.c = c
+	return tap
 }
 
 func (s *subjectTap) Dial(network, address string) (net.Conn, error) {
@@ -490,6 +529,9 @@ func (s *subjectTap) all() []string {
 // tapConn parses the client-to-server protocol stream: control lines are
 // scanned for PUB and HPUB subjects, payload bytes are skipped by the length
 // each header announces, so payload content is never mistaken for a frame.
+// The server-to-client stream is parsed the same way,
+// so a MSG or HMSG frame can be dropped whole while the tap withholds inbox frames.
+// nats.go reads the connection from one goroutine, so the read side needs no lock.
 type tapConn struct {
 	net.Conn
 	tap *subjectTap
@@ -497,6 +539,12 @@ type tapConn struct {
 	mu      sync.Mutex
 	pending []byte
 	skip    int
+
+	in      []byte // the server's bytes not yet parsed
+	inSkip  int    // payload bytes of the current frame still to pass or drop
+	inDrop  bool   // whether the current frame is being dropped
+	out     []byte // parsed bytes not yet handed to the client
+	readBuf [64 << 10]byte
 }
 
 func (c *tapConn) Write(b []byte) (int, error) {
@@ -504,6 +552,64 @@ func (c *tapConn) Write(b []byte) (int, error) {
 	c.parse(b)
 	c.mu.Unlock()
 	return c.Conn.Write(b)
+}
+
+// Read hands the client the server's frames minus the ones the tap withholds.
+func (c *tapConn) Read(b []byte) (int, error) {
+	for len(c.out) == 0 {
+		n, err := c.Conn.Read(c.readBuf[:])
+		if n > 0 {
+			c.parseIn(c.readBuf[:n])
+		}
+		if err != nil && len(c.out) == 0 {
+			return 0, err
+		}
+	}
+	n := copy(b, c.out)
+	c.out = c.out[n:]
+	if len(c.out) == 0 {
+		c.out = nil
+	}
+	return n, nil
+}
+
+// parseIn is parse for the server's stream: MSG and HMSG frames are passed or dropped whole,
+// every other control line passes.
+func (c *tapConn) parseIn(b []byte) {
+	data := append(c.in, b...)
+	i := 0
+	for i < len(data) {
+		if c.inSkip > 0 {
+			n := min(c.inSkip, len(data)-i)
+			if !c.inDrop {
+				c.out = append(c.out, data[i:i+n]...)
+			}
+			i += n
+			c.inSkip -= n
+			continue
+		}
+		j := bytes.Index(data[i:], []byte("\r\n"))
+		if j < 0 {
+			break
+		}
+		line := data[i : i+j+2]
+		fields := strings.Fields(string(data[i : i+j]))
+		i += j + 2
+		c.inDrop = false
+		if len(fields) >= 4 {
+			switch strings.ToUpper(fields[0]) {
+			case "MSG", "HMSG": // MSG <subject> <sid> [reply] <bytes> / HMSG <subject> <sid> [reply] <hdr> <total>
+				if size, err := strconv.Atoi(fields[len(fields)-1]); err == nil {
+					c.inSkip = size + 2 // payload and its trailing CRLF
+					c.inDrop = c.tap.droppingInbox() && strings.HasPrefix(fields[1], "_INBOX.")
+				}
+			}
+		}
+		if !c.inDrop {
+			c.out = append(c.out, line...)
+		}
+	}
+	c.in = append(c.in[:0], data[i:]...)
 }
 
 func (c *tapConn) parse(b []byte) {

@@ -67,6 +67,8 @@ type ObjectInfo struct {
 
 // Objects is one Object Store bucket.
 type Objects interface {
+	// Put stores r under name, bounded by ctx alone;
+	// when ctx carries no deadline, nats.go bounds the metadata read and each chunk's acknowledgement by its own five seconds.
 	Put(ctx context.Context, name string, r io.Reader) error
 	// Get returns a reader for the object's bytes; ErrObjectNotFound when absent.
 	// The reader follows ctx: it ends when ctx ends or when it is closed, whichever comes first,
