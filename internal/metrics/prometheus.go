@@ -102,7 +102,7 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 		}, []string{"result"}),
 		tlsCertificateTTL: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "profgate_tls_certificate_expiry_seconds",
-			Help: "When the certificate the API listener serves stops being valid, in seconds since the epoch.",
+			Help: "When the certificate the API listener serves stops being valid, in seconds since the epoch, or NaN before one is loaded.",
 		}),
 		authFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "profgate_auth_failures_total",
@@ -147,6 +147,10 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 
 		return time.Since(time.Unix(at, 0)).Seconds()
 	})
+
+	// An install with no server.tls never calls TLSCertificateExpiry,
+	// so the gauge must not read as a certificate that expired at the epoch.
+	p.tlsCertificateTTL.Set(math.NaN())
 
 	reg.MustRegister(
 		p.requests, p.requestDuration, p.confirms, p.profilesInFlight, p.discoverySynced,

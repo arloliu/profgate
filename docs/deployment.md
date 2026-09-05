@@ -223,6 +223,9 @@ and the pod template deliberately carries no checksum annotation for the TLS Sec
 hashing it would roll the Deployment on every renewal and defeat the reload.
 `profgate_tls_reloads_total{result}` and `profgate_tls_certificate_expiry_seconds` are how a rotation
 that stopped working becomes visible before the certificate expires.
+The expiry threshold is inert until a certificate is served:
+an install without `server.tls` reads `NaN`, not an expired-at-the-epoch value that a rule could cross,
+and the reload counter has no series at all on such an install.
 
 Two details worth knowing:
 
@@ -460,7 +463,7 @@ All metrics are on the ops port at `/metrics`.
 | `profgate_nats_connected` | gauge | | 1 while the NATS connection is up |
 | `profgate_pgo_synced` | gauge | | 1 while every watch has replayed the current store generation and every cache has applied it |
 | `profgate_tls_reloads_total` | counter | `result` | Certificate load and reload outcomes, the startup load included |
-| `profgate_tls_certificate_expiry_seconds` | gauge | | When the served certificate expires, as a Unix timestamp |
+| `profgate_tls_certificate_expiry_seconds` | gauge | | When the served certificate expires, as a Unix timestamp; `NaN` until one is loaded |
 | `profgate_auth_failures_total` | counter | `mode`, `reason` | Authentication failures answered `401`, `429`, or `503`; a redirect is not a failure |
 | `profgate_auth_sessions_issued_total` | counter | | Browser sessions minted |
 | `profgate_oidc_jwks_refresh_total` | counter | `result` | Signing key fetches |

@@ -206,6 +206,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Each message keeps its status, its code, and its details, and now ends with a clause naming the next step:
   `GET /v1/limits`, the targets route with `explain=true`, the collections route that lists the live one,
   and the `pgo.enabled` configuration key, in that order.
+- **`profgate_tls_certificate_expiry_seconds` reads `NaN` before a certificate is loaded.**
+  It read `0` on every install without `server.tls`, a certificate that expired at the epoch,
+  which no expiry threshold could be written over.
+  An operator's own rule that compared the gauge to zero no longer matches on such an install;
+  `profgate_tls_certificate_expiry_seconds - time() < 604800` is the form that now works everywhere.
 
 ## [0.5.0] - 2026-09-03
 

@@ -283,12 +283,44 @@ profgate_tls_reloads_total{result="failed"} 1
 	}
 
 	wantGauge := `
-# HELP profgate_tls_certificate_expiry_seconds When the certificate the API listener serves stops being valid, in seconds since the epoch.
+# HELP profgate_tls_certificate_expiry_seconds When the certificate the API listener serves stops being valid, in seconds since the epoch, or NaN before one is loaded.
 # TYPE profgate_tls_certificate_expiry_seconds gauge
 profgate_tls_certificate_expiry_seconds 1.8e+09
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(wantGauge), "profgate_tls_certificate_expiry_seconds"); err != nil {
 		t.Errorf("profgate_tls_certificate_expiry_seconds: %v", err)
+	}
+}
+
+// TestPrometheus_TLSBeforeAnyCertificate covers the gauge's construction-time state,
+// before Loader.apply has ever run.
+// An install without server.tls never calls TLSCertificateExpiry,
+// so the gauge must not read as a certificate that expired at the epoch:
+// NaN crosses no threshold the way 0 would,
+// and the reload counter has no series at all until a load is attempted.
+func TestPrometheus_TLSBeforeAnyCertificate(t *testing.T) {
+	reg := prometheus.NewPedanticRegistry()
+	rec := NewPrometheus(reg)
+
+	if got := testutil.ToFloat64(rec.tlsCertificateTTL); !math.IsNaN(got) {
+		t.Errorf("profgate_tls_certificate_expiry_seconds before any certificate = %v, want NaN", got)
+	}
+
+	want := `
+# HELP profgate_tls_certificate_expiry_seconds When the certificate the API listener serves stops being valid, in seconds since the epoch, or NaN before one is loaded.
+# TYPE profgate_tls_certificate_expiry_seconds gauge
+profgate_tls_certificate_expiry_seconds NaN
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "profgate_tls_certificate_expiry_seconds"); err != nil {
+		t.Errorf("profgate_tls_certificate_expiry_seconds before any certificate: %v", err)
+	}
+
+	count, err := testutil.GatherAndCount(reg, "profgate_tls_reloads_total")
+	if err != nil {
+		t.Fatalf("gather profgate_tls_reloads_total: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("profgate_tls_reloads_total series before any load attempt = %d, want 0", count)
 	}
 }
 

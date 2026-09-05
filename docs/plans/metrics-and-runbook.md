@@ -346,7 +346,7 @@ arithmetic on it stays `NaN` and the ordered comparisons filter it out;
 and `profgate_tls_certificate_expiry_seconds - time() < 604800` matches nothing until a certificate is served.
 That expression is the one the next task ships.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Add `TestPrometheus_TLSBeforeAnyCertificate` to `internal/metrics/prometheus_test.go`,
 beside `TestPrometheus_TLS` (`:267-292`).
@@ -371,7 +371,7 @@ go test ./internal/metrics/ -run 'TestPrometheus_TLSBeforeAnyCertificate'
 
 The first two assertions fail on `0`; the counter assertion passes.
 
-- [ ] **Seed the gauge and say so where it is documented**
+- [x] **Seed the gauge and say so where it is documented**
 
 `docs/deployment.md:463`, the gauge's row in the metrics table, gains the seed:
 `NaN` until a certificate is loaded, so an install without `server.tls` crosses no threshold.
@@ -386,7 +386,7 @@ which no expiry threshold could be written over.
 An operator's own rule that compared the gauge to zero no longer matches on such an install;
 `profgate_tls_certificate_expiry_seconds - time() < 604800` is the form that now works everywhere.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/metrics/prometheus.go internal/metrics/prometheus_test.go \
