@@ -583,6 +583,17 @@ func (gw *gateway) exitCode(t *testing.T, within time.Duration) int {
 	}
 }
 
+// requireNoDrainWindow fails the subtest when serve logged that it waited out the endpoint-removal window.
+func (gw *gateway) requireNoDrainWindow(t *testing.T) {
+	t.Helper()
+
+	for _, rec := range gw.records(t) {
+		if rec["msg"] == "draining; waiting for endpoint removal" {
+			t.Fatalf("the endpoint-removal window was spent by a replica that was never ready:\n%s", gw.stdout.String())
+		}
+	}
+}
+
 // records parses every JSON line serve wrote to stdout.
 func (gw *gateway) records(t *testing.T) []map[string]any {
 	t.Helper()
@@ -1076,6 +1087,42 @@ func TestServe(t *testing.T) {
 		if code := gw.exitCode(t, waitTimeout); code != 0 {
 			t.Fatalf("exit code = %d, want 0", code)
 		}
+	})
+
+	// The drain delay exists so requests already routed to this replica are served rather than reset,
+	// and nothing is routed to a replica /readyz never admitted.
+	// Both rows below give the delay six times the wait they allow,
+	// so a delay spent is the wait failing, not a slow exit.
+	t.Run("a refused preflight exits without the drain delay", func(t *testing.T) {
+		cs := fake.NewClientset()
+		denyWatch(cs, "pods")
+		gw := startGatewayWith(t, cs, defaultLimits(), gatewayOpts{drainDelay: 30 * time.Second})
+		if code := gw.exitCode(t, waitTimeout); code != 1 {
+			t.Fatalf("exit code = %d, want 1", code)
+		}
+		gw.requireNoDrainWindow(t)
+	})
+
+	t.Run("a stop before readiness exits without the drain delay", func(t *testing.T) {
+		cs := fake.NewClientset()
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		cs.PrependReactor("list", "services", func(k8stesting.Action) (bool, runtime.Object, error) {
+			<-release
+
+			return false, nil, nil
+		})
+		gw := startGatewayWith(t, cs, defaultLimits(), gatewayOpts{drainDelay: 30 * time.Second})
+		gw.waitStatus(t, waitTimeout, gw.opsAddr, "/healthz", http.StatusOK)
+		if code, _ := mustGet(t, gw.opsAddr, "/readyz"); code != http.StatusServiceUnavailable {
+			t.Fatalf("/readyz during preflight = %d, want 503", code)
+		}
+
+		gw.stopOnce()
+		if code := gw.exitCode(t, waitTimeout); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		gw.requireNoDrainWindow(t)
 	})
 
 	t.Run("discovery keeps resolving through the drain", func(t *testing.T) {

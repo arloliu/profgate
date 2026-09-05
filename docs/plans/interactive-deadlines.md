@@ -1116,7 +1116,7 @@ and the comment above it (`:371-379`) says both conditions.
 The five fatal callers and the stop request (`:506-510`) are unchanged;
 `shutdownMode`'s comments (`:57-67`) say that `drainEndpoints` spends the window only once the replica has been ready.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Two subtests of `TestServe`, each with `gatewayOpts{drainDelay: 30 * time.Second}`, six times the wait they allow.
 
@@ -1136,7 +1136,7 @@ go test -race -count=1 ./cmd/profgate/ -run 'TestServe/a_refused_preflight|TestS
 
 Each red run spends the 30 seconds before its cleanup sees the exit.
 
-- [ ] **Follow readiness and say so**
+- [x] **Follow readiness and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **An exit before `/readyz` has answered 200 does not wait `server.drainDelay`.**
@@ -1145,7 +1145,7 @@ though nothing had ever been routed to the replica.
 The window is spent only by a replica that has been ready;
 a crash loop at startup is now as fast as the failure it reports.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check cmd/profgate/serve.go CHANGELOG.md

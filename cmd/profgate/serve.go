@@ -58,7 +58,9 @@ type listenFunc func(ctx context.Context, network, address string) (net.Listener
 type shutdownMode int
 
 const (
-	// drainEndpoints spends server.drainDelay letting the EndpointSlice controllers stop routing here.
+	// drainEndpoints spends server.drainDelay letting the EndpointSlice controllers stop routing here,
+	// and only once the replica has been ready:
+	// nothing routes to a replica /readyz never admitted, so an exit before then spends no window.
 	drainEndpoints shutdownMode = iota
 	// listenerFailed skips that window.
 	// The process is ending because a listener it cannot serve without has failed,
@@ -158,6 +160,9 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	cluster := rt.Cluster()
 
 	var draining atomic.Bool
+	// answeredReady is set the first time /readyz answers 200.
+	// Until then nothing routes to this replica, so an exit spends no endpoint-removal window.
+	var answeredReady atomic.Bool
 	// natsReady holds the one PGO readiness gate: the NATS preflight has passed.
 	// Readiness never waits for the replay barrier,
 	// and never falls back to 503 when the connection drops later:
@@ -171,7 +176,13 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	var issuerReady atomic.Bool
 	issuerReady.Store(oidc == nil)
 	ready := func() bool {
-		return !draining.Load() && issuerReady.Load() && cluster.HasSynced() && (!cfg.PGO.Enabled || natsReady.Load())
+		if !draining.Load() && issuerReady.Load() && cluster.HasSynced() && (!cfg.PGO.Enabled || natsReady.Load()) {
+			answeredReady.Store(true)
+
+			return true
+		}
+
+		return false
 	}
 	// The handlers gate on less than /readyz does: the drain delay exists to
 	// keep serving requests already routed here, and a replica whose NATS
@@ -406,7 +417,9 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		// supports.
 		// A listener that has failed receives nothing the window protects,
 		// so the fatal path spends none of the grace period on it.
-		if delay := cfg.Server.DrainDelay; delay > 0 && mode == drainEndpoints {
+		// Neither does a replica /readyz never admitted:
+		// nothing was routed to it, whichever path is exiting.
+		if delay := cfg.Server.DrainDelay; delay > 0 && mode == drainEndpoints && answeredReady.Load() {
 			logger.Info("draining; waiting for endpoint removal", "delay", delay.String())
 			time.Sleep(delay)
 		}

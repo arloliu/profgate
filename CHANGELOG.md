@@ -223,6 +223,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   klog now writes through the gateway's logger at the level client-go emits:
   a list that fails is an `ERROR` record, a watch that ends with an error and is retried is `INFO`,
   and client-go's verbose lines, a watch that closes cleanly among them, appear under `server.logLevel: debug`.
+- **An exit before `/readyz` has answered 200 does not wait `server.drainDelay`.**
+  A refused preflight, a failed issuer discovery, a failed NATS preflight, and a stop request during startup each slept the delay before exiting,
+  though nothing had ever been routed to the replica.
+  The window is spent only by a replica that has been ready;
+  a crash loop at startup is now as fast as the failure it reports.
 - **Three log lines name the work they belong to.**
   A failed collection sample names its Collection,
   so it is attributable to one of the several a replica may be running,
