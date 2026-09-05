@@ -293,6 +293,7 @@ type recorder struct {
 	confirms     []string
 	collections  []string
 	authFailures []authFailureCall
+	storeFails   []string
 	inFlight     int
 	peak         int
 }
@@ -341,6 +342,12 @@ func (r *recorder) CollectionDuration(time.Duration) {}
 func (r *recorder) ScheduleSlot(string) {}
 
 func (r *recorder) SweeperDelete(string) {}
+
+func (r *recorder) StoreFailure(op string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.storeFails = append(r.storeFails, op)
+}
 
 func (r *recorder) CollectionsActive(int) {}
 

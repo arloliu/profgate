@@ -227,6 +227,55 @@ profgate_sweeper_deletes_total{kind="orphan"} 1
 	}
 }
 
+func TestPrometheus_StoreFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		ops  []string
+		want string
+	}{
+		{
+			name: "an expired flip that failed",
+			ops:  []string{"expire"},
+			want: `
+# HELP profgate_pgo_store_failures_total Total number of PGO store operations that returned an error other than a lost race, by operation.
+# TYPE profgate_pgo_store_failures_total counter
+profgate_pgo_store_failures_total{op="expire"} 1
+`,
+		},
+		{
+			name: "a probe listing that failed",
+			ops:  []string{"probe_list"},
+			want: `
+# HELP profgate_pgo_store_failures_total Total number of PGO store operations that returned an error other than a lost race, by operation.
+# TYPE profgate_pgo_store_failures_total counter
+profgate_pgo_store_failures_total{op="probe_list"} 1
+`,
+		},
+		{
+			// A counter with no child exposes no series,
+			// which is how the metric exists only where PGO runs.
+			name: "nothing recorded",
+			ops:  nil,
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := prometheus.NewPedanticRegistry()
+			rec := NewPrometheus(reg)
+
+			for _, op := range tc.ops {
+				rec.StoreFailure(op)
+			}
+
+			if err := testutil.GatherAndCompare(reg, strings.NewReader(tc.want), "profgate_pgo_store_failures_total"); err != nil {
+				t.Errorf("profgate_pgo_store_failures_total: %v", err)
+			}
+		})
+	}
+}
+
 func TestPrometheus_CollectionsActive(t *testing.T) {
 	reg := prometheus.NewPedanticRegistry()
 	rec := NewPrometheus(reg)
@@ -515,6 +564,7 @@ func TestNoop(t *testing.T) {
 		rec.CollectionDuration(time.Second)
 		rec.ScheduleSlot("won")
 		rec.SweeperDelete("artifact")
+		rec.StoreFailure("expire")
 		rec.CollectionsActive(1)
 		rec.CollectionsActive(-1)
 		rec.NATSConnected(true)

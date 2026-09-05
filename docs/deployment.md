@@ -469,6 +469,7 @@ All metrics are on the ops port at `/metrics`.
 | `profgate_collections_active` | gauge | | Collections currently active |
 | `profgate_nats_connected` | gauge | | 1 while the NATS connection is up; `0` under `pgo.enabled`, from the start of the NATS preflight and before the first attempt; `NaN` where the process makes none |
 | `profgate_pgo_synced` | gauge | | 1 while every watch has replayed the current store generation and every cache has applied it |
+| `profgate_pgo_store_failures_total` | counter | `op` (`expire`/`probe_list`) | A store write that returned an error other than a lost race, or a probe listing that returned one; the durable outcome of an `expire` may be indeterminate |
 | `profgate_tls_reloads_total` | counter | `result` | Certificate load and reload outcomes, the startup load included |
 | `profgate_tls_certificate_expiry_seconds` | gauge | | When the served certificate expires, as a Unix timestamp; `NaN` until one is loaded |
 | `profgate_auth_failures_total` | counter | `mode`, `reason` | Authentication failures answered `401`, `429`, or `503`; a redirect is not a failure |

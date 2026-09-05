@@ -1125,6 +1125,7 @@ type countingRecorder struct {
 	collections map[string]int
 	samples     map[string]int
 	sweeps      map[string]int
+	storeFails  map[string]int
 	durations   []time.Duration
 	active      int
 	activePeak  int
@@ -1136,6 +1137,7 @@ func newCountingRecorder() *countingRecorder {
 		collections: make(map[string]int),
 		samples:     make(map[string]int),
 		sweeps:      make(map[string]int),
+		storeFails:  make(map[string]int),
 	}
 }
 
@@ -1243,6 +1245,12 @@ func (r *countingRecorder) SweeperDelete(kind string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sweeps[kind]++
+}
+
+func (r *countingRecorder) StoreFailure(op string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.storeFails[op]++
 }
 
 func (r *countingRecorder) CollectionsActive(delta int) {

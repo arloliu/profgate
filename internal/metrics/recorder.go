@@ -91,6 +91,11 @@ type Recorder interface {
 	// SweeperDelete records one sweeper deletion, by kind:
 	// "artifact", "record", "slot", "active", "orphan", or "probe".
 	SweeperDelete(kind string)
+	// StoreFailure records one store operation that returned an error other than a lost race:
+	// "expire" is a completed-to-expired update that returned anything but a revision mismatch,
+	// on the sweeper's path and on the two read paths that make the same flip;
+	// "probe_list" is a probe key listing the sweeper could not take.
+	StoreFailure(op string)
 	// CollectionsActive adjusts the count of Collections currently active by delta.
 	CollectionsActive(delta int)
 	// NATSConnected reports whether the NATS connection is currently up.
@@ -154,6 +159,9 @@ func (Noop) ScheduleSlot(string) {}
 
 // SweeperDelete implements Recorder and does nothing.
 func (Noop) SweeperDelete(string) {}
+
+// StoreFailure implements Recorder and does nothing.
+func (Noop) StoreFailure(string) {}
 
 // CollectionsActive implements Recorder and does nothing.
 func (Noop) CollectionsActive(int) {}

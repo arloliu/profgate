@@ -885,7 +885,7 @@ the method, and `storeFailureRows()`.
 a store write that returned an error other than a lost race, or a probe listing that returned one;
 the durable outcome of an `expire` may be indeterminate.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 | Test | What it asserts, and how it fails today |
 |---|---|
@@ -898,7 +898,7 @@ The red state:
 go test -race -count=1 ./internal/metrics/ -run 'TestPrometheus_StoreFailure'
 ```
 
-- [ ] **Declare the series and say so**
+- [x] **Declare the series and say so**
 
 `CHANGELOG.md`, `### Added`:
 **`profgate_pgo_store_failures_total` counts a store operation that returned a failure.**
@@ -909,7 +909,7 @@ No existing counter counted a failed result:
 `profgate_collections_total` counts transitions that did, and `profgate_sweeper_deletes_total` counts deletions.
 The series exists only where PGO runs, on both roles.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/metrics/recorder.go internal/metrics/prometheus.go docs/deployment.md CHANGELOG.md

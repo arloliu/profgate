@@ -20,6 +20,7 @@ type Prometheus struct {
 	collectionDuration prometheus.Histogram
 	scheduleSlots      *prometheus.CounterVec
 	sweeperDeletes     *prometheus.CounterVec
+	storeFailures      *prometheus.CounterVec
 	collectionsActive  prometheus.Gauge
 	natsConnected      prometheus.Gauge
 	tlsReloads         *prometheus.CounterVec
@@ -88,6 +89,10 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 			Name: "profgate_sweeper_deletes_total",
 			Help: "Total number of sweeper deletions, by kind.",
 		}, []string{"kind"}),
+		storeFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "profgate_pgo_store_failures_total",
+			Help: "Total number of PGO store operations that returned an error other than a lost race, by operation.",
+		}, []string{"op"}),
 		collectionsActive: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "profgate_collections_active",
 			Help: "Number of Collections currently active.",
@@ -160,6 +165,7 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 	reg.MustRegister(
 		p.requests, p.requestDuration, p.confirms, p.profilesInFlight, p.discoverySynced,
 		p.collections, p.collectionSamples, p.collectionDuration, p.scheduleSlots, p.sweeperDeletes,
+		p.storeFailures,
 		p.collectionsActive, p.natsConnected, p.tlsReloads, p.tlsCertificateTTL,
 		p.authFailures, p.authSessions, p.jwksRefreshes, p.jwksKeys, p.jwksAge,
 		p.authFileReloads, p.cookieKeys,
@@ -234,6 +240,11 @@ func (p *Prometheus) ScheduleSlot(result string) {
 // SweeperDelete implements Recorder.
 func (p *Prometheus) SweeperDelete(kind string) {
 	p.sweeperDeletes.WithLabelValues(kind).Inc()
+}
+
+// StoreFailure implements Recorder.
+func (p *Prometheus) StoreFailure(op string) {
+	p.storeFailures.WithLabelValues(op).Inc()
 }
 
 // CollectionsActive implements Recorder.

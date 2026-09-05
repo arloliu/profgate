@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`profgate_pgo_store_failures_total` counts a store operation that returned a failure.**
+  A `completed` to `expired` update that fails for a reason other than a lost race, and a probe key listing that fails,
+  each add one to the counter under `op`, `expire` or `probe_list`, and write one warn record.
+  Whether the write landed is then indeterminate: a result can be lost after the server committed it.
+  No existing counter counted a failed result:
+  `profgate_collections_total` counts transitions that did, and `profgate_sweeper_deletes_total` counts deletions.
+  The series exists only where PGO runs, on both roles.
 - **Six more alerts ship with the chart.**
   A failing certificate re-read, a certificate within a week of expiry, an authenticator that cannot decide,
   a saturated authentication gate,
