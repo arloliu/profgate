@@ -682,14 +682,18 @@ func TestDo(t *testing.T) {
 		type result struct {
 			out     Outcome
 			elapsed time.Duration
+			// end is the budget's end and armed the write deadline Do set on the client connection.
+			end, armed time.Time
 		}
 		results := make(chan result, 1)
 		gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
 			defer cancel()
+			end, _ := ctx.Deadline()
+			rw := &deadlineRecorder{ResponseWriter: w}
 			start := time.Now()
-			out := f.p.Do(ctx, w, request(target, 0))
-			results <- result{out: out, elapsed: time.Since(start)}
+			out := f.p.Do(ctx, rw, request(target, 0))
+			results <- result{out: out, elapsed: time.Since(start), end: end, armed: rw.armed}
 		}))
 		t.Cleanup(gateway.Close)
 
@@ -705,11 +709,94 @@ func TestDo(t *testing.T) {
 			if got.elapsed > 1500*time.Millisecond {
 				t.Errorf("Do took %s, want under 1.5s: the budget is the bound", got.elapsed)
 			}
+			// The write blocked and then failed only because the deadline was armed at the budget's end;
+			// the recorded deadline is what proves the failure was the deadline's and not the socket's.
+			if !got.armed.Equal(got.end) {
+				t.Errorf("write deadline armed at %v, want the budget's end %v", got.armed, got.end)
+			}
 		case <-time.After(3 * time.Second):
 			t.Fatal("Do still blocked 3s after a 500ms budget: the write to a client that stopped reading has no deadline")
 		}
 	})
+
+	t.Run("an HTTP/2 stream reset at the budget is upstream_stream_failed", func(t *testing.T) {
+		f := newFixture(t, Options{})
+		// The upstream commits enough body to carry the headers to the client, then holds without a byte,
+		// so the proxy is waiting on the upstream, not on the client, when the budget ends.
+		_, target := f.upstream(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(bytes.Repeat([]byte("x"), 64<<10))
+			flush(t, w)
+			<-r.Context().Done()
+		})
+		results := make(chan Outcome, 1)
+		gateway := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithCancel(r.Context())
+			defer cancel()
+			budget := budgetWithoutTimer{Context: ctx, end: time.Now().Add(300 * time.Millisecond)}
+			results <- f.p.Do(budget, w, request(target, 0))
+		}))
+		gateway.EnableHTTP2 = true
+		gateway.StartTLS()
+		t.Cleanup(gateway.Close)
+
+		// The client reads the headers and stops there: the body is never read and the stream stays open.
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, gateway.URL+cpuPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := gateway.Client().Do(req)
+		if err != nil {
+			t.Fatalf("Do() error = %v", err)
+		}
+		t.Cleanup(func() { _ = resp.Body.Close() })
+		if resp.ProtoMajor != 2 {
+			t.Fatalf("response proto = %s, want HTTP/2.0: the row is about the stream reset", resp.Proto)
+		}
+
+		select {
+		case out := <-results:
+			if out.Code != "upstream_stream_failed" || !out.Committed {
+				t.Errorf("Outcome = %+v, want upstream_stream_failed committed: the budget ended, the client did not leave", out)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("Do still blocked 3s after a 300ms budget")
+		}
+	})
 }
+
+// deadlineRecorder is the writer the stalled-client row hands to Do:
+// it records the write deadline Do arms and forwards it to the connection behind it,
+// so the row proves the deadline was set at the budget's end rather than inferring it from a write that failed.
+// Do is the only writer on the connection, so the field needs no lock;
+// the row reads it after Do returns.
+type deadlineRecorder struct {
+	http.ResponseWriter
+	armed time.Time
+}
+
+func (d *deadlineRecorder) SetWriteDeadline(t time.Time) error {
+	d.armed = t
+
+	return http.NewResponseController(d.ResponseWriter).SetWriteDeadline(t)
+}
+
+// Unwrap keeps http.ResponseController reaching the connection for everything else.
+func (d *deadlineRecorder) Unwrap() http.ResponseWriter { return d.ResponseWriter }
+
+// budgetWithoutTimer carries a budget's end and no timer that would end it.
+// Under HTTP/2 the write deadline fires by resetting the stream, which cancels the request context;
+// a production budget has its own timer at the same instant, and the two race.
+// Dropping the timer forces the losing order every time:
+// the reset is the only thing that fires, the context is cancelled rather than expired,
+// and the copy ends in a cancellation that must still read as the budget's expiry.
+type budgetWithoutTimer struct {
+	context.Context
+	end time.Time
+}
+
+func (b budgetWithoutTimer) Deadline() (time.Time, bool) { return b.end, true }
 
 // streamUntilGone is an upstream that flushes 64 KiB chunks until its request context ends,
 // so a client that stops reading fills the loopback buffers within milliseconds.

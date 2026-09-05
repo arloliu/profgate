@@ -199,6 +199,13 @@ func (p *Proxy) Do(ctx context.Context, w http.ResponseWriter, req Request) Outc
 			// net/http cancels the request context on the failed write,
 			// so ctx alone cannot tell this expiry from a client that left.
 			code = codeStreamFailed
+		case budgetPassed(ctx):
+			// Under HTTP/2 the write deadline fires by resetting the stream rather than by failing a write;
+			// the reset cancels the request context, and the cancellation reaches the upstream read through reqCtx,
+			// so the copy ends in a cancellation that carries no deadline error.
+			// The budget's own timer fires at the same instant and may lose the race,
+			// so a cancellation at or after the budget's end is the expiry, not a client that left.
+			code = codeStreamFailed
 		case errors.Is(ctx.Err(), context.Canceled):
 			code = codeClientGone
 		default:
@@ -209,9 +216,18 @@ func (p *Proxy) Do(ctx context.Context, w http.ResponseWriter, req Request) Outc
 	return Outcome{Code: code, Status: resp.StatusCode, Committed: true}
 }
 
+// budgetPassed reports whether ctx carries a deadline that has already been reached.
+func budgetPassed(ctx context.Context) bool {
+	end, ok := ctx.Deadline()
+
+	return ok && !end.After(time.Now())
+}
+
 // classifyBeforeHeaders maps a failure before any response headers to its outcome.
 // A deadline cause always wins; a client cancellation is reported as such;
 // everything else (refused, reset, EOF, malformed response) is an unreachable upstream.
+// No write deadline is armed before the commit, so a cancellation here is never the budget's:
+// the budget's own expiry arrives as DeadlineExceeded, and a stream reset can only be the client's.
 func classifyBeforeHeaders(ctx, reqCtx context.Context) Outcome {
 	switch {
 	case errors.Is(context.Cause(reqCtx), errHeaderDeadline), errors.Is(ctx.Err(), context.DeadlineExceeded):

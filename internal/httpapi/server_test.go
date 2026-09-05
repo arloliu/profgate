@@ -833,10 +833,17 @@ func TestProxyOutcomes(t *testing.T) {
 		})
 		h := newHarness(upstream.target())
 		h.gate = admit.New(1)
-		h.upstream = proxy.New(proxy.Options{})
+		budget := &budgetRecorder{next: proxy.New(proxy.Options{})}
+		h.upstream = budget
 		handler := h.handler()
 		setBudgetGrace(handler, 500*time.Millisecond)
-		gateway := httptest.NewServer(handler)
+		// The writer the handler serves is wrapped so the row can read the write deadline the proxy armed.
+		var writer atomic.Pointer[deadlineRecorder]
+		gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rw := &deadlineRecorder{ResponseWriter: w}
+			writer.Store(rw)
+			handler.ServeHTTP(rw, r)
+		}))
 		t.Cleanup(gateway.Close)
 
 		// The client reads the headers and then holds the socket open without reading;
@@ -897,6 +904,12 @@ func TestProxyOutcomes(t *testing.T) {
 		h.expectMetricCode(t, "upstream_stream_failed")
 		if _, _, inFlight := h.rec.snapshot(); inFlight != 0 {
 			t.Errorf("ProfilesInFlight net = %d after the cut, want 0", inFlight)
+		}
+		// The write blocked and then failed only because the deadline was armed at the budget's end;
+		// the recorded deadline is what proves the failure was the deadline's and not the socket's.
+		end, armed := budget.end.Load(), writer.Load().armed.Load()
+		if end == nil || armed == nil || !armed.Equal(*end) {
+			t.Errorf("write deadline armed at %v, want the budget's end %v", armed, end)
 		}
 	})
 
@@ -1004,6 +1017,38 @@ func TestProxyOutcomes(t *testing.T) {
 			t.Errorf("trap hits = %d, want 0", tr.hits.Load())
 		}
 	})
+}
+
+// deadlineRecorder wraps the writer a handler is served with:
+// it records the write deadline the proxy arms and forwards it to the connection behind it,
+// so the stalled-client row proves the deadline was set at the budget's end and does not infer it from a failed write.
+type deadlineRecorder struct {
+	http.ResponseWriter
+	armed atomic.Pointer[time.Time]
+}
+
+func (d *deadlineRecorder) SetWriteDeadline(t time.Time) error {
+	d.armed.Store(&t)
+
+	return http.NewResponseController(d.ResponseWriter).SetWriteDeadline(t)
+}
+
+// Unwrap keeps http.ResponseController reaching the connection for everything else.
+func (d *deadlineRecorder) Unwrap() http.ResponseWriter { return d.ResponseWriter }
+
+// budgetRecorder is an Upstream that records the budget's end it was handed and passes the call on,
+// so a row can compare the deadline the proxy armed with the budget the handler set.
+type budgetRecorder struct {
+	next Upstream
+	end  atomic.Pointer[time.Time]
+}
+
+func (b *budgetRecorder) Do(ctx context.Context, w http.ResponseWriter, req proxy.Request) proxy.Outcome {
+	if end, ok := ctx.Deadline(); ok {
+		b.end.Store(&end)
+	}
+
+	return b.next.Do(ctx, w, req)
 }
 
 // countingWriter discards what it is given and counts it, so a test can see a stream flowing before it ends it.
