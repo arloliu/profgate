@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -179,6 +180,12 @@ func (p *Proxy) Do(ctx context.Context, w http.ResponseWriter, req Request) Outc
 	for name, value := range req.TargetHeaders {
 		header.Set(name, value)
 	}
+	// From the first byte a client that stops reading can stall the copy below;
+	// the budget's end is the bound, and net/http clears the deadline before the connection serves another request.
+	// A writer with no connection behind it answers ErrNotSupported and is left unbounded.
+	if end, ok := ctx.Deadline(); ok {
+		_ = http.NewResponseController(w).SetWriteDeadline(end)
+	}
 	w.WriteHeader(resp.StatusCode)
 
 	code := codeOK
@@ -186,9 +193,15 @@ func (p *Proxy) Do(ctx context.Context, w http.ResponseWriter, req Request) Outc
 		code = fmt.Sprintf("upstream_%d", resp.StatusCode)
 	}
 	if _, err := io.Copy(w, contextReader{ctx: reqCtx, r: resp.Body}); err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) {
+		switch {
+		case errors.Is(err, os.ErrDeadlineExceeded):
+			// The write deadline fired: the budget ended while the client was not reading.
+			// net/http cancels the request context on the failed write,
+			// so ctx alone cannot tell this expiry from a client that left.
+			code = codeStreamFailed
+		case errors.Is(ctx.Err(), context.Canceled):
 			code = codeClientGone
-		} else {
+		default:
 			code = codeStreamFailed
 		}
 	}

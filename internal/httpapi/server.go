@@ -87,6 +87,9 @@ type Deps struct {
 // server is the handler's state.
 type server struct {
 	deps Deps
+	// budgetGrace is the grace the overall request budget adds to the effective duration.
+	// Production sets it from the constant above; a test on a real socket shortens it.
+	budgetGrace time.Duration
 	// beforeAllowlist, when set, runs after the realm check and before the allowlist check.
 	// Production leaves it nil; a test uses it to swap the configuration pointer mid-request.
 	beforeAllowlist func()
@@ -111,7 +114,7 @@ func New(d Deps) http.Handler {
 		d.Auth = auth.Disabled{}
 	}
 
-	return &server{deps: d}
+	return &server{deps: d, budgetGrace: budgetGrace}
 }
 
 // routeKind is which of the /v1 routes a path matched.
@@ -711,7 +714,7 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 	defer s.deps.Recorder.ProfilesInFlight(-1)
 
 	// The overall budget starts here and bounds confirmation, dial, header wait, and streaming.
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(params.seconds)*time.Second+budgetGrace)
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(params.seconds)*time.Second+s.budgetGrace)
 	defer cancel()
 
 	if err := s.deps.Discovery.Confirm(ctx, target); err != nil {

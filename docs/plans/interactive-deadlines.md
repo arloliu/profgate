@@ -460,7 +460,7 @@ The handler's budget grace becomes a field so a test can shorten it.
 `serveProfile` reads `s.budgetGrace` at `:714`,
 and `export_test.go` gains `setBudgetGrace(h http.Handler, d time.Duration)` beside `setBeforeAllowlist`.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Two tests, one per package, both on real sockets.
 
@@ -478,7 +478,7 @@ go test -race -count=1 ./internal/httpapi/ -run 'TestProfileProxy/a_client_that_
 
 Both time out on their own waits and report the handler still blocked.
 
-- [ ] **Arm the deadline at commit and say so**
+- [x] **Arm the deadline at commit and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **A client that stops reading holds nothing past the request budget.**
@@ -490,7 +490,7 @@ The write to the client now fails at the budget's end,
 the request is audited `upstream_stream_failed` as any expiry after the response is committed is,
 and the slot and the Pod connection are released then.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/proxy/proxy.go internal/httpapi/server.go CHANGELOG.md

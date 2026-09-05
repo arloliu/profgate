@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"sync"
@@ -673,6 +675,91 @@ func TestDo(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	})
+
+	t.Run("a client that stops reading is cut at the budget", func(t *testing.T) {
+		f := newFixture(t, Options{})
+		_, target := f.upstream(streamUntilGone(t))
+		type result struct {
+			out     Outcome
+			elapsed time.Duration
+		}
+		results := make(chan result, 1)
+		gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			out := f.p.Do(ctx, w, request(target, 0))
+			results <- result{out: out, elapsed: time.Since(start)}
+		}))
+		t.Cleanup(gateway.Close)
+
+		// The client reads the headers and then holds the socket open without reading;
+		// its close at cleanup is what would end the blocked write if the deadline did not.
+		holdAfterHeaders(t, gateway.Listener.Addr().String(), cpuPath)
+
+		select {
+		case got := <-results:
+			if got.out.Code != "upstream_stream_failed" || !got.out.Committed {
+				t.Errorf("Outcome = %+v, want upstream_stream_failed committed", got.out)
+			}
+			if got.elapsed > 1500*time.Millisecond {
+				t.Errorf("Do took %s, want under 1.5s: the budget is the bound", got.elapsed)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("Do still blocked 3s after a 500ms budget: the write to a client that stopped reading has no deadline")
+		}
+	})
+}
+
+// streamUntilGone is an upstream that flushes 64 KiB chunks until its request context ends,
+// so a client that stops reading fills the loopback buffers within milliseconds.
+func streamUntilGone(t *testing.T) http.HandlerFunc {
+	t.Helper()
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		chunk := bytes.Repeat([]byte("x"), 64<<10)
+		for r.Context().Err() == nil {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			if err := http.NewResponseController(w).Flush(); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// holdAfterHeaders dials addr, sends a GET for path, reads the response headers, and then stops reading;
+// the socket stays open until the test's cleanup closes it.
+func holdAfterHeaders(t *testing.T, addr, path string) {
+	t.Helper()
+
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) error = %v", addr, err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+	if _, err := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: gateway\r\n\r\n", path); err != nil {
+		t.Fatalf("write request error = %v", err)
+	}
+	// The status line and the headers are read by hand: an http.Response's Close would drain the body,
+	// and the body is what this client must never read.
+	tp := textproto.NewReader(bufio.NewReader(conn))
+	status, err := tp.ReadLine()
+	if err != nil {
+		t.Fatalf("read status line error = %v", err)
+	}
+	if !strings.HasPrefix(status, "HTTP/1.1 200 ") {
+		t.Fatalf("status line = %q, want 200 before the client stops reading", status)
+	}
+	if _, err := tp.ReadMIMEHeader(); err != nil {
+		t.Fatalf("read headers error = %v", err)
+	}
 }
 
 func TestNew(t *testing.T) {

@@ -171,6 +171,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A client that stops reading holds nothing past the request budget.**
+  The budget bounded confirmation, the dial, the header wait, and the upstream read,
+  and not the write to the client:
+  a client that read the headers and then stopped held the handler, its admission slot, and the Pod connection for as long as it kept the socket open,
+  and sixteen such clients answered every later profile request `429 too_many_profiles`.
+  The write to the client now fails at the budget's end,
+  the request is audited `upstream_stream_failed` as any expiry after the response is committed is,
+  and the slot and the Pod connection are released then.
 - **The upstream transport's idle pool is bounded.**
   An idle connection to a Pod was kept until the Pod closed it or TCP keepalive noticed the Pod was gone,
   so the pool grew with every Pod ever profiled.

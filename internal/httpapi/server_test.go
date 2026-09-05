@@ -1,13 +1,16 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"slices"
 	"strconv"
 	"strings"
@@ -768,6 +771,89 @@ func TestProxyOutcomes(t *testing.T) {
 		h.expectMetricCode(t, "upstream_stream_failed")
 		if _, _, inFlight := h.rec.snapshot(); inFlight != 0 {
 			t.Errorf("ProfilesInFlight net = %d after the abort, want 0", inFlight)
+		}
+	})
+
+	t.Run("a client that stops reading releases its slot", func(t *testing.T) {
+		upstream := newTrap(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			chunk := bytes.Repeat([]byte("x"), 64<<10)
+			for r.Context().Err() == nil {
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
+				if err := http.NewResponseController(w).Flush(); err != nil {
+					return
+				}
+			}
+		})
+		h := newHarness(upstream.target())
+		h.gate = admit.New(1)
+		h.upstream = proxy.New(proxy.Options{})
+		handler := h.handler()
+		setBudgetGrace(handler, 500*time.Millisecond)
+		gateway := httptest.NewServer(handler)
+		t.Cleanup(gateway.Close)
+
+		// The client reads the headers and then holds the socket open without reading;
+		// its close at cleanup is what would end the blocked write if the budget did not.
+		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "tcp", gateway.Listener.Addr().String())
+		if err != nil {
+			t.Fatalf("Dial() error = %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatalf("SetDeadline() error = %v", err)
+		}
+		if _, err := io.WriteString(conn, "GET "+profilePath+"heap HTTP/1.1\r\nHost: gateway\r\n\r\n"); err != nil {
+			t.Fatalf("write request error = %v", err)
+		}
+		// The status line and the headers are read by hand: an http.Response's Close would drain the body,
+		// and the body is what this client must never read.
+		tp := textproto.NewReader(bufio.NewReader(conn))
+		status, err := tp.ReadLine()
+		if err != nil {
+			t.Fatalf("read status line error = %v", err)
+		}
+		if !strings.HasPrefix(status, "HTTP/1.1 200 ") {
+			t.Fatalf("status line = %q, want 200 before the client stops reading", status)
+		}
+		if _, err := tp.ReadMIMEHeader(); err != nil {
+			t.Fatalf("read headers error = %v", err)
+		}
+
+		// The slot comes back when the handler's write fails at the budget's end;
+		// until then the one slot is held and every later profile request is refused.
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			if release, ok := h.gate.TryAcquire(); ok {
+				release()
+
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("admission slot still held 2s after a 500ms budget: the write to a client that stopped reading has no deadline")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		for {
+			records := h.audits(t)
+			if len(records) == 1 {
+				if records[0]["code"] != "upstream_stream_failed" {
+					t.Errorf("audit code = %v, want upstream_stream_failed", records[0]["code"])
+				}
+
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("audit records = %d, want 1", len(records))
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		h.expectMetricCode(t, "upstream_stream_failed")
+		if _, _, inFlight := h.rec.snapshot(); inFlight != 0 {
+			t.Errorf("ProfilesInFlight net = %d after the cut, want 0", inFlight)
 		}
 	})
 }
