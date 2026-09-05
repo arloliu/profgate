@@ -39,7 +39,11 @@ What each value licenses: [000](000-agent-contract.md#document-authority).
 ### Finishing a Plan
 
 **The same change that lands a plan's last task flips its `Status:` to `Done`
-and adds an `Outcome:` line naming the commit or tag that shipped it.**
+and adds an `Outcome:` line naming the commit, tag, or pull request that shipped it.**
+
+A pull request is the honest name while the work is still on a branch:
+the merge rebases the branch onto `main` and rewrites every hash on it,
+so a commit named while the branch was being written names nothing afterwards.
 
 `Outcome:` occupies line 4, directly below `Status:`, so a check can find it
 in the same place every time.
@@ -62,7 +66,7 @@ are then deleted from the tree, in two commits.**
 
 The first commit is the change described above, with the document still in place:
 it flips `Status:` and adds the line that says where the work went —
-`Outcome:` naming the commit or tag for a `Done` plan,
+`Outcome:` naming the commit, tag, or pull request for a `Done` plan,
 the replacement for an `Abandoned` one,
 and for a `Superseded` spec the specs that replace it.
 `check_status` validates that tree exactly as it always has.

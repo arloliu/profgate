@@ -95,7 +95,7 @@ def check_status(errors):
             if is_plan and value == "Done":
                 line4 = lines[3] if len(lines) > 3 else ""
                 if not OUTCOME_RE.match(line4):
-                    errors.append(f"{path}:4: a Done plan records '**Outcome:** <commit or tag>' on line 4")
+                    errors.append(f"{path}:4: a Done plan records '**Outcome:** <commit, tag, or pull request>' on line 4")
 
 
 def check_go_directive(errors):
