@@ -626,6 +626,53 @@ func TestDo(t *testing.T) {
 			t.Errorf("Seconds=2 Outcome = %+v, want ok", outcomes[1])
 		}
 	})
+
+	t.Run("an idle upstream connection is closed after its timeout", func(t *testing.T) {
+		f := newFixture(t, Options{IdleConnTimeout: 100 * time.Millisecond})
+		var mu sync.Mutex
+		states := map[net.Conn][]http.ConnState{}
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, "abc")
+		}))
+		srv.Config.ConnState = func(c net.Conn, state http.ConnState) {
+			mu.Lock()
+			defer mu.Unlock()
+			states[c] = append(states[c], state)
+		}
+		srv.Start()
+		t.Cleanup(srv.Close)
+		target := targetOf(t, srv.URL)
+
+		out, rec := f.do(2*time.Second, target, 0)
+
+		if out.Code != "ok" || rec.Body.String() != "abc" {
+			t.Fatalf("Outcome = %+v body %q, want ok \"abc\"", out, rec.Body.String())
+		}
+		// The upstream ended the body and the proxy closed it, so the connection sits idle in the pool;
+		// the transport's idle timeout is what closes it, and nothing else does.
+		closed := func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			for _, seen := range states {
+				for _, state := range seen {
+					if state == http.StateClosed {
+						return true
+					}
+				}
+			}
+
+			return false
+		}
+		deadline := time.Now().Add(time.Second)
+		for !closed() {
+			if time.Now().After(deadline) {
+				mu.Lock()
+				defer mu.Unlock()
+				t.Fatalf("idle upstream connection still open after 1s; states = %v", states)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
 }
 
 func TestNew(t *testing.T) {
@@ -660,6 +707,20 @@ func TestNew(t *testing.T) {
 		}
 		if tr.ResponseHeaderTimeout != 0 {
 			t.Errorf("ResponseHeaderTimeout = %s, want unset", tr.ResponseHeaderTimeout)
+		}
+		// The pool's bounds are an inventory of the transport's settings;
+		// the idle close itself is exercised under TestDo.
+		if tr.MaxIdleConns != 100 {
+			t.Errorf("MaxIdleConns = %d, want 100", tr.MaxIdleConns)
+		}
+		if tr.IdleConnTimeout != 90*time.Second {
+			t.Errorf("IdleConnTimeout = %s, want 90s", tr.IdleConnTimeout)
+		}
+		if tr.MaxIdleConnsPerHost != 0 {
+			t.Errorf("MaxIdleConnsPerHost = %d, want 0 so Go's default of two applies", tr.MaxIdleConnsPerHost)
+		}
+		if tr.DisableKeepAlives {
+			t.Errorf("DisableKeepAlives = true, want false so a client fetching several profiles reuses its connection")
 		}
 	})
 }

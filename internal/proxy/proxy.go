@@ -24,6 +24,11 @@ const (
 	headerDeadlineGrace = 10 * time.Second
 	// defaultHeaderDeadline applies to profiles without a duration.
 	defaultHeaderDeadline = 30 * time.Second
+	// maxIdleConns caps the transport's idle pool across every Pod, the standard transport's value;
+	// the per-host cap stays at Go's default of two.
+	maxIdleConns = 100
+	// defaultIdleConnTimeout is how long an idle upstream connection is kept, the standard transport's value.
+	defaultIdleConnTimeout = 90 * time.Second
 	// redirectDrainLimit caps how much of a redirect body is read before the connection is released;
 	// pprof handlers never redirect, so the body is never interesting.
 	redirectDrainLimit = 64 << 10
@@ -72,6 +77,9 @@ type Options struct {
 	// seconds+10s, or 30s when seconds is 0.
 	// Tests inject short values.
 	HeaderDeadline func(seconds int) time.Duration
+	// IdleConnTimeout is how long an idle upstream connection is kept; zero means the spec's 90 seconds.
+	// Tests inject short values.
+	IdleConnTimeout time.Duration
 }
 
 // Proxy forwards pprof requests through one shared, immutable transport.
@@ -81,12 +89,19 @@ type Proxy struct {
 }
 
 // New builds the one shared immutable transport: Proxy nil, DisableCompression true,
-// 5s dial timeout, and a client whose CheckRedirect returns http.ErrUseLastResponse.
+// 5s dial timeout, an idle pool of at most 100 connections each kept 90s,
+// and a client whose CheckRedirect returns http.ErrUseLastResponse.
 func New(opts Options) *Proxy {
+	idle := opts.IdleConnTimeout
+	if idle == 0 {
+		idle = defaultIdleConnTimeout
+	}
 	transport := &http.Transport{
 		Proxy:              nil,
 		DisableCompression: true,
 		DialContext:        (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		MaxIdleConns:       maxIdleConns,
+		IdleConnTimeout:    idle,
 	}
 	headerDeadline := opts.HeaderDeadline
 	if headerDeadline == nil {

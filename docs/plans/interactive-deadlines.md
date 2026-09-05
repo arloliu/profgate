@@ -382,7 +382,7 @@ where `idle` is the option or the default;
 `MaxIdleConnsPerHost` is not set, so Go's `DefaultMaxIdleConnsPerHost` of two applies.
 The doc comment of `New` (`:83-84`) names both.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Two assertions, in `internal/proxy/proxy_test.go`.
 
@@ -397,7 +397,7 @@ The red state:
 go test -race -count=1 ./internal/proxy/ -run 'TestNew/transport|TestDo/an_idle_upstream'
 ```
 
-- [ ] **Bound the pool**
+- [x] **Bound the pool**
 
 `CHANGELOG.md`, `### Fixed`:
 **The upstream transport's idle pool is bounded.**
@@ -407,7 +407,7 @@ The transport now keeps at most 100 idle connections and closes one idle for 90 
 the standard transport's values; two per Pod, as before.
 A client fetching several short profiles from one Pod still reuses its connection.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/proxy/proxy.go CHANGELOG.md

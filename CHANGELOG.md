@@ -171,6 +171,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The upstream transport's idle pool is bounded.**
+  An idle connection to a Pod was kept until the Pod closed it or TCP keepalive noticed the Pod was gone,
+  so the pool grew with every Pod ever profiled.
+  The transport now keeps at most 100 idle connections and closes one idle for 90 seconds,
+  the standard transport's values; two per Pod, as before.
+  A client fetching several short profiles from one Pod still reuses its connection.
 - **Three log lines name the work they belong to.**
   A failed collection sample names its Collection,
   so it is attributable to one of the several a replica may be running,
