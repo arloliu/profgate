@@ -516,6 +516,18 @@ func (s *subjectTap) record(subject string) {
 	s.subjects[subject] = struct{}{}
 }
 
+// anyWithPrefix reports whether a subject recorded so far begins with prefix.
+func (s *subjectTap) anyWithPrefix(prefix string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for subj := range s.subjects {
+		if strings.HasPrefix(subj, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *subjectTap) all() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -711,6 +723,18 @@ func TestPublishedSubjects(t *testing.T) {
 		}
 		if err := r.Close(); err != nil {
 			t.Fatalf("close: %v", err)
+		}
+		// The consumer's delete is sent after Close has returned,
+		// so the snapshot waits for it to reach the wire and holds every step of the chunk read.
+		consumerAPI := "$JS.API.CONSUMER."
+		consumerSuffix := ".OBJ_PROFGATE_ARTIFACTS." + chunkConsumerName
+		waitFor(t, "the consumer's delete", func() bool {
+			return tap.anyWithPrefix(consumerAPI + "DELETE" + consumerSuffix)
+		})
+		for _, op := range []string{"CREATE", "MSG.NEXT", "DELETE"} {
+			if !tap.anyWithPrefix(consumerAPI + op + consumerSuffix) {
+				t.Errorf("no published subject under %q: the chunk read's %s is not in the snapshot", consumerAPI+op+consumerSuffix, op)
+			}
 		}
 
 		allowed := fragmentPermissions().Publish.Allow

@@ -1115,10 +1115,10 @@ func TestObjects(t *testing.T) {
 		waitFor(t, "consumer release", func() bool { return f.artifactConsumers(t) == 0 })
 	})
 
-	t.Run("a reader whose context ends mid-stream returns the pending read with the cause", func(t *testing.T) {
+	t.Run("a reader whose context ends with a pull pending returns the pending read with the cause", func(t *testing.T) {
 		f := startFixture(t)
-		f.c.callTimeout = time.Second
 		name, _, s := stalledAt(t, f, 2)
+		nuid := f.chunkNUID(t, name)
 		ctx, cancel := context.WithCancelCause(t.Context())
 		defer cancel(nil)
 
@@ -1132,12 +1132,15 @@ func TestObjects(t *testing.T) {
 		}
 		<-s.written
 
+		// The chunks left are purged, so the pull the pump sends once released waits at the server.
+		f.purgeChunks(t, nuid)
 		result := make(chan error, 1)
 		go func() {
 			_, err := r.Read(make([]byte, chunkSize))
 			result <- err
 		}()
-		time.Sleep(50 * time.Millisecond) // the read is pending on a pump that has not fetched
+		s.free()
+		waitFor(t, "a pull pending at the server", func() bool { return f.artifactConsumerWaiting(t) == 1 })
 		cause := errors.New("the request left")
 		cancel(cause)
 		select {
@@ -1148,14 +1151,13 @@ func TestObjects(t *testing.T) {
 		case <-time.After(100 * time.Millisecond):
 			t.Fatalf("the pending read did not return within 100ms of the cancellation")
 		}
-		s.free()
 		waitFor(t, "consumer release", func() bool { return f.artifactConsumers(t) == 0 })
 	})
 
-	t.Run("a reader closed mid-stream returns the pending read and leaves no consumer", func(t *testing.T) {
+	t.Run("a reader closed with a pull pending returns the pending read and leaves no consumer", func(t *testing.T) {
 		f := startFixture(t)
-		f.c.callTimeout = time.Second
 		name, _, s := stalledAt(t, f, 2)
+		nuid := f.chunkNUID(t, name)
 
 		r, err := f.view().Artifacts.Get(t.Context(), name)
 		if err != nil {
@@ -1166,12 +1168,15 @@ func TestObjects(t *testing.T) {
 		}
 		<-s.written
 
+		// The chunks left are purged, so the pull the pump sends once released waits at the server.
+		f.purgeChunks(t, nuid)
 		result := make(chan error, 1)
 		go func() {
 			_, err := r.Read(make([]byte, chunkSize))
 			result <- err
 		}()
-		time.Sleep(50 * time.Millisecond) // the read is pending on a pump that has not fetched
+		s.free()
+		waitFor(t, "a pull pending at the server", func() bool { return f.artifactConsumerWaiting(t) == 1 })
 		closed := make(chan error, 1)
 		go func() { closed <- r.Close() }()
 		select {
@@ -1187,10 +1192,9 @@ func TestObjects(t *testing.T) {
 			if err != nil {
 				t.Fatalf("close: %v", err)
 			}
-		default:
-			t.Fatalf("Close had not returned when the pending read did")
+		case <-time.After(fixtureTimeout):
+			t.Fatalf("Close did not return within %s", fixtureTimeout)
 		}
-		s.free()
 		waitFor(t, "consumer release", func() bool { return f.artifactConsumers(t) == 0 })
 	})
 

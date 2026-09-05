@@ -487,6 +487,27 @@ func (f *fixture) artifactConsumers(t *testing.T) int {
 	return n
 }
 
+// artifactConsumerWaiting counts the pull requests waiting at the artifact stream's consumers,
+// which is how many object reads have a pull pending at the server.
+func (f *fixture) artifactConsumerWaiting(t *testing.T) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+	defer cancel()
+	stream, err := f.js.Stream(ctx, "OBJ_"+artifactsBucket)
+	if err != nil {
+		t.Fatalf("artifact stream: %v", err)
+	}
+	n := 0
+	infos := stream.ListConsumers(ctx)
+	for info := range infos.Info() {
+		n += info.NumWaiting
+	}
+	if err := infos.Err(); err != nil {
+		t.Fatalf("consumer infos: %v", err)
+	}
+	return n
+}
+
 // purgeChunks removes every chunk message of the object whose chunk subject nuid names,
 // which is a store that stops delivering to a read that has not fetched them.
 func (f *fixture) purgeChunks(t *testing.T, nuid string) {
