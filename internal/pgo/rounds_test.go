@@ -752,6 +752,35 @@ func TestRoundsObservability(t *testing.T) {
 	}
 }
 
+// TestRoundsSampleRecordNamesItsCollection proves every per-sample record names the Collection it belongs to,
+// so a failed sample is attributable to one of the several a replica may be running.
+func TestRoundsSampleRecordNamesItsCollection(t *testing.T) {
+	good := newPodServer(t, "pod-a", "1.42.3", fixtureProfile(t, "cpu-a.pprof"))
+	bad := newPodServer(t, "pod-b", "1.42.3", []byte("garbage"))
+
+	logs := newLogCapture()
+	r := newTestRounds(t, roundsOpts{
+		discovery: newFakeDiscovery(good.target, bad.target),
+		logs:      logs,
+	})
+
+	in := newRunInput(t)
+	if res := runRounds(t, r, in); res.Reason != "" {
+		t.Fatalf("the collection failed %q", res.Reason)
+	}
+
+	records := logs.with("collection sample")
+	if len(records) != 2 {
+		t.Fatalf("%d sample records logged, want 2", len(records))
+	}
+	for _, entry := range records {
+		if got := entry.Attrs["collection"]; got != in.record.ID {
+			t.Errorf("a sample record names collection %v, want the record's %q: %v",
+				got, in.record.ID, entry.Attrs)
+		}
+	}
+}
+
 // TestRoundsCancellationStoresNothing proves a Collection cancelled between
 // rounds and one cancelled mid-sample both end with nothing in the store.
 func TestRoundsCancellationStoresNothing(t *testing.T) {

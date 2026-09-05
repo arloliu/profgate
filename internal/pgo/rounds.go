@@ -386,7 +386,7 @@ func (r *Rounds) absorb(out sampleOutcome, state *runState, ok *int) string {
 		state.progress.SamplesFailed++
 	}
 	state.man.Samples = append(state.man.Samples, s)
-	r.recordSample(s)
+	r.recordSample(state.man.Collection, s)
 
 	if s.Result == sampleResultOK && state.merged != nil {
 		if size, err := r.serializedSize(state.merged); err != nil || size > r.deps.Limits.MaxMergedBytes {
@@ -402,14 +402,17 @@ func (r *Rounds) absorb(out sampleOutcome, state *runState, ok *int) string {
 }
 
 // recordSample emits the one metric row and the one debug record per sample.
+// The record names the Collection it belongs to,
+// so a sample is attributable to one of the several a replica may be running.
 // Neither carries a Pod IP or a port.
-func (r *Rounds) recordSample(s Sample) {
+func (r *Rounds) recordSample(collection string, s Sample) {
 	result := sampleOutcomeFailed
 	if s.Result == sampleResultOK {
 		result = sampleOutcomeOK
 	}
 	r.deps.Recorder.CollectionSample(result)
-	r.deps.Log.Debug("collection sample", "pod", s.Pod, "round", s.Round, "result", s.Result, "bytes", s.Bytes)
+	r.deps.Log.Debug("collection sample",
+		"collection", collection, "pod", s.Pod, "round", s.Round, "result", s.Result, "bytes", s.Bytes)
 }
 
 // serializedSize is the size of the object the running profile would be stored

@@ -1193,7 +1193,7 @@ so an operator greps one string across both records.
 The namespace is not added: the audit record for the same request already carries it,
 and `requestId` is what joins the two.
 
-- [ ] **Write the tests**
+- [x] **Write the tests**
 
 Each of the three is asserted against a logger the package's own fixtures already build.
 `internal/pgo` has `logCapture` (`internal/pgo/fixtures_test.go:1278-1300`),
@@ -1218,9 +1218,9 @@ go test ./internal/pgo/ ./internal/httpapi/ -run 'Sample|Authenticator|Receipt'
 Name the three cases so that pattern matches them.
 All three fail on the missing attribute.
 
-- [ ] **Add the three attributes**
+- [x] **Add the three attributes**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 `CHANGELOG.md`, `### Fixed`:
 **Three log lines name the work they belong to.**

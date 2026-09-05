@@ -565,6 +565,26 @@ var paramNameRE = regexp.MustCompile(`(?m)^\s*\w+Param\s+=\s+"[^"]*"`)
 // TestReasonsClosedSet checks that this package names audit reasons only
 // through the constants of internal/auth, so no reason can exist that the
 // closed set does not hold.
+// TestAuthenticatorErrorNamesItsRequest proves what the record an unclassified authenticator error writes carries:
+// the request identifier, which joins it to the audit record of the same request.
+func TestAuthenticatorErrorNamesItsRequest(t *testing.T) {
+	const id = "authenticator-failed-request"
+
+	h := authHarness("oidc", &fakeAuth{err: errors.New("boom")})
+	rec := h.doHeaders(t, http.MethodGet, targetsPath, http.Header{requestIDHeader: []string{id}})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+
+	records := h.logRecords(t, "authenticator failed")
+	if len(records) != 1 {
+		t.Fatalf("authenticator failed records = %d, want 1: %s", len(records), h.logs.String())
+	}
+	if got := records[0]["requestId"]; got != id {
+		t.Errorf("the record names request %v, want the one the client sent, %q: %v", got, id, records[0])
+	}
+}
+
 func TestReasonsClosedSet(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {

@@ -156,6 +156,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Three log lines name the work they belong to.**
+  A failed collection sample names its Collection,
+  so it is attributable to one of the several a replica may be running,
+  and the authenticator error and the unreadable idempotency receipt carry `requestId`,
+  with the receipt warning naming the Service too,
+  so each joins the audit record of the same request.
 - **`login --context <name>` names the command that selects the context.**
   `--context` says which context one command speaks through and selects nothing,
   so a first login wrote the context and left every later command resolving the old one, without a word.

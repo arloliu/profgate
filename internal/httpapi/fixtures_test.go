@@ -755,6 +755,28 @@ func (h *harness) audits(t *testing.T) []map[string]any {
 	return records
 }
 
+// logRecords parses every record the logger wrote under one message,
+// which is how a test reads a record that is not the audit line.
+func (h *harness) logRecords(t *testing.T, msg string) []map[string]any {
+	t.Helper()
+
+	var records []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(h.logs.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line %q is not JSON: %v", line, err)
+		}
+		if rec["msg"] == msg {
+			records = append(records, rec)
+		}
+	}
+
+	return records
+}
+
 // logText is every captured log line flattened without its time and requestId fields.
 // slog writes the timestamp, and the request id is random hex or the caller's own,
 // so neither can carry what a fixture holds.

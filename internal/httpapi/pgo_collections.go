@@ -508,7 +508,7 @@ func (s *server) serveCollectionCreate(
 	if key != "" {
 		receiptKey = pgo.ReceiptKey(principal, rt.namespace, rt.service, key)
 		hash = pgo.SnapshotHash(snapshot)
-		bound, lerr := s.lookupReceipt(r.Context(), sess, receiptKey, hash, true)
+		bound, lerr := s.lookupReceipt(r.Context(), q, sess, receiptKey, hash, true)
 		if lerr != nil {
 			q.fail(w, lerr)
 
@@ -622,7 +622,7 @@ type receiptLookup struct {
 // A caller that cannot create — a publication that already lost the active key —
 // leaves a stale receipt alone and is refused instead.
 func (s *server) lookupReceipt(
-	ctx context.Context, sess *pgo.Session, receiptKey, hash string, clearStale bool,
+	ctx context.Context, q *request, sess *pgo.Session, receiptKey, hash string, clearStale bool,
 ) (receiptLookup, *requestError) {
 	for range receiptReads {
 		receipt, revision, err := sess.ReadReceipt(ctx, receiptKey)
@@ -630,7 +630,8 @@ func (s *server) lookupReceipt(
 		case errors.Is(err, natskv.ErrKeyNotFound):
 			return receiptLookup{}, nil
 		case err != nil:
-			s.deps.Logger.Warn("pgo: idempotency receipt is not readable", "error", err)
+			s.deps.Logger.Warn("pgo: idempotency receipt is not readable",
+				"requestId", q.audit.requestID, "service", q.route.service, "error", err)
 
 			return receiptLookup{}, errPGOUnavailable
 		}
@@ -711,7 +712,7 @@ func (s *server) refuseLoser(
 		return
 	}
 
-	bound, lerr := s.lookupReceipt(r.Context(), sess, receiptKey, hash, false)
+	bound, lerr := s.lookupReceipt(r.Context(), q, sess, receiptKey, hash, false)
 	if lerr != nil {
 		q.fail(w, lerr)
 

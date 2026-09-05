@@ -83,7 +83,7 @@ func (s *server) authenticate(
 		if !errors.As(err, &f) {
 			// Not one of the classified failures: a programming error, answered
 			// as unavailable so the caller retries rather than reads it as a denial.
-			s.deps.Logger.Error("authenticator failed", "error", err)
+			s.deps.Logger.Error("authenticator failed", "requestId", q.audit.requestID, "error", err)
 			f = &auth.Failure{Status: http.StatusServiceUnavailable, Reason: auth.ReasonInternal}
 		}
 		s.failAuth(w, q, f, cfg.Auth.Mode)

@@ -2351,6 +2351,32 @@ func TestCollectionReplayReadsPastTheCaches(t *testing.T) {
 	}
 }
 
+// TestCollectionUnreadableReceiptNamesItsRequest proves what the record a failed receipt read writes names:
+// the request, and the Service whose Collection was being created,
+// which join it to the audit record of the same request.
+func TestCollectionUnreadableReceiptNamesItsRequest(t *testing.T) {
+	const id = "unreadable-receipt-request"
+
+	h := newPGOHarness(t, pgoOpts{})
+	h.nats.jobs.setGetErr(natskv.ErrUnavailable)
+
+	header := keyed("k")
+	header.Set(requestIDHeader, id)
+	got := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, header)
+	expectCode(t, got, http.StatusServiceUnavailable, CodePGOUnavailable)
+
+	records := h.logRecords(t, "pgo: idempotency receipt is not readable")
+	if len(records) != 1 {
+		t.Fatalf("unreadable receipt records = %d, want 1: %s", len(records), h.logs.String())
+	}
+	if v := records[0]["requestId"]; v != id {
+		t.Errorf("the record names request %v, want the one the client sent, %q: %v", v, id, records[0])
+	}
+	if v := records[0]["service"]; v != fixtureService {
+		t.Errorf("the record names service %v, want %q: %v", v, fixtureService, records[0])
+	}
+}
+
 // TestCollectionCreateReplacesAStaleReceipt proves what a receipt outliving
 // its record means: the record reached its retention, so the key names nothing
 // and the request creates.
