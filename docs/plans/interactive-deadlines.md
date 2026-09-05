@@ -763,7 +763,7 @@ and `shutdown` waits on it right after `cancelInformers()` at `:427`, before the
 so a returned `serve` means nothing it started still logs through klog,
 and a test that starts another gateway afterwards installs a new sink with no goroutine reading the old one.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 `TestClusterLogsThroughSlog`, in a new `internal/k8s/cluster_test.go`, with two subtests.
 `startFixture` (`internal/k8s/export_test.go:27-47`) builds the fake clientset itself and blocks in `waitCache` until `HasSynced`,
@@ -788,7 +788,7 @@ go test -race -count=1 ./internal/k8s/ -run 'TestClusterLogsThroughSlog'
 
 klog's sink is package state; the package's tests do not run in parallel, and this test says so in a comment.
 
-- [ ] **Install the sink and say so**
+- [x] **Install the sink and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **Kubernetes client failures are JSON on stdout.**
@@ -798,7 +798,7 @@ klog now writes through the gateway's logger at the level client-go emits:
 a list that fails is an `ERROR` record, a watch that ends with an error and is retried is `INFO`,
 and client-go's verbose lines, a watch that closes cleanly among them, appear under `server.logLevel: debug`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 go mod tidy && git diff --stat go.mod go.sum

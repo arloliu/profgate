@@ -201,6 +201,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   both listeners now close it after 120 seconds.
   A TLS handshake failure and a recovered handler panic were printed to stderr as text, outside `server.logLevel`;
   they are now `ERROR` records on stdout like everything else the gateway says.
+- **Kubernetes client failures are JSON on stdout.**
+  client-go's informers log through klog, whose default sink is stderr text outside `server.logLevel`,
+  so a watch that kept failing after the first sync was invisible in the gateway's own log.
+  klog now writes through the gateway's logger at the level client-go emits:
+  a list that fails is an `ERROR` record, a watch that ends with an error and is retried is `INFO`,
+  and client-go's verbose lines, a watch that closes cleanly among them, appear under `server.logLevel: debug`.
 - **Three log lines name the work they belong to.**
   A failed collection sample names its Collection,
   so it is attributable to one of the several a replica may be running,

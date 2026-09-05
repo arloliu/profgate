@@ -8,6 +8,7 @@ require (
 	github.com/chromedp/chromedp v0.16.0
 	github.com/dop251/goja v0.0.0-20260826204918-8f1c0696a37b
 	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-logr/logr v1.4.3
 	github.com/go-playground/validator/v10 v10.30.1
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3
 	github.com/nats-io/jwt/v2 v2.8.2
@@ -21,6 +22,7 @@ require (
 	k8s.io/api v0.36.4
 	k8s.io/apimachinery v0.36.4
 	k8s.io/client-go v0.36.4
+	k8s.io/klog/v2 v2.140.0
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -35,7 +37,6 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
@@ -79,7 +80,6 @@ require (
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect
 	k8s.io/streaming v0.36.4 // indirect
 	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2 // indirect

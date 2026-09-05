@@ -335,6 +335,10 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	// profile request confirms its Pod before it dials.
 	informerCtx, cancelInformers := context.WithCancel(ctx)
 	defer cancelInformers()
+	// informersStopped closes when cluster.Run returns, and stays open when the informers never start.
+	// The loop below sets informersStarted and the shutdown it calls reads it, both on this goroutine.
+	informersStopped := make(chan struct{})
+	informersStarted := false
 	// The certificate is re-read under runCtx, so it stops with the other
 	// loops at the top of the drain.
 	// Nothing waits for it: the pair already loaded serves every connection
@@ -444,6 +448,12 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		}
 		wg.Wait()
 		cancelInformers()
+		// Run returns once every informer goroutine has stopped,
+		// so a returned serve means nothing it started still logs through klog,
+		// and a runtime built afterwards installs a new sink with no goroutine reading the old one.
+		if informersStarted {
+			<-informersStopped
+		}
 
 		opsCtx, cancelOps := context.WithTimeout(context.Background(), opsDrainTimeout)
 		defer cancelOps()
@@ -488,7 +498,11 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 				return 1
 			}
 			logger.Info("preflight passed; starting informers")
-			go cluster.Run(informerCtx)
+			informersStarted = true
+			go func() {
+				defer close(informersStopped)
+				cluster.Run(informerCtx)
+			}()
 			go waitSynced(runCtx, cluster.HasSynced, syncedCh, syncedReportInterval, logger)
 		case <-syncedCh:
 			deps.recorder.DiscoverySynced(true)
