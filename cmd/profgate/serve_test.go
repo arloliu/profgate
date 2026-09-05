@@ -461,6 +461,9 @@ type gatewayOpts struct {
 	// idleTimeout is how long both listeners hold a keep-alive connection
 	// that sends nothing, zero meaning the production 120 seconds.
 	idleTimeout time.Duration
+	// drainSlack is what the API drain's bound adds to the longest profile duration,
+	// zero meaning the production 30 seconds.
+	drainSlack time.Duration
 	// authBlock, when set, is the raw top-level auth block written in place
 	// of the disabled one; authPoll is the users-file and cookie-key poll
 	// interval, zero meaning the production 30 seconds.
@@ -513,6 +516,7 @@ func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o gatewayOpts)
 	}
 	deps.tlsRefresh = o.tlsRefresh
 	deps.idleTimeout = o.idleTimeout
+	deps.drainSlack = o.drainSlack
 	deps.authPoll = o.authPoll
 	if o.preflight != nil {
 		deps.natsPreflight = o.preflight.fn()
@@ -1960,8 +1964,11 @@ func TestServePGO(t *testing.T) {
 		nats := newFakeNATS(true)
 		nats.stores.Jobs = jobs
 		pf := newPreflightStub(preflightResult{client: nats})
+		// The drain's slack is shortened: the row is about what the bound does to the held request,
+		// and the production bound itself is proved by the drain bound row above.
+		const slack = 2 * time.Second
 		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), limits{cpu: 1, trace: 1, maxConcurrent: 1},
-			gatewayOpts{enabled: true, preflight: pf, worker: worker, pgoMaxDuration: time.Second})
+			gatewayOpts{enabled: true, preflight: pf, worker: worker, pgoMaxDuration: time.Second, drainSlack: slack})
 		gw.waitReady(t, waitTimeout)
 		waitFor(t, waitTimeout, "the collections route passing the barrier", func() bool {
 			code, _, err := get(gw.apiAddr, collectionsPath)
@@ -1989,8 +1996,8 @@ func TestServePGO(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit code = %d, want 0", code)
 		}
-		if elapsed < 30*time.Second || elapsed > 35*time.Second {
-			t.Fatalf("serve exited after %s, want max(cpu,trace)+30s = 31s: the store call held the request to the bound", elapsed)
+		if bound := time.Second + slack; elapsed < bound || elapsed > bound+5*time.Second {
+			t.Fatalf("serve exited after %s, want max(cpu,trace)+%s = %s: the store call held the request to the bound", elapsed, slack, bound)
 		}
 		if rec := gw.record(t, "drain complete"); rec["api"] != "deadline_closed" {
 			t.Fatalf("drain complete record = %v, want api=deadline_closed: the bound cut the request", rec)

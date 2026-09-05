@@ -93,6 +93,7 @@ type serveDeps struct {
 	listen        listenFunc                             // production: nil, so serve uses net.ListenConfig
 	tlsRefresh    time.Duration                          // production: 0, so tlscert re-reads on its own interval
 	idleTimeout   time.Duration                          // production: 0, so both listeners close an idle connection after idleTimeout
+	drainSlack    time.Duration                          // production: 0, so the API drain's bound adds drainSlack to the longest profile duration
 	authPoll      time.Duration                          // production: 0, so the users file and cookie key file are polled every 30 seconds
 }
 
@@ -433,7 +434,11 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			drainBound := time.Duration(max(cfg.Limits.CPUSeconds, cfg.Limits.TraceSeconds))*time.Second + drainSlack
+			slack := drainSlack
+			if deps.drainSlack > 0 {
+				slack = deps.drainSlack
+			}
+			drainBound := time.Duration(max(cfg.Limits.CPUSeconds, cfg.Limits.TraceSeconds))*time.Second + slack
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), drainBound)
 			defer cancel()
 			err := apiServer.Shutdown(shutdownCtx)
