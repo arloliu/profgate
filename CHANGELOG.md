@@ -261,7 +261,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`profgate_nats_connected` reads `NaN` where no NATS connection is ever made.**
   It read `0` on every install with `pgo.enabled: false` — a transport that was never configured, reported as down —
   which no rule could be written over.
-  It now reads `0` from the moment a process is configured to reach NATS, before its first attempt,
+  It now reads `0` under `pgo.enabled`, from the start of the NATS preflight and before the first attempt,
   rather than only once a connection has been made and lost.
   An operator's own `profgate_nats_connected == 0` rule no longer matches on an install that runs no collection,
   and it now matches from the start of a NATS outage at startup instead of staying silent through it.
