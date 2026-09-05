@@ -1,6 +1,6 @@
 # NATS Holds Nothing the PGO Path Did Not Bound
 
-**Status:** Draft
+**Status:** Approved
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -1393,10 +1393,6 @@ Line 3 becomes `**Status:** Done` and line 4 `**Outcome:** pull request #<n> ...
 naming the pull request that carries the ten tasks above,
 and in the same commit the roadmap item's `Shipped:` line (`docs/plans/roadmap.md:277`) names that pull request,
 the shape the previous plan's closing commit gave it.
-The same commit reconciles one figure in the accepted spec with the test that carries it:
-the unit case at `docs/specs/pgo.md:3317`, an upload that takes a minute against a context with no deadline,
-is carried by six seconds, because the bound the change removes is five, a minute proves nothing more, and a test that sleeps a minute costs every run;
-the sentence there says six seconds, and the amendment block's *Unit* row says the figure moved with the implementation.
 The pull request is named rather than a commit because the merge rebases this branch onto `main`
 and rewrites every hash on it, while the number is the same before and after;
 [`900-design-and-review-loops.md`](../../.agents/rules/900-design-and-review-loops.md) admits a pull request there for that reason,
@@ -1413,7 +1409,7 @@ it deletes this file and rewrites every link that cited it, which `check_links` 
 semlf check docs/plans/pgo-nats-bounds.md docs/plans/roadmap.md docs/specs/pgo.md
 mise exec golangci-lint@2.12.2 -- golangci-lint run ./... && mise run test && mise run check && mise run prose
 git add docs/plans/pgo-nats-bounds.md docs/plans/roadmap.md docs/specs/pgo.md
-git commit -m "docs: close the PGO NATS bounds plan" -m "<body: the item's seven bullets are done and its Shipped line names the pull request; the plan is Done; the spec's minute-long upload case carries the six seconds the test runs>"
+git commit -m "docs: close the PGO NATS bounds plan" -m "<body: the item's seven bullets are done and its Shipped line names the pull request; the plan is Done>"
 git log --oneline -1 && git status --short
 ```
 
@@ -1491,8 +1487,8 @@ on every Markdown file and every Go file with doc comments a task edits;
 - **A refused install leaves a longer lease in the store than the owner honours.**
   The renewal landed and the work was cancelled under it; the owner writes nothing more,
   and the record is reclaimed once that lease lapses, one renewal interval later than it would have been.
-- **The spec's minute becomes six seconds in one unit case.**
-  The closing task edits the accepted text to say so; until then the spec and the test disagree on a figure and not on a bound.
+- **The spec's deadline-less upload case is carried by six seconds.**
+  The accepted text asks for an upload that outlasts the call deadline; five is the bound the change removes, and six outlasts it.
 - **The plan's deletion is not one of its tasks.**
   The closing task leaves the finished document in the tree under the lifecycle checks;
   the commit that deletes it and rewrites its links follows the merge, as the previous plan's did.
