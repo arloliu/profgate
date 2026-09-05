@@ -588,3 +588,52 @@ func TestCachesRebuildOnAWatchCut(t *testing.T) {
 		t.Errorf("Run returned %v on a cancelled context, want nil", err)
 	}
 }
+
+// TestCachesCarryTheScanFields is an inventory:
+// a cached record carries the lease, the claim deadline, the deadline, and the creation time as the store wrote them,
+// because the worker scan decides from the cache alone which records it reads fresh.
+func TestCachesCarryTheScanFields(t *testing.T) {
+	client := newSeamClient()
+	logs := newLogCapture()
+	caches := NewCaches(logs.logger())
+
+	id := newID()
+	lease := slotBase.Add(time.Minute)
+	deadline := slotBase.Add(time.Hour)
+	client.put(t, client.jobs, jobKey(id), Record{
+		ID: id, Namespace: "payment", Service: "payment-api",
+		Origin: OriginSchedule, State: StateRunning, Attempt: 1,
+		CreatedAt:  slotBase,
+		ClaimBy:    slotBase.Add(30 * time.Second),
+		LeaseUntil: &lease,
+		Deadline:   &deadline,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- caches.Run(ctx, client) }()
+	waitFor(t, "the four caches to replay", func() bool { return caches.Synced(client.Generation()) })
+
+	got, ok := caches.jobEntries()[jobKey(id)]
+	if !ok {
+		t.Fatalf("the job cache does not hold %s", jobKey(id))
+	}
+	if !got.CreatedAt.Equal(slotBase) {
+		t.Errorf("createdAt is %s, want %s", got.CreatedAt, slotBase)
+	}
+	if !got.ClaimBy.Equal(slotBase.Add(30 * time.Second)) {
+		t.Errorf("claimBy is %s, want %s", got.ClaimBy, slotBase.Add(30*time.Second))
+	}
+	if got.LeaseUntil == nil || !got.LeaseUntil.Equal(lease) {
+		t.Errorf("leaseUntil is %v, want %s", got.LeaseUntil, lease)
+	}
+	if got.Deadline == nil || !got.Deadline.Equal(deadline) {
+		t.Errorf("deadline is %v, want %s", got.Deadline, deadline)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("Run returned %v on a cancelled context, want nil", err)
+	}
+}

@@ -196,6 +196,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The worker scan reads only what is due.**
+  Every scan, on its timer and after every record delivery, read every nonterminal record fresh,
+  quadratic in live Collections.
+  The cache now carries each record's lease, claim deadline, and deadline,
+  so a pass reads fresh only a `pending` record it could claim or that has outlived its claim deadline,
+  a `running` record whose lease or deadline has lapsed, and an `initializing` one past its grace.
 - **An expired flip that fails, and a probe listing that fails, are seen.**
   A `completed` to `expired` update that returned anything but a lost race was dropped without a record,
   on the sweeper's path and on the two download paths that make the same flip,

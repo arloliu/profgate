@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -437,7 +439,7 @@ func TestWorkerBehindBarrier(t *testing.T) {
 			return r.client.Synced(r.client.Generation())
 		})
 		gen := r.client.Generation()
-		if len(r.caches.nonterminalJobIDs()) == 0 {
+		if len(r.caches.nonterminalJobs()) == 0 {
 			t.Fatal("the caches emptied themselves; the stale contents are what this case is about")
 		}
 
@@ -1356,5 +1358,209 @@ func (f *pgoFixture) waitObjectGone(r *replica, name string) {
 		}
 
 		return false
+	})
+}
+
+// seedFiftyRunning writes fifty running Collections, each on a Service of its own,
+// owned by a replica that is not this one, with a lease an hour out and a deadline two hours out.
+func seedFiftyRunning(f *pgoFixture) []string {
+	f.t.Helper()
+	lease := slotBase.Add(time.Hour)
+	started := slotBase
+	deadline := slotBase.Add(2 * time.Hour)
+	ids := make([]string, 0, 50)
+	for i := range 50 {
+		ids = append(ids, f.seedClaimable("payment", fmt.Sprintf("payment-api-%02d", i), func(rec *Record) {
+			rec.State = StateRunning
+			rec.Attempt = 1
+			rec.Owner = &Owner{Instance: "other-replica", Pod: "other-replica"}
+			rec.LeaseUntil = &lease
+			rec.StartedAt = &started
+			rec.Deadline = &deadline
+		}))
+	}
+
+	return ids
+}
+
+// jobReads counts the fresh reads a scan issued over the named Collections.
+func jobReads(hook *kvHook, ids []string) int {
+	reads := 0
+	for _, id := range ids {
+		reads += len(hook.callsFor("get", jobKey(id)))
+	}
+
+	return reads
+}
+
+// jobUpdates counts the conditional updates issued on any Collection record.
+func jobUpdates(hook *kvHook) int {
+	updates := 0
+	for _, c := range hook.operations() {
+		if c.Op == "update" && strings.HasPrefix(c.Key, jobPrefix) {
+			updates++
+		}
+	}
+
+	return updates
+}
+
+// TestWorkerScanReadsOnlyWhatIsDue proves a pass reads fresh only the records it may act on,
+// so one delivery costs the store what is due rather than what is stored:
+// a running record under a valid lease is skipped from the cache alone,
+// a pending record is read only while this replica could claim it or once its claim deadline has passed,
+// and the cache stays a candidate filter that never decides a write.
+func TestWorkerScanReadsOnlyWhatIsDue(t *testing.T) {
+	t.Run("fifty running records with valid leases cost no read", func(t *testing.T) {
+		f := startPGO(t)
+		ids := seedFiftyRunning(f)
+
+		hook := &kvHook{}
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		r.waitCache("holds all fifty", func(c *Caches) bool {
+			for _, id := range ids {
+				if !c.hasJob(id) {
+					return false
+				}
+			}
+
+			return true
+		})
+		w := r.newWorker(trapRun(t))
+		hook.reset()
+		scanNow(t, w)
+
+		if got := jobReads(hook, ids); got != 0 {
+			t.Fatalf("the scan read %d records fresh, want 0: none of them is due under a valid lease", got)
+		}
+	})
+
+	t.Run("lapsed leases cost one read each", func(t *testing.T) {
+		f := startPGO(t)
+		ids := seedFiftyRunning(f)
+
+		hook := &kvHook{}
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		r.waitCache("holds all fifty", func(c *Caches) bool {
+			for _, id := range ids {
+				if !c.hasJob(id) {
+					return false
+				}
+			}
+
+			return true
+		})
+		stub := newRunStub(workResult{})
+		t.Cleanup(stub.release)
+		// maxActiveCollections is one, so the first claim takes the only slot
+		// and the other forty-nine are read and refused for want of one.
+		w := r.newWorker(stub.fn())
+		r.clock.Set(slotBase.Add(time.Hour + skewMargin + time.Second))
+		hook.reset()
+		scanNow(t, w)
+		stub.waitStarted(t)
+
+		if got := jobReads(hook, ids); got != 50 {
+			t.Fatalf("the scan read %d records fresh, want 50: every lapsed lease is due", got)
+		}
+		if got := jobUpdates(hook); got != 1 {
+			t.Fatalf("the scan issued %d updates, want the one claim the slot allowed", got)
+		}
+	})
+
+	t.Run("a replica at its ceiling reads no pending record until claimBy passes", func(t *testing.T) {
+		f := startPGO(t)
+		owned := f.seedClaimable("payment", "payment-api")
+
+		hook := &kvHook{}
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(owned) })
+
+		// The held stub keeps the one slot maxActiveCollections allows.
+		stub := newRunStub(workResult{})
+		t.Cleanup(stub.release)
+		w := r.newWorker(stub.fn())
+		scanNow(t, w)
+		stub.waitStarted(t)
+		waitClaimed(t, f, owned, 1)
+
+		// A second Service's Collection arrives while the slot is taken;
+		// its claim deadline is ten seconds out, inside the lease the owner holds.
+		claimBy := slotBase.Add(10 * time.Second)
+		pending := f.seedClaimable("payment", "other-api", func(rec *Record) { rec.ClaimBy = claimBy })
+		r.waitCache("holds the pending record", func(c *Caches) bool { return c.hasJob(pending) })
+
+		hook.reset()
+		scanNow(t, w)
+		if got := len(hook.callsFor("get", jobKey(pending))); got != 0 {
+			t.Fatalf("a replica with no free slot read the pending record %d times, want 0", got)
+		}
+
+		r.clock.Set(claimBy.Add(skewMargin + time.Second))
+		hook.reset()
+		scanNow(t, w)
+		if got := len(hook.callsFor("get", jobKey(pending))); got != 1 {
+			t.Fatalf("the pending record past its claim deadline was read %d times, want once", got)
+		}
+		if rec := f.record(pending); rec.State != StateFailed || rec.Reason != ReasonNotClaimed {
+			t.Fatalf("record is %q %q, want failed not_claimed", rec.State, rec.Reason)
+		}
+	})
+
+	// This case holds on the unchanged code as on the changed:
+	// it is the candidate-filter rule the cases above must keep.
+	t.Run("a cached lease that lags the store reads fresh and claims nothing", func(t *testing.T) {
+		f := startPGO(t)
+		lapsed := slotBase.Add(-time.Minute)
+		started := slotBase.Add(-2 * time.Minute)
+		deadline := slotBase.Add(time.Hour)
+		id := f.seedClaimable("payment", "payment-api", func(rec *Record) {
+			rec.State = StateRunning
+			rec.Attempt = 1
+			rec.Owner = &Owner{Instance: "other-replica", Pod: "other-replica"}
+			rec.LeaseUntil = &lapsed
+			rec.StartedAt = &started
+			rec.Deadline = &deadline
+		})
+
+		hook := &kvHook{}
+		frozen := newFreezer(cacheJobs)
+		r := f.newReplica("replica", replicaOpts{
+			freezer:    frozen,
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+
+		// The owner renews while this replica's job cache is held,
+		// so the cache still shows the lapsed lease the store no longer holds.
+		frozen.freeze()
+		renewed := f.record(id)
+		lease := slotBase.Add(time.Hour)
+		renewed.LeaseUntil = &lease
+		f.putJSON(f.jobs, jobKey(id), renewed)
+
+		w := r.newWorker(trapRun(t))
+		hook.reset()
+		scanNow(t, w)
+
+		if got := len(hook.callsFor("get", jobKey(id))); got != 1 {
+			t.Fatalf("the record was read %d times, want once: the cache made it a candidate", got)
+		}
+		if got := jobUpdates(hook); got != 0 {
+			t.Fatalf("the scan issued %d updates, want 0: the fresh lease is valid", got)
+		}
+		if got := f.record(id); got.Attempt != 1 || got.Owner.Instance != "other-replica" {
+			t.Fatalf("record is attempt %d owned by %s, want the renewing owner's attempt 1", got.Attempt, got.Owner.Instance)
+		}
 	})
 }

@@ -1052,7 +1052,7 @@ a claim inside the pass changes it, and the claim's own `reserveLocalSlot` is wh
 The comment on `Run` (`:159-166`) keeps saying the pass runs on the timer and on every delivery;
 that is already the code.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 | Test | What it asserts, and how it fails today |
 |---|---|
@@ -1068,7 +1068,7 @@ The red state:
 go test -race -count=1 ./internal/pgo/ -run 'TestWorkerScanReadsOnlyWhatIsDue|TestCachesCarryTheScanFields'
 ```
 
-- [ ] **Skip what is not due and say so**
+- [x] **Skip what is not due and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **The worker scan reads only what is due.**
@@ -1078,7 +1078,7 @@ The cache now carries each record's lease, claim deadline, and deadline,
 so a pass reads fresh only a `pending` record it could claim or that has outlived its claim deadline,
 a `running` record whose lease or deadline has lapsed, and an `initializing` one past its grace.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/pgo/caches.go internal/pgo/worker.go CHANGELOG.md

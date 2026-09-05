@@ -284,6 +284,10 @@ func (w *Worker) inFlightSnapshot() []*inFlight {
 
 // scan is one pass over the records this replica's cache shows as nonterminal.
 // It begins behind the replay barrier and uses one view for the whole pass.
+// Only the candidates due now are read fresh,
+// so one pass costs the store what is due rather than what is stored.
+// Whether a slot is free is read once per pass and not per candidate:
+// a claim inside the pass changes it, and the claim's own reserveLocalSlot is what refuses the next.
 func (w *Worker) scan(ctx context.Context) {
 	gen := w.client.Generation()
 	if !w.client.Synced(gen) || !w.caches.Synced(gen) {
@@ -293,8 +297,36 @@ func (w *Worker) scan(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	for _, id := range w.caches.nonterminalJobIDs() {
-		w.visit(ctx, stores, id)
+	now := w.clock.Now().UTC()
+	w.mu.Lock()
+	slotFree := w.active < w.maxActive
+	w.mu.Unlock()
+	for _, c := range w.caches.nonterminalJobs() {
+		if !due(c.job, now, slotFree) {
+			continue
+		}
+		w.visit(ctx, stores, c.id)
+	}
+}
+
+// due reports whether a cached record may need acting on now,
+// so a pass reads fresh only the records it may act on and one delivery costs the store what is due, not what is stored.
+// A cached lease is never later than the store's, because a renewal only extends it and the cache lags the store,
+// so lag can make a pass read a record it need not and never skip one whose lease has lapsed;
+// the fresh read still precedes every write, and the write alone decides.
+func due(c cachedJob, now time.Time, slotFree bool) bool {
+	switch c.State {
+	case StateInitializing:
+		return c.CreatedAt.Add(publishGrace + skewMargin).Before(now)
+	case StatePending:
+		return slotFree || c.ClaimBy.Add(skewMargin).Before(now)
+	case StateRunning:
+		return (c.LeaseUntil != nil && c.LeaseUntil.Add(skewMargin).Before(now)) ||
+			(c.Deadline != nil && c.Deadline.Add(skewMargin).Before(now))
+	case StateCompleted, StateFailed, StateCancelled, StateExpired:
+		return false
+	default:
+		return false
 	}
 }
 

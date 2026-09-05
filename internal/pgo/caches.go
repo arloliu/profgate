@@ -121,6 +121,13 @@ type cachedJob struct {
 	Artifact   string
 	FinishedAt *time.Time
 	ExpiresAt  *time.Time
+	// ClaimBy, LeaseUntil, and Deadline are what the worker scan decides from
+	// which records it reads fresh, so a pass costs the store what is due.
+	// The cache is a candidate filter and never the authority:
+	// the fresh read still precedes every write, and the write alone decides.
+	ClaimBy    time.Time
+	LeaseUntil *time.Time
+	Deadline   *time.Time
 }
 
 // cachedActive is one active key.
@@ -458,6 +465,9 @@ func (c *Caches) applyJob(e natskv.Entry) {
 		CreatedAt:       rec.CreatedAt,
 		FinishedAt:      rec.FinishedAt,
 		ExpiresAt:       rec.ExpiresAt,
+		ClaimBy:         rec.ClaimBy,
+		LeaseUntil:      rec.LeaseUntil,
+		Deadline:        rec.Deadline,
 	}
 	if rec.Artifact != nil {
 		job.Artifact = rec.Artifact.Object
@@ -617,23 +627,29 @@ func (c *Caches) cachedLive(gen uint64) (int, bool) {
 	return len(live), true
 }
 
-// nonterminalJobIDs lists the Collections the cache shows in a state they can
-// still leave: the worker scan's candidates.
-// The sweeper's candidates are the other ones, and it reads them through
-// jobEntries.
-func (c *Caches) nonterminalJobIDs() []string {
+// scanCandidate is one Collection the worker scan may read fresh:
+// its identifier and the cached record the scan decides from.
+type scanCandidate struct {
+	id  string
+	job cachedJob
+}
+
+// nonterminalJobs lists the Collections the cache shows in a state they can still leave,
+// sorted by identifier: the worker scan's candidates.
+// The sweeper's candidates are the other ones, and it reads them through jobEntries.
+func (c *Caches) nonterminalJobs() []scanCandidate {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]string, 0, len(c.jobs))
+	out := make([]scanCandidate, 0, len(c.jobs))
 	for key, j := range c.jobs {
 		if terminal(j.State) {
 			continue
 		}
 		if id, ok := strings.CutPrefix(key, jobPrefix); ok {
-			out = append(out, id)
+			out = append(out, scanCandidate{id: id, job: j})
 		}
 	}
-	slices.Sort(out)
+	slices.SortFunc(out, func(a, b scanCandidate) int { return strings.Compare(a.id, b.id) })
 
 	return out
 }
