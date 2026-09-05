@@ -201,35 +201,37 @@ and an operator on call has no page that says what to look at.
 
 ### 5. Bound what a slow client can hold on the interactive path
 
-- [ ] A client that stops reading holds the handler, its admission slot, and the Pod connection past the request budget:
+- [x] A client that stops reading holds the handler, its admission slot, and the Pod connection past the request budget:
   `internal/proxy/proxy.go:173` blocks in `w.Write` and `cmd/profgate/serve.go:234` sets only `ReadHeaderTimeout`.
   Sixteen such clients — the default `limits.maxConcurrentProfiles` — answer every later profile request `429`.
   Reproduced: a two-second budget, a handler still blocked at eight seconds;
   with a write deadline at the budget it returned at two.
   `docs/specs/gateway.md:981-983` already promises the budget bounds body streaming; the code catches up.
-- [ ] A PGO route reads its JSON body with no deadline once the headers are in
+- [x] A PGO route reads its JSON body with no deadline once the headers are in
   (`internal/httpapi/pgo.go:206`); a body dripped one byte at a time holds a handler goroutine indefinitely.
   Reproduced: a handler blocked in `decodeBody` until the client hung up, and back in one second with a read deadline.
   A read deadline on the small-body routes through `http.ResponseController`, set before the read and cleared after;
   the write deadline above is the same idiom on the streaming side.
   A server-wide `ReadTimeout` or `WriteTimeout` is not the fix: it cancels a long profile handler.
-- [ ] client-go reflector failures go to stderr as text, outside `server.logLevel` and the JSON contract at `docs/specs/gateway.md:1443`;
+- [x] client-go reflector failures go to stderr as text, outside `server.logLevel` and the JSON contract at `docs/specs/gateway.md:1443`;
   a watch that keeps failing after the first sync is invisible everywhere else.
   Reproduced: every Pod list failing, `HasSynced` false, the gateway log empty.
   Route klog through `slog` in `internal/k8s`.
-- [ ] Neither server sets `ErrorLog` (`cmd/profgate/serve.go:234-235`),
+- [x] Neither server sets `ErrorLog` (`cmd/profgate/serve.go:234-235`),
   so TLS handshake failures and recovered panics print through `log.Printf`;
   neither sets `IdleTimeout`;
   the upstream transport (`internal/proxy/proxy.go:86-90`) sets no `IdleConnTimeout` and no global `MaxIdleConns`.
-- [ ] Two outcomes are misattributed: a client gone during the confirmation read counts as
+- [x] Two outcomes are misattributed: a client gone during the confirmation read counts as
   `profgate_confirm_total{result="unavailable"}` and audits `503 discovery_unavailable` (`internal/k8s/confirm.go:44`);
   a connection the drain deadline closes audits `client_gone` (`internal/proxy/proxy.go:174`).
-- [ ] Every fatal startup path sleeps `server.drainDelay` before exiting (`cmd/profgate/serve.go:380-383`)
+- [x] Every fatal startup path sleeps `server.drainDelay` before exiting (`cmd/profgate/serve.go:380-383`)
   though `/readyz` never turned green; `docs/specs/gateway.md:1635` gives the reason to skip the window,
   and it holds here.
 
-Spec: [`gateway.md`](../specs/gateway.md) *Network* for the write deadline, the body read deadline, and the idle timeouts;
-*Logging* already covers the reflector records.
+Spec: [`gateway.md`](../specs/gateway.md) *Network* for the listener timeouts, the body read deadline, and `ErrorLog`;
+*Proxy behavior* for the write deadline, the transport's keep-alives, and the `drain_expired` outcome;
+*Logging* for the klog records;
+*Startup and shutdown* for the drain cut and the fatal exits that skip `server.drainDelay`.
 Shipped: not built yet.
 Why here: the first bullet is reproduced and reaches the default limit with sixteen idle sockets.
 

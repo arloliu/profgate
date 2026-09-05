@@ -236,6 +236,24 @@ with a wildcard entry there a client may name any port number, or any port name,
 and NetworkPolicy is then the only bound on which Pod ports the gateway can reach.
 The ops listener is not exposed by the gateway's own Ingress or Service of type other than `ClusterIP`.
 
+Both listeners, the ops listener included, set `ReadHeaderTimeout` to 10 seconds and `IdleTimeout` to 120 seconds,
+both constants,
+so a keep-alive connection that sends nothing is closed rather than held until the process exits.
+No server-wide `ReadTimeout` or `WriteTimeout` is set, because either would cancel a long profile request.
+Every PGO route of [`pgo.md`](pgo.md) that reads or probes a body sets a 10-second read deadline before the read.
+It is set through `http.ResponseController.SetReadDeadline`;
+10 seconds is the same constant as the listener's `ReadHeaderTimeout`, and the body is at most 64 KiB,
+so no configuration key exists for it.
+The deadline is cleared only after the body has been read to its end.
+A read that fails — the deadline, the size limit, or any other error —
+leaves the deadline in place through the handler's return,
+so the drain `net/http` performs on the unread body is bounded by it and the connection is closed rather than reused.
+A probe read that fails is answered the way an unreadable body is on the routes that decode one.
+The write deadline on the profile route is described under *Proxy behavior*.
+Both servers set `ErrorLog` to a logger that writes through the process's `log/slog` handler at `error`,
+so TLS handshake failures reach stdout as JSON under `server.logLevel` rather than stderr as text,
+and so does every other message `net/http` writes on its own, a recovered handler panic and its stack among them.
+
 ### 3.4 Container
 
 ```yaml
@@ -675,6 +693,11 @@ time spent waiting on the rate limiter counts toward the confirmation timeout.
 A transport error, timeout, or any other API error is `ErrDiscoveryUnavailable`
 and ends with `503 discovery_unavailable`:
 when the API server cannot vouch for the target, the gateway does not connect.
+A client that disconnects while the read is in flight is neither:
+the request ends as `client_gone` with no response written,
+and `profgate_confirm_total` counts the attempt under `result="client_gone"`;
+of the ways the read can be cut short,
+only an expiry of the confirmation's own timeout or of the budget is `unavailable`.
 
 `Confirm` uses `Target.UID` captured at selection, never a second cache lookup,
 so a replacement Pod that has since entered the cache under the same name cannot satisfy it.
@@ -971,6 +994,13 @@ through a dedicated `http.Transport`:
 
 - `Proxy: nil` — environment proxy variables are never consulted.
 - `DisableCompression: true` — the upstream body is forwarded byte for byte.
+- Keep-alives stay on.
+  The transport sets `MaxIdleConns: 100` and `IdleConnTimeout: 90s`, the standard transport's values;
+  the per-host idle cap stays at its default of two.
+  So the pool is bounded in size and in age rather than growing with every Pod ever profiled,
+  and the admission gate already bounds the connections in use.
+  Keep-alives are kept for a client that fetches several short profiles from one Pod:
+  without them it would pay a handshake and a `TIME_WAIT` socket per request.
 - `CheckRedirect` returns `http.ErrUseLastResponse` —
   a redirect is returned to the client as an upstream status, never followed.
 - Dial timeout 5s on the transport's dialer.
@@ -982,6 +1012,18 @@ through a dedicated `http.Transport`:
   starts when the request enters the Admit step of section 6.1 and bounds confirmation, dial, header wait,
   and body streaming together;
   the confirmation read's own 5-second timeout is the lesser of 5s and what remains of the budget.
+- The handler calls `http.ResponseController.SetWriteDeadline` with the budget's end on the client response.
+  It does so at the moment the response is committed:
+  immediately before the upstream status and headers are written to the client.
+  The deadline is left in place through the handler's return,
+  so the flush `net/http` performs after the handler runs under it as well;
+  `net/http` clears it before the connection serves another request.
+  So a client that stops reading holds the handler, its admission slot, and the Pod connection no longer than the budget;
+  that is the bound the budget already places on body streaming.
+  Before the commit nothing has been written, so a client that stops reading holds nothing the deadline would free,
+  and a gateway error envelope written after a budget expiry needs no deadline: it fits the socket's send buffer.
+  An expiry after the response is committed is `upstream_stream_failed` in the table below, whichever side was slow;
+  no configuration key or distinct code value exists for this case.
 - The upstream request context is derived from the client request context,
   so a client disconnect cancels the upstream request.
 
@@ -1006,6 +1048,10 @@ Outcomes are classified by cause, not by which timer fired first:
 | upstream returned `4xx` or `5xx` | forwarded unchanged, with target headers | `upstream_<status>` |
 | failure or budget expiry after the client response was committed | connection closed; body truncated | `upstream_stream_failed` |
 | client disconnected | upstream cancelled | `client_gone` |
+| the drain bound of section 8.5 ended while the request was in flight | connection closed; nothing more is written | `drain_expired` |
+
+A client that disconnects while the confirmation read is in flight is `client_gone` too, with no response written,
+and `profgate_confirm_total` counts the attempt under `result="client_gone"` (section 5.6).
 
 The two deadlines are distinct context causes so the classification is deterministic even when they coincide;
 a deadline cause always maps to `504`, any other error before headers to `502`.
@@ -1484,6 +1530,15 @@ Requests under `/ui/` and to `/` still write no record, so a console request's i
 This is the audit trail.
 Records never contain a Pod IP.
 
+client-go and its informers log through `klog`;
+the gateway installs the process's `slog` logger as klog's sink with `klog.SetSlogLogger` before building the client,
+so reflector and watch failures appear on stdout as JSON under `server.logLevel`, and never on stderr as text.
+They arrive at the level client-go emits, which is not a level the gateway chooses:
+a list that fails arrives at `error` through client-go's error handler,
+and a watch that ends with an error the reflector does not classify, and is retried, arrives at `info`;
+a watch that closes cleanly is logged at a verbosity only `server.logLevel: debug` shows.
+These records carry no `requestId` and are not part of the audit record above.
+
 ### 8.3 Health
 
 Both paths are on the ops listener and have no authentication or realm check.
@@ -1514,7 +1569,7 @@ and refuses to proxy (section 5.6), which is the correct behavior, not a reason 
 |---|---|
 | `profgate_requests_total` (counter) | `endpoint` (`targets`/`profile`/`namespaces`/`services`/`whoami`/`limits`/`ui`/`openapi`/`auth`), `profile`, `code` |
 | `profgate_request_duration_seconds` (histogram) | `profile` |
-| `profgate_confirm_total` (counter) | `result` (`ok`/`changed`/`unavailable`) |
+| `profgate_confirm_total` (counter) | `result` (`ok`/`changed`/`unavailable`/`client_gone`) |
 | `profgate_profiles_in_flight` (gauge) | — |
 | `profgate_discovery_synced` (gauge) | — |
 | `profgate_tls_reloads_total` (counter) | `result` (`applied`/`unchanged`/`failed`) |
@@ -1650,6 +1705,18 @@ SIGTERM
               the process exits once that wait has ended
 ```
 
+A request still in flight when that wait has ended is cut:
+its connection is closed, nothing more is written,
+and its audit record carries `drain_expired` rather than `client_gone`, the code for a client that left on its own.
+A handler cannot tell the two apart from its request context alone,
+because closing the connections cancels it either way,
+so the process names the cause:
+every API request context derives from one drain context the process owns,
+and when the drain bound ends the process cancels that context with a `drain_expired` cause;
+only then does it close the connections still open.
+The audit classification on every route, interactive and PGO, reads the cancellation's cause
+and records `drain_expired` for a request the drain cut and `client_gone` for any other cancellation.
+
 Nothing about `pgo.enabled` lengthens this drain.
 A gateway replica runs no Collection: the loops that do live in the collector process of [`pgo.md`](pgo.md),
 which drains on a bound of its own and has its own grace period.
@@ -1688,7 +1755,9 @@ so only the operator can say it has gone on long enough.
 
 A listener that fails is fatal:
 the process logs the failure, waits out the in-flight requests, and exits 1.
-It skips `server.drainDelay`, because a listener that has failed receives nothing that window protects.
+So is a failed startup step: issuer discovery, the Kubernetes preflight, or the NATS preflight of [`pgo.md`](pgo.md).
+Any exit before `/readyz` has first answered 200 skips `server.drainDelay`:
+nothing routes to a replica that was never ready, so the window protects nothing.
 
 An unreachable API server is never fatal after preflight and does not change `/readyz`:
 the targets endpoint keeps serving the cache, confirmation fails closed, and the failure table in section 13 applies.
@@ -2502,6 +2571,7 @@ it is reachable only from `cmd/profgate` and imports no Kubernetes or NATS packa
 | Selected Pod deleted before confirmation | confirmation returns `503 target_changed`; the client retries |
 | Selected Pod deleted after confirmation, before the dial | the residual window of section 5.6: a reset or `502` in practice, and, if the address was already reused, a connection to the wrong Pod |
 | Gateway replica receives SIGTERM mid-profile | `/readyz` 503; the API listener closes after `server.drainDelay`; the profile completes within the grace period; then exit |
+| Drain bound ends with a request still in flight | the connection is closed; the audit record carries `drain_expired` |
 | Gateway replica crashes mid-profile | the client's connection drops; no state to recover |
 | Target Pod dies mid-profile | `502` if headers were not yet sent; otherwise a truncated body and `upstream_stream_failed` in the audit log |
 | Configuration invalid | process exits at startup with the validation error |
@@ -2828,3 +2898,32 @@ Updated with the implementation:
 | `cmd/profgate` | the connection gauge written `0` on the path configured for NATS, before the preflight's first connection attempt, so a rule over it fires through an outage at startup |
 | `deploy/chart/profgate/templates/prometheusrule.yaml` | `ProfgateNotReady` says that a replica has not completed its initial discovery sync, not that it is not serving |
 | `docs/deployment.md` | the expiry gauge's row: `NaN` until a certificate is loaded |
+
+Bounding what a slow client can hold —
+a write deadline on the profile route,
+a read deadline on the routes that read a body,
+idle timeouts on both listeners,
+and a drain cut told apart from a client that left —
+amends the following text.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *Network* | both listeners set `ReadHeaderTimeout` 10s and `IdleTimeout` 120s and route `ErrorLog` through `slog` at `error`; no server-wide `ReadTimeout` or `WriteTimeout`; a route that reads or probes a body sets a 10-second read deadline through `http.ResponseController`, cleared only after the body is read to its end and kept after a failed read |
+| `docs/specs/gateway.md` | *Confirmation before connecting* | a client gone during the confirmation read is `client_gone`, not `discovery_unavailable`, and `profgate_confirm_total` counts it under `result="client_gone"` |
+| `docs/specs/gateway.md` | *Proxy behavior* | keep-alives kept with the pool bounded by `MaxIdleConns` and `IdleConnTimeout`; a write deadline at the budget's end set when the response is committed and left for `net/http` to clear; `drain_expired` in the outcome table |
+| `docs/specs/gateway.md` | *Logging* | klog writes through the process's `slog` logger, at the level client-go emits and outside the audit record |
+| `docs/specs/gateway.md` | *Metrics* | `client_gone` among the `result` values of `profgate_confirm_total` |
+| `docs/specs/gateway.md` | *Startup and shutdown* | a request the drain bound cuts is `drain_expired`, told from `client_gone` by the cause of the drain context the process cancels; any exit before `/readyz` has first answered 200 skips `server.drainDelay` |
+| `docs/specs/gateway.md` | *Failure Scenarios* | the drain bound ending with a request in flight |
+| `docs/deployment.md` | the `code` label | `drain_expired` among the values that reach the label and the audit log but never an envelope |
+| `docs/specs/pgo.md` | *Errors* | `drain_expired` among the audit-only codes |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `internal/proxy` | `MaxIdleConns` and `IdleConnTimeout` on the transport; the write deadline set at the commit and never cleared by the handler |
+| `internal/httpapi` | the read deadline around `decodeBody` and `rejectBody`, retained after a failed read; the drain cause read on every route so a drain cut is `drain_expired`; `drain_expired` in the audit-only list of `codes.go` and its test |
+| `internal/k8s` | `klog.SetSlogLogger` before the client is built; a client gone during `Confirm` returned as a cancellation, not `ErrDiscoveryUnavailable` |
+| `internal/metrics` | `client_gone` as a `result` of `profgate_confirm_total` |
+| `cmd/profgate` | `IdleTimeout` and `ErrorLog` at `error` on both servers; the drain context every API request derives from, cancelled with the `drain_expired` cause when the bound ends; every fatal startup path takes the shutdown mode that skips `server.drainDelay` |

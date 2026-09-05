@@ -2471,6 +2471,7 @@ The body is streamed, not buffered, and the outcome is classified as the gateway
 | store error before headers (`ErrUnavailable`) | `503 pgo_unavailable` | `pgo_unavailable` |
 | store error after headers, including the object expiring mid-stream | connection closed; body truncated | `artifact_stream_failed` |
 | client disconnected | store read cancelled | `client_gone` |
+| the gateway's drain bound ended while the body was streaming ([`gateway.md`](gateway.md) *Startup and shutdown*) | connection closed; body truncated | `drain_expired` |
 
 A download in progress does not protect its object from expiry;
 the sweeper deletes on schedule and the reader sees `artifact_stream_failed`.
@@ -2597,7 +2598,9 @@ the rule and the vocabularies belong to the gateway spec's *Errors* section.
 
 `invalid_parameter`, `realm_denied`, `route_unknown`, `method_not_allowed`, `not_ready`,
 `service_not_found`, and `service_selectorless` are reused with their gateway meanings.
-Audit-only codes, never an HTTP status of their own: `cas_contended`, `artifact_stream_failed`, `client_gone`.
+Audit-only codes, never an HTTP status of their own:
+`cas_contended`, `artifact_stream_failed`, `client_gone`,
+and `drain_expired` for a request the gateway's drain bound cuts ([`gateway.md`](gateway.md) *Startup and shutdown*).
 
 ### 10.9 Non-disclosure
 

@@ -487,7 +487,7 @@ and `/v1/openapi.json` serves the same set.
 `collector_unavailable` is one of the forty and no route in this build answers it, so it never appears on a series.
 Eight more values reach this label and the audit log but never an error envelope:
 `ok`, `upstream_stream_failed`, `internal_error`, `auth_redirect`,
-`cas_contended`, `artifact_stream_failed`, `client_gone`, and `cancelled`.
+`cas_contended`, `artifact_stream_failed`, `client_gone`, and `drain_expired`.
 `auth_redirect` is the browser navigation sent to login;
 it is not a failure and is not counted in `profgate_auth_failures_total`.
 The last family, `upstream_<status>`, is minted from any upstream response of `400` and above,
