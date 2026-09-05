@@ -232,7 +232,7 @@ Spec: [`gateway.md`](../specs/gateway.md) *Network* for the listener timeouts, t
 *Proxy behavior* for the write deadline, the transport's keep-alives, and the `drain_expired` outcome;
 *Logging* for the klog records;
 *Startup and shutdown* for the drain cut and the fatal exits that skip `server.drainDelay`.
-Shipped: not built yet.
+Shipped: pull request #26.
 Why here: the first bullet is reproduced and reaches the default limit with sixteen idle sockets.
 
 ### 6. Bound what NATS can hold on the PGO path

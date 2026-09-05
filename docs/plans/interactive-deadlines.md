@@ -1,6 +1,8 @@
 # A Slow Client Holds Nothing Past the Budget
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #26 carries the eight tasks and the spec revision they implement;
+the commit that carries this line closes the plan.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -1177,7 +1179,7 @@ and the retirement of the previous plan followed in pull request #25;
 it deletes this file and rewrites every link that cited it, which `check_links` enforces, and changes nothing else.
 `grep -rn interactive-deadlines --include='*.md' .` finds the links.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/plans/interactive-deadlines.md docs/plans/roadmap.md
