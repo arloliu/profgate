@@ -330,6 +330,11 @@ type seamClient struct {
 	// onMove is Options.OnGenerationMove as cmd/profgate wires it.
 	onMove func()
 
+	// buffer sizes each watch's channel; seamWatchBuffer when zero.
+	// Watch replays the whole bucket into that channel before it returns,
+	// so a bucket larger than the buffer needs one sized for it.
+	buffer int
+
 	mu       sync.Mutex
 	gen      uint64
 	revision uint64
@@ -408,6 +413,20 @@ func (c *seamClient) remove(store *seamStore, key string) {
 	delete(store.keys, key)
 }
 
+// tombstone delivers a nil value for one key to every watch that covers it,
+// which is another replica's delete reaching this one.
+// The key itself leaves the bucket through remove.
+func (c *seamClient) tombstone(store *seamStore, key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.revision++
+	for _, w := range c.watches {
+		if w.store == store && strings.HasPrefix(key, w.prefix) {
+			w.ch <- natskv.Entry{Key: key, Revision: c.revision, Generation: c.gen}
+		}
+	}
+}
+
 // cut is a watch subscription closing while the connection stays up.
 // The seam answers it by moving the store generation and reporting the move,
 // and every watch then re-opens and replays under the new generation, which replay delivers.
@@ -459,8 +478,12 @@ func (s *seamStore) Keys(context.Context, string) ([]string, error) { return nil
 // Watch registers one watch, replays the bucket into it, and ends it with the marker.
 func (s *seamStore) Watch(ctx context.Context, prefix string) (<-chan natskv.Entry, error) {
 	c := s.c
+	buffer := c.buffer
+	if buffer == 0 {
+		buffer = seamWatchBuffer
+	}
 	c.mu.Lock()
-	w := &seamWatch{store: s, prefix: prefix, ch: make(chan natskv.Entry, seamWatchBuffer)}
+	w := &seamWatch{store: s, prefix: prefix, ch: make(chan natskv.Entry, buffer)}
 	c.watches = append(c.watches, w)
 	c.mu.Unlock()
 
@@ -630,6 +653,142 @@ func TestCachesCarryTheScanFields(t *testing.T) {
 	}
 	if got.Deadline == nil || !got.Deadline.Equal(deadline) {
 		t.Errorf("deadline is %v, want %s", got.Deadline, deadline)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("Run returned %v on a cancelled context, want nil", err)
+	}
+}
+
+// TestCachesCollectionsCostTheServiceAlone holds what a one-Service listing costs the cache:
+// the entries it visits and the bytes it allocates are the Service's own records and not every record the bucket holds.
+// A listing that walked the whole job map under the lock visited every record of every Service
+// and sized its page for all of them.
+func TestCachesCollectionsCostTheServiceAlone(t *testing.T) {
+	const others = 10_000
+	client := newSeamClient()
+	client.buffer = 20_000
+	logs := newLogCapture()
+	caches := NewCaches(logs.logger())
+
+	record := func(id, svc string) Record {
+		return Record{
+			ID: id, Namespace: "payment", Service: svc,
+			Origin: OriginSchedule, State: StateCompleted, CreatedAt: slotBase,
+		}
+	}
+	for range 3 {
+		id := newID()
+		client.put(t, client.jobs, jobKey(id), record(id, "payment-api"))
+	}
+	for range others {
+		id := newID()
+		client.put(t, client.jobs, jobKey(id), record(id, "other-api"))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- caches.Run(ctx, client) }()
+	gen := client.Generation()
+	waitFor(t, "the four caches to replay", func() bool { return caches.Synced(gen) })
+
+	var mu sync.Mutex
+	visited := 0
+	caches.listVisited = func(string) {
+		mu.Lock()
+		defer mu.Unlock()
+		visited++
+	}
+
+	views, more, ok := caches.Collections(gen, "payment", "payment-api", CollectionQuery{})
+	if !ok || more || len(views) != 3 {
+		t.Fatalf("the listing is %d entries (more=%v, ok=%v), want the three of payment-api", len(views), more, ok)
+	}
+	mu.Lock()
+	got := visited
+	mu.Unlock()
+	if got != 3 {
+		t.Errorf("the listing visited %d entries, want the three of payment-api and none of the %d others", got, others)
+	}
+
+	result := testing.Benchmark(func(b *testing.B) {
+		for range b.N {
+			caches.Collections(gen, "payment", "payment-api", CollectionQuery{})
+		}
+	})
+	if bytes := result.AllocedBytesPerOp(); bytes >= 4096 {
+		t.Errorf("the listing allocates %d bytes, want under 4 KiB for three entries", bytes)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("Run returned %v on a cancelled context, want nil", err)
+	}
+}
+
+// TestCachesServiceIndexFollowsTheRecord holds the per-Service index to the job map:
+// a delivered record is indexed under its Service, a tombstone removes it and its Service's emptied set,
+// and a replay under a new generation rebuilds the index with the map rather than keeping what the cut left behind.
+func TestCachesServiceIndexFollowsTheRecord(t *testing.T) {
+	client := newSeamClient()
+	logs := newLogCapture()
+	caches := NewCaches(logs.logger())
+
+	id := newID()
+	ref := serviceRef{Namespace: "payment", Service: "payment-api"}
+	client.put(t, client.jobs, jobKey(id), Record{
+		ID: id, Namespace: ref.Namespace, Service: ref.Service,
+		Origin: OriginSchedule, State: StateCompleted, CreatedAt: slotBase,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- caches.Run(ctx, client) }()
+	before := client.Generation()
+	waitFor(t, "the four caches to replay", func() bool { return caches.Synced(before) })
+
+	indexed := func() (map[serviceRef]map[string]struct{}, int) {
+		caches.mu.Lock()
+		defer caches.mu.Unlock()
+		index := make(map[serviceRef]map[string]struct{}, len(caches.byService))
+		for svc, keys := range caches.byService {
+			index[svc] = maps.Clone(keys)
+		}
+
+		return index, len(caches.jobs)
+	}
+
+	index, jobs := indexed()
+	if _, ok := index[ref][jobKey(id)]; !ok || len(index) != 1 || len(index[ref]) != 1 || jobs != 1 {
+		t.Fatalf("after one delivery the index is %v beside %d records, want %s alone under %v", index, jobs, jobKey(id), ref)
+	}
+
+	client.remove(client.jobs, jobKey(id))
+	client.tombstone(client.jobs, jobKey(id))
+	waitFor(t, "the tombstone to apply", func() bool { _, jobs := indexed(); return jobs == 0 })
+	if index, _ := indexed(); len(index) != 0 {
+		t.Fatalf("after the tombstone the index is %v, want the Service's set gone", index)
+	}
+
+	client.put(t, client.jobs, jobKey(id), Record{
+		ID: id, Namespace: ref.Namespace, Service: ref.Service,
+		Origin: OriginSchedule, State: StateCompleted, CreatedAt: slotBase,
+	})
+	waitFor(t, "the record to return", func() bool { index, _ := indexed(); return len(index[ref]) == 1 })
+
+	// The record leaves while the watches are down, so no tombstone is delivered for it.
+	client.remove(client.jobs, jobKey(id))
+	client.cut()
+	after := client.Generation()
+	for _, prefix := range cachePrefixes {
+		client.replay(prefix)
+	}
+	waitFor(t, "the replay under the new generation", func() bool { return caches.Synced(after) })
+	if index, jobs := indexed(); len(index) != 0 || jobs != 0 {
+		t.Fatalf("after the replay the index is %v beside %d records, want both empty under generation %d", index, jobs, after)
 	}
 
 	cancel()

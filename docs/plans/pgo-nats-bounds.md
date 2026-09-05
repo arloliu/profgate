@@ -1111,7 +1111,7 @@ a record that could not be unmarshalled is removed the same way (`:444-448`).
 `Collections` (`:731-781`) walks `c.byService[serviceRef{ns, svc}]`,
 looks each key up in `c.jobs`, and sizes `out` from that set.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Both on a `seamClient` (`internal/pgo/caches_test.go:319-478`),
 because ten thousand records over the embedded server would be the slow part of the suite,
@@ -1136,7 +1136,7 @@ The red state:
 go test -race -count=1 ./internal/pgo/ -run 'TestCachesCollectionsCostTheServiceAlone|TestCachesServiceIndexFollowsTheRecord'
 ```
 
-- [ ] **Index the cache and say so**
+- [x] **Index the cache and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **A Collection listing costs what the Service holds.**
@@ -1144,7 +1144,7 @@ A page of one Service's Collections walked every record in the job cache under i
 about 30 milliseconds and 10 MiB per listing with a week of records at the default on-demand ceiling.
 The cache now indexes its records per Service, so a listing visits and sorts that Service's records alone.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/pgo/caches.go CHANGELOG.md

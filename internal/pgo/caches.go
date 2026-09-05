@@ -172,6 +172,11 @@ type Caches struct {
 	overrides map[string]cachedOverride // key: service.<ns>.<svc>
 	jobs      map[string]cachedJob      // key: job.<id>
 	active    map[serviceRef]cachedActive
+	// byService indexes jobs by the Service each record belongs to,
+	// holding the job.<id> keys of that Service's records,
+	// so a listing walks one Service's entries and not every record the bucket holds.
+	// It follows jobs exactly: maintained as each entry lands or leaves, and cleared with it.
+	byService map[serviceRef]map[string]struct{}
 	slots     map[string]cachedSlot // key: schedule.<ns>.<svc>.<slot>
 
 	// gen and synced track the replay barrier from the consumer's side.
@@ -206,6 +211,10 @@ type Caches struct {
 	// A test freezes one cache's delivery with it while the seam's own watch
 	// stays synced.
 	applyGate func(which cacheKind, e natskv.Entry)
+
+	// listVisited, when set, runs for every job entry a Collection listing examines.
+	// A test counts what one Service's listing costs the cache with it.
+	listVisited func(key string)
 }
 
 // cacheKind names one of the four watched caches.
@@ -226,6 +235,7 @@ func NewCaches(log *slog.Logger) *Caches {
 		log:         log,
 		overrides:   make(map[string]cachedOverride),
 		jobs:        make(map[string]cachedJob),
+		byService:   make(map[serviceRef]map[string]struct{}),
 		active:      make(map[serviceRef]cachedActive),
 		slots:       make(map[string]cachedSlot),
 		jobPulse:    make(chan struct{}, 1),
@@ -408,6 +418,7 @@ func (c *Caches) reset(kind cacheKind) {
 		clear(c.overrides)
 	case cacheJobs:
 		clear(c.jobs)
+		clear(c.byService)
 	case cacheActive:
 		clear(c.active)
 	case cacheSlots:
@@ -443,14 +454,14 @@ func (c *Caches) applyJob(e natskv.Entry) {
 		return
 	}
 	if e.Value == nil {
-		delete(c.jobs, e.Key)
+		c.deleteJob(e.Key)
 
 		return
 	}
 	var rec Record
 	if err := json.Unmarshal(e.Value, &rec); err != nil {
 		c.log.Warn("pgo: collection record is not readable", "key", e.Key, "revision", e.Revision, "error", err)
-		delete(c.jobs, e.Key)
+		c.deleteJob(e.Key)
 
 		return
 	}
@@ -472,7 +483,34 @@ func (c *Caches) applyJob(e natskv.Entry) {
 	if rec.Artifact != nil {
 		job.Artifact = rec.Artifact.Object
 	}
+	// A record never changes Service, but the index is held to the map rather than to that promise.
+	if prev, ok := c.jobs[e.Key]; ok && (prev.Namespace != job.Namespace || prev.Service != job.Service) {
+		c.deleteJob(e.Key)
+	}
 	c.jobs[e.Key] = job
+	ref := serviceRef{Namespace: job.Namespace, Service: job.Service}
+	keys, ok := c.byService[ref]
+	if !ok {
+		keys = make(map[string]struct{})
+		c.byService[ref] = keys
+	}
+	keys[e.Key] = struct{}{}
+}
+
+// deleteJob removes one job.<id> entry from the map and from its Service's index,
+// dropping the Service's set when it empties, called with c.mu held.
+func (c *Caches) deleteJob(key string) {
+	job, ok := c.jobs[key]
+	if !ok {
+		return
+	}
+	delete(c.jobs, key)
+	ref := serviceRef{Namespace: job.Namespace, Service: job.Service}
+	keys := c.byService[ref]
+	delete(keys, key)
+	if len(keys) == 0 {
+		delete(c.byService, ref)
+	}
 }
 
 // applyActive records one active.<ns>.<svc> entry, called with c.mu held.
@@ -756,9 +794,15 @@ func (c *Caches) Collections(gen uint64, ns, svc string, q CollectionQuery) ([]C
 		return nil, false, false
 	}
 
-	out := make([]CollectionView, 0, len(c.jobs))
-	for key, j := range c.jobs {
-		if j.Namespace != ns || j.Service != svc {
+	// The index holds this Service's keys alone, so the listing visits and sizes for its records and no other's.
+	keys := c.byService[serviceRef{Namespace: ns, Service: svc}]
+	out := make([]CollectionView, 0, len(keys))
+	for key := range keys {
+		if visited := c.listVisited; visited != nil {
+			visited(key)
+		}
+		j, ok := c.jobs[key]
+		if !ok {
 			continue
 		}
 		id, ok := strings.CutPrefix(key, jobPrefix)

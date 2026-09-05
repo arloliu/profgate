@@ -202,6 +202,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The cache now carries each record's lease, claim deadline, and deadline,
   so a pass reads fresh only a `pending` record it could claim or that has outlived its claim deadline,
   a `running` record whose lease or deadline has lapsed, and an `initializing` one past its grace.
+- **A Collection listing costs what the Service holds.**
+  A page of one Service's Collections walked every record in the job cache under its lock and allocated for all of them,
+  about 30 milliseconds and 10 MiB per listing with a week of records at the default on-demand ceiling.
+  The cache now indexes its records per Service, so a listing visits and sorts that Service's records alone.
 - **An expired flip that fails, and a probe listing that fails, are seen.**
   A `completed` to `expired` update that returned anything but a lost race was dropped without a record,
   on the sweeper's path and on the two download paths that make the same flip,
