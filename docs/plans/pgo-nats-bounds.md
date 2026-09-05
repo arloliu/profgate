@@ -713,7 +713,7 @@ and after every failed `openWatcher` it waits one draw,
 through one helper that runs the hook, then selects on `ctx.Done()` and `time.After`.
 The doc comment on `runWatch` says which cut waits and which does not.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Two subtests of `TestGeneration` (`internal/natskv/client_test.go:321-711`),
 each on `startFixture` with a `watcherTap` (`fixtures_test.go:198-245`),
@@ -747,7 +747,7 @@ The red state:
 go test -race -count=1 ./internal/natskv/ -run 'TestGeneration/a_watch_cut_against_an_absent_bucket|TestGeneration/a_re-open_that_is_cut'
 ```
 
-- [ ] **Back off and say so**
+- [x] **Back off and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **A watch the seam cannot re-open backs off.**
@@ -756,7 +756,7 @@ so a bucket that stayed absent cost the process about sixty failed opens a secon
 The wait now doubles from 50 milliseconds to thirty seconds, with each wait drawn from the upper half of its schedule,
 and resets once the re-opened watch has replayed.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/natskv/client.go CHANGELOG.md

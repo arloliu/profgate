@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	mrand "math/rand/v2"
 	"net"
 	"sync"
 	"testing"
@@ -210,11 +212,13 @@ func newWatcherTap() *watcherTap {
 	return &watcherTap{watchers: map[string]jetstream.KeyWatcher{}}
 }
 
-// record is the client's testWatchOpened hook.
-func (w *watcherTap) record(prefix string, kw jetstream.KeyWatcher) {
+// record is the client's testWatchOpened hook; the client keeps consuming the watcher it was given.
+func (w *watcherTap) record(prefix string, kw jetstream.KeyWatcher) jetstream.KeyWatcher {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.watchers[prefix] = kw
+
+	return kw
 }
 
 // cut stops the watcher currently open on prefix, which closes its subscription.
@@ -246,6 +250,128 @@ func (w *watcherTap) stop(prefix string) bool {
 	_ = kw.Stop()
 
 	return true
+}
+
+// cutWatcher stands in front of a real watcher with a channel of its own,
+// which the test closes without delivering anything: a re-opened watch cut before its marker.
+// A real watcher stopped at open still replays,
+// because nats.go places an empty prefix's marker in the watcher's buffered channel before the open returns
+// and stopping the watcher closes that channel with the marker still in it.
+type cutWatcher struct {
+	inner   jetstream.KeyWatcher
+	updates chan jetstream.KeyValueEntry
+}
+
+func newCutWatcher(inner jetstream.KeyWatcher) *cutWatcher {
+	return &cutWatcher{inner: inner, updates: make(chan jetstream.KeyValueEntry)}
+}
+
+func (w *cutWatcher) Updates() <-chan jetstream.KeyValueEntry { return w.updates }
+
+// Stop stops the real watcher, so the subscription behind it goes with the cut.
+func (w *cutWatcher) Stop() error { return w.inner.Stop() }
+
+// cut closes the channel, having delivered nothing.
+func (w *cutWatcher) cut() { close(w.updates) }
+
+// cuttingTap returns a real watcher through tap until it is armed,
+// and then a cutWatcher, cut at once, for as many watchers as arm asked for.
+type cuttingTap struct {
+	tap       *watcherTap
+	mu        sync.Mutex
+	remaining int
+}
+
+func newCuttingTap(tap *watcherTap) *cuttingTap {
+	return &cuttingTap{tap: tap}
+}
+
+// arm cuts the next n watchers the client opens.
+func (c *cuttingTap) arm(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.remaining = n
+}
+
+// opened is the client's testWatchOpened hook.
+func (c *cuttingTap) opened(prefix string, kw jetstream.KeyWatcher) jetstream.KeyWatcher {
+	c.tap.record(prefix, kw)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.remaining == 0 {
+		return kw
+	}
+	c.remaining--
+	cw := newCutWatcher(kw)
+	cw.cut()
+
+	return cw
+}
+
+// drawLog records every wait a client draws before a re-open attempt, keyed by prefix.
+// As the client's testReopenWait hook it skips the wait when skip is set.
+type drawLog struct {
+	mu    sync.Mutex
+	skip  bool
+	draws map[string][]time.Duration
+}
+
+func newDrawLog(skip bool) *drawLog {
+	return &drawLog{skip: skip, draws: map[string][]time.Duration{}}
+}
+
+func (l *drawLog) record(prefix string, d time.Duration) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.draws[prefix] = append(l.draws[prefix], d)
+
+	return l.skip
+}
+
+// of returns the draws recorded on prefix so far, in order.
+func (l *drawLog) of(prefix string) []time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return append([]time.Duration(nil), l.draws[prefix]...)
+}
+
+func (l *drawLog) clear() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	clear(l.draws)
+}
+
+// reopenRandByPrefix seeds one generator per watch from its prefix, so a run's draws are reproducible.
+func reopenRandByPrefix(prefix string) *mrand.Rand {
+	sum := sha256.Sum256([]byte(prefix))
+
+	//nolint:gosec // G404: a test's reproducible draws, seeded from the prefix
+	return mrand.New(mrand.NewPCG(binary.LittleEndian.Uint64(sum[:8]), binary.LittleEndian.Uint64(sum[8:16])))
+}
+
+// band is the kth figure of the re-open schedule: the whole a draw at that place may reach.
+func band(k int) time.Duration {
+	return min(reopenFirst<<k, reopenCap)
+}
+
+// inBand reports whether d lies within the kth band, between half of its figure and the whole of it.
+func inBand(k int, d time.Duration) bool {
+	whole := band(k)
+
+	return d >= whole/2 && d <= whole
+}
+
+// assertDraws checks each draw against the band of its place on the schedule, one case per draw.
+func assertDraws(t *testing.T, prefix string, draws []time.Duration) {
+	t.Helper()
+	for k, d := range draws {
+		t.Run(fmt.Sprintf("draw %d on %q is in band %s", k, prefix, band(k)), func(t *testing.T) {
+			if !inBand(k, d) {
+				t.Fatalf("draw %d: got %s, want within [%s, %s]", k, d, band(k)/2, band(k))
+			}
+		})
+	}
 }
 
 // withUsers runs the server with an unrestricted admin user and a client

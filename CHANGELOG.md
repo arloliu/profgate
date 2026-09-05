@@ -337,6 +337,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The upload now runs under the owner's work context, whose cutoff the committed lease sets;
   nats.go bounds each chunk's acknowledgement by its own five seconds,
   so a store that stops acknowledging still fails the attempt.
+- **A watch the seam cannot re-open backs off.**
+  A cut watch was re-opened every 50 milliseconds without bound,
+  so a bucket that stayed absent cost the process about sixty failed opens a second for as long as it lasted.
+  The wait now doubles from 50 milliseconds to thirty seconds, with each wait drawn from the upper half of its schedule,
+  and resets once the re-opened watch has replayed.
 
 ## [0.5.0] - 2026-09-03
 

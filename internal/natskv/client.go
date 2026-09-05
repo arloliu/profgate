@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	mrand "math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -28,8 +30,31 @@ const (
 // callTimeout is the deadline every store call carries in addition to the caller's.
 const callTimeout = 5 * time.Second
 
-// watchReopenDelay paces the retry loop that re-opens a cut-off watch.
-const watchReopenDelay = 50 * time.Millisecond
+// reopenFirst and reopenCap bound the wait between two attempts to re-open a cut watch:
+// the wait doubles from the first to the cap,
+// and each wait is drawn from the upper half of its schedule so the watches of one process,
+// and the replicas of one Deployment, spread out.
+const (
+	reopenFirst = 50 * time.Millisecond
+	reopenCap   = 30 * time.Second
+)
+
+// reopenBackoff is one watch's place on that schedule.
+type reopenBackoff struct {
+	next time.Duration
+	rng  *mrand.Rand
+}
+
+// draw returns the wait before the next attempt and advances the schedule.
+func (b *reopenBackoff) draw() time.Duration {
+	d := b.next
+	b.next = min(b.next*2, reopenCap)
+
+	return d/2 + time.Duration(b.rng.Int64N(int64(d/2)+1))
+}
+
+// reset returns the schedule to its first wait, once a re-opened watch has replayed.
+func (b *reopenBackoff) reset() { b.next = reopenFirst }
 
 // watchBuffer sizes the entry channel a Watch returns.
 const watchBuffer = 64
@@ -127,11 +152,24 @@ type client struct {
 	// sets it.
 	testInterceptProbeWatch func(bucket string, e Entry) bool
 
-	// testWatchOpened, when non-nil, runs with every watcher this client opens.
+	// newReopenRand returns the generator one watch draws its re-open waits from.
+	// Production seeds one from crypto/rand for every watch, so no two watches share a generator;
+	// a test seeds by prefix so a run's draws are reproducible.
+	newReopenRand func(prefix string) *mrand.Rand
+
+	// testWatchOpened, when non-nil, runs with every watcher this client opens,
+	// and the client consumes the watcher it returns.
 	// It exists only so a test can stop a live watcher,
-	// which drives the same closed subscription a deleted stream drives;
+	// which drives the same closed subscription a deleted stream drives,
+	// or put a watcher of its own in front of the real one;
 	// production never sets it.
-	testWatchOpened func(prefix string, w jetstream.KeyWatcher)
+	testWatchOpened func(prefix string, w jetstream.KeyWatcher) jetstream.KeyWatcher
+
+	// testReopenWait, when non-nil, runs with every wait drawn before a re-open attempt,
+	// and the wait is skipped when it returns true.
+	// It exists only so a test can count the schedule rather than sleep through it;
+	// production never sets it.
+	testReopenWait func(prefix string, d time.Duration) (skip bool)
 
 	// testHoldReopen, when non-nil, runs at the top of every re-open attempt
 	// and blocks for as long as the test holds it.
@@ -169,6 +207,7 @@ func connect(ctx context.Context, cfg connectConfig, log *slog.Logger) (*client,
 		watches:            make(map[*watchState]struct{}),
 		probeDeadline:      probeTimeout,
 		callTimeout:        callTimeout,
+		newReopenRand:      newReopenRand,
 		onConnectionChange: cfg.onConnectionChange,
 		onGenerationMove:   cfg.onGenerationMove,
 	}
@@ -444,6 +483,17 @@ func (ws *watchState) syncedUnder(gen uint64) bool {
 	return ws.marker && ws.markerGen == gen
 }
 
+// newReopenRand seeds one math/rand/v2 generator from crypto/rand for one watch's re-open waits.
+func newReopenRand(string) *mrand.Rand {
+	var seed [16]byte
+	// crypto/rand.Read never returns an error and always fills its argument.
+	_, _ = rand.Read(seed[:])
+	// Not a security decision: the generator only spreads when a watch is re-opened,
+	// and its seed does come from crypto/rand.
+	//nolint:gosec // G404: a wait, seeded from crypto/rand
+	return mrand.New(mrand.NewPCG(binary.LittleEndian.Uint64(seed[:8]), binary.LittleEndian.Uint64(seed[8:])))
+}
+
 // failure maps timeouts and connection errors to ErrUnavailable and leaves
 // every other error as it came, for the caller to wrap.
 // ErrAsyncPublishTimeout is the acknowledgement timer a Put runs under a context with no deadline.
@@ -687,7 +737,7 @@ func (c *client) openWatcher(ctx context.Context, kv jetstream.KeyValue, prefix 
 			return nil, nil, r.err
 		}
 		if hook := c.testWatchOpened; hook != nil {
-			hook(prefix, r.w)
+			return hook(prefix, r.w), cancel, nil
 		}
 		return r.w, cancel, nil
 	case <-timer.C:
@@ -702,17 +752,29 @@ func (c *client) openWatcher(ctx context.Context, kv jetstream.KeyValue, prefix 
 // When the generation moves, or the underlying subscription closes, it
 // re-opens the watcher for the current generation: a cut-off watcher has an
 // unknown gap behind it, so a fresh replay and a fresh marker follow.
+// A watch cut after it replayed is re-opened at once;
+// a re-open that failed, and one that was cut before its replay marker arrived,
+// each wait one draw of the watch's backoff first,
+// which resets once a re-opened watch has replayed.
 func (c *client) runWatch(ctx context.Context, kv jetstream.KeyValue, prefix string,
 	w jetstream.KeyWatcher, stop context.CancelFunc, gen uint64, moved <-chan struct{}, ch chan<- Entry, ws *watchState,
 ) {
 	defer close(ch)
 	defer c.removeWatch(ws)
+	backoff := &reopenBackoff{next: reopenFirst, rng: c.newReopenRand(prefix)}
 	for {
 		done := c.consumeWatcher(ctx, w, prefix, gen, moved, ch, ws)
 		//nolint:errcheck // stopping a watcher whose subscription is already gone is fine
 		_ = w.Stop()
 		stop()
 		if done {
+			return
+		}
+		// The marker under gen says the watch replayed before this cut: the schedule starts over.
+		// Without it the re-open was cut before its replay, and the next attempt waits as a failed one does.
+		if ws.syncedUnder(gen) {
+			backoff.reset()
+		} else if !c.reopenWait(ctx, prefix, backoff) {
 			return
 		}
 		for {
@@ -731,12 +793,25 @@ func (c *client) runWatch(ctx context.Context, kv jetstream.KeyValue, prefix str
 				break
 			}
 			c.reopenFailed(prefix, err)
-			select {
-			case <-ctx.Done():
+			if !c.reopenWait(ctx, prefix, backoff) {
 				return
-			case <-time.After(watchReopenDelay):
 			}
 		}
+	}
+}
+
+// reopenWait waits one draw of the watch's backoff before the next re-open attempt,
+// and reports false when ctx ended first.
+func (c *client) reopenWait(ctx context.Context, prefix string, backoff *reopenBackoff) bool {
+	d := backoff.draw()
+	if hook := c.testReopenWait; hook != nil && hook(prefix, d) {
+		return true
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 

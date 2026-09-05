@@ -445,6 +445,9 @@ func TestGeneration(t *testing.T) {
 		ctx := t.Context()
 		tap := newWatcherTap()
 		f.c.testWatchOpened = tap.record
+		f.c.newReopenRand = reopenRandByPrefix
+		draws := newDrawLog(false)
+		f.c.testReopenWait = draws.record
 		held := make(chan struct{})
 		// Every re-open names the prefix it is on before it waits,
 		// so the bucket goes only once all three of the watches the cut took down are held.
@@ -537,6 +540,113 @@ func TestGeneration(t *testing.T) {
 		}
 		if n := capture.count(reopenFailingRecord); n != 1 {
 			t.Fatalf("failing re-open records once the bucket returned: got %d, want 1", n)
+		}
+		// Three watches failed their re-opens together, each on its own goroutine and its own generator;
+		// each recorded its own first two draws.
+		for _, prefix := range prefixes {
+			got := draws.of(prefix)
+			if len(got) < 2 {
+				t.Fatalf("draws on %q: got %v, want at least two", prefix, got)
+			}
+			assertDraws(t, prefix, got[:2])
+		}
+	})
+
+	t.Run("a watch cut against an absent bucket is re-opened on a doubling, jittered schedule that resets after the replay", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		tap := newWatcherTap()
+		f.c.testWatchOpened = tap.record
+		f.c.newReopenRand = reopenRandByPrefix
+		draws := newDrawLog(true)
+		f.c.testReopenWait = draws.record
+
+		kv := f.view().Jobs
+		ch, err := kv.Watch(ctx, "g.")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+		drainToMarker(t, ch)
+
+		// The bucket goes and the watch is cut, so every re-open fails on an absent stream.
+		// Stopping a watcher whose stream is gone closes its channel and then fails to delete its consumer,
+		// an error that decides nothing here.
+		if err := f.js.DeleteKeyValue(ctx, jobsBucket); err != nil {
+			t.Fatalf("delete bucket: %v", err)
+		}
+		if !tap.stop("g.") {
+			t.Fatalf("no watcher was opened on %q", "g.")
+		}
+		const wanted = 12
+		waitFor(t, "twelve draws", func() bool { return len(draws.of("g.")) >= wanted })
+		got := draws.of("g.")[:wanted]
+		assertDraws(t, "g.", got)
+		jittered := false
+		for k, d := range got {
+			if d < band(k) {
+				jittered = true
+			}
+			if d > reopenCap {
+				t.Fatalf("draw %d: got %s, above the %s cap", k, d, reopenCap)
+			}
+		}
+		if !jittered {
+			t.Fatalf("every draw is the whole of its band: %v", got)
+		}
+
+		// The bucket returns, the re-opened watch replays, and the next cut starts the schedule over.
+		if _, err := f.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+			Bucket:  jobsBucket,
+			History: 1,
+			Storage: jetstream.FileStorage,
+		}); err != nil {
+			t.Fatalf("recreate bucket: %v", err)
+		}
+		waitFor(t, "the watch to replay again", func() bool { return f.c.Synced(f.c.Generation()) })
+		draws.clear()
+		if err := f.js.DeleteKeyValue(ctx, jobsBucket); err != nil {
+			t.Fatalf("delete bucket again: %v", err)
+		}
+		if !tap.stop("g.") {
+			t.Fatalf("no watcher was re-opened on %q", "g.")
+		}
+		waitFor(t, "one draw after the replay", func() bool { return len(draws.of("g.")) >= 1 })
+		if d := draws.of("g.")[0]; !inBand(0, d) {
+			t.Fatalf("first draw after the replay: got %s, want within [%s, %s]", d, band(0)/2, band(0))
+		}
+	})
+
+	t.Run("a re-open that is cut before its marker waits on the same schedule as a failed open", func(t *testing.T) {
+		f := startFixture(t)
+		ctx := t.Context()
+		tap := newWatcherTap()
+		cutting := newCuttingTap(tap)
+		f.c.testWatchOpened = cutting.opened
+		f.c.newReopenRand = reopenRandByPrefix
+		draws := newDrawLog(true)
+		f.c.testReopenWait = draws.record
+
+		kv := f.view().Jobs
+		ch, err := kv.Watch(ctx, "g.")
+		if err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+		drainToMarker(t, ch)
+
+		// The next four re-opens succeed and are cut before their marker; the fifth stands.
+		cutting.arm(4)
+		tap.cut(t, "g.")
+		waitFor(t, "four draws", func() bool { return len(draws.of("g.")) >= 4 })
+		assertDraws(t, "g.", draws.of("g.")[:4])
+		waitFor(t, "the watch to replay again", func() bool { return f.c.Synced(f.c.Generation()) })
+
+		// A cut after the replay starts the schedule over.
+		draws.clear()
+		cutting.arm(1)
+		tap.cut(t, "g.")
+		waitFor(t, "one draw after the replay", func() bool { return len(draws.of("g.")) >= 1 })
+		if d := draws.of("g.")[0]; !inBand(0, d) {
+			t.Fatalf("first draw after the replay: got %s, want within [%s, %s]", d, band(0)/2, band(0))
 		}
 	})
 
