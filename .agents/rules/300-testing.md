@@ -26,3 +26,7 @@ The layers and the cases each one must cover are defined in the *Testing* sectio
   subtests never share a fake clientset, informer, or server.
 - A test encodes why the behavior matters ([000](000-agent-contract.md#test-intent)):
   a test that cannot fail when the logic changes is wrong.
+- Show an assertion is load-bearing by breaking what it reads, and run that flip with `-count=1`.
+  The test cache records the files the test process opens, not the ones `helm` opens for it,
+  so a run narrowed with `-run` replays `ok` against a chart template it never read.
+  A whole-package run records every chart file only because one test copies the chart tree in-process.

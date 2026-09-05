@@ -32,13 +32,15 @@ If in doubt, read the file rather than guess its contents.
 ## Before Writing or Running Tests
 
 - **[300-testing.md](300-testing.md)** —
-  the unit and end-to-end layers, `-race`, table tests, `httptest`, the fake clientset, and a fresh fixture per subtest.
+  the unit and end-to-end layers, `-race`, table tests, `httptest`, the fake clientset, a fresh fixture per subtest,
+  and why proving an assertion load-bearing needs `-count=1`.
 
 ## Before Every Commit or PR
 
 - **[500-validation-and-workflow.md](500-validation-and-workflow.md)** —
   the git hooks to install once per clone, the validation block, `semlf check` on prose,
-  and when the end-to-end suite must run before a PR.
+  when the end-to-end suite must run before a PR,
+  and how to read a refused commit, a skipped check, and a failure that is not about your change.
 
 ## For Kubernetes Access, NATS Access, RBAC, or Auth
 
