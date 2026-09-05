@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The forty envelope codes by the tables that hold them, the eight audit-only outcomes in full,
   and the `upstream_<status>` family;
   and it says that `profgate_confirm_total` and `profgate_profiles_in_flight` count the interactive path alone.
+- **The guides have troubleshooting sections.**
+  For each failure the gateway measures, the deployment guide names the symptom, the signal, and the step,
+  including a bucket deleted or recreated under a running process, a restore from backup, and NATS maintenance;
+  the authentication guide does the same for each authentication failure reason.
+  Both guides now say that a NATS disconnect of any length aborts the Collections a replica owns
+  and spends an attempt on each.
 
 ### Changed
 

@@ -1453,9 +1453,9 @@ so an empty `profgate_auth_failures_total` does not mean logins are working.
 `ProfgateAuthUnavailable` fires on the code, not the reason,
 so the table is also how an operator turns that alert into the four reasons it can mean.
 
-- [ ] **Write both sections and the two disconnect sentences**
+- [x] **Write both sections and the two disconnect sentences**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 `CHANGELOG.md`, `### Added`:
 **The guides have troubleshooting sections.**

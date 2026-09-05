@@ -364,6 +364,9 @@ with `auth.mode: oidc` issuer discovery and the initial signing-key fetch have s
 and, with PGO enabled, the NATS preflight has passed.
 A later NATS disconnect does not turn readiness off:
 the replica keeps serving interactive requests and answers the PGO routes 503.
+It does abort every Collection that replica owns:
+each aborted attempt is spent against `pgo.maxAttempts`,
+and [Troubleshooting](#troubleshooting) says what that costs.
 
 With `auth.mode: oidc`, startup passes through a `[discovering]` state between opening the listeners
 and the Kubernetes preflight:
@@ -559,6 +562,63 @@ The three `/auth/` routes write their own record, carrying only
 with no namespace, Service, or Pod.
 A browser navigation sent to `/auth/login` from `/v1` — no credential, or an expired session — is not counted
 as a failure: it carries `code auth_redirect` and status `302`.
+
+### Troubleshooting
+
+Each row is a symptom, the series or the log line that shows it, and the step.
+The same behavior is stated by [specs/gateway.md](specs/gateway.md#13-failure-scenarios)
+and [specs/pgo.md](specs/pgo.md#122-health).
+
+| Symptom | Where it shows | Step |
+|---|---|---|
+| `/readyz` 503 from startup and never green | `profgate_discovery_synced` reads `0`, and the log repeats `preflight attempt` with `error` and `retry_in`, or `still waiting for informer caches to sync` with `elapsed` | The Kubernetes API is unreachable, or the informers have not finished their first list. The preflight retries forever and the process stays up, so reaching the API is the only thing that ends this |
+| the process exits at startup naming a resource and a verb | one `preflight forbidden; the ClusterRole lacks a tuple` record at error, carrying `resource` and `verb`: the preflight received `403` | Add that tuple to the ClusterRole; [RBAC](#rbac) has the shipped set |
+| `/readyz` 503 under `auth.mode: oidc`, with no `issuer discovered; starting preflight` line | issuer discovery is still retrying; both listeners are up and `/healthz` already answers 200 | The process exits with `issuer discovery failed` once `auth.oidc.discoveryTimeout` passes. Check that the issuer is reachable and that `auth.oidc.caFile` trusts its chain |
+| `/readyz` 503 under `pgo.enabled`, with `nats preflight attempt` repeating | the connection is unavailable and `profgate_nats_connected` reads `0`. `ProfgateNATSDisconnected` is what fires; `ProfgatePGONotSynced` cannot, because `profgate_pgo_synced` does not exist until the preflight passes | Only a connection failure retries, and it retries for as long as it lasts. Fix the transport |
+| the process exits at startup after one `nats preflight failed` record at error | a missing bucket, a bucket of the wrong kind, a configuration outside the contract, or a probe the account is denied; none of those retries | The error names the bucket and the operation or the field. [NATS for PGO collection](#nats-for-pgo-collection) has the buckets and the permissions they need |
+| every profile request answers `502` or `504` | `profgate_requests_total{code="upstream_unreachable"}` or `{code="upstream_timeout"}` climbing with no `code="ok"` beside it. `ProfgateUpstreamsUnreachable` | A NetworkPolicy that closed the pprof port, or a `discovery.pprof.port` no workload listens on. One dead Pod raises neither: the rule needs a replica that served no profile request successfully in the same window |
+| profile requests answer `429` | `profgate_requests_total{code="too_many_profiles"}`. `ProfgateAdmissionSaturated` | `limits.maxConcurrentProfiles` is the admission gate and it counts per replica; the gateway never queues. Raise it or add replicas |
+| a renewed certificate is not being served | `profgate_tls_reloads_total{result="failed"}` climbing while `profgate_tls_certificate_expiry_seconds` does not move. `ProfgateTLSReloadFailing` | The pair last applied stays in use, so no connection drops. The files are unreadable, or the certificate and the key do not match |
+| `profgate_tls_certificate_expiry_seconds` reads `NaN` | no certificate has been loaded | `server.tls` is not configured. Expected on a plaintext listener, where both certificate rules are inert by construction |
+| PGO routes answer `503 pgo_unavailable` while `/readyz` is green | `profgate_pgo_synced` reads `0`. `ProfgatePGONotSynced` | A store whose watches the seam cannot re-open. Readiness is right to stay green, because interactive profiling is unaffected. A deleted or recreated bucket and a restore from backup are how a store gets there |
+| a Collection ends `failed` with reason `attempts_exhausted` around a NATS outage | `profgate_collections_total{result="failed"}`, and the `reason` field of the record | Every disconnect aborts the Collections each replica owns and spends an attempt, so `pgo.maxAttempts` of them inside one Collection's deadline end it — three at the default |
+
+**A bucket deleted or recreated under a running process.**
+The process stays up, the seam retries the re-open until the bucket exists again,
+`/readyz` stays green, and every PGO route refuses for as long as that lasts
+([specs/pgo.md](specs/pgo.md#122-health)).
+`profgate_pgo_synced` is where it shows and `ProfgatePGONotSynced` is what fires.
+Recreating the bucket under the same name is enough; no restart is needed.
+The log writes one record when a re-open starts failing and one when every watch is open and has replayed again,
+and nothing per retry,
+so a bucket absent for an hour leaves two records rather than hundreds.
+
+**A restore from backup.**
+A restore replaces the buckets, which is the deleted-or-recreated case:
+the watches on them close, the store generation moves,
+and every replica reads `profgate_pgo_synced` `0` until its watches have replayed under the new generation
+([specs/pgo.md](specs/pgo.md#122-health)).
+Records that come back from a backup carry leases and deadlines stamped before the restore.
+A Collection whose lease has lapsed is reclaimed by the ordinary scan as a new attempt and costs one;
+a Collection whose deadline has passed is failed `deadline_exceeded` by that scan rather than resumed.
+
+**NATS maintenance.**
+Plan it as an outage that costs attempts, not as a pause.
+A disconnect of any length aborts the Collections each replica owns.
+
+**What a disconnect costs a running Collection.**
+An owner takes its store view once, at claim time.
+Any move of the store generation — a disconnect, or a watch cut under a live connection —
+makes every later call on that view unavailable, so the owner never renews its lease again
+([specs/pgo.md](specs/pgo.md#84-the-owner-loop)).
+It stops once `pgo.leaseTTL` minus five seconds of clock skew has passed since its last successful renewal,
+and commits nothing.
+How long the outage lasts decides how long the owner takes to notice, not whether its attempt survives:
+a disconnect of any length ends that attempt.
+Another replica reclaims the record and retries from round zero,
+so each disconnect spends one attempt against `pgo.maxAttempts`.
+That key is what bounds the exhaustion: it runs from `1` to `10` and defaults to `3`,
+so `pgo.maxAttempts` disconnects inside one Collection's deadline end it `failed attempts_exhausted`.
 
 ### Smoke test
 

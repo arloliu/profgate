@@ -337,6 +337,15 @@ Coordination is compare-and-swap on KV keys:
   and can end the Collection itself as `failed no_samples`;
   either way, the Service becomes eligible again
   and a later successful slot may publish another Collection.
+- **A NATS disconnect interrupts one too.**
+  An owner takes its store view once, at claim time,
+  and any move of the store generation makes every later call on that view fail,
+  so a disconnect of any length ends the attempt rather than pausing it.
+  The owner stops `pgo.leaseTTL` minus five seconds of clock skew after its last successful renewal
+  and commits nothing; another replica reclaims the record and retries from round zero.
+  Each disconnect therefore spends one attempt against `pgo.maxAttempts`,
+  so `pgo.maxAttempts` of them inside one Collection's deadline end it `attempts_exhausted` —
+  three at the default.
 - **The sweeper cleans up everywhere.**
   Every replica expires artifacts past retention,
   deletes terminal records past `jobRetention`, consumed slot keys, orphaned objects,

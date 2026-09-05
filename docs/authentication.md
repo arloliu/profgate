@@ -135,3 +135,37 @@ Disabling a user, an issuer-side logout, or a changed group reaches the gateway 
 never before — there is no way to revoke a session before its `exp`.
 `auth.oidc.browser.sessionTTL` (8 hours by default, 24 at most) is exactly the exposure an operator accepts;
 choosing a shorter one is the only lever for narrowing it.
+
+## Troubleshooting
+
+Every authentication failure is counted by `profgate_auth_failures_total` under a `reason` label
+and written to the audit record as `auth_reason`;
+[specs/auth.md](specs/auth.md#7-audit-and-metrics) defines both,
+and [deployment.md](deployment.md#audit-log) describes the record that carries them.
+Each row names every reason it covers, so a value taken out of a log appears in exactly one of them.
+
+| Reason | What it means | Status | Step |
+|---|---|---|---|
+| `missing`, `scheme`, `malformed` | no credential, the wrong `Authorization` scheme for the mode, or one that did not parse or exceeded a size limit | `401`; `missing` is `302` for a navigation under the browser flow | Send the credential the mode expects |
+| `bad_credential` | the users file holds no such user, or the password does not match | `401` | Fix the credential; `profgate auth hash` writes the bcrypt hash the file takes |
+| `throttled` | the bcrypt comparison gate was full | `429` | Raise `auth.basic.maxConcurrent`, which bounds concurrent comparisons per replica, or add replicas. `ProfgateAuthLimiterSaturated` fires on this |
+| `signature`, `alg`, `token_type` | no key verified the token or none could be selected; the algorithm is not allowed; `typ` is not `at+jwt` under `tokenType: access` | `401` | Check that the issuer's signing keys are reachable, and that `auth.oidc.tokenType` matches what the issuer mints |
+| `issuer`, `audience` | the token was minted for another issuer (`iss`) or another audience (`aud` or `azp`) | `401` | Point `auth.oidc.issuer` and `auth.oidc.audience` at what the issuer mints; the per-issuer notes in this guide say what each one puts in `aud` |
+| `expired`, `session` | the token's `iat`, `nbf`, or `exp` is outside the validity window, missing, or not a number; or the session cookie is unopenable or expired | `401`; `session` is `302` for a navigation under the browser flow | Get a new token or log in again, and check the clock skew between the issuer and the gateway |
+| `claim` | `sub` or the username claim is missing, empty, or too long, or the groups claim is present with a bad shape | `401` | Point `auth.oidc.usernameClaim` and `auth.oidc.groupsClaim` at claims the issuer actually mints |
+| `no_realm` | authenticated, and mapped to no realm | `401` | Add the principal or one of its groups to `auth.oidc.mapping`, or set `auth.oidc.mapping.defaultRealm`. In `basic` mode each user entry carries a required `realm` instead |
+| `nonce`, `state`, `csrf` | a browser round trip whose integrity check failed: an ID token `nonce` mismatch; a transaction cookie missing or expired, or a `state` mismatch; a session-authenticated request whose `Sec-Fetch-Site` is neither `same-origin` nor `none` | `401` | Usually a stale tab or a bookmarked callback: start the login again from the gateway. A persistent `csrf` is something in front of the gateway rewriting the request's origin |
+| `issuer_denied`, `exchange_denied` | the issuer refused the login: it returned `error` on the callback, or its token endpoint refused the code or returned no ID token | `401` | The issuer's own log says why; check the client registration and the redirect URI |
+| `exchange` | the issuer's token endpoint is unreachable or answered `5xx` | `503` | Bearer tokens and existing sessions are unaffected; only new browser logins stop. Fix the issuer's reachability |
+| `keys_stale` | the signing keys are older than `auth.oidc.jwksMaxStale` | `503` | Every token is refused. Fix the reachability of the issuer's JWKS endpoint. `ProfgateOIDCKeysStale` fires at half the 24-hour default, so it precedes this by twelve hours |
+| `entropy`, `internal` | the gateway itself failed: `crypto/rand` refused while sealing a login's cookies, or the authenticator returned an error that is none of the above | `503` | Not the operator's to fix. `internal` is a programming error and is logged at error with the authenticator's own record; `entropy` reaches the browser login and nothing else |
+
+A navigation that carries no credential is not a failure and is counted under no reason:
+it answers `302` with code `auth_redirect` ([deployment.md](deployment.md#audit-log)),
+so an empty `profgate_auth_failures_total` does not mean logins are working.
+The `/auth/` records, with route `auth_login`, `auth_callback`, or `auth_logout`, are where a login shows.
+
+`ProfgateAuthUnavailable` fires on the `auth_unavailable` code rather than on a reason,
+so it can mean any of the four `503` reasons:
+`keys_stale` refuses every token, `exchange` and `entropy` stop the browser login alone,
+and `internal` is the gateway's own defect.
