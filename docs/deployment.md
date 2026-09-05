@@ -454,7 +454,7 @@ All metrics are on the ops port at `/metrics`.
 |---|---|---|---|
 | `profgate_requests_total` | counter | `endpoint`, `profile`, `code` | Completed `/v1` requests |
 | `profgate_request_duration_seconds` | histogram | `profile` | Duration of completed `/v1` requests |
-| `profgate_confirm_total` | counter | `result` | Pod confirmation attempts, on the interactive profile path |
+| `profgate_confirm_total` | counter | `result` (`ok`/`changed`/`unavailable`/`client_gone`) | Pod confirmation attempts, on the interactive profile path; `client_gone` is a client that left during the read |
 | `profgate_profiles_in_flight` | gauge | | Profile fetches currently in progress, on the interactive profile path |
 | `profgate_discovery_synced` | gauge | | 1 once the initial discovery sync has completed; never back to 0 |
 | `profgate_collections_total` | counter | `result` | Collections, by terminal result |

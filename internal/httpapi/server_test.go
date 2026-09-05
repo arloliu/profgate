@@ -714,6 +714,49 @@ func TestProxyOutcomes(t *testing.T) {
 		h.expectMetricCode(t, "client_gone")
 	})
 
+	t.Run("a client gone during confirmation is client_gone", func(t *testing.T) {
+		tr := newTrap(t, nil)
+		h := newHarness(tr.target())
+		h.disc.confirmBlocks = true
+		handler := h.handler()
+
+		// The client leaves while the confirmation read is in flight:
+		// its context is cancelled once the fake API server has been asked and before it answers.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		rec := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, profilePath+"heap", nil))
+		}()
+		deadline := time.Now().Add(2 * time.Second)
+		for h.disc.confirmCalls.Load() == 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("Confirm was not called within 2s")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("the handler did not return within 2s of the client leaving")
+		}
+
+		if rec.Body.Len() != 0 {
+			t.Errorf("body = %q, want nothing: there is nobody to write to", rec.Body.String())
+		}
+		h.expectAudit(t, 0, codeClientGone)
+		h.expectMetricCode(t, codeClientGone)
+		if _, confirms, _ := h.rec.snapshot(); len(confirms) != 1 || confirms[0] != codeClientGone {
+			t.Errorf("Recorder.Confirm calls = %v, want [client_gone]: the counter says what ended the read", confirms)
+		}
+		if tr.hits.Load() != 0 {
+			t.Errorf("trap hits = %d, want 0", tr.hits.Load())
+		}
+	})
+
 	t.Run("committed stream failure aborts the connection", func(t *testing.T) {
 		upstream := newTrap(t, func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/octet-stream")

@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -20,6 +21,9 @@ var _ Discovery = (*Cluster)(nil)
 // same UID, not terminating, running and ready, and still holding the selected address.
 // Any mismatch, and a Pod that is gone, is ErrTargetChanged; any other failure of the read is ErrDiscoveryUnavailable,
 // because a gateway that cannot check identity does not connect.
+// A caller that cancels ctx while the read is in flight gets context.Canceled and neither sentinel:
+// nothing about the target is known, and nothing is claimed.
+// A deadline that passes, the confirmation's own or the caller's, is ErrDiscoveryUnavailable.
 //
 // The UID comes from t, captured at selection,
 // so a replacement Pod that has since taken the same name cannot satisfy the check.
@@ -39,6 +43,10 @@ func (c *Cluster) Confirm(ctx context.Context, t Target) error {
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return fmt.Errorf("pod %s/%s is gone: %w", t.Namespace, t.Pod, ErrTargetChanged)
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			// The caller left before the API server answered; nothing about the target is known, and nothing is claimed.
+			return fmt.Errorf("confirm pod %s/%s: %w", t.Namespace, t.Pod, context.Canceled)
 		}
 
 		return fmt.Errorf("%w: confirm pod %s/%s: %s", ErrDiscoveryUnavailable, t.Namespace, t.Pod, err.Error())

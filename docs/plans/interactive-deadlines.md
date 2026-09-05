@@ -866,7 +866,7 @@ the counter's `client_gone` stays, so `profgate_confirm_total` keeps its four va
 the counter is a `CounterVec` on `result` (`internal/metrics/prometheus.go:58-60`, `:177-182`) and needs no code change.
 `docs/deployment.md:457`, the counter's row, names the four results.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 | Test | What it asserts, and how it fails today |
 |---|---|
@@ -880,7 +880,7 @@ go test -race -count=1 ./internal/k8s/ -run 'TestConfirm/caller_cancelled'
 go test -race -count=1 ./internal/httpapi/ -run 'TestProfileProxy/a_client_gone_during_confirmation'
 ```
 
-- [ ] **Return the cancellation and say so**
+- [x] **Return the cancellation and say so**
 
 `CHANGELOG.md`, `### Changed`:
 **BREAKING: a client that leaves during the confirmation read is `client_gone`, in the audit record and in `profgate_confirm_total`.**
@@ -891,7 +891,7 @@ and the counter has a fourth result, `client_gone`, for exactly those attempts.
 A query over `profgate_confirm_total{result="unavailable"}` counts fewer,
 and a rule that summed the three documented results now misses a fourth unless it is added.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/k8s/confirm.go internal/httpapi/server.go internal/metrics/recorder.go docs/deployment.md CHANGELOG.md

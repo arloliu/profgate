@@ -64,7 +64,9 @@ type Recorder interface {
 	// and the console → ("ui","none").
 	// Requests that fail before a route resolves, or name an unknown profile, record ("profile","none").
 	Request(endpoint Endpoint, profile, code string, d time.Duration)
-	// Confirm records the outcome of one Pod confirmation call: "ok", "changed", or "unavailable".
+	// Confirm records the outcome of one Pod confirmation call: "ok", "changed", "unavailable", or "client_gone".
+	// "client_gone" is a client that left while the read was in flight;
+	// an expiry of the confirmation's own timeout or of the request budget is "unavailable".
 	Confirm(result string)
 	// ProfilesInFlight adjusts the count of profile fetches currently in progress by delta.
 	ProfilesInFlight(delta int)

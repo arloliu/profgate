@@ -743,6 +743,13 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 
 			return
 		}
+		if errors.Is(err, context.Canceled) {
+			// The client left during the read: nobody to answer, and an attempt the counter still sees.
+			s.deps.Recorder.Confirm(codeClientGone)
+			q.audit.code = codeClientGone
+
+			return
+		}
 		// Anything the gateway cannot classify is treated as the API server not vouching for the target.
 		s.deps.Recorder.Confirm("unavailable")
 		q.fail(w, &requestError{

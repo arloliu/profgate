@@ -279,6 +279,46 @@ func TestConfirm(t *testing.T) {
 		}
 	})
 
+	t.Run("caller cancelled", func(t *testing.T) {
+		cs, c, cancel := startFixture(t, baseOptions(), baseline().objects()...)
+		target := onlyTarget(t, c)
+		cancel()
+
+		// entered is closed the first time the API server is asked; release holds that call open.
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		defer close(release)
+		var once sync.Once
+		cs.PrependReactor("get", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+			once.Do(func() { close(entered) })
+			<-release
+
+			return true, nil, nil
+		})
+
+		ctx, cancelCall := context.WithCancel(context.Background())
+		defer cancelCall()
+		done := make(chan error, 1)
+		go func() { done <- c.Confirm(ctx, target) }()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("the API server was not asked within 1s")
+		}
+		cancelCall()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Confirm() = %v, want context.Canceled: a caller that left is not an API server that could not answer", err)
+			}
+			if errors.Is(err, ErrDiscoveryUnavailable) {
+				t.Fatalf("Confirm() = %v, which also matches ErrDiscoveryUnavailable: the two outcomes carry different audit codes", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Confirm() did not return within 1s of its context being cancelled")
+		}
+	})
+
 	t.Run("one call only", func(t *testing.T) {
 		cs, c, cancel := startFixture(t, baseOptions(), baseline().objects()...)
 		target := onlyTarget(t, c)

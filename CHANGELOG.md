@@ -69,6 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: a client that leaves during the confirmation read is `client_gone`, in the audit record and in `profgate_confirm_total`.**
+  It was answered `503 discovery_unavailable` — to nobody — and counted under `result="unavailable"`,
+  so a burst of impatient clients read as an API server that could not vouch for anything.
+  The request now ends with nothing written and `client_gone` in the audit record,
+  and the counter has a fourth result, `client_gone`, for exactly those attempts.
+  A query over `profgate_confirm_total{result="unavailable"}` counts fewer,
+  and a rule that summed the three documented results now misses a fourth unless it is added.
 - **BREAKING: the round display counts from one.**
   `progress.round` is the zero-based index of the running round,
   and every surface that showed it put it on the line beside the round count,

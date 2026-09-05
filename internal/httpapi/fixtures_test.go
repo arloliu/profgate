@@ -94,7 +94,9 @@ type fakeDiscovery struct {
 	err        error
 	synced     bool
 	confirmErr error
-	onTargets  func()
+	// confirmBlocks holds Confirm open until its context ends, and returns that context's error.
+	confirmBlocks bool
+	onTargets     func()
 
 	// catalog and catalogErr answer Catalog; catalogNamespaces records the namespace argument of every call.
 	catalog    []k8s.ServiceRef
@@ -154,6 +156,11 @@ func (f *fakeDiscovery) Confirm(ctx context.Context, t k8s.Target) error {
 	f.confirmDeadline, _ = ctx.Deadline()
 	f.confirmTarget = t
 	f.mu.Unlock()
+	if f.confirmBlocks {
+		<-ctx.Done()
+
+		return ctx.Err()
+	}
 
 	return f.confirmErr
 }
