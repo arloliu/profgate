@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/arloliu/profgate/internal/auth"
 	"github.com/arloliu/profgate/internal/config"
@@ -68,13 +69,34 @@ type fakeRoutes struct {
 	outcome auth.RouteOutcome
 	calls   int
 	cfgs    []*config.Config
+	// holds makes ServeAuth close entered and then wait for the request context to end before it answers,
+	// the way the browser's token exchange answers a cancelled one.
+	holds   bool
+	entered chan struct{}
+	once    sync.Once
 }
 
-func (f *fakeRoutes) ServeAuth(w http.ResponseWriter, _ *http.Request, cfg *config.Config) auth.RouteOutcome {
+// blockUntilCancelled makes every later ServeAuth signal its entry on the returned channel
+// and answer the programmed outcome only once the request context has ended.
+func (f *fakeRoutes) blockUntilCancelled() <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.holds = true
+	f.entered = make(chan struct{})
+
+	return f.entered
+}
+
+func (f *fakeRoutes) ServeAuth(w http.ResponseWriter, r *http.Request, cfg *config.Config) auth.RouteOutcome {
 	f.mu.Lock()
 	f.calls++
 	f.cfgs = append(f.cfgs, cfg)
+	holds, entered := f.holds, f.entered
 	f.mu.Unlock()
+	if holds {
+		f.once.Do(func() { close(entered) })
+		<-r.Context().Done()
+	}
 	switch f.outcome.Status {
 	case http.StatusFound:
 		w.Header().Set("Location", "https://issuer.example/authorize")
@@ -755,6 +777,29 @@ func TestAuthRoutes(t *testing.T) {
 		expectRouteAudit(t, h, "auth_login", "-", http.StatusServiceUnavailable, "auth_unavailable", auth.ReasonEntropy)
 		h.expectAuthFailureMetric(t, authFailureCall{"oidc", auth.ReasonEntropy})
 		h.expectMetricCode(t, "auth_unavailable")
+		h.expectMetric(t, metrics.EndpointAuth, "none")
+	})
+
+	t.Run("an exchange held across the drain cut writes nothing", func(t *testing.T) {
+		h, routes := routed(auth.RouteOutcome{Status: 503, Code: "auth_unavailable", Reason: auth.ReasonExchange, Principal: "-"})
+		entered := routes.blockUntilCancelled()
+		srv, cut := cutServer(t, h.handler())
+
+		// The cut lands with the route inside its exchange, which answers 503 once its context ends;
+		// that answer must not reach the client, and the record must say the drain cut the request.
+		conn := dialRequest(t, srv, "/auth/callback?code=x")
+		select {
+		case <-entered:
+		case <-time.After(heldOpenTimeout):
+			t.Fatal("the route was not entered within the wait")
+		}
+		cut()
+
+		expectNothingRead(t, conn)
+		waitForAudit(t, h, codeDrainExpired)
+		expectRouteAudit(t, h, "auth_callback", "-", 0, codeDrainExpired, "")
+		h.expectAuthFailureMetric(t)
+		h.expectMetricCode(t, codeDrainExpired)
 		h.expectMetric(t, metrics.EndpointAuth, "none")
 	})
 

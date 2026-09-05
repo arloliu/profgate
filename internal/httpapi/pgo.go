@@ -30,10 +30,9 @@ const configAPIDisabled = "disabled"
 // The audit-only codes of the spec's "Errors" table: outcomes with a code of
 // their own that are never an HTTP status of their own.
 const (
-	codeCASContended        = "cas_contended"
-	codeArtifactStreamFail  = "artifact_stream_failed"
-	codeClientGone          = "client_gone"
-	codeCollectionCancelled = "cancelled"
+	codeCASContended       = "cas_contended"
+	codeArtifactStreamFail = "artifact_stream_failed"
+	codeClientGone         = "client_gone"
 )
 
 // The errors more than one PGO route answers with.

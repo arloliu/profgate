@@ -402,6 +402,10 @@ limits:
 `, listen, opsListen, o.drainDelay.String(), tlsBlock, l.cpu, l.trace, l.maxConcurrent, authBlock)
 	if o.enabled {
 		body += pgoBlock
+		if o.pgoMaxDuration > 0 {
+			body += fmt.Sprintf("  limits:\n    maxDuration: %s\n  defaults:\n    sampling:\n      duration: %s\n",
+				o.pgoMaxDuration, o.pgoMaxDuration)
+		}
 	}
 	if o.uiEnabled {
 		body += "ui:\n  enabled: true\n"
@@ -464,6 +468,9 @@ type gatewayOpts struct {
 	authPoll  time.Duration
 	// uiEnabled writes ui.enabled: true into the configuration.
 	uiEnabled bool
+	// pgoMaxDuration, when set, is written as pgo.limits.maxDuration and pgo.defaults.sampling.duration,
+	// which a row with pgo.enabled needs when its limits.cpuSeconds sits under the shipped ceiling.
+	pgoMaxDuration time.Duration
 }
 
 // startGateway runs serve over cs with PGO off.
@@ -1339,6 +1346,25 @@ func (k *oneRecordKV) Watch(ctx context.Context, prefix string) (<-chan natskv.E
 	return ch, nil
 }
 
+// heldKV is a bucket whose every read is held until the caller's context ends,
+// standing in for a store that does not answer,
+// which is the one kind of call a request can still be inside when the drain bound ends:
+// the request budget bounds every interactive wait, and no budget bounds a store call.
+type heldKV struct {
+	emptyKV
+	entered chan struct{}
+	once    sync.Once
+}
+
+func newHeldKV() *heldKV { return &heldKV{entered: make(chan struct{})} }
+
+func (k *heldKV) Get(ctx context.Context, _ string) (natskv.Entry, error) {
+	k.once.Do(func() { close(k.entered) })
+	<-ctx.Done()
+
+	return natskv.Entry{}, ctx.Err()
+}
+
 // emptyObjects is an Object Store holding nothing.
 type emptyObjects struct{}
 
@@ -1877,6 +1903,74 @@ func TestServePGO(t *testing.T) {
 		worker.releaseDrain()
 		if code := gw.exitCode(t, delay+waitTimeout); code != 0 {
 			t.Fatalf("exit code = %d, want 0", code)
+		}
+	})
+
+	t.Run("a store call held across the drain bound is drain_expired", func(t *testing.T) {
+		collection := "/v1/collections/" + waitCollectionID
+		worker := newStubWorker()
+		jobs := newHeldKV()
+		nats := newFakeNATS(true)
+		nats.stores.Jobs = jobs
+		pf := newPreflightStub(preflightResult{client: nats})
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), limits{cpu: 1, trace: 1, maxConcurrent: 1},
+			gatewayOpts{enabled: true, preflight: pf, worker: worker, pgoMaxDuration: time.Second})
+		gw.waitReady(t, waitTimeout)
+		waitFor(t, waitTimeout, "the collections route passing the barrier", func() bool {
+			code, _, err := get(gw.apiAddr, collectionsPath)
+
+			return err == nil && code == http.StatusOK
+		})
+
+		// The request is sent over a socket the test holds itself,
+		// so what the gateway writes to it, if anything, is read as sent.
+		conn, err := (&net.Dialer{Timeout: waitTimeout}).DialContext(context.Background(), "tcp", gw.apiAddr)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		if _, err := io.WriteString(conn, "GET "+collection+" HTTP/1.1\r\nHost: gateway\r\n\r\n"); err != nil {
+			t.Fatalf("write request: %v", err)
+		}
+		waitFor(t, waitTimeout, "the request reaching the store", func() bool { return closed(jobs.entered) })
+
+		start := time.Now()
+		gw.stopOnce()
+		worker.releaseDrain()
+		code := gw.exitCode(t, 40*time.Second)
+		elapsed := time.Since(start)
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if elapsed < 30*time.Second || elapsed > 35*time.Second {
+			t.Fatalf("serve exited after %s, want max(cpu,trace)+30s = 31s: the store call held the request to the bound", elapsed)
+		}
+		if rec := gw.record(t, "drain complete"); rec["api"] != "deadline_closed" {
+			t.Fatalf("drain complete record = %v, want api=deadline_closed: the bound cut the request", rec)
+		}
+		// The cancelled store call maps to 503 pgo_unavailable;
+		// a request the drain cut is not answered it, and its record says what ended it.
+		if err := conn.SetReadDeadline(time.Now().Add(waitTimeout)); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 512)
+		if n, err := conn.Read(buf); n != 0 || !errors.Is(err, io.EOF) {
+			t.Errorf("Read() = %d bytes %q, error %v; want 0 bytes and io.EOF: nothing is written to a request the drain cut", n, buf[:n], err)
+		}
+		var audit map[string]any
+		waitFor(t, waitTimeout, "the audit record of the held request", func() bool {
+			for _, rec := range gw.records(t) {
+				if rec["msg"] == "request" && rec["collection"] == waitCollectionID {
+					audit = rec
+
+					return true
+				}
+			}
+
+			return false
+		})
+		if audit["code"] != "drain_expired" || audit["status"] != float64(0) {
+			t.Fatalf("audit record = %v, want status 0 and code drain_expired: the drain cut the request, the store did not refuse it", audit)
 		}
 	})
 

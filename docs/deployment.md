@@ -431,6 +431,8 @@ On SIGTERM the gateway drains in this order:
    `pgo.leaseTTL` minus five seconds of clock skew.
    Merge and write cannot be interrupted once entered,
    so a work goroutine may outlive the drain; it commits nothing, because its lease has lapsed.
+   A request still in flight when the API drain's bound ends is cut:
+   nothing more is written to it, and its audit record carries `drain_expired`, not `client_gone`.
 4. The informers stop, the ops listener drains, and the process exits 0.
 
 A second signal skips the rest of the drain and exits 1.

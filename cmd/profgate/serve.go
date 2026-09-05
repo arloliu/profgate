@@ -240,8 +240,14 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		idle = deps.idleTimeout
 	}
 	errorLog := slog.NewLogLogger(logger.Handler(), slog.LevelError)
+	// Every API request context descends from this one.
+	// The drain cancels it with httpapi.ErrDrainExpired just before it closes the connections its bound cut,
+	// so a handler can tell that cut from a client that left on its own.
+	drainCtx, cutInFlight := context.WithCancelCause(ctx)
+	defer cutInFlight(nil)
 	apiServer := &http.Server{
 		Handler:           counted,
+		BaseContext:       func(net.Listener) context.Context { return drainCtx },
 		ReadHeaderTimeout: httpapi.RequestReadTimeout,
 		IdleTimeout:       idle,
 		ErrorLog:          errorLog,
@@ -415,15 +421,18 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		go func() {
 			defer wg.Done()
 			drainBound := time.Duration(max(cfg.Limits.CPUSeconds, cfg.Limits.TraceSeconds))*time.Second + drainSlack
-			drainCtx, cancel := context.WithTimeout(context.Background(), drainBound)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), drainBound)
 			defer cancel()
-			err := apiServer.Shutdown(drainCtx)
+			err := apiServer.Shutdown(shutdownCtx)
 			switch {
 			case err == nil:
 			case errors.Is(err, context.DeadlineExceeded):
 				apiOutcome = "deadline_closed"
 				logger.Warn("drain deadline passed; closing in-flight connections",
 					"requests", inFlightRequests.Load())
+				// The cause is set before the connections close,
+				// because closing them cancels every request context the same way a client leaving does.
+				cutInFlight(httpapi.ErrDrainExpired)
 				_ = apiServer.Close()
 			default:
 				apiOutcome = "failed"

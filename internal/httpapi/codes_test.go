@@ -70,7 +70,7 @@ func TestEnvelopeCodesIsCopied(t *testing.T) {
 func TestAuditOnlyCodesAreNotRegistered(t *testing.T) {
 	auditOnly := []string{
 		codeOK, codeStreamFailed, codeInternalError, codeAuthRedirect,
-		codeCASContended, codeArtifactStreamFail, codeClientGone, codeCollectionCancelled,
+		codeCASContended, codeArtifactStreamFail, codeClientGone, codeDrainExpired,
 		"upstream_404", "upstream_500",
 	}
 	for _, code := range auditOnly {

@@ -899,6 +899,120 @@ func TestProxyOutcomes(t *testing.T) {
 			t.Errorf("ProfilesInFlight net = %d after the cut, want 0", inFlight)
 		}
 	})
+
+	t.Run("the drain cut mid-stream is drain_expired, a closed socket is client_gone", func(t *testing.T) {
+		rows := []struct {
+			name string
+			// end is what stops the stream: the drain cut, or the client closing its socket.
+			end func(cut func(), conn net.Conn)
+			// code is the audit and metrics outcome, and wantErr what the client's read of the body ends in;
+			// nil leaves the read's error unchecked.
+			code    string
+			wantErr error
+		}{
+			{"the drain cut", func(cut func(), _ net.Conn) { cut() }, codeDrainExpired, io.ErrUnexpectedEOF},
+			{"a closed socket", func(_ func(), conn net.Conn) { _ = conn.Close() }, codeClientGone, nil},
+		}
+		for _, row := range rows {
+			t.Run(row.name, func(t *testing.T) {
+				// The upstream streams until its request is cancelled, so nothing but the row's ending stops the profile.
+				upstream := newTrap(t, func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/octet-stream")
+					w.WriteHeader(http.StatusOK)
+					chunk := bytes.Repeat([]byte("x"), 4<<10)
+					for r.Context().Err() == nil {
+						if _, err := w.Write(chunk); err != nil {
+							return
+						}
+						if err := http.NewResponseController(w).Flush(); err != nil {
+							return
+						}
+					}
+				})
+				h := newHarness(upstream.target())
+				h.upstream = proxy.New(proxy.Options{})
+				srv, cut := cutServer(t, h.handler())
+
+				conn := dialRequest(t, srv, profilePath+"heap")
+				resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+				if err != nil {
+					t.Fatalf("ReadResponse() error = %v", err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("status = %d, want 200 before the stream is ended", resp.StatusCode)
+				}
+				// The body is drained on a goroutine, so the stream is running, not stalled, when it is ended.
+				var received atomic.Int64
+				read := make(chan error, 1)
+				go func() {
+					_, err := io.Copy(countingWriter{n: &received}, resp.Body)
+					read <- err
+				}()
+				deadline := time.Now().Add(heldOpenTimeout)
+				for received.Load() == 0 {
+					if time.Now().After(deadline) {
+						t.Fatal("no profile byte reached the client within the wait")
+					}
+					time.Sleep(time.Millisecond)
+				}
+
+				row.end(cut, conn)
+				select {
+				case err := <-read:
+					if row.wantErr != nil && !errors.Is(err, row.wantErr) {
+						t.Errorf("the client's read ended in %v, want %v: the cut truncates the body, it does not finish it", err, row.wantErr)
+					}
+				case <-time.After(heldOpenTimeout):
+					t.Fatal("the client's read did not end after the stream was ended")
+				}
+				waitForAudit(t, h, row.code)
+				h.expectMetricCode(t, row.code)
+				if _, _, inFlight := h.rec.snapshot(); inFlight != 0 {
+					t.Errorf("ProfilesInFlight net = %d after the stream ended, want 0", inFlight)
+				}
+			})
+		}
+	})
+
+	t.Run("the drain cut during confirmation audits drain_expired and counts client_gone", func(t *testing.T) {
+		tr := newTrap(t, nil)
+		h := newHarness(tr.target())
+		h.disc.confirmBlocks = true
+		srv, cut := cutServer(t, h.handler())
+
+		// The drain bound ends while the confirmation read is in flight:
+		// the fake API server has been asked and has not answered when the request context is cancelled with the cause.
+		conn := dialRequest(t, srv, profilePath+"heap")
+		deadline := time.Now().Add(heldOpenTimeout)
+		for h.disc.confirmCalls.Load() == 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("Confirm was not called within the wait")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		cut()
+
+		expectNothingRead(t, conn)
+		waitForAudit(t, h, codeDrainExpired)
+		h.expectAudit(t, 0, codeDrainExpired)
+		h.expectMetricCode(t, codeDrainExpired)
+		if _, confirms, _ := h.rec.snapshot(); len(confirms) != 1 || confirms[0] != codeClientGone {
+			t.Errorf("Recorder.Confirm calls = %v, want [client_gone]: the counter says what ended the read, the audit what ended the request", confirms)
+		}
+		if tr.hits.Load() != 0 {
+			t.Errorf("trap hits = %d, want 0", tr.hits.Load())
+		}
+	})
+}
+
+// countingWriter discards what it is given and counts it, so a test can see a stream flowing before it ends it.
+type countingWriter struct{ n *atomic.Int64 }
+
+func (c countingWriter) Write(p []byte) (int, error) {
+	c.n.Add(int64(len(p)))
+
+	return len(p), nil
 }
 
 func TestAuditAndMetrics(t *testing.T) {

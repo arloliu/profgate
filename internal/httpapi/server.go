@@ -37,6 +37,8 @@ const (
 	codeOK = "ok"
 	// codeStreamFailed is the proxy outcome after which the connection is dropped.
 	codeStreamFailed = "upstream_stream_failed"
+	// codeDrainExpired is the outcome of a request the drain bound cut.
+	codeDrainExpired = "drain_expired"
 	// codeInternalError is the console outcome for a status that is neither a
 	// success, a redirect, nor one of the two envelopes the console writes.
 	codeInternalError = "internal_error"
@@ -46,6 +48,12 @@ const (
 	// a Collection profiles CPU and nothing else.
 	labelCPU = "cpu"
 )
+
+// ErrDrainExpired is the cancellation cause the gateway sets on every request still in flight
+// when its drain bound ends, just before it closes their connections.
+// Every request context derives from the cancelled one and reports it through context.Cause,
+// which is how a cut is told from a client that left on its own.
+var ErrDrainExpired = errors.New("the drain bound ended with the request in flight")
 
 // Upstream is what the profile handler needs from internal/proxy.
 type Upstream interface {
@@ -250,6 +258,8 @@ type route struct {
 
 // request is what one request accumulates for its audit record and its metrics labels.
 type request struct {
+	// ctx is the request's own context, read for the cause of its cancellation.
+	ctx    context.Context
 	routed bool
 	route  route
 	// authRoute marks a request under /auth/, which has labels and an audit shape of its own.
@@ -330,8 +340,26 @@ func (q *request) narrated() bool {
 	return q.route.kind != kindAuth && q.route.kind != kindOpenAPI
 }
 
+// cut reports whether the drain bound ended while this request was in flight.
+// A request built with no context, as a test may build one, was not cut.
+func (q *request) cut() bool {
+	if q.ctx == nil {
+		return false
+	}
+
+	return errors.Is(context.Cause(q.ctx), ErrDrainExpired)
+}
+
 // fail writes a gateway-generated error and records it.
+// A request the drain cut is recorded as the cut and answered nothing:
+// the error it reached is what the cancelled call mapped to, not what happened,
+// and the abort keeps net/http from writing the empty 200 a handler that returns silently gets.
 func (q *request) fail(w http.ResponseWriter, e *requestError) {
+	if q.cut() {
+		q.audit.status = 0
+		q.audit.code = codeDrainExpired
+		panic(http.ErrAbortHandler)
+	}
 	q.audit.status = e.status
 	q.audit.code = e.code
 	if e.auditCode != "" {
@@ -359,14 +387,26 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := RequestID(r)
 	w.Header().Set(requestIDHeader, id)
 
-	q := &request{}
+	q := &request{ctx: r.Context()}
 	q.audit.requestID = id
 	defer func() {
+		// A route that ends on its cancelled context records client_gone, which is true of what it saw;
+		// when the drain caused that cancellation the record says so instead,
+		// and the request is aborted after the row and the record are written,
+		// so a committed stream is truncated and an uncommitted one ends with nothing written.
+		// Every other code is a response the route produced, which the cut does not touch.
+		abort := q.cut() && q.audit.code == codeClientGone
+		if abort {
+			q.audit.code = codeDrainExpired
+		}
 		q.audit.duration = time.Since(start)
 		endpoint, profile := q.labels()
 		s.deps.Recorder.Request(endpoint, profile, q.audit.code, q.audit.duration)
 		if q.narrated() {
 			writeAudit(s.deps.Logger, q.audit)
+		}
+		if abort {
+			panic(http.ErrAbortHandler)
 		}
 	}()
 
@@ -776,7 +816,8 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 	q.audit.code = out.Code
 	if !out.Committed {
 		// Status 0 is a client that left before anything was written: nobody to answer.
-		if out.Status != 0 {
+		// A request the drain cut is answered nothing either, for the timeout that lands in the same instant as the cut.
+		if out.Status != 0 && !q.cut() {
 			WriteError(w, out.Status, out.Code, upstreamMessage(out.Code, target.Pod))
 		}
 

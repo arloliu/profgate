@@ -23,6 +23,39 @@ const (
 	noPrincipal = "-"
 )
 
+// errRequestCut is what a write after the drain cut returns:
+// the route's own error handling sees a failed write, and the client sees nothing.
+var errRequestCut = errors.New("the drain bound cut this request")
+
+// cutWriter is the writer the /auth/ routes answer through.
+// Once the drain bound has cut the request it refuses every write,
+// so a route that answers after the cut writes nothing the client could mistake for an answer.
+type cutWriter struct {
+	http.ResponseWriter
+	q         *request
+	committed bool // a status was written before any cut
+}
+
+func (c *cutWriter) WriteHeader(status int) {
+	if c.q.cut() {
+		return
+	}
+	c.committed = true
+	c.ResponseWriter.WriteHeader(status)
+}
+
+func (c *cutWriter) Write(p []byte) (int, error) {
+	if c.q.cut() {
+		return 0, errRequestCut
+	}
+	c.committed = true
+
+	return c.ResponseWriter.Write(p)
+}
+
+// Unwrap keeps http.ResponseController reaching the connection.
+func (c *cutWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }
+
 // authRouteName names the audit line of one of the three browser-login routes.
 // Every other kind reaches serveAuthRoute through no declaration, so it names none.
 func authRouteName(kind routeKind) string {
@@ -164,7 +197,17 @@ func (s *server) serveAuthRoute(
 
 		return
 	}
-	out := s.deps.AuthRoutes.ServeAuth(w, r, cfg)
+	cw := &cutWriter{ResponseWriter: w, q: q}
+	out := s.deps.AuthRoutes.ServeAuth(cw, r, cfg)
+	// A route still answering when the drain cut the request wrote nothing through the writer above;
+	// its outcome is what the cancelled exchange mapped to, so the record carries the cut instead,
+	// and the abort keeps net/http from finishing the response the route never wrote.
+	// A route that had committed its answer before the cut keeps the outcome it returned.
+	if q.cut() && !cw.committed {
+		q.audit.status = 0
+		q.audit.code = codeDrainExpired
+		panic(http.ErrAbortHandler)
+	}
 	q.audit.status = out.Status
 	q.audit.code = out.Code
 	q.audit.reason = out.Reason

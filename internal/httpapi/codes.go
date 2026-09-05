@@ -100,7 +100,7 @@ const (
 //
 // The audit-only outcomes are deliberately absent.
 // cas_contended, artifact_stream_failed, client_gone, upstream_stream_failed,
-// cancelled, internal_error, and ok name what happened to a request
+// drain_expired, internal_error, and ok name what happened to a request
 // in its audit record and its metrics row, and none is ever written into an envelope.
 // A status passed through under upstream_<status> carries the application's body, not an envelope.
 var envelopeCodes = [...]string{

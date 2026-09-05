@@ -76,6 +76,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the counter has a fourth result, `client_gone`, for exactly those attempts.
   A query over `profgate_confirm_total{result="unavailable"}` counts fewer,
   and a rule that summed the three documented results now misses a fourth unless it is added.
+- **BREAKING: a request the drain bound cuts is audited `drain_expired`, and `cancelled` leaves the `code` set.**
+  A connection the drain closed after its bound was audited `client_gone`, the code for a client that left on its own,
+  so a rollout that cut long downloads read as impatient clients,
+  and a request inside a store call at that moment was answered `503 pgo_unavailable` on its way out.
+  The cut now carries its own code, `drain_expired`, in the audit record and the `code` label, on every route;
+  it is audit-only, never an envelope, and nothing is written to a request it names,
+  so a query over `client_gone` stops matching it.
+  `cancelled` was documented among the audit-only values and written by nothing;
+  it is no longer documented, and a query that named it matched nothing before and matches nothing now.
 - **BREAKING: the round display counts from one.**
   `progress.round` is the zero-based index of the running round,
   and every surface that showed it put it on the line beside the round count,

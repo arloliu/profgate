@@ -1277,6 +1277,68 @@ func TestCollectionDownloadClientGone(t *testing.T) {
 	}
 }
 
+// TestADownloadCutByTheDrainIsTruncated proves the drain bound ending mid-download truncates the body
+// and is audited as the cut it is, rather than as a client that left.
+// The store parks after the first chunk and the test never releases it,
+// so only the cut ends the stream.
+func TestADownloadCutByTheDrainIsTruncated(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.completedRecord(t)
+	h.nats.artifacts.gate = make(chan struct{})
+	srv, cut := cutServer(t, h.handler())
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+collectionPath(rec.ID, "/profile"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: the cut lands after the headers", resp.StatusCode)
+	}
+	if _, err := io.ReadFull(resp.Body, make([]byte, chunkBytes)); err != nil {
+		t.Fatalf("ReadFull() error = %v", err)
+	}
+	cut()
+
+	rest, err := io.ReadAll(resp.Body)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("ReadAll() error = %v (%d more bytes), want io.ErrUnexpectedEOF: the client must see a truncation, not a clean end", err, len(rest))
+	}
+	waitForAudit(t, h.harness, codeDrainExpired)
+	h.expectMetricCode(t, codeDrainExpired)
+	if reader := h.nats.artifacts.reader(); reader == nil || !reader.closed.Load() {
+		t.Error("the store read was not released when the request was cut")
+	}
+}
+
+// TestAStoreCallHeldAcrossTheDrainCutWritesNothing proves the cut reaches a request inside a store call.
+// The cancelled call maps to a 503 the request is not answered:
+// nothing is written, and the audit record carries the cut.
+func TestAStoreCallHeldAcrossTheDrainCutWritesNothing(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+	started := h.nats.jobs.blockGets()
+	srv, cut := cutServer(t, h.handler())
+
+	conn := dialRequest(t, srv, collectionPath(rec.ID, ""))
+	// The cut lands with the request inside the store call, not before it reaches the store.
+	select {
+	case <-started:
+	case <-time.After(heldOpenTimeout):
+		t.Fatal("the request did not reach the store within the wait")
+	}
+	cut()
+
+	expectNothingRead(t, conn)
+	waitForAudit(t, h.harness, codeDrainExpired)
+	h.expectPGOAudit(t, 0, codeDrainExpired)
+	h.expectMetricCode(t, codeDrainExpired)
+}
+
 // waitForAudit blocks until one audit record has been written and checks its code.
 func waitForAudit(t *testing.T, h *harness, code string) {
 	t.Helper()
@@ -1728,10 +1790,10 @@ func TestCollectionCancel(t *testing.T) {
 	if n := h.nats.jobs.countKeys(activeKeyPrefix); n != 0 {
 		t.Errorf("active keys = %d, want the Service released", n)
 	}
-	if rows := h.rec.collectionRows(); len(rows) != 1 || rows[0] != codeCollectionCancelled {
+	if rows := h.rec.collectionRows(); len(rows) != 1 || rows[0] != string(pgo.StateCancelled) {
 		t.Errorf("Collection rows = %v, want exactly one cancelled", rows)
 	}
-	if records := h.transitions(t); len(records) != 1 || records[0]["state"] != codeCollectionCancelled {
+	if records := h.transitions(t); len(records) != 1 || records[0]["state"] != string(pgo.StateCancelled) {
 		t.Errorf("transition records = %v, want exactly one cancelled", records)
 	}
 }

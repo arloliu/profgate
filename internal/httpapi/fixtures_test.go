@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -448,6 +449,58 @@ func (tr *trap) target() k8s.Target {
 	t.Port = tr.port
 
 	return t
+}
+
+// cutServer serves handler over a real socket whose request contexts descend from one drain context,
+// the shape cmd/profgate gives the API listener.
+// The returned function is the cut: it cancels that context with ErrDrainExpired and leaves every socket open,
+// which is the interval between the drain bound ending and the process closing the connections.
+func cutServer(t *testing.T, handler http.Handler) (*httptest.Server, func()) {
+	t.Helper()
+
+	drainCtx, cancel := context.WithCancelCause(context.Background())
+	srv := httptest.NewUnstartedServer(handler)
+	srv.Config.BaseContext = func(net.Listener) context.Context { return drainCtx }
+	srv.Start()
+	t.Cleanup(func() {
+		cancel(nil)
+		srv.Close()
+	})
+
+	return srv, func() { cancel(ErrDrainExpired) }
+}
+
+// dialRequest opens a raw connection to srv and sends one GET with no body,
+// so the test holds the socket itself rather than through a client that would read, retry, or close it.
+// Every read and write on the connection is bounded, so a request nothing ends fails the test rather than hangs it.
+func dialRequest(t *testing.T, srv *httptest.Server, target string) net.Conn {
+	t.Helper()
+
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.SetDeadline(time.Now().Add(heldOpenTimeout)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+	if _, err := io.WriteString(conn, "GET "+target+" HTTP/1.1\r\nHost: gateway\r\n\r\n"); err != nil {
+		t.Fatalf("write request error = %v", err)
+	}
+
+	return conn
+}
+
+// expectNothingRead asserts the connection delivers no byte before the server closes it:
+// a request the drain cut ends with nothing written, not with an envelope and not with an empty 200.
+func expectNothingRead(t *testing.T, conn net.Conn) {
+	t.Helper()
+
+	buf := make([]byte, 512)
+	n, err := conn.Read(buf)
+	if n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("Read() = %d bytes %q, error %v; want 0 bytes and io.EOF: nothing is written to a request the drain cut", n, buf[:n], err)
+	}
 }
 
 // harness wires one handler over the fakes; every subtest builds its own.
@@ -905,6 +958,12 @@ type fakeKV struct {
 	// outside the bucket's lock,
 	// so a test can hold one write open while another request runs to completion.
 	beforeCall func(op, key string)
+	// holdsGets makes every Get close getStarted and then wait for its context to end,
+	// answering with that context's error,
+	// so a test can cut a request that is inside the store call rather than one that has not reached it.
+	holdsGets  bool
+	getStarted chan struct{}
+	startOnce  sync.Once
 
 	updates atomic.Int32
 	creates atomic.Int32
@@ -936,14 +995,21 @@ func (k *fakeKV) setBefore(fn func(op, key string)) {
 	k.beforeCall = fn
 }
 
-func (k *fakeKV) Get(_ context.Context, key string) (natskv.Entry, error) {
+func (k *fakeKV) Get(ctx context.Context, key string) (natskv.Entry, error) {
 	k.calls.Add(1)
 	k.hold("get", key)
 	k.mu.Lock()
 	getErr, after := k.getErr, k.afterGet
+	holds, started := k.holdsGets, k.getStarted
 	e, ok := k.entries[key]
 	k.mu.Unlock()
 
+	if holds {
+		k.startOnce.Do(func() { close(started) })
+		<-ctx.Done()
+
+		return natskv.Entry{}, ctx.Err()
+	}
 	if getErr != nil {
 		return natskv.Entry{}, getErr
 	}
@@ -1170,6 +1236,17 @@ func (k *fakeKV) setGetErr(err error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.getErr = err
+}
+
+// blockGets makes every later Get signal its entry on the returned channel
+// and then wait for its context to end, the way a store call held across the drain cut does.
+func (k *fakeKV) blockGets() <-chan struct{} {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.holdsGets = true
+	k.getStarted = make(chan struct{})
+
+	return k.getStarted
 }
 
 // watchCount is how many watches are open on the bucket, which is the caches'

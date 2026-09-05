@@ -1038,7 +1038,7 @@ but by then the cause is set, and a second cancellation changes nothing.
 a request still in flight when the API drain's bound ends is cut, nothing more is written to it,
 and its audit record carries `drain_expired`, not `client_gone`.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Every row below that involves a socket builds `httptest.NewUnstartedServer(handler)`,
 sets `srv.Config.BaseContext` to return a `context.WithCancelCause` context, and calls `srv.Start()`;
@@ -1065,7 +1065,7 @@ go test -race -count=1 ./cmd/profgate/ -run 'TestServe/drain_bound|TestServeAuth
 
 The last two take 31 seconds each.
 
-- [ ] **Classify the cut and say so**
+- [x] **Classify the cut and say so**
 
 `CHANGELOG.md`, `### Changed`:
 **BREAKING: a request the drain bound cuts is audited `drain_expired`, and `cancelled` leaves the `code` set.**
@@ -1076,7 +1076,7 @@ it is audit-only, never an envelope, and a query over `client_gone` stops matchi
 `cancelled` was documented among the audit-only values and written by nothing;
 it is no longer documented, and a query that named it matched nothing before and matches nothing now.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/httpapi/server.go internal/httpapi/auth.go internal/httpapi/pgo.go internal/httpapi/codes.go \
