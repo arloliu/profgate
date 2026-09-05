@@ -1247,6 +1247,18 @@ func (r *countingRecorder) SweeperDelete(kind string) {
 	r.sweeps[kind]++
 }
 
+// storeFailureRows is a copy of the profgate_pgo_store_failures_total rows.
+func (r *countingRecorder) storeFailureRows() map[string]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]int, len(r.storeFails))
+	for k, v := range r.storeFails {
+		out[k] = v
+	}
+
+	return out
+}
+
 func (r *countingRecorder) StoreFailure(op string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

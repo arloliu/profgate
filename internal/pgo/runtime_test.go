@@ -401,6 +401,69 @@ func TestSessionRecordsOneTransitionPerCommit(t *testing.T) {
 	}
 }
 
+// TestLatestCollectionCountsAFlipThatFails proves the latest path reports the
+// flip it could not make: the walk continues to the next candidate either way,
+// and a store that answered anything but a lost race leaves one warn record
+// and one store-failure row behind it.
+func TestLatestCollectionCountsAFlipThatFails(t *testing.T) {
+	f := startPGO(t)
+	hook := &kvHook{}
+	r := f.newReplica("a", replicaOpts{
+		wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+	})
+	r.waitSynced()
+
+	older := f.seedCompleted(r, "payment", "payment-api")
+	newer := f.seedCompleted(r, "payment", "payment-api", func(rec *Record) {
+		rec.CreatedAt = slotBase.Add(time.Minute)
+	})
+	f.deleteObject(r, newer.Artifact.Object)
+	r.waitCache("holds both completed records", func(c *Caches) bool {
+		return c.hasJob(older.ID) && c.hasJob(newer.ID)
+	})
+
+	hook.setAfter(func(op, _ string, err error) error {
+		if op == "update" {
+			return natskv.ErrUnavailable
+		}
+
+		return err
+	})
+	// The session reads through the wrapped client, which newRuntime does not bind:
+	// its loops see the wrapper and its runtime sees the raw connection.
+	rt := NewRuntime()
+	rt.Bind(Bundle{
+		Client:    r.loopClient,
+		Caches:    r.caches,
+		Publisher: r.pub,
+		Bucket:    NewTokenBucket(r.limits.OnDemandPerMinute, r.clock),
+		Defaults:  schedulerDefaults(t),
+		Limits:    r.limits,
+		Clock:     r.clock,
+		Recorder:  r.recorder,
+		Instance:  r.name,
+		Log:       r.logs.logger(),
+	})
+	sess := r.session(rt)
+
+	stored, body, err := sess.LatestCompleted(context.Background(), "payment", "payment-api")
+	if err != nil {
+		t.Fatalf("LatestCompleted error = %v", err)
+	}
+	//nolint:errcheck // the reader is closed to release the read, not asserted on
+	defer body.Close()
+
+	if stored.Record.ID != older.ID {
+		t.Errorf("latest = %s, want %s: the candidate whose object is gone is skipped", stored.Record.ID, older.ID)
+	}
+	if got := r.logs.with("pgo: expired flip failed"); len(got) != 1 {
+		t.Fatalf("flip-failed records are %v, want one", got)
+	}
+	if got := r.recorder.storeFailureRows(); len(got) != 1 || got[storeOpExpire] != 1 {
+		t.Fatalf("store failure rows are %v, want one %s", got, storeOpExpire)
+	}
+}
+
 // TestCachesCollectionsListsNewestFirst covers the listing the Collections
 // route answers from: one Service's Collections, newest first, capped.
 func TestCachesCollectionsListsNewestFirst(t *testing.T) {

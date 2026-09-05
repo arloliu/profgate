@@ -343,6 +343,14 @@ func (r *recorder) ScheduleSlot(string) {}
 
 func (r *recorder) SweeperDelete(string) {}
 
+// storeFailureRows is every store failure recorded, in order.
+func (r *recorder) storeFailureRows() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]string(nil), r.storeFails...)
+}
+
 func (r *recorder) StoreFailure(op string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -980,7 +980,7 @@ func (s *server) serveCollectionDownload(
 		object = rec.Artifact.Object
 	}
 	if object == "" {
-		s.expireCollection(r, q, sess, stored)
+		expireCollection(r, q, sess, stored)
 		q.fail(w, errArtifactGone)
 
 		return
@@ -993,7 +993,7 @@ func (s *server) serveCollectionDownload(
 		// A download does not protect its object from expiry, so a completed
 		// record whose object is gone is flipped by whichever reader gets
 		// there first, and that reader owns the transition.
-		s.expireCollection(r, q, sess, stored)
+		expireCollection(r, q, sess, stored)
 		q.fail(w, errArtifactGone)
 
 		return
@@ -1074,17 +1074,15 @@ func (f flushing) Write(p []byte) (int, error) {
 }
 
 // expireCollection flips a completed record whose object is gone.
-// The conditional update is what decides: the reader that wins it owns the
-// transition's log record and its metric row, exactly as the sweeper owns the
-// same transition on its own path, so one flip is never counted twice.
-func (s *server) expireCollection(r *http.Request, q *request, sess *pgo.Session, stored pgo.StoredRecord) {
-	rec := stored.Record
-	rec.State = pgo.StateExpired
-	if err := sess.WriteRecord(r.Context(), rec, stored.Revision); err != nil {
-		return
+// The session owns the flip, so this path and the latest one make it the same way:
+// the winner of the conditional update records the transition,
+// a lost update is another reader's flip,
+// and any other failure is logged and counted there.
+// The audit names the Collection only when this request's update won it.
+func expireCollection(r *http.Request, q *request, sess *pgo.Session, stored pgo.StoredRecord) {
+	if sess.ExpireGoneArtifact(r.Context(), stored) {
+		q.audit.collection = stored.Record.ID
 	}
-	q.audit.collection = rec.ID
-	sess.RecordTransition(rec)
 }
 
 // serveCollectionCancel ends a live Collection.

@@ -52,6 +52,12 @@ const (
 	sweepProbe    = "probe"
 )
 
+// The operations profgate_pgo_store_failures_total carries.
+const (
+	storeOpExpire    = "expire"
+	storeOpProbeList = "probe_list"
+)
+
 // Sweeper removes what Collections leave behind: expired artifacts, retired
 // records, spent slot keys, objects no record names, active keys whose
 // Collection has ended, and preflight probes a crash stranded.
@@ -253,6 +259,11 @@ func (s *Sweeper) flipExpired(ctx context.Context, jobs natskv.KV, key string, j
 		return
 	}
 	if _, err := jobs.Update(ctx, key, value, job.Revision); err != nil {
+		if !errors.Is(err, natskv.ErrRevisionMismatch) {
+			s.log.Warn("pgo: expired flip failed", "collection", rec.ID, "error", err)
+			s.recorder.StoreFailure(storeOpExpire)
+		}
+
 		return
 	}
 	logTransition(s.log, s.owner.Instance, rec)
@@ -417,21 +428,28 @@ func (s *Sweeper) sweepActive(ctx context.Context, jobs natskv.KV) {
 func (s *Sweeper) sweepProbes(
 	ctx context.Context, stores natskv.Stores, objects []natskv.ObjectInfo, listed bool, now time.Time,
 ) {
-	for _, kv := range []natskv.KV{stores.Config, stores.Jobs} {
-		keys, err := kv.Keys(ctx, probeKeyPrefix)
+	buckets := []struct {
+		name string
+		kv   natskv.KV
+	}{{name: "config", kv: stores.Config}, {name: "jobs", kv: stores.Jobs}}
+	for _, b := range buckets {
+		keys, err := b.kv.Keys(ctx, probeKeyPrefix)
 		if err != nil {
+			s.log.Warn("pgo: listing probe keys failed", "bucket", b.name, "error", err)
+			s.recorder.StoreFailure(storeOpProbeList)
+
 			continue
 		}
 		slices.Sort(keys)
 		for _, key := range keys {
-			e, err := kv.Get(ctx, key)
+			e, err := b.kv.Get(ctx, key)
 			if err != nil {
 				continue
 			}
 			if !e.Created.Add(orphanAge + skewMargin).Before(now) {
 				continue
 			}
-			if err := kv.Delete(ctx, key, e.Revision); err != nil {
+			if err := b.kv.Delete(ctx, key, e.Revision); err != nil {
 				continue
 			}
 			s.recorder.SweeperDelete(sweepProbe)

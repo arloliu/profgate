@@ -196,6 +196,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An expired flip that fails, and a probe listing that fails, are seen.**
+  A `completed` to `expired` update that returned anything but a lost race was dropped without a record,
+  on the sweeper's path and on the two download paths that make the same flip,
+  and a probe key listing that failed skipped that bucket silently.
+  Each now writes one warn record and counts once under `profgate_pgo_store_failures_total`;
+  the next pass or the next reader flips a record still `completed` and leaves one already `expired`.
 - **A client that stops reading holds nothing past the request budget.**
   The budget bounded confirmation, the dial, the header wait, and the upstream read,
   and not the write to the client:

@@ -424,7 +424,7 @@ func (s *Session) LatestCompleted(ctx context.Context, ns, svc string) (StoredRe
 			object = stored.Record.Artifact.Object
 		}
 		if object == "" {
-			s.expireGoneArtifact(ctx, stored)
+			s.ExpireGoneArtifact(ctx, stored)
 
 			continue
 		}
@@ -434,7 +434,7 @@ func (s *Session) LatestCompleted(ctx context.Context, ns, svc string) (StoredRe
 		case err == nil:
 			return stored, body, nil
 		case errors.Is(err, natskv.ErrObjectNotFound):
-			s.expireGoneArtifact(ctx, stored)
+			s.ExpireGoneArtifact(ctx, stored)
 		default:
 			return StoredRecord{}, nil, err
 		}
@@ -444,19 +444,30 @@ func (s *Session) LatestCompleted(ctx context.Context, ns, svc string) (StoredRe
 		ns, svc, natskv.ErrKeyNotFound)
 }
 
-// expireGoneArtifact flips a completed record whose object is no longer in the store.
+// ExpireGoneArtifact flips a completed record whose object is no longer in the store,
+// and reports whether the flip landed.
 // The conditional update at the revision the fresh read returned is what decides:
 // the reader that wins it owns the transition's log record and its metric row,
 // exactly as the sweeper owns the same transition on its own path,
 // so one flip is never counted twice.
 // A lost update is another reader's flip and needs nothing from this one.
-func (s *Session) expireGoneArtifact(ctx context.Context, stored StoredRecord) {
+// Any other failure is logged at warn and counted under op="expire";
+// whether the update landed is then indeterminate,
+// and the next reader or the next sweep observes what stands.
+func (s *Session) ExpireGoneArtifact(ctx context.Context, stored StoredRecord) bool {
 	rec := stored.Record
 	rec.State = StateExpired
 	if err := s.WriteRecord(ctx, rec, stored.Revision); err != nil {
-		return
+		if !errors.Is(err, natskv.ErrRevisionMismatch) {
+			s.b.Log.Warn("pgo: expired flip failed", "collection", rec.ID, "error", err)
+			s.b.Recorder.StoreFailure(storeOpExpire)
+		}
+
+		return false
 	}
 	s.RecordTransition(rec)
+
+	return true
 }
 
 // ReleaseActive frees the Service the moment its Collection ends.

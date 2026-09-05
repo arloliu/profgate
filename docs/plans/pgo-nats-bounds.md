@@ -966,7 +966,7 @@ and `s.b.Recorder.StoreFailure(storeOpExpire)` before returning false;
 `sweepProbes` (`:421-423`) logs `pgo: listing probe keys failed` with the bucket and the error,
 records `storeOpProbeList`, and continues to the next bucket.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 | Test | What it asserts, and how it fails today |
 |---|---|
@@ -983,7 +983,7 @@ go test -race -count=1 ./internal/pgo/ -run 'TestSweeperExpiry/a_flip_whose_upda
 go test -race -count=1 ./internal/httpapi/ -run 'TestCollectionDownloadCountsAFlipThatFails'
 ```
 
-- [ ] **Count the failure and say so**
+- [x] **Count the failure and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **An expired flip that fails, and a probe listing that fails, are seen.**
@@ -993,7 +993,7 @@ and a probe key listing that failed skipped that bucket silently.
 Each now writes one warn record and counts once under `profgate_pgo_store_failures_total`;
 the next pass or the next reader flips a record still `completed` and leaves one already `expired`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/pgo/runtime.go internal/pgo/sweeper.go internal/httpapi/pgo_collections.go CHANGELOG.md

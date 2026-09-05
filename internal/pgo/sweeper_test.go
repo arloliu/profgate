@@ -90,7 +90,55 @@ func TestSweeperExpiry(t *testing.T) {
 		}
 	})
 
-	t.Run("a lost update leaves the record alone", func(t *testing.T) {
+	t.Run("a flip whose update is unavailable is logged and counted", func(t *testing.T) {
+		f := startPGO(t)
+		hook := &kvHook{}
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		rec := f.seedCompleted(r, "payment", "payment-api")
+		r.waitCache("holds the completed record", func(c *Caches) bool { return c.hasJob(rec.ID) })
+
+		// The update commits and its result is lost on the way back,
+		// which is what makes the outcome indeterminate:
+		// the record moved and this sweeper cannot know it.
+		hook.setAfter(func(op, key string, err error) error {
+			if op == "update" && key == jobKey(rec.ID) {
+				return natskv.ErrUnavailable
+			}
+
+			return err
+		})
+		r.clock.Set(rec.ExpiresAt.Add(2 * skewMargin))
+		sweepNow(t, r.newSweeper())
+
+		if got := r.logs.with("pgo: expired flip failed"); len(got) != 1 {
+			t.Fatalf("flip-failed records are %v, want one", got)
+		}
+		if got := r.recorder.storeFailureRows(); len(got) != 1 || got[storeOpExpire] != 1 {
+			t.Fatalf("store failure rows are %v, want one %s", got, storeOpExpire)
+		}
+		if got := r.recorder.collectionRows(); len(got) != 0 {
+			t.Fatalf("collection rows are %v, want none: the transition was not observed", got)
+		}
+		if got := f.record(rec.ID).State; got != StateExpired {
+			t.Fatalf("record is %q, want expired: the write landed and its result was lost", got)
+		}
+
+		// The next pass observes what stands, and a record already expired is
+		// no candidate, so the failure is counted once and not once per pass.
+		r.waitCache("holds the expired record", func(c *Caches) bool {
+			return c.jobEntries()[jobKey(rec.ID)].State == StateExpired
+		})
+		sweepNow(t, r.newSweeper())
+
+		if got := r.recorder.storeFailureRows(); got[storeOpExpire] != 1 {
+			t.Fatalf("store failure rows after the second pass are %v, want the one the first pass counted", got)
+		}
+	})
+
+	t.Run("a lost update is silent and the next pass flips what is still completed", func(t *testing.T) {
 		f := startPGO(t)
 		fz := newFreezer(cacheJobs)
 		r := f.newReplica("replica", replicaOpts{freezer: fz})
@@ -100,6 +148,7 @@ func TestSweeperExpiry(t *testing.T) {
 
 		// The record moves after the cache saw it, so the revision the sweeper
 		// writes against is no longer the bucket's.
+		seeded := r.caches.jobEntries()[jobKey(rec.ID)].Revision
 		fz.freeze()
 		moved := rec
 		moved.Progress.SamplesOK = 9
@@ -119,6 +168,27 @@ func TestSweeperExpiry(t *testing.T) {
 		}
 		if got := r.recorder.collectionRows(); len(got) != 0 {
 			t.Fatalf("collection rows are %v, want none: no transition was committed", got)
+		}
+		// A lost race is the ordinary outcome of two actors reaching one transition,
+		// so it leaves neither a record nor a count.
+		if got := r.logs.with("pgo: expired flip failed"); len(got) != 0 {
+			t.Fatalf("flip-failed records are %v, want none for a lost race", got)
+		}
+		if got := r.recorder.storeFailureRows(); len(got) != 0 {
+			t.Fatalf("store failure rows are %v, want none for a lost race", got)
+		}
+
+		fz.release()
+		r.waitCache("holds the moved record", func(c *Caches) bool {
+			return c.jobEntries()[jobKey(rec.ID)].Revision != seeded
+		})
+		sweepNow(t, r.newSweeper())
+
+		if got := f.record(rec.ID).State; got != StateExpired {
+			t.Fatalf("record is %q, want expired once the sweeper wrote at the revision that stands", got)
+		}
+		if got := r.recorder.collectionRows(); len(got) != 1 || got[string(StateExpired)] != 1 {
+			t.Fatalf("collection rows are %v, want one expired", got)
 		}
 	})
 }
@@ -594,6 +664,59 @@ func TestSweeperProbeCleanup(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a probe listing that fails is logged and counted, and the rest of the pass runs", func(t *testing.T) {
+		f := startPGO(t)
+		hook := &kvHook{}
+		r := f.newReplica("replica", replicaOpts{
+			clock:      newFakeClock(time.Now().UTC()),
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+
+		jobsProbe := probeKeyPrefix + "jobs-instance"
+		configProbe := probeKeyPrefix + "config-instance"
+		objectProbe := probeObjectPrefix + "instance"
+		f.putJSON(f.jobs, jobsProbe, "profgate preflight probe")
+		f.putJSON(f.config, configProbe, "profgate preflight probe")
+		f.putObject(r, objectProbe)
+
+		newest := f.keyCreated(f.jobs, jobsProbe)
+		for _, at := range []time.Time{f.keyCreated(f.config, configProbe), f.objectModTime(r, objectProbe)} {
+			if at.After(newest) {
+				newest = at
+			}
+		}
+
+		// The pass lists the config bucket's probe keys first,
+		// so failing the first listing of the prefix fails that bucket and no other.
+		var listings atomic.Int64
+		hook.setBefore(func(op, key string) (error, bool) {
+			if op == "keys" && key == probeKeyPrefix && listings.Add(1) == 1 {
+				return natskv.ErrUnavailable, true
+			}
+
+			return nil, false
+		})
+		r.clock.Set(newest.Add(orphanAge + 2*skewMargin))
+		sweepNow(t, r.newSweeper())
+
+		if got := r.logs.with("pgo: listing probe keys failed"); len(got) != 1 {
+			t.Fatalf("probe-listing records are %v, want one", got)
+		}
+		if got := r.recorder.storeFailureRows(); len(got) != 1 || got[storeOpProbeList] != 1 {
+			t.Fatalf("store failure rows are %v, want one %s", got, storeOpProbeList)
+		}
+		if f.hasKey(f.jobs, jobsProbe) {
+			t.Error("the jobs probe key survived a pass whose config listing failed")
+		}
+		if got := len(f.objectNames(r)); got != 0 {
+			t.Errorf("the artifact bucket holds %d objects, want the stranded probe object gone", got)
+		}
+		if !f.hasKey(f.config, configProbe) {
+			t.Error("the config probe key went, though its listing never answered")
+		}
+	})
 }
 
 // TestSweeperBehindTheBarrier proves nothing is swept from caches that have

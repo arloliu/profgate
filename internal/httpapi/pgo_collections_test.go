@@ -1142,6 +1142,49 @@ func TestCollectionDownloadFlipsAMissingArtifact(t *testing.T) {
 	}
 }
 
+// TestCollectionDownloadCountsAFlipThatFails proves the download path reports the flip it could not make,
+// and stays silent about the one it merely lost:
+// the answer is 410 either way, because the object is gone whether or not the record says so yet.
+func TestCollectionDownloadCountsAFlipThatFails(t *testing.T) {
+	t.Run("a store that cannot answer is counted", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		rec := h.completedRecord(t)
+		if err := h.nats.artifacts.Delete(context.Background(), rec.Artifact.Object); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		h.nats.jobs.updateErr = natskv.ErrUnavailable
+
+		got := h.doPGO(t, http.MethodGet, collectionPath(rec.ID, "/profile"), "", nil)
+
+		h.expectPGOError(t, got, http.StatusGone, "artifact_gone", "artifact_gone")
+		if rows := h.rec.storeFailureRows(); len(rows) != 1 || rows[0] != "expire" {
+			t.Errorf("store failure rows = %v, want exactly one expire", rows)
+		}
+		if rows := h.rec.collectionRows(); len(rows) != 0 {
+			t.Errorf("Collection rows = %v, want none: the transition was not observed", rows)
+		}
+		if records := h.transitions(t); len(records) != 0 {
+			t.Errorf("transition records = %v, want none", records)
+		}
+	})
+
+	t.Run("a lost race is silent", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		rec := h.completedRecord(t)
+		if err := h.nats.artifacts.Delete(context.Background(), rec.Artifact.Object); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		h.nats.jobs.updateMismatch = true
+
+		got := h.doPGO(t, http.MethodGet, collectionPath(rec.ID, "/profile"), "", nil)
+
+		h.expectPGOError(t, got, http.StatusGone, "artifact_gone", "artifact_gone")
+		if rows := h.rec.storeFailureRows(); len(rows) != 0 {
+			t.Errorf("store failure rows = %v, want none: a lost update is another reader's flip", rows)
+		}
+	})
+}
+
 // TestConcurrentDownloadsFlipOnce proves one owner per winning conditional
 // update: two readers of one completed record whose object is gone both answer
 // 410, and only the one whose update won records the transition.
