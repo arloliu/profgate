@@ -69,10 +69,12 @@ type runFunc func(ctx context.Context, in workInput) workResult
 // install and cancel are the only writes, both under mu, so a renewal's result and a cancellation are ordered one way:
 // a result installed first moves the cutoff the timer then re-reads,
 // and a cancellation declared first refuses the result, which the owner then treats as a lease it cannot use.
+// The work context is cancelled under the same lock, and cancelledCh is closed only once that call has returned,
+// so whoever reads the channel finds the work cancelled rather than about to be.
 type inFlight struct {
 	id          string
 	done        chan struct{} // closed when the owner loop exits
-	cancelledCh chan struct{} // closed once cancel or abort has set cancelled
+	cancelledCh chan struct{} // closed once cancel or abort has cancelled the work
 
 	mu        sync.Mutex
 	cutoff    time.Time
@@ -101,28 +103,30 @@ func (fl *inFlight) install(cutoff time.Time) bool {
 	return true
 }
 
-// cancel marks the work cancelled when now is not before the cutoff, and reports whether this call did so.
+// cancel cancels the work through cancelWork when now is not before the cutoff, and reports whether this call did so.
 // A timer that finds the cutoff moved re-arms for the new one.
-func (fl *inFlight) cancel(now time.Time) bool {
+func (fl *inFlight) cancel(now time.Time, cancelWork context.CancelFunc) bool {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
 	if fl.cancelled || now.Before(fl.cutoff) {
 		return false
 	}
 	fl.cancelled = true
+	cancelWork()
 	close(fl.cancelledCh)
 
 	return true
 }
 
-// abort marks the work cancelled whatever the cutoff, for the lost record and the lapsed lease.
-func (fl *inFlight) abort() bool {
+// abort cancels the work through cancelWork whatever the cutoff, for the lost record and the lapsed lease.
+func (fl *inFlight) abort(cancelWork context.CancelFunc) bool {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
 	if fl.cancelled {
 		return false
 	}
 	fl.cancelled = true
+	cancelWork()
 	close(fl.cancelledCh)
 
 	return true
@@ -154,6 +158,9 @@ type Worker struct {
 	log       *slog.Logger
 	owner     Owner
 	run       runFunc
+	// wrapCancel, when set, wraps the function that cancels a work context.
+	// A test holds a cancellation open with it and checks what waits for the cancellation to complete.
+	wrapCancel func(context.CancelFunc) context.CancelFunc
 
 	// draining is closed by Drain and stops every owner loop renewing its lease,
 	// so each owner ends at the cutoff of the lease it last committed rather than whenever its work finishes.
@@ -602,6 +609,9 @@ func (w *Worker) ownerLoop(fl *inFlight, stores natskv.Stores, entry Record, rev
 	deadline := *entry.Deadline
 
 	workCtx, cancelWork := context.WithCancel(context.Background())
+	if w.wrapCancel != nil {
+		cancelWork = w.wrapCancel(cancelWork)
+	}
 	defer cancelWork()
 
 	progressCh := make(chan Progress, progressBuffer)
@@ -663,8 +673,7 @@ func (w *Worker) ownerLoop(fl *inFlight, stores natskv.Stores, entry Record, rev
 					// The lease it committed is one this owner cannot use, as a lapsed one is;
 					// the owner writes nothing more, and another replica reclaims the record once that lease lapses.
 					aborted = true
-					fl.abort()
-					cancelWork()
+					fl.abort(cancelWork)
 					w.log.Warn("pgo: collection lease renewed after its work was cancelled at the cutoff",
 						"collection", entry.ID, "instance", w.owner.Instance)
 
@@ -678,13 +687,11 @@ func (w *Worker) ownerLoop(fl *inFlight, stores natskv.Stores, entry Record, rev
 				// Cancelled by the API, or reclaimed after a stall: the work
 				// context is cancelled at once, without waiting for the cutoff.
 				aborted = true
-				fl.abort()
-				cancelWork()
+				fl.abort(cancelWork)
 				w.logLostRecord(jobs, entry)
 			case errors.Is(err, errLeaseLapsed):
 				aborted = true
-				fl.abort()
-				cancelWork()
+				fl.abort(cancelWork)
 				w.log.Warn("pgo: collection lease lapsed", "collection", entry.ID, "instance", w.owner.Instance)
 			default:
 				// ErrUnavailable changes nothing; the next tick tries again
@@ -852,9 +859,7 @@ func (w *Worker) runCutoff(fl *inFlight, cancelWork context.CancelFunc, done <-c
 
 			return
 		case <-timer.C():
-			if fl.cancel(w.clock.Now()) {
-				cancelWork()
-
+			if fl.cancel(w.clock.Now(), cancelWork) {
 				return
 			}
 		}

@@ -1175,6 +1175,77 @@ func TestWorkerDrain(t *testing.T) {
 		}
 	})
 
+	t.Run("returns only once the work has been cancelled", func(t *testing.T) {
+		f := startPGO(t)
+		id := f.seedClaimable("payment", "payment-api")
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+
+		// The cancel function itself is held open once the cutoff calls it.
+		// The drain reports the work cancelled when it returns,
+		// so it must not return while that call is still in progress.
+		stub := newRunStub(workResult{})
+		stub.ignoreCancel = true
+		t.Cleanup(stub.release)
+		captured := &ctxCapture{}
+		w := r.newWorker(captured.wrap(stub.fn()))
+		held := make(chan struct{}, 1)
+		release := make(chan struct{})
+		var once sync.Once
+		w.wrapCancel = func(cancel context.CancelFunc) context.CancelFunc {
+			return func() {
+				once.Do(func() {
+					held <- struct{}{}
+					<-release
+				})
+				cancel()
+			}
+		}
+		scanNow(t, w)
+		claimed := waitClaimed(t, f, id, 1)
+		stub.waitStarted(t)
+		waitFor(t, "the owner armed its cutoff timer", func() bool { return r.clock.armedTimers() == 1 })
+		fl := w.entryOf(id)
+
+		drained := make(chan error, 1)
+		go func() { drained <- w.Drain(context.Background()) }()
+		waitFor(t, "the drain armed its timer", func() bool { return r.clock.armedTimers() == 2 })
+
+		r.clock.Set(claimed.LeaseUntil.Add(-skewMargin + time.Second))
+		select {
+		case <-held:
+		case <-time.After(fixtureTimeout):
+			t.Fatal("the cutoff never called the work's cancel function")
+		}
+		select {
+		case err := <-drained:
+			t.Fatalf("Drain returned %v while the work's cancel function was still in progress", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		select {
+		case <-fl.cancelledCh:
+			t.Fatal("the cancellation was published while its cancel function was still in progress")
+		default:
+		}
+		if captured.cancelled() {
+			t.Fatal("the work context was done before its cancel function had run")
+		}
+
+		close(release)
+		select {
+		case err := <-drained:
+			if err != nil {
+				t.Fatalf("Drain returned %v, want nil", err)
+			}
+		case <-time.After(fixtureTimeout):
+			t.Fatal("Drain did not return once the work had been cancelled")
+		}
+		if !captured.cancelled() {
+			t.Fatal("Drain returned with the work context still live")
+		}
+	})
+
 	t.Run("leaves a collection past its cutoff for another replica", func(t *testing.T) {
 		f := startPGO(t)
 		id := f.seedClaimable("payment", "payment-api")
@@ -1318,14 +1389,16 @@ func TestWorkerDrain(t *testing.T) {
 					// The cutoff timer fires first:
 					// the work is cancelled and the drain returns at the cutoff the entry holds.
 					r.clock.Set(first.Add(time.Second))
-					waitFor(t, "the work context was cancelled", captured.cancelled)
 					select {
 					case err := <-drained:
 						if err != nil {
 							t.Fatalf("Drain returned %v, want nil", err)
 						}
 					case <-time.After(fixtureTimeout):
-						t.Fatal("Drain did not return once the work was cancelled at the cutoff")
+						t.Fatal("Drain did not return at the cutoff the entry held")
+					}
+					if !captured.cancelled() {
+						t.Fatal("Drain returned before the work was cancelled at the cutoff")
 					}
 
 					// The result lands on a cancelled owner: it moves nothing,
