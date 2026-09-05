@@ -1,7 +1,11 @@
 package natskv
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -73,6 +77,11 @@ type client struct {
 	// withheld-delivery failure without waiting the full deadline.
 	probeDeadline time.Duration
 
+	// callTimeout bounds each store call, and each wait on the store inside a transfer.
+	// It is the spec's 5 seconds, the callTimeout constant;
+	// tests shorten it to observe one deadline pass without waiting the full five seconds.
+	callTimeout time.Duration
+
 	// onConnectionChange mirrors connectConfig.onConnectionChange.
 	onConnectionChange func(up bool)
 
@@ -134,6 +143,18 @@ type client struct {
 	// It exists only so a test can wait for a retry rather than sleep long enough for one;
 	// production never sets it.
 	testReopenFailed func(prefix string)
+
+	// testBeforeFetch, when non-nil, runs before the fetch of chunk n of an object read,
+	// counting from one.
+	// It exists only so a test can hold a read between two chunks and act on the store meanwhile;
+	// production never sets it.
+	testBeforeFetch func(name string, n int)
+
+	// testChunkWritten, when non-nil, runs after chunk n of an object read has been written into the pipe,
+	// which is after the caller has drained it.
+	// It exists only so a test knows a pending read is waiting on the pump and not on bytes already fetched;
+	// production never sets it.
+	testChunkWritten func(name string, n int)
 }
 
 var _ Client = (*client)(nil)
@@ -147,6 +168,7 @@ func connect(ctx context.Context, cfg connectConfig, log *slog.Logger) (*client,
 		genMoved:           make(chan struct{}),
 		watches:            make(map[*watchState]struct{}),
 		probeDeadline:      probeTimeout,
+		callTimeout:        callTimeout,
 		onConnectionChange: cfg.onConnectionChange,
 		onGenerationMove:   cfg.onGenerationMove,
 	}
@@ -493,7 +515,7 @@ func (v *kvView) Get(ctx context.Context, key string) (Entry, error) {
 	if err := v.pre(); err != nil {
 		return Entry{}, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	defer cancel()
 	kve, err := v.kv.Get(cctx, key)
 	if perr := v.post(); perr != nil {
@@ -512,7 +534,7 @@ func (v *kvView) Create(ctx context.Context, key string, value []byte) (uint64, 
 	if err := v.pre(); err != nil {
 		return 0, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	defer cancel()
 	rev, err := v.kv.Create(cctx, key, value)
 	if perr := v.post(); perr != nil {
@@ -531,7 +553,7 @@ func (v *kvView) Update(ctx context.Context, key string, value []byte, expected 
 	if err := v.pre(); err != nil {
 		return 0, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	defer cancel()
 	rev, err := v.kv.Update(cctx, key, value, expected)
 	if perr := v.post(); perr != nil {
@@ -550,7 +572,7 @@ func (v *kvView) Delete(ctx context.Context, key string, expected uint64) error 
 	if err := v.pre(); err != nil {
 		return err
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	defer cancel()
 	err := v.kv.Delete(cctx, key, jetstream.LastRevision(expected))
 	if perr := v.post(); perr != nil {
@@ -569,7 +591,7 @@ func (v *kvView) Keys(ctx context.Context, prefix string) ([]string, error) {
 	if err := v.pre(); err != nil {
 		return nil, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	defer cancel()
 	all, err := v.kv.Keys(cctx)
 	if perr := v.post(); perr != nil {
@@ -594,7 +616,7 @@ func (v *kvView) Status(ctx context.Context) (Status, error) {
 	if err := v.pre(); err != nil {
 		return Status{}, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	defer cancel()
 	st, err := v.kv.Status(cctx)
 	if perr := v.post(); perr != nil {
@@ -654,7 +676,7 @@ func (c *client) openWatcher(ctx context.Context, kv jetstream.KeyValue, prefix 
 		w, err := kv.WatchFiltered(wctx, watchFilters(prefix))
 		res <- openResult{w: w, err: err}
 	}()
-	timer := time.NewTimer(callTimeout)
+	timer := time.NewTimer(c.callTimeout)
 	defer timer.Stop()
 	select {
 	case r := <-res:
@@ -816,7 +838,7 @@ func (v *objView) Put(ctx context.Context, name string, r io.Reader) error {
 	if err := v.pre(); err != nil {
 		return err
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	defer cancel()
 	_, err := v.obs.Put(cctx, jetstream.ObjectMeta{Name: name}, r)
 	if perr := v.post(); perr != nil {
@@ -832,33 +854,174 @@ func (v *objView) Get(ctx context.Context, name string) (io.ReadCloser, error) {
 	if err := v.pre(); err != nil {
 		return nil, err
 	}
-	// The deadline covers the whole download: nats.go reads chunks against
-	// the context it was given, so cancel must wait for the reader's Close.
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
-	res, err := v.obs.Get(cctx, name)
+	// Establishment runs under the call deadline: the metadata read and the consumer's creation.
+	// The bytes then follow ctx, one chunk at a time, each awaited under the same deadline,
+	// so the deadline bounds every wait on the store and never the transfer.
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
+	info, err := v.obs.GetInfo(cctx, name)
+	var cons jetstream.Consumer
+	consumer := ""
+	if err == nil && info.Size > 0 {
+		consumer = newChunkConsumerName()
+		cons, err = v.c.js.CreateConsumer(cctx, artifactsStream, chunkConsumerConfig(consumer, info.NUID))
+	}
+	cancel()
 	if perr := v.post(); perr != nil {
-		if res != nil {
-			//nolint:errcheck // the result is discarded with the stale view
-			_ = res.Close()
+		if cons != nil {
+			v.c.deleteChunkConsumer(consumer)
 		}
-		cancel()
 		return nil, perr
 	}
 	if err != nil {
-		cancel()
+		// A create that timed out may have landed; the consumer's inactive threshold removes it.
 		if errors.Is(err, jetstream.ErrObjectNotFound) {
 			return nil, fmt.Errorf("get object %q in %s: %w", name, v.bucket, ErrObjectNotFound)
 		}
 		return nil, fmt.Errorf("get object %q in %s: %w", name, v.bucket, failure(err))
 	}
-	return &objectReader{ReadCloser: res, cancel: cancel}, nil
+	return v.openChunks(ctx, name, cons, consumer, info), nil
+}
+
+// artifactsStream is the stream behind the artifact bucket, named as nats.go names it.
+const artifactsStream = "OBJ_" + artifactsBucket
+
+// chunkConsumerName is the prefix of every consumer the seam creates to read an object.
+const chunkConsumerName = "profgate-get-"
+
+// newChunkConsumerName draws a consumer name no other read uses.
+func newChunkConsumerName() string {
+	var b [8]byte
+	// crypto/rand.Read never returns an error and always fills its argument.
+	_, _ = rand.Read(b[:])
+	return chunkConsumerName + hex.EncodeToString(b[:])
+}
+
+// chunkConsumerConfig is the consumer the seam reads an object's chunks through:
+// what nats.go's ordered consumer sends the server, over the one chunk subject the object's identifier names,
+// bound to a name of the seam's own so the pull never resets it.
+func chunkConsumerConfig(name, nuid string) jetstream.ConsumerConfig {
+	return jetstream.ConsumerConfig{
+		Name:              name,
+		FilterSubject:     "$O." + artifactsBucket + ".C." + nuid,
+		DeliverPolicy:     jetstream.DeliverAllPolicy,
+		AckPolicy:         jetstream.AckNonePolicy,
+		MemoryStorage:     true,
+		Replicas:          1,
+		InactiveThreshold: 5 * time.Minute,
+	}
+}
+
+// deleteChunkConsumer removes one consumer the seam created, under a fresh call deadline.
+// A delete the store does not answer leaves a consumer its inactive threshold removes.
+func (c *client) deleteChunkConsumer(name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.callTimeout)
+	defer cancel()
+	if err := c.js.DeleteConsumer(ctx, artifactsStream, name); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
+		c.log.Debug("nats artifact consumer not deleted", "consumer", name, "error", err)
+	}
+}
+
+// errReaderClosed is the cause an objectReader's Close ends the read with.
+var errReaderClosed = errors.New("object reader closed")
+
+// errReadEnded is the cause the pump ends the read's context with once the pipe is closed,
+// so the goroutine waiting on that context exits with it.
+var errReadEnded = errors.New("object read ended")
+
+// openChunks returns a reader over an io.Pipe that a pump goroutine fills one chunk at a time.
+// The read ends with ctx or with Close: either closes the pipe's write side with the cause,
+// which returns a pending Read at once whatever the pump is waiting on.
+// An object of size zero has no chunks, no consumer, and an empty reader.
+func (v *objView) openChunks(ctx context.Context, name string, cons jetstream.Consumer, consumer string, info *jetstream.ObjectInfo) io.ReadCloser {
+	rctx, cancel := context.WithCancelCause(ctx)
+	pr, pw := io.Pipe()
+	if cons == nil {
+		//nolint:errcheck // closing with nil is EOF for the reader and cannot fail
+		_ = pw.Close()
+		return &objectReader{r: pr, cancel: cancel}
+	}
+	go func() {
+		<-rctx.Done()
+		//nolint:errcheck // a pipe already closed by the pump keeps the pump's result
+		_ = pw.CloseWithError(context.Cause(rctx))
+	}()
+	go func() {
+		defer v.c.deleteChunkConsumer(consumer)
+		//nolint:errcheck // a pipe already closed by the cancellation keeps the cause
+		_ = pw.CloseWithError(v.pumpChunks(rctx, name, cons, info, pw))
+		cancel(errReadEnded)
+	}()
+	return &objectReader{r: pr, cancel: cancel}
+}
+
+// pumpChunks fetches the object's chunks one at a time and writes each into pw.
+// Each fetch is bounded by the call deadline;
+// the next fetch is issued only after the previous chunk's write has returned,
+// so time spent handing bytes to the caller is outside every wait on the store.
+// It returns nil once the last chunk has arrived and the bytes sum to the digest the metadata carries,
+// the cause when rctx ended, and the wrapped store error otherwise.
+func (v *objView) pumpChunks(rctx context.Context, name string, cons jetstream.Consumer, info *jetstream.ObjectInfo, pw *io.PipeWriter) error {
+	digest := sha256.New()
+	for n := 1; ; n++ {
+		if hook := v.c.testBeforeFetch; hook != nil {
+			hook(name, n)
+		}
+		if rctx.Err() != nil {
+			return context.Cause(rctx)
+		}
+		batch, err := cons.Fetch(1, jetstream.FetchMaxWait(v.c.callTimeout))
+		if err != nil {
+			return fmt.Errorf("get object %q in %s: chunk %d: %w", name, v.bucket, n, failure(err))
+		}
+		var msg jetstream.Msg
+		select {
+		case msg = <-batch.Messages():
+		case <-rctx.Done():
+			return context.Cause(rctx)
+		}
+		if msg == nil {
+			// A batch that ended with no message and no error waited out its expiry.
+			err := batch.Error()
+			if err == nil {
+				err = nats.ErrTimeout
+			}
+			return fmt.Errorf("get object %q in %s: chunk %d: %w", name, v.bucket, n, failure(err))
+		}
+		data := msg.Data()
+		if _, err := pw.Write(data); err != nil {
+			// The write side was closed under the pump, which only the read's end does.
+			if cause := context.Cause(rctx); cause != nil {
+				return cause
+			}
+			return err
+		}
+		digest.Write(data)
+		if hook := v.c.testChunkWritten; hook != nil {
+			hook(name, n)
+		}
+		meta, err := msg.Metadata()
+		if err != nil {
+			return fmt.Errorf("get object %q in %s: chunk %d: %w", name, v.bucket, n, err)
+		}
+		if meta.NumPending > 0 {
+			continue
+		}
+		want, err := jetstream.DecodeObjectDigest(info.Digest)
+		if err != nil {
+			return fmt.Errorf("get object %q in %s: %w", name, v.bucket, err)
+		}
+		if !bytes.Equal(digest.Sum(nil), want) {
+			return fmt.Errorf("get object %q in %s: %w", name, v.bucket, jetstream.ErrDigestMismatch)
+		}
+		return nil
+	}
 }
 
 func (v *objView) Delete(ctx context.Context, name string) error {
 	if err := v.pre(); err != nil {
 		return err
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	defer cancel()
 	err := v.obs.Delete(cctx, name)
 	if perr := v.post(); perr != nil {
@@ -877,7 +1040,7 @@ func (v *objView) List(ctx context.Context) ([]ObjectInfo, error) {
 	if err := v.pre(); err != nil {
 		return nil, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	defer cancel()
 	infos, err := v.obs.List(cctx)
 	if perr := v.post(); perr != nil {
@@ -904,7 +1067,7 @@ func (v *objView) Status(ctx context.Context) (Status, error) {
 	if err := v.pre(); err != nil {
 		return Status{}, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, callTimeout)
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	defer cancel()
 	st, err := v.obs.Status(cctx)
 	if perr := v.post(); perr != nil {
@@ -920,15 +1083,18 @@ func (v *objView) Status(ctx context.Context) (Status, error) {
 	return statusFromStream(bs.StreamInfo().Config), nil
 }
 
-// objectReader hands the object bytes through and releases the call's
-// deadline context only when the caller is done reading.
+// objectReader is the read side of the pipe the pump fills.
+// Close ends the read with errReaderClosed, which stops the pump and releases its consumer.
 type objectReader struct {
-	io.ReadCloser
-	cancel context.CancelFunc
+	r      *io.PipeReader
+	cancel context.CancelCauseFunc
+}
+
+func (r *objectReader) Read(p []byte) (int, error) {
+	return r.r.Read(p)
 }
 
 func (r *objectReader) Close() error {
-	err := r.ReadCloser.Close()
-	r.cancel()
-	return err
+	r.cancel(errReaderClosed)
+	return r.r.Close()
 }

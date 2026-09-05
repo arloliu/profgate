@@ -324,6 +324,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than only once a connection has been made and lost.
   An operator's own `profgate_nats_connected == 0` rule no longer matches on an install that runs no collection,
   and it now matches from the start of a NATS outage at startup instead of staying silent through it.
+- **A download is bounded by its request, and by each wait on the store.**
+  The seam's five-second call deadline covered the whole transfer,
+  so a client that could not drain an artifact in five seconds was cut mid-body and nothing was tunable.
+  The deadline now bounds opening the object and each wait for a chunk;
+  the bytes follow the request, so a slow client is served to the end,
+  and a store that stops delivering ends the stream one deadline into the wait,
+  audited `artifact_stream_failed` as before.
 
 ## [0.5.0] - 2026-09-03
 

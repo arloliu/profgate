@@ -1277,6 +1277,65 @@ func TestCollectionDownloadClientGone(t *testing.T) {
 	}
 }
 
+// TestCollectionDownloadFollowsASlowClient proves a download is bounded by its request and nothing shorter:
+// a client that drains the body slower than the socket fills it is served to the end,
+// because the handler hands the store the request's context, which carries no deadline,
+// and the store's own deadline covers each wait for a chunk rather than the transfer.
+func TestCollectionDownloadFollowsASlowClient(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	body := bytes.Repeat([]byte("slow-client-"), (256<<10)/12)
+	rec := h.completedRecord(t, func(r *pgo.Record) { r.Artifact.Bytes = int64(len(body)) })
+	h.nats.artifacts.put(rec.Artifact.Object, body)
+
+	gateway := httptest.NewServer(h.handler())
+	t.Cleanup(gateway.Close)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, gateway.URL+collectionPath(rec.ID, "/profile"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := gateway.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	// 4 KiB every 20 milliseconds: the socket's buffers fill and the handler's copy waits on the client.
+	got := make([]byte, 0, len(body))
+	buf := make([]byte, 4<<10)
+	for {
+		n, err := resp.Body.Read(buf)
+		got = append(got, buf[:n]...)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read after %d bytes: %v", len(got), err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("body: got %d bytes, want %d", len(got), len(body))
+	}
+
+	reader := h.nats.artifacts.reader()
+	if reader == nil {
+		t.Fatal("the store handed out no reader")
+	}
+	if deadline, ok := reader.ctx.Deadline(); ok {
+		t.Errorf("the store read ran under a deadline at %v, want the request's context and nothing shorter", deadline)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !reader.closed.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("the store read was not released after the body was served")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // TestADownloadCutByTheDrainIsTruncated proves the drain bound ending mid-download truncates the body
 // and is audited as the cut it is, rather than as a client that left.
 // The store parks after the first chunk and the test never releases it,

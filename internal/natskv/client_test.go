@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -788,6 +789,237 @@ func TestObjects(t *testing.T) {
 		}
 		if len(infos) != 0 {
 			t.Fatalf("list of an empty bucket: got %v", infos)
+		}
+	})
+
+	t.Run("a 2 MiB object drained over ten seconds returns every byte", func(t *testing.T) {
+		f := startFixture(t)
+		f.c.callTimeout = time.Second
+		data := f.putBytes(t, "slow.pprof", 2<<20)
+
+		r, err := f.view().Artifacts.Get(t.Context(), "slow.pprof")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		// 64 reads of 32 KiB, 150 milliseconds apart: about ten seconds for a reader whose deadline is one.
+		got := make([]byte, 0, len(data))
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := r.Read(buf)
+			got = append(got, buf[:n]...)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("read after %d bytes: %v", len(got), err)
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if !bytes.Equal(got, data) {
+			t.Fatalf("object bytes differ: got %d bytes, want %d", len(got), len(data))
+		}
+	})
+
+	t.Run("a reader that holds one chunk for ten seconds is not failed", func(t *testing.T) {
+		f := startFixture(t)
+		f.c.callTimeout = time.Second
+		name, data, s := stalledAt(t, f, 2)
+
+		r, err := f.view().Artifacts.Get(t.Context(), name)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		first := make([]byte, chunkSize)
+		if _, err := io.ReadFull(r, first); err != nil {
+			t.Fatalf("read chunk 1: %v", err)
+		}
+		time.Sleep(10 * time.Second)
+		s.free()
+		rest, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("read the rest: %v", err)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if got := append(first, rest...); !bytes.Equal(got, data) {
+			t.Fatalf("object bytes differ: got %d bytes, want %d", len(got), len(data))
+		}
+	})
+
+	t.Run("a store that stops delivering fails the pending read one call deadline into the wait", func(t *testing.T) {
+		f := startFixture(t)
+		f.c.callTimeout = time.Second
+		name, _, s := stalledAt(t, f, 3)
+		nuid := f.chunkNUID(t, name)
+
+		r, err := f.view().Artifacts.Get(t.Context(), name)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		if _, err := io.ReadFull(r, make([]byte, 2*chunkSize)); err != nil {
+			t.Fatalf("read chunks 1 and 2: %v", err)
+		}
+		<-s.written
+
+		// The store stops delivering: the chunks left are purged while the pump has not fetched.
+		ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+		defer cancel()
+		stream, err := f.js.Stream(ctx, "OBJ_"+artifactsBucket)
+		if err != nil {
+			t.Fatalf("artifact stream: %v", err)
+		}
+		if err := stream.Purge(ctx, jetstream.WithPurgeSubject("$O."+artifactsBucket+".C."+nuid)); err != nil {
+			t.Fatalf("purge chunks: %v", err)
+		}
+
+		result := make(chan error, 1)
+		go func() {
+			_, err := r.Read(make([]byte, chunkSize))
+			result <- err
+		}()
+		released := time.Now()
+		s.free()
+		select {
+		case err := <-result:
+			elapsed := time.Since(released)
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("pending read: got %v, want ErrUnavailable", err)
+			}
+			// The wait is measured from the fetch, not from the Get seconds earlier:
+			// the server ends the request at the deadline and the client's own fallback a second later.
+			if elapsed < f.c.callTimeout-100*time.Millisecond || elapsed > 2*f.c.callTimeout {
+				t.Fatalf("pending read failed %s after the release, want between one and two call deadlines", elapsed)
+			}
+		case <-time.After(fixtureTimeout):
+			t.Fatalf("the pending read did not fail within %s", fixtureTimeout)
+		}
+	})
+
+	t.Run("a reader whose context ends mid-stream returns the pending read with the cause", func(t *testing.T) {
+		f := startFixture(t)
+		f.c.callTimeout = time.Second
+		name, _, s := stalledAt(t, f, 2)
+		ctx, cancel := context.WithCancelCause(t.Context())
+		defer cancel(nil)
+
+		r, err := f.view().Artifacts.Get(ctx, name)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		if _, err := io.ReadFull(r, make([]byte, chunkSize)); err != nil {
+			t.Fatalf("read chunk 1: %v", err)
+		}
+		<-s.written
+
+		result := make(chan error, 1)
+		go func() {
+			_, err := r.Read(make([]byte, chunkSize))
+			result <- err
+		}()
+		time.Sleep(50 * time.Millisecond) // the read is pending on a pump that has not fetched
+		cause := errors.New("the request left")
+		cancel(cause)
+		select {
+		case err := <-result:
+			if !errors.Is(err, cause) {
+				t.Fatalf("pending read: got %v, want the cancellation's cause", err)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("the pending read did not return within 100ms of the cancellation")
+		}
+		s.free()
+		waitFor(t, "consumer release", func() bool { return f.artifactConsumers(t) == 0 })
+	})
+
+	t.Run("a reader closed mid-stream returns the pending read and leaves no consumer", func(t *testing.T) {
+		f := startFixture(t)
+		f.c.callTimeout = time.Second
+		name, _, s := stalledAt(t, f, 2)
+
+		r, err := f.view().Artifacts.Get(t.Context(), name)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if _, err := io.ReadFull(r, make([]byte, chunkSize)); err != nil {
+			t.Fatalf("read chunk 1: %v", err)
+		}
+		<-s.written
+
+		result := make(chan error, 1)
+		go func() {
+			_, err := r.Read(make([]byte, chunkSize))
+			result <- err
+		}()
+		time.Sleep(50 * time.Millisecond) // the read is pending on a pump that has not fetched
+		closed := make(chan error, 1)
+		go func() { closed <- r.Close() }()
+		select {
+		case err := <-result:
+			if err == nil {
+				t.Fatalf("pending read returned bytes after Close")
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("the pending read did not return within 100ms of Close")
+		}
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Fatalf("close: %v", err)
+			}
+		default:
+			t.Fatalf("Close had not returned when the pending read did")
+		}
+		s.free()
+		waitFor(t, "consumer release", func() bool { return f.artifactConsumers(t) == 0 })
+	})
+
+	t.Run("a consumer creation that is never answered fails the get within the call deadline and leaves nothing", func(t *testing.T) {
+		f := startFixture(t, withUsers(fragmentWithout(t, "publish", "$JS.API.CONSUMER.CREATE.OBJ_PROFGATE_ARTIFACTS.>")))
+		f.c.callTimeout = time.Second
+		f.putBytes(t, "denied.pprof", 16)
+
+		// The denied publish is answered by an asynchronous permission error and never by a response,
+		// so the create waits out its context.
+		start := time.Now()
+		r, err := f.view().Artifacts.Get(t.Context(), "denied.pprof")
+		elapsed := time.Since(start)
+		if err == nil {
+			_ = r.Close()
+			t.Fatalf("get with the consumer create denied returned a reader")
+		}
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("get: got %v, want ErrUnavailable", err)
+		}
+		if elapsed > 2*f.c.callTimeout {
+			t.Fatalf("get took %s, want it within two call deadlines", elapsed)
+		}
+		if n := f.artifactConsumers(t); n != 0 {
+			t.Fatalf("artifact stream holds %d consumers after a failed get, want 0", n)
+		}
+	})
+
+	t.Run("chunks whose digest is not the metadata's fail the last read rather than EOF", func(t *testing.T) {
+		f := startFixture(t)
+		data := f.putBytes(t, "forged.pprof", 300<<10)
+		f.rewriteDigest(t, "forged.pprof", []byte("other bytes"))
+
+		r, err := f.view().Artifacts.Get(t.Context(), "forged.pprof")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		got, err := io.ReadAll(r)
+		if len(got) != len(data) {
+			t.Fatalf("read %d bytes before the check, want every one of %d", len(got), len(data))
+		}
+		if err == nil || errors.Is(err, io.EOF) || !strings.Contains(err.Error(), "digest") {
+			t.Fatalf("read after the last chunk: got %v, want an error naming the digest", err)
 		}
 	})
 }

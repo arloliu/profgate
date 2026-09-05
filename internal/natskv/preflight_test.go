@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -274,9 +275,9 @@ func TestPreflightPermissions(t *testing.T) {
 	// The spec's account fragment grants subscribe on $KV.PROFGATE_JOBS.>
 	// and $O.PROFGATE_ARTIFACTS.>, and the spec expects preflight to fail
 	// without them.
-	// In fact every watch and object read is delivered through an ordered
-	// consumer whose deliver subject is an inbox, so only the granted
-	// _INBOX.> subscription carries data and preflight passes;
+	// In fact every watch is delivered through an ordered consumer whose deliver subject is an inbox,
+	// and every object read is fetched from the seam's own pull consumer into an inbox,
+	// so only the granted _INBOX.> subscription carries data and preflight passes;
 	// the grants are unexercised by this client version.
 	// These subtests pin that fact so a client or server change that starts
 	// exercising them is caught here.
@@ -588,6 +589,22 @@ func TestPublishedSubjects(t *testing.T) {
 		}
 		if _, err := stores.Jobs.Keys(ctx, ""); err != nil {
 			t.Fatalf("keys: %v", err)
+		}
+		// The probe's object is one chunk; three chunks put the filtered create,
+		// one fetch per chunk, and the delete of the seam's consumer in the tap.
+		data := make([]byte, 300<<10)
+		if err := stores.Artifacts.Put(ctx, "three.pprof", bytes.NewReader(data)); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		r, err := stores.Artifacts.Get(ctx, "three.pprof")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got, err := io.ReadAll(r); err != nil || len(got) != len(data) {
+			t.Fatalf("read: %d bytes, %v", len(got), err)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatalf("close: %v", err)
 		}
 
 		allowed := fragmentPermissions().Publish.Allow

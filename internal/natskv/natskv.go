@@ -69,6 +69,10 @@ type ObjectInfo struct {
 type Objects interface {
 	Put(ctx context.Context, name string, r io.Reader) error
 	// Get returns a reader for the object's bytes; ErrObjectNotFound when absent.
+	// The reader follows ctx: it ends when ctx ends or when it is closed, whichever comes first,
+	// and a pending Read returns then with the cause.
+	// The call deadline bounds opening the object and each wait for a chunk, never the transfer,
+	// so a store that stops delivering fails a Read one deadline into the wait with ErrUnavailable.
 	Get(ctx context.Context, name string) (io.ReadCloser, error)
 	// Delete removes the object; an absent name is success.
 	Delete(ctx context.Context, name string) error

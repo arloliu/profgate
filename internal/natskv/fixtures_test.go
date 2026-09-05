@@ -1,7 +1,11 @@
 package natskv
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -334,6 +338,136 @@ func (f *fixture) view() Stores {
 		f.t.Fatalf("view: %v", err)
 	}
 	return stores
+}
+
+// artifactConsumers counts the consumers the artifact stream holds,
+// which is how many object reads have not released theirs.
+func (f *fixture) artifactConsumers(t *testing.T) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+	defer cancel()
+	stream, err := f.js.Stream(ctx, "OBJ_"+artifactsBucket)
+	if err != nil {
+		t.Fatalf("artifact stream: %v", err)
+	}
+	n := 0
+	names := stream.ConsumerNames(ctx)
+	for range names.Name() {
+		n++
+	}
+	if err := names.Err(); err != nil {
+		t.Fatalf("consumer names: %v", err)
+	}
+	return n
+}
+
+// putBytes stores n bytes of a known pattern under name through the admin connection
+// and returns them.
+func (f *fixture) putBytes(t *testing.T, name string, n int) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+	defer cancel()
+	obs, err := f.js.ObjectStore(ctx, artifactsBucket)
+	if err != nil {
+		t.Fatalf("admin object store: %v", err)
+	}
+	data := make([]byte, n)
+	for i := range data {
+		data[i] = byte(i*31 + 7)
+	}
+	if _, err := obs.Put(ctx, jetstream.ObjectMeta{Name: name}, bytes.NewReader(data)); err != nil {
+		t.Fatalf("admin put %s: %v", name, err)
+	}
+	return data
+}
+
+// chunkSize is nats.go's default object chunk, which every put here uses.
+const chunkSize = 128 << 10
+
+// rewriteDigest republishes the object's metadata with the digest of other bytes,
+// so the chunks stored under it no longer sum to what the metadata claims.
+func (f *fixture) rewriteDigest(t *testing.T, name string, other []byte) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+	defer cancel()
+	stream, err := f.js.Stream(ctx, "OBJ_"+artifactsBucket)
+	if err != nil {
+		t.Fatalf("artifact stream: %v", err)
+	}
+	subject := "$O." + artifactsBucket + ".M." + base64.URLEncoding.EncodeToString([]byte(name))
+	last, err := stream.GetLastMsgForSubject(ctx, subject)
+	if err != nil {
+		t.Fatalf("last meta message of %s: %v", name, err)
+	}
+	var info jetstream.ObjectInfo
+	if err := json.Unmarshal(last.Data, &info); err != nil {
+		t.Fatalf("meta message of %s: %v", name, err)
+	}
+	sum := sha256.Sum256(other)
+	info.Digest = "SHA-256=" + base64.URLEncoding.EncodeToString(sum[:])
+	body, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("marshal meta: %v", err)
+	}
+	msg := nats.NewMsg(last.Subject)
+	msg.Header.Set(jetstream.MsgRollup, jetstream.MsgRollupSubject)
+	msg.Data = body
+	if _, err := f.js.PublishMsg(ctx, msg); err != nil {
+		t.Fatalf("republish meta of %s: %v", name, err)
+	}
+}
+
+// chunkNUID returns the identifier the chunk subject of name carries.
+func (f *fixture) chunkNUID(t *testing.T, name string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+	defer cancel()
+	obs, err := f.js.ObjectStore(ctx, artifactsBucket)
+	if err != nil {
+		t.Fatalf("admin object store: %v", err)
+	}
+	info, err := obs.GetInfo(ctx, name)
+	if err != nil {
+		t.Fatalf("admin get info %s: %v", name, err)
+	}
+	return info.NUID
+}
+
+// stall is a read held between two chunks of an object.
+type stall struct {
+	// written is closed once the chunk before the held one has been written into the pipe,
+	// which is once the caller has drained it.
+	written chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+// free releases the held fetch; it is safe to call more than once.
+func (s *stall) free() {
+	s.once.Do(func() { close(s.release) })
+}
+
+// stalledAt stores a four-chunk object,
+// and arranges for the seam's read of it to block before the fetch of chunk chunk, counting from one,
+// so a reader that has drained chunk chunk-1 has a Read pending on a pump that has not fetched.
+// The test releases the fetch with free; the cleanup releases it for a test that never does.
+func stalledAt(t *testing.T, f *fixture, chunk int) (string, []byte, *stall) {
+	t.Helper()
+	const name = "stalled.pprof"
+	data := f.putBytes(t, name, 512<<10)
+	s := &stall{written: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(s.free)
+	f.c.testBeforeFetch = func(_ string, n int) {
+		if n == chunk {
+			<-s.release
+		}
+	}
+	f.c.testChunkWritten = func(_ string, n int) {
+		if n == chunk-1 {
+			close(s.written)
+		}
+	}
+	return name, data, s
 }
 
 func runServer(t *testing.T, opts *server.Options) *server.Server {

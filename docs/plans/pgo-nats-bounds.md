@@ -510,7 +510,7 @@ a reader that was cancelled, closed, or drained therefore leaves nothing on the 
 `Objects.Get`'s doc comment in `internal/natskv/natskv.go:71-72` says the reader follows ctx
 and the call deadline covers each wait on the store.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 `TestObjects` (`internal/natskv/client_test.go:713-793`) gains the subtests below,
 each on `startFixture` with `f.c.callTimeout = time.Second`.
@@ -561,7 +561,7 @@ the last two wait on the result mutex.
 `a consumer creation that is never answered`, the digest row, and the two existing rows are green before and after;
 so is the httpapi row.
 
-- [ ] **Read the chunks and say so**
+- [x] **Read the chunks and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **A download is bounded by its request, and by each wait on the store.**
@@ -572,7 +572,7 @@ the bytes follow the request, so a slow client is served to the end,
 and a store that stops delivering ends the stream one deadline into the wait,
 audited `artifact_stream_failed` as before.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/natskv/client.go internal/natskv/natskv.go CHANGELOG.md
