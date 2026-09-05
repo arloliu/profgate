@@ -5,6 +5,7 @@ helm = "3.21.4"
 kind = ["0.32.0", "0.22.0"]
 ko = "0.19.1"
 kubectl = "1.36.4"
+promtool = "3.7.3"
 
 [env]
 # Fail loudly when go.mod asks for a toolchain mise did not install,

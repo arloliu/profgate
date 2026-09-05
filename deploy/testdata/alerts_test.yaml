@@ -1,0 +1,286 @@
+# The alerts deploy/chart/profgate/templates/prometheusrule.yaml ships, evaluated.
+# `go test ./deploy/` renders that template with pgo.enabled=true, writes the
+# rendered rules beside a copy of this file as rules.yaml, and runs
+# `promtool test rules` over it, so every case below runs against the
+# expressions a cluster gets rather than against a copy of them.
+#
+# The rule file the test writes carries each rule's expression, hold, and
+# severity, and leaves its annotations out: promtool compares a firing alert's
+# annotations as well as its labels, so naming them here would pin every word of
+# a description and fail on a wording repair.
+#
+# Every series carries the instance and pod labels a scrape attaches, so a case
+# can tell two replicas apart and an expectation can name the replica an alert
+# fired on. The one alert with no such labels is ProfgateAdmissionSaturated,
+# whose expression sums over the whole fleet.
+#
+# The clock starts at the Unix epoch, so a certificate's notAfter is written as
+# seconds from that start: 518400 is six days ahead of it, 2592000 is thirty
+# days ahead, and -86400 is a day behind it.
+
+rule_files:
+  - rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # A saturated bcrypt gate on one replica of two.
+  # The refusals arrive under two endpoint values, which is what the request
+  # path and the browser login record, so an expression that did not aggregate
+  # them would raise two alerts for one gate.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="profile",profile="none",code="too_many_auth",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x20'
+      - series: 'profgate_requests_total{endpoint="auth",profile="none",code="too_many_auth",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x20'
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="ok",instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ProfgateAuthLimiterSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "10.0.0.1:9091"
+              pod: profgate-1
+
+  # One refusal and then eleven quiet minutes: a burst that decays is not a
+  # saturated gate, and the ten-minute hold outlives the five-minute rate.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="profile",profile="none",code="too_many_auth",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0 1 1+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ProfgateAuthLimiterSaturated
+        exp_alerts: []
+
+  # An authenticator that cannot decide, on one replica of two.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="profile",profile="none",code="auth_unavailable",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x20'
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="ok",instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ProfgateAuthUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "10.0.0.1:9091"
+              pod: profgate-1
+
+  # One replica failing every profile request while a second serves them.
+  # The first replica's only successes are Collection artifact downloads, which
+  # read a store and reach no upstream, so they do not count as a profile
+  # request served and the alert still names that replica alone.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="upstream_unreachable",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x25'
+      - series: 'profgate_requests_total{endpoint="profile",profile="heap",code="upstream_timeout",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x25'
+      - series: 'profgate_requests_total{endpoint="collection_profile",profile="cpu",code="ok",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x25'
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="ok",instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: '0+1x25'
+    alert_rule_test:
+      - eval_time: 17m
+        alertname: ProfgateUpstreamsUnreachable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "10.0.0.1:9091"
+              pod: profgate-1
+
+  # A replica failing some profile requests and serving others: one dead Pod
+  # behind a Service, which is not what this alert is for.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="upstream_unreachable",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x25'
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="ok",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x25'
+    alert_rule_test:
+      - eval_time: 17m
+        alertname: ProfgateUpstreamsUnreachable
+        exp_alerts: []
+
+  # A gateway nobody asks for profiles: the listing routes answer and no
+  # profile request is served or failed, so the expression produces no sample.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="namespaces",profile="none",code="ok",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x25'
+    alert_rule_test:
+      - eval_time: 17m
+        alertname: ProfgateUpstreamsUnreachable
+        exp_alerts: []
+
+  # One replica re-reading its certificate successfully half the time, and one
+  # failing every re-read. The ratio is what separates a Secret swap caught
+  # mid-write from a renewal that never arrives.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_tls_reloads_total{result="failed",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x40'
+      - series: 'profgate_tls_reloads_total{result="unchanged",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x40'
+      - series: 'profgate_tls_reloads_total{result="failed",instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ProfgateTLSReloadFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "10.0.0.2:9091"
+              pod: profgate-2
+
+  # Four certificates and no reload counter, which is an install without
+  # server.tls for the reload rule and four separate answers for the expiry one.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_tls_certificate_expiry_seconds{instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '518400+0x70'
+      - series: 'profgate_tls_certificate_expiry_seconds{instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: '-86400+0x70'
+      - series: 'profgate_tls_certificate_expiry_seconds{instance="10.0.0.3:9091",pod="profgate-3"}'
+        values: '2592000+0x70'
+      - series: 'profgate_tls_certificate_expiry_seconds{instance="10.0.0.4:9091",pod="profgate-4"}'
+        values: 'NaN+0x70'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ProfgateTLSCertificateExpiring
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "10.0.0.1:9091"
+              pod: profgate-1
+          - exp_labels:
+              severity: warning
+              instance: "10.0.0.2:9091"
+              pod: profgate-2
+      - eval_time: 65m
+        alertname: ProfgateTLSReloadFailing
+        exp_alerts: []
+
+  # A NATS connection that is down, one that was never attempted, and a replica
+  # that reports neither. profgate_pgo_synced does not exist during a startup
+  # outage, so the transport rule is the only one that fires there.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_nats_connected{instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+0x10'
+      - series: 'profgate_nats_connected{instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: 'NaN+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ProfgateNATSDisconnected
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "10.0.0.1:9091"
+              pod: profgate-1
+      - eval_time: 6m
+        alertname: ProfgatePGONotSynced
+        exp_alerts: []
+
+  # A replica that has not completed its initial informer sync, and then has.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_discovery_synced{instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0x11 1x10'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ProfgateNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: "10.0.0.1:9091"
+              pod: profgate-1
+      - eval_time: 15m
+        alertname: ProfgateNotReady
+        exp_alerts: []
+
+  # A scrape gap long enough to leave the expression without a sample.
+  # The hold starts again when scraping resumes rather than carrying across it,
+  # so the alert is late by the length of the gap.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_discovery_synced{instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0x5 _x6 0x11'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ProfgateNotReady
+        exp_alerts: []
+      - eval_time: 23m
+        alertname: ProfgateNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: "10.0.0.1:9091"
+              pod: profgate-1
+
+  # The admission gate refusing in every window, which is the one alert summed
+  # over the fleet rather than reported per replica.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="too_many_profiles",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ProfgateAdmissionSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+
+  # One admission refusal and then eleven quiet minutes.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="too_many_profiles",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0 1 1+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ProfgateAdmissionSaturated
+        exp_alerts: []
+
+  # A restart resets a counter. The replica that stopped being refused before
+  # its restart raises nothing, and the one still being refused after its
+  # restart keeps the alert: rate accounts for the reset, a difference would
+  # read it as the refusals having stopped.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="profile",profile="none",code="too_many_auth",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '5+0x10 0+0x15'
+      - series: 'profgate_requests_total{endpoint="profile",profile="none",code="too_many_auth",instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: '0+1x10 0+1x15'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ProfgateAuthLimiterSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "10.0.0.2:9091"
+              pod: profgate-2
+
+  # Signing keys twelve hours old, keys an hour old, and a replica that has
+  # fetched none, which is an install outside auth.mode oidc.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_oidc_jwks_age_seconds{instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '50000+0x20'
+      - series: 'profgate_oidc_jwks_age_seconds{instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: '3600+0x20'
+      - series: 'profgate_oidc_jwks_age_seconds{instance="10.0.0.3:9091",pod="profgate-3"}'
+        values: 'NaN+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ProfgateOIDCKeysStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "10.0.0.1:9091"
+              pod: profgate-1

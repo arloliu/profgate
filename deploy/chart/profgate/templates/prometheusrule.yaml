@@ -56,7 +56,102 @@ spec:
               auth.oidc.jwksMaxStale, 24 hours at the binary's default, so this fires at half
               of it while tokens still verify. The gauge is NaN until the first fetch, which
               crosses no threshold, so the rule is inert outside auth.mode oidc.
+        - alert: ProfgateAuthLimiterSaturated
+          expr: sum without (endpoint, profile, code) (rate(profgate_requests_total{code="too_many_auth"}[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: profgate is refusing authentication attempts.
+            description: >-
+              This replica has answered at least one authentication attempt with 429
+              too_many_auth in every five-minute window for the last ten minutes. It does
+              not say the gate was full throughout: a steady trickle of refusals reads
+              the same as a saturated one. Only the bcrypt gate at
+              auth.basic.maxConcurrent answers this code, so raise that limit or add
+              replicas -- the gate is per replica -- and a client retrying a wrong
+              credential is the usual cause. The rule is inert outside auth.mode basic.
+        - alert: ProfgateAuthUnavailable
+          expr: sum without (endpoint, profile, code) (rate(profgate_requests_total{code="auth_unavailable"}[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: profgate is refusing requests it cannot authenticate.
+            description: >-
+              This replica has answered at least one request with 503 auth_unavailable in
+              every five-minute window for the last ten minutes. Which callers are refused
+              depends on why, and profgate_auth_failures_total by reason separates them:
+              keys_stale refuses every token this replica verifies, entropy and exchange
+              are the browser login alone and leave bearer tokens and live sessions
+              working, and internal is a programming error that may be either. Read that
+              series before treating this as a total outage.
+        - alert: ProfgateUpstreamsUnreachable
+          expr: >-
+            sum without (endpoint, profile, code) (rate(profgate_requests_total{code=~"upstream_unreachable|upstream_timeout"}[5m])) > 0
+            unless
+            sum without (endpoint, profile, code) (rate(profgate_requests_total{code="ok",profile!="none",endpoint!~"collection.*"}[5m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: profgate is failing every profile request it finishes.
+            description: >-
+              For fifteen minutes this replica has answered profile requests at the dial
+              or the deadline and has served none successfully in the same five-minute
+              window, which is a NetworkPolicy that closed the pprof port or a
+              discovery.pprof.port no workload listens on, not one Pod that died. It says
+              nothing about a replica serving some profiles and failing others, and it
+              produces no sample while no profile request is served, so an outage that
+              starts in a quiet period waits for traffic.
+        - alert: ProfgateTLSReloadFailing
+          expr: >-
+            sum without (result) (rate(profgate_tls_reloads_total{result="failed"}[15m]))
+            / sum without (result) (rate(profgate_tls_reloads_total[15m])) > 0.9
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: profgate cannot re-read its API listener certificate.
+            description: >-
+              More than nine in ten of this replica's certificate re-reads over the last
+              fifteen minutes failed, so it is still serving the pair it last applied and
+              a renewal into the Secret is not reaching it. The loader re-reads every 30
+              seconds, so that is at least 27 failures of 30 rather than one unlucky read
+              during a Secret swap. profgate_tls_certificate_expiry_seconds still holds
+              the served certificate's notAfter, which is how long that is safe for. The
+              counter has no series at all without server.tls, so this rule is inert
+              there.
+        - alert: ProfgateTLSCertificateExpiring
+          expr: profgate_tls_certificate_expiry_seconds - time() < 604800
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: profgate's API listener certificate expires within a week, or has expired.
+            description: >-
+              The certificate this replica serves stops being valid in under seven days,
+              and the rule keeps firing once it has expired, because the difference only
+              falls further. The gauge is NaN until a certificate is loaded, and NaN
+              crosses no comparison, so this rule is inert on an install without
+              server.tls.
         {{- if include "profgate.pgoEnabled" . }}
+        - alert: ProfgateNATSDisconnected
+          expr: profgate_nats_connected == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: profgate has no NATS connection.
+            description: >-
+              The transport has been down on this replica for five minutes. At startup
+              that holds /readyz at 503 while the preflight retries a connection failure,
+              and profgate_pgo_synced does not exist yet, so this is the only alert that
+              fires then. On a running replica each Collection it owns aborts once the
+              lease it last committed lapses, which is pgo.leaseTTL -- 60s by default and
+              up to 10m -- so an outage shorter than that lease costs nothing, and every
+              abort past it spends one of pgo.maxAttempts. PGO routes answer 503
+              pgo_unavailable while it lasts.
         - alert: ProfgatePGONotSynced
           expr: profgate_pgo_synced == 0
           for: 10m

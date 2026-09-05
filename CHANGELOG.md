@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Six more alerts ship with the chart.**
+  A failing certificate re-read, a certificate within a week of expiry, an authenticator that cannot decide,
+  a saturated authentication gate,
+  a replica whose profile requests all fail at the dial or the deadline,
+  and, only when `pgo.enabled`, a NATS connection that is down.
+  The last is the one alert that fires during a NATS outage at startup,
+  where `profgate_pgo_synced` does not exist yet and `ProfgatePGONotSynced` is silent.
+  Each of the new rules names the replica it fired on rather than the fleet.
+  A deployment that set `prometheusRule.rules` keeps its own set and sees none of them.
 - **Every release tag gets a GitHub Release.**
   The release workflow creates one after the image and chart are pushed,
   with that version's changelog section, the image tag and digest, and the chart version as its notes.

@@ -486,14 +486,26 @@ so `profgate_requests_total`'s own `endpoint` reaches a query under that name in
 its value was always the constant `ops`, since this `PodMonitor` declares one endpoint.
 
 `prometheusRule.enabled` renders a `PrometheusRule` with alerts over metrics the gateway already exports,
-three always and a fourth only when `pgo.enabled`:
+eight always and two more when `pgo.enabled`:
 
 | Alert | Expression | Fires when |
 |---|---|---|
 | `ProfgateNotReady` | `profgate_discovery_synced == 0` | A replica has not completed its initial informer sync for ten minutes, so `/readyz` answers 503. The gauge is also `0` while an unreachable issuer or a failing Kubernetes preflight keeps the informers from starting, and it never returns to `0`, so it does not report a replica that goes unready later |
 | `ProfgateAdmissionSaturated` | `sum(rate(profgate_requests_total{code="too_many_profiles"}[5m])) > 0` | The admission gate is at `limits.maxConcurrentProfiles` and answering 429 |
 | `ProfgateOIDCKeysStale` | `profgate_oidc_jwks_age_seconds > 43200` | Signing keys have not been fetched for 12 hours |
+| `ProfgateAuthLimiterSaturated` | `sum without (endpoint, profile, code) (rate(profgate_requests_total{code="too_many_auth"}[5m])) > 0` | A replica has answered at least one authentication attempt with 429 `too_many_auth` in every five-minute window for ten minutes. Only the bcrypt gate at `auth.basic.maxConcurrent` answers that code |
+| `ProfgateAuthUnavailable` | `sum without (endpoint, profile, code) (rate(profgate_requests_total{code="auth_unavailable"}[5m])) > 0` | A replica has answered at least one request with 503 `auth_unavailable` in every five-minute window for ten minutes. `profgate_auth_failures_total` by `reason` says which callers are refused: `keys_stale` refuses every token, `entropy` and `exchange` stop the browser login alone |
+| `ProfgateUpstreamsUnreachable` | `sum without (endpoint, profile, code) (rate(profgate_requests_total{code=~"upstream_unreachable\|upstream_timeout"}[5m])) > 0 unless sum without (endpoint, profile, code) (rate(profgate_requests_total{code="ok",profile!="none",endpoint!~"collection.*"}[5m])) > 0` | For fifteen minutes a replica has answered profile requests at the dial or the deadline and served none successfully in the same window, which is a NetworkPolicy that closed the pprof port or a `discovery.pprof.port` no workload listens on rather than one Pod that died |
+| `ProfgateTLSReloadFailing` | `sum without (result) (rate(profgate_tls_reloads_total{result="failed"}[15m])) / sum without (result) (rate(profgate_tls_reloads_total[15m])) > 0.9` | More than nine in ten of a replica's certificate re-reads over fifteen minutes failed, so a renewal into the Secret is not reaching it and it still serves the pair it last applied |
+| `ProfgateTLSCertificateExpiring` | `profgate_tls_certificate_expiry_seconds - time() < 604800` | The certificate a replica serves stops being valid in under seven days, and the rule keeps firing once it has expired |
+| `ProfgateNATSDisconnected` | `profgate_nats_connected == 0` | The NATS transport has been down on a replica for five minutes. At startup that is the only alert that fires, because `profgate_pgo_synced` does not exist until the preflight passes |
 | `ProfgatePGONotSynced` | `profgate_pgo_synced == 0` | The watched PGO caches have been unsynced for ten minutes, so the process decides nothing from them and every PGO route on a gateway replica is refusing |
+
+Three of them are inert where the feature they watch is off.
+`ProfgateTLSCertificateExpiring` and `ProfgateTLSReloadFailing` read series that only `server.tls` produces,
+and `ProfgateAuthLimiterSaturated` reads a code only `auth.mode: basic` answers with.
+`ProfgateUpstreamsUnreachable` produces no sample while no profile request is served,
+so an outage that starts in a quiet period waits for traffic.
 
 Every one reads the ops port, so they need something scraping it — `podMonitor.enabled`, or a scrape configured by hand.
 The stale-keys threshold is half of the binary's own `auth.oidc.jwksMaxStale` default of 24 hours,

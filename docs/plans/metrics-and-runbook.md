@@ -1013,7 +1013,7 @@ the one place `endpoint` appears above is that success-side exclusion,
 which passes harmlessly where the label is missing, so the rule degrades rather than dies.
 *Risks and What This Plan Does Not Cover* records what a hand-written scrape still costs.
 
-- [ ] **Write the tests**
+- [x] **Write the tests**
 
 Three edits in `deploy/chart_test.go`, one new subtest, one new fixture, and one line in `mise.toml`.
 
@@ -1104,7 +1104,7 @@ go test ./deploy/ -run 'TestChartPrometheusRule'
 Both `the shipped set` cases fail on the alert-name comparison, and the `promtool` subtest fails on six missing alerts.
 The new code-label subtest passes before and after; it is the guard, not the driver.
 
-- [ ] **Add the six rules**
+- [x] **Add the six rules**
 
 Before writing the `want` lists, read each of the six expressions the way the test does:
 it extracts every `profgate_[a-z_]+` match from an expression
@@ -1128,7 +1128,7 @@ and `unless` and `/` are both operators that a space on either side leaves intac
 Confirm each rendered `expr` is one line before committing;
 `promtool` reads the rendered file, so a fold that broke an expression fails the subtest rather than shipping.
 
-- [ ] **Say what each rule fires on, where the alerts are documented**
+- [x] **Say what each rule fires on, where the alerts are documented**
 
 | File | Change |
 |---|---|
@@ -1137,7 +1137,7 @@ Confirm each rendered `expr` is one line before committing;
 | `docs/deployment.md`, the paragraph at `:487-497` | becomes a table with the same rows as the chart README's, since the prose list no longer fits ten rules; the sentences about the ops port, the stale-keys threshold, and `prometheusRule.rules` replacing the set outright stay as they are |
 | `CHANGELOG.md`, `### Added` | **Six more alerts ship with the chart.** A failing certificate re-read, a certificate within a week of expiry, an authenticator that cannot decide, a saturated authentication gate, a replica whose profile requests all fail at the dial or the deadline, and, only when `pgo.enabled`, a NATS connection that is down. The last is the one alert that fires during a NATS outage at startup, where `profgate_pgo_synced` does not exist yet and `ProfgatePGONotSynced` is silent. Each of the new rules names the replica it fired on rather than the fleet. A deployment that set `prometheusRule.rules` keeps its own set and sees none of them |
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check deploy/chart/profgate/README.md deploy/chart_test.go \

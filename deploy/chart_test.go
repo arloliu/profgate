@@ -41,6 +41,19 @@ func helmBin(t *testing.T) string {
 	return path
 }
 
+// promtoolBin returns the promtool executable, or skips.
+// mise.toml pins promtool, so `mise run test` always has it.
+// A bare `go test` on a machine without it skips the rule evaluation rather than failing.
+func promtoolBin(t *testing.T) string {
+	t.Helper()
+	path, err := exec.LookPath("promtool")
+	if err != nil {
+		t.Skip("promtool is not on PATH; run the suite through `mise run test`, which uses the pinned promtool")
+	}
+
+	return path
+}
+
 // runHelm runs helm with args and returns its stdout.
 func runHelm(t *testing.T, args ...string) []byte {
 	t.Helper()
@@ -1085,13 +1098,20 @@ func TestChartPrometheusRule(t *testing.T) {
 			{
 				name: "pgo disabled",
 				pgo:  false,
-				want: []string{"ProfgateNotReady", "ProfgateAdmissionSaturated", "ProfgateOIDCKeysStale"},
+				want: []string{
+					"ProfgateNotReady", "ProfgateAdmissionSaturated", "ProfgateOIDCKeysStale",
+					"ProfgateAuthLimiterSaturated", "ProfgateAuthUnavailable", "ProfgateUpstreamsUnreachable",
+					"ProfgateTLSReloadFailing", "ProfgateTLSCertificateExpiring",
+				},
 			},
 			{
 				name: "pgo enabled",
 				pgo:  true,
 				want: []string{
-					"ProfgateNotReady", "ProfgateAdmissionSaturated", "ProfgateOIDCKeysStale", "ProfgatePGONotSynced",
+					"ProfgateNotReady", "ProfgateAdmissionSaturated", "ProfgateOIDCKeysStale",
+					"ProfgateAuthLimiterSaturated", "ProfgateAuthUnavailable", "ProfgateUpstreamsUnreachable",
+					"ProfgateTLSReloadFailing", "ProfgateTLSCertificateExpiring",
+					"ProfgateNATSDisconnected", "ProfgatePGONotSynced",
 				},
 			},
 		} {
@@ -1169,6 +1189,112 @@ func TestChartPrometheusRule(t *testing.T) {
 		// unaggregated rate fires once per profile name a burst touched.
 		if !strings.HasPrefix(expr, "sum(") {
 			t.Errorf("expr %q is not summed, so one burst raises one alert per profile name", expr)
+		}
+	})
+
+	t.Run("every code label in an expression is a code the gateway writes", func(t *testing.T) {
+		pr := render[prometheusRule](t, "prometheusrule.yaml",
+			"--set", "prometheusRule.enabled=true",
+			"--set", "pgo.enabled=true",
+			"--set", "nats.url=nats://nats.profgate.svc:4222",
+		)
+		// internal/httpapi/codes.go is the registry of the codes a refusal writes into an envelope.
+		// The outcomes it deliberately leaves out -- ok among them -- are constants in internal/httpapi/server.go,
+		// and a rule that selects a request the gateway answered as asked names one of those,
+		// so both files are the source a selector is checked against.
+		var written []byte
+		for _, name := range []string{"codes.go", "server.go"} {
+			//nolint:gosec // the path is this repository's own source
+			source, err := os.ReadFile(filepath.Join("..", "internal", "httpapi", name))
+			if err != nil {
+				t.Fatalf("read internal/httpapi/%s: %v", name, err)
+			}
+			written = append(written, source...)
+		}
+
+		// A code selector is either an equality or an alternation, and every alternative in one is a code of its own.
+		selector := regexp.MustCompile(`code=~?"([^"]*)"`)
+		var checked int
+		for _, rule := range pr.Spec.Groups[0].Rules {
+			for _, match := range selector.FindAllStringSubmatch(rule.Expr, -1) {
+				for _, code := range strings.Split(match[1], "|") {
+					checked++
+					if !bytes.Contains(written, []byte(`"`+code+`"`)) {
+						t.Errorf("%s selects code %q, which internal/httpapi does not write", rule.Alert, code)
+					}
+				}
+			}
+		}
+		// A rewrite that renames the label leaves the loop above with nothing to check,
+		// which would otherwise read as every code being accounted for.
+		if checked == 0 {
+			t.Error("no code label value was read out of any expression: the pattern and the shipped rules have parted")
+		}
+	})
+
+	t.Run("the rules fire on the series they name", func(t *testing.T) {
+		promtool := promtoolBin(t)
+		pr := render[prometheusRule](t, "prometheusrule.yaml",
+			"--set", "prometheusRule.enabled=true",
+			"--set", "pgo.enabled=true",
+			"--set", "nats.url=nats://nats.profgate.svc:4222",
+		)
+
+		// The evaluated rule file carries each rule's expression, hold, and severity, and leaves the annotations out.
+		// promtool compares a firing alert's annotations as well as its labels,
+		// so a fixture that named them would pin every word of a description and fail on a wording repair.
+		// That the prose is there at all is the shipped set's assertion.
+		type evaluatedRule struct {
+			Alert  string            `json:"alert"`
+			Expr   string            `json:"expr"`
+			For    string            `json:"for"`
+			Labels map[string]string `json:"labels"`
+		}
+		type evaluatedGroup struct {
+			Name  string          `json:"name"`
+			Rules []evaluatedRule `json:"rules"`
+		}
+		var evaluated struct {
+			Groups []evaluatedGroup `json:"groups"`
+		}
+		for _, group := range pr.Spec.Groups {
+			rendered := evaluatedGroup{Name: group.Name}
+			for _, rule := range group.Rules {
+				rendered.Rules = append(rendered.Rules, evaluatedRule{
+					Alert:  rule.Alert,
+					Expr:   rule.Expr,
+					For:    rule.For,
+					Labels: rule.Labels,
+				})
+			}
+			evaluated.Groups = append(evaluated.Groups, rendered)
+		}
+		rules, err := yaml.Marshal(evaluated)
+		if err != nil {
+			t.Fatalf("serialize the rendered rules: %v", err)
+		}
+
+		// promtool resolves rule_files against its working directory,
+		// so the rendered rules and the checked-in fixture meet in one directory
+		// and the fixture names rules.yaml with no path built at runtime.
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "rules.yaml"), rules, 0o600); err != nil {
+			t.Fatalf("write the rendered rules: %v", err)
+		}
+		fixture, err := os.ReadFile(filepath.Join("testdata", "alerts_test.yaml"))
+		if err != nil {
+			t.Fatalf("read the alert fixture: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "alerts_test.yaml"), fixture, 0o600); err != nil {
+			t.Fatalf("write the alert fixture: %v", err)
+		}
+
+		//nolint:gosec // the executable comes from PATH and the arguments are this test's literals
+		cmd := exec.CommandContext(t.Context(), promtool, "test", "rules", "alerts_test.yaml")
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Errorf("promtool test rules: %v\n%s\nthe rules it read:\n%s", err, out, rules)
 		}
 	})
 
