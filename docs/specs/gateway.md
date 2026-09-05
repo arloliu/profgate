@@ -2913,7 +2913,7 @@ amends the following text.
 
 | File | Section | Change |
 |---|---|---|
-| `docs/specs/gateway.md` | *Network* | both listeners set `ReadHeaderTimeout` 10s and `IdleTimeout` 120s and route `ErrorLog` through `slog` at `error`; no server-wide `ReadTimeout` or `WriteTimeout`; a route that reads or probes a body sets a 10-second read deadline through `http.ResponseController`, cleared only after the body is read to its end and kept after a failed read |
+| `docs/specs/gateway.md` | *Network* | both listeners set `ReadHeaderTimeout` 10s and `IdleTimeout` 120s and route `ErrorLog` through `slog` at `error`; no server-wide `ReadTimeout` or `WriteTimeout`; every request that carries a body gets a 10-second read deadline through `http.ResponseController` when it enters the API handler, and a route that reads or probes the body keeps it, cleared only after the body is read to its end and kept after a failed read |
 | `docs/specs/gateway.md` | *Confirmation before connecting* | a client gone during the confirmation read is `client_gone`, not `discovery_unavailable`, and `profgate_confirm_total` counts it under `result="client_gone"` |
 | `docs/specs/gateway.md` | *Proxy behavior* | keep-alives kept with the pool bounded by `MaxIdleConns` and `IdleConnTimeout`; a write deadline at the budget's end set when the response is committed and left for `net/http` to clear; `drain_expired` in the outcome table |
 | `docs/specs/gateway.md` | *Logging* | klog writes through the process's `slog` logger, at the level client-go emits and outside the audit record |
