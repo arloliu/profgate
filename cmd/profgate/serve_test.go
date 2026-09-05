@@ -1601,8 +1601,9 @@ func TestNATSCallbacksSplitTheirDuties(t *testing.T) {
 
 	opts.OnConnectionChange(false)
 
-	if got := rec.connectedCalls(); len(got) != 1 || got[0] {
-		t.Fatalf("NATSConnected calls after a lost connection = %v, want exactly [false]", got)
+	if got := rec.connectedCalls(); len(got) != 2 || got[0] || got[1] {
+		t.Fatalf("NATSConnected calls after a lost connection = %v, want exactly [false false]: "+
+			"the write before the first dial, then the lost connection", got)
 	}
 	if closed(sess.GenerationMoved()) {
 		t.Fatal("a lost connection moved the runtime generation through OnConnectionChange: " +
@@ -1615,8 +1616,9 @@ func TestNATSCallbacksSplitTheirDuties(t *testing.T) {
 		t.Fatal("OnGenerationMove did not reach Runtime.MoveGeneration: " +
 			"a watch cut under a live connection would leave a parked request waiting out its own deadline")
 	}
-	if got := rec.connectedCalls(); len(got) != 1 {
-		t.Fatalf("NATSConnected calls after a generation move = %v, want the one the lost connection made: "+
+	if got := rec.connectedCalls(); len(got) != 2 {
+		t.Fatalf("NATSConnected calls after a generation move = %v, "+
+			"want the write before the first dial and the one the lost connection made, and nothing else: "+
 			"a moved generation is not a connection report", got)
 	}
 }
@@ -1745,9 +1747,12 @@ func TestServePGO(t *testing.T) {
 			gatewayOpts{enabled: true, preflight: pf, worker: newStubWorker()})
 
 		gw.waitReady(t, waitTimeout)
-		waitFor(t, waitTimeout, "NATSConnected(true)", func() bool { return len(gw.rec.connectedCalls()) > 0 })
-		if got := gw.rec.connectedCalls(); len(got) != 1 || !got[0] {
-			t.Fatalf("NATSConnected calls = %v, want exactly [true]", got)
+		waitFor(t, waitTimeout, "NATSConnected(false) then NATSConnected(true)", func() bool {
+			return len(gw.rec.connectedCalls()) > 1
+		})
+		if got := gw.rec.connectedCalls(); len(got) != 2 || got[0] || !got[1] {
+			t.Fatalf("NATSConnected calls = %v, want exactly [false true]: "+
+				"the transport is down until the preflight reports it up", got)
 		}
 	})
 

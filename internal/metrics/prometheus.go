@@ -94,7 +94,7 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 		}),
 		natsConnected: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "profgate_nats_connected",
-			Help: "Whether the NATS connection is currently up: 1 if up, 0 otherwise.",
+			Help: "Whether the NATS connection is currently up: 1 if up, 0 if down, or NaN on a process that makes none.",
 		}),
 		tlsReloads: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "profgate_tls_reloads_total",
@@ -151,6 +151,11 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 	// An install with no server.tls never calls TLSCertificateExpiry,
 	// so the gauge must not read as a certificate that expired at the epoch.
 	p.tlsCertificateTTL.Set(math.NaN())
+
+	// An install with pgo.enabled false configures no NATS connection and never calls NATSConnected,
+	// so the gauge must not read as a transport that is down.
+	// The process that does configure one writes 0 before its first dial.
+	p.natsConnected.Set(math.NaN())
 
 	reg.MustRegister(
 		p.requests, p.requestDuration, p.confirms, p.profilesInFlight, p.discoverySynced,

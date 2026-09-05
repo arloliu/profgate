@@ -252,12 +252,35 @@ func TestPrometheus_NATSConnected(t *testing.T) {
 	rec.NATSConnected(true)
 
 	want := `
-# HELP profgate_nats_connected Whether the NATS connection is currently up: 1 if up, 0 otherwise.
+# HELP profgate_nats_connected Whether the NATS connection is currently up: 1 if up, 0 if down, or NaN on a process that makes none.
 # TYPE profgate_nats_connected gauge
 profgate_nats_connected 1
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "profgate_nats_connected"); err != nil {
 		t.Errorf("profgate_nats_connected: %v", err)
+	}
+}
+
+// TestPrometheus_NATSBeforeAnyConnection covers the gauge's construction-time state,
+// before any connection has been attempted.
+// A process that makes no NATS connection at all must not report a transport it never configured as down:
+// NaN crosses no comparison the way 0 would,
+// so a rule reading the gauge is inert on an install that runs no collection.
+func TestPrometheus_NATSBeforeAnyConnection(t *testing.T) {
+	reg := prometheus.NewPedanticRegistry()
+	rec := NewPrometheus(reg)
+
+	if got := testutil.ToFloat64(rec.natsConnected); !math.IsNaN(got) {
+		t.Errorf("profgate_nats_connected before any connection = %v, want NaN", got)
+	}
+
+	want := `
+# HELP profgate_nats_connected Whether the NATS connection is currently up: 1 if up, 0 if down, or NaN on a process that makes none.
+# TYPE profgate_nats_connected gauge
+profgate_nats_connected NaN
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "profgate_nats_connected"); err != nil {
+		t.Errorf("profgate_nats_connected before any connection: %v", err)
 	}
 }
 

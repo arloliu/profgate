@@ -585,8 +585,8 @@ func natsPreflight(
 		CredsFile:      nats.CredsFile,
 		ConnectTimeout: nats.ConnectTimeout,
 		// The connection callback drives profgate_nats_connected and nothing else.
-		// Without the report Preflight makes on its first connection,
-		// the gauge would read zero until the first reconnect.
+		// It is what moves the gauge off the zero written below,
+		// through the report Preflight makes on its first connection.
 		OnConnectionChange: deps.recorder.NATSConnected,
 		// Either move reaches this callback,
 		// the disconnect and the watch cut under a live connection alike,
@@ -594,6 +594,10 @@ func natsPreflight(
 		// so a request ended here always sees a generation that has moved.
 		OnGenerationMove: runtime.MoveGeneration,
 	}
+	// The gauge reads NaN on a process that makes no connection.
+	// This process makes one, so the transport is down until the callback above reports otherwise,
+	// and a rule over the gauge fires through an outage that never reaches the callback at all.
+	deps.recorder.NATSConnected(false)
 	backoff := preflightBackoffFirst
 	for {
 		client, err := deps.natsPreflight(ctx, opts, instance, logger)

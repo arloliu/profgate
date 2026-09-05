@@ -211,6 +211,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which no expiry threshold could be written over.
   An operator's own rule that compared the gauge to zero no longer matches on such an install;
   `profgate_tls_certificate_expiry_seconds - time() < 604800` is the form that now works everywhere.
+- **`profgate_nats_connected` reads `NaN` where no NATS connection is ever made.**
+  It read `0` on every install with `pgo.enabled: false` — a transport that was never configured, reported as down —
+  which no rule could be written over.
+  It now reads `0` from the moment a process is configured to reach NATS, before its first attempt,
+  rather than only once a connection has been made and lost.
+  An operator's own `profgate_nats_connected == 0` rule no longer matches on an install that runs no collection,
+  and it now matches from the start of a NATS outage at startup instead of staying silent through it.
 
 ## [0.5.0] - 2026-09-03
 

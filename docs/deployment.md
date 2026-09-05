@@ -460,7 +460,7 @@ All metrics are on the ops port at `/metrics`.
 | `profgate_schedule_slots_total` | counter | `result` | Collection scheduling attempts |
 | `profgate_sweeper_deletes_total` | counter | `kind` | Sweeper deletions |
 | `profgate_collections_active` | gauge | | Collections currently active |
-| `profgate_nats_connected` | gauge | | 1 while the NATS connection is up |
+| `profgate_nats_connected` | gauge | | 1 while the NATS connection is up; `0` from the moment one is configured, before the first attempt; `NaN` where the process makes none |
 | `profgate_pgo_synced` | gauge | | 1 while every watch has replayed the current store generation and every cache has applied it |
 | `profgate_tls_reloads_total` | counter | `result` | Certificate load and reload outcomes, the startup load included |
 | `profgate_tls_certificate_expiry_seconds` | gauge | | When the served certificate expires, as a Unix timestamp; `NaN` until one is loaded |

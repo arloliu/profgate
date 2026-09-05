@@ -466,7 +466,7 @@ because it is not registered until `startPGO` runs (`cmd/profgate/serve.go:668`)
 `1` while the connection is up, and `0` again when it drops, is what the gauge already did.
 That expression is the one the alert task ships as `ProfgateNATSDisconnected`.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Three existing tests move and one is new, in two packages.
 
@@ -487,7 +487,7 @@ go test ./cmd/profgate/ -run 'TestServePGO|TestNATSCallbacksSplitTheirDuties'
 The metrics tests fail on the `HELP` string and on `0` where `NaN` is expected;
 the two in `cmd/profgate` fail on the call sequence, each naming the calls it got.
 
-- [ ] **Seed the gauge, write the zero, and say so where it is documented**
+- [x] **Seed the gauge, write the zero, and say so where it is documented**
 
 `docs/deployment.md:460`, the gauge's row in the metrics table, reads "1 while the NATS connection is up"
 and gains the two cases it does not name:
@@ -502,7 +502,7 @@ rather than only once a connection has been made and lost.
 An operator's own `profgate_nats_connected == 0` rule no longer matches on an install that runs no collection,
 and it now matches from the start of a NATS outage at startup instead of staying silent through it.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/metrics/prometheus.go internal/metrics/prometheus_test.go \
