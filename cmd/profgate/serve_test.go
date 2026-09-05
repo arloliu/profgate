@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -453,6 +454,9 @@ type gatewayOpts struct {
 	// into an HTTPS listener; tlsRefresh is how often they are read again.
 	tlsDir     string
 	tlsRefresh time.Duration
+	// idleTimeout is how long both listeners hold a keep-alive connection
+	// that sends nothing, zero meaning the production 120 seconds.
+	idleTimeout time.Duration
 	// authBlock, when set, is the raw top-level auth block written in place
 	// of the disabled one; authPoll is the users-file and cookie-key poll
 	// interval, zero meaning the production 30 seconds.
@@ -501,6 +505,7 @@ func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o gatewayOpts)
 		stop:     gw.stop,
 	}
 	deps.tlsRefresh = o.tlsRefresh
+	deps.idleTimeout = o.idleTimeout
 	deps.authPoll = o.authPoll
 	if o.preflight != nil {
 		deps.natsPreflight = o.preflight.fn()
@@ -859,6 +864,73 @@ func TestServe(t *testing.T) {
 		if got := gw.stderr.String(); got != "" {
 			t.Fatalf("stderr = %q, want nothing: operational output goes to stdout as JSON", got)
 		}
+	})
+
+	t.Run("an idle keep-alive connection is closed", func(t *testing.T) {
+		gw := startGatewayWith(t, fake.NewClientset(), defaultLimits(),
+			gatewayOpts{idleTimeout: 200 * time.Millisecond})
+		gw.waitReady(t, waitTimeout)
+
+		// Both listeners: a raw connection sends one complete request, reads
+		// the complete response, and then sends nothing.
+		// net/http parks waiting for the next request on the connection,
+		// and IdleTimeout is the only bound on that wait.
+		for _, tc := range []struct{ addr, path string }{
+			{gw.opsAddr, "/healthz"},
+			{gw.apiAddr, "/v1/openapi.json"},
+		} {
+			conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", tc.addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			if _, err := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", tc.path, tc.addr); err != nil {
+				t.Fatal(err)
+			}
+			reader := bufio.NewReader(conn)
+			resp, err := http.ReadResponse(reader, nil)
+			if err != nil {
+				t.Fatalf("GET %s%s: %v", tc.addr, tc.path, err)
+			}
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+
+			if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reader.ReadByte(); !errors.Is(err, io.EOF) {
+				t.Errorf("read after %s%s went idle: error = %v, want io.EOF: the listener held the idle connection", tc.addr, tc.path, err)
+			}
+		}
+	})
+
+	t.Run("a handshake failure is an error record on stdout", func(t *testing.T) {
+		dir := t.TempDir()
+		writeSelfSigned(t, dir)
+		gw := startGatewayWith(t, fake.NewClientset(), defaultLimits(), gatewayOpts{tlsDir: dir})
+		gw.waitReady(t, waitTimeout)
+
+		// Plaintext on the HTTPS listener fails the handshake,
+		// the one line net/http writes on its own that a test can provoke.
+		conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", gw.apiAddr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", gw.apiAddr); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, waitTimeout, "an ERROR record naming the TLS handshake error", func() bool {
+			for _, rec := range gw.records(t) {
+				if rec["level"] == "ERROR" && strings.Contains(fmt.Sprint(rec["msg"]), "TLS handshake error") {
+					return true
+				}
+			}
+
+			return false
+		})
 	})
 
 	t.Run("preflight forbidden", func(t *testing.T) {

@@ -40,6 +40,8 @@ const (
 	drainSlack = 30 * time.Second
 	// opsDrainTimeout bounds the ops listener's shutdown.
 	opsDrainTimeout = 5 * time.Second
+	// idleTimeout is how long either listener holds a keep-alive connection that sends nothing before closing it.
+	idleTimeout = 120 * time.Second
 	// syncedPollInterval is how often the lifecycle re-checks HasSynced after the informers start.
 	syncedPollInterval = 50 * time.Millisecond
 	// syncedReportInterval is how often an informer sync still waiting says so.
@@ -88,6 +90,7 @@ type serveDeps struct {
 	pgoWorker     collectionWorker                       // production: nil, so serve builds a pgo.Worker
 	listen        listenFunc                             // production: nil, so serve uses net.ListenConfig
 	tlsRefresh    time.Duration                          // production: 0, so tlscert re-reads on its own interval
+	idleTimeout   time.Duration                          // production: 0, so both listeners close an idle connection after idleTimeout
 	authPoll      time.Duration                          // production: 0, so the users file and cookie key file are polled every 30 seconds
 }
 
@@ -229,8 +232,26 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		defer inFlightRequests.Add(-1)
 		api.ServeHTTP(w, r)
 	})
-	apiServer := &http.Server{Handler: counted, ReadHeaderTimeout: httpapi.RequestReadTimeout}
-	opsServer := &http.Server{Handler: ops.New(ready, deps.registry), ReadHeaderTimeout: httpapi.RequestReadTimeout}
+	// A keep-alive connection that sends nothing is closed after idle,
+	// and every line net/http writes on its own is an ERROR record on stdout under the process's handler,
+	// a TLS handshake failure and a recovered handler panic among them.
+	idle := idleTimeout
+	if deps.idleTimeout > 0 {
+		idle = deps.idleTimeout
+	}
+	errorLog := slog.NewLogLogger(logger.Handler(), slog.LevelError)
+	apiServer := &http.Server{
+		Handler:           counted,
+		ReadHeaderTimeout: httpapi.RequestReadTimeout,
+		IdleTimeout:       idle,
+		ErrorLog:          errorLog,
+	}
+	opsServer := &http.Server{
+		Handler:           ops.New(ready, deps.registry),
+		ReadHeaderTimeout: httpapi.RequestReadTimeout,
+		IdleTimeout:       idle,
+		ErrorLog:          errorLog,
+	}
 
 	// The API listener serves HTTPS when the configuration names a certificate,
 	// and the ops listener never does: its readers are the kubelet and the

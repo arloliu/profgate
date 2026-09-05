@@ -676,7 +676,7 @@ so every line `net/http` writes on its own is an `ERROR` record on stdout under 
 the level the spec names (`docs/specs/gateway.md:253-255`).
 `gatewayOpts` (`cmd/profgate/serve_test.go:445-463`) gains `idleTimeout`, copied into `deps` where `tlsRefresh` is (`:503`).
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Two subtests of `TestServe`.
 
@@ -694,7 +694,7 @@ The red state:
 go test -race -count=1 ./cmd/profgate/ -run 'TestServe/an_idle_keep-alive|TestServe/a_handshake_failure'
 ```
 
-- [ ] **Set the two fields and say so**
+- [x] **Set the two fields and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **An idle connection is closed after two minutes, and `net/http`'s own lines are JSON on stdout.**
@@ -703,7 +703,7 @@ both listeners now close it after 120 seconds.
 A TLS handshake failure and a recovered handler panic were printed to stderr as text, outside `server.logLevel`;
 they are now `ERROR` records on stdout like everything else the gateway says.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check cmd/profgate/serve.go CHANGELOG.md

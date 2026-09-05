@@ -196,6 +196,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a refused request whose body never arrives no longer holds the connection.
   The bound is a constant, as the header bound is; there is no key for it.
   A client fetching several short profiles from one Pod still reuses its connection.
+- **An idle connection is closed after two minutes, and `net/http`'s own lines are JSON on stdout.**
+  A keep-alive connection that sent nothing after its last request was held until the process exited;
+  both listeners now close it after 120 seconds.
+  A TLS handshake failure and a recovered handler panic were printed to stderr as text, outside `server.logLevel`;
+  they are now `ERROR` records on stdout like everything else the gateway says.
 - **Three log lines name the work they belong to.**
   A failed collection sample names its Collection,
   so it is attributable to one of the several a replica may be running,
