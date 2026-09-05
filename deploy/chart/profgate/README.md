@@ -485,7 +485,7 @@ three always and a fourth only when `pgo.enabled`:
 
 | Alert | Expression | Fires when |
 |---|---|---|
-| `ProfgateNotReady` | `profgate_discovery_synced == 0` | A replica's discovery cache has been unsynced for ten minutes, so `/readyz` answers 503 |
+| `ProfgateNotReady` | `profgate_discovery_synced == 0` | A replica has not completed its initial informer sync for ten minutes, so `/readyz` answers 503. The gauge is also `0` while an unreachable issuer or a failing Kubernetes preflight keeps the informers from starting, and it never returns to `0`, so it does not report a replica that goes unready later |
 | `ProfgateAdmissionSaturated` | `sum(rate(profgate_requests_total{code="too_many_profiles"}[5m])) > 0` | The admission gate is at `limits.maxConcurrentProfiles` and answering 429 |
 | `ProfgateOIDCKeysStale` | `profgate_oidc_jwks_age_seconds > 43200` | Signing keys have not been fetched for 12 hours |
 | `ProfgatePGONotSynced` | `profgate_pgo_synced == 0` | The watched PGO caches have been unsynced for ten minutes, so the process decides nothing from them and every PGO route on a gateway replica is refusing |

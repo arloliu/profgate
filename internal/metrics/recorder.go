@@ -68,7 +68,9 @@ type Recorder interface {
 	Confirm(result string)
 	// ProfilesInFlight adjusts the count of profile fetches currently in progress by delta.
 	ProfilesInFlight(delta int)
-	// DiscoverySynced reports whether the discovery cache is currently synced.
+	// DiscoverySynced reports whether the initial informer sync has completed.
+	// It is called once, on the branch that reports that sync,
+	// and never reports false afterwards.
 	DiscoverySynced(synced bool)
 	// PGOSyncedFrom registers read as the source of the PGO replay barrier gauge.
 	// The gauge exists from this call on, and never before it,

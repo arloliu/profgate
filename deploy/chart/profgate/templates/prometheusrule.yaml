@@ -25,10 +25,15 @@ spec:
           labels:
             severity: critical
           annotations:
-            summary: A profgate replica is not serving.
+            summary: A profgate replica has not completed its initial discovery sync.
             description: >-
-              The discovery cache has been unsynced for ten minutes, so /readyz answers 503
-              and no traffic reaches this replica.
+              This replica has reported no initial informer sync for ten minutes, so
+              /readyz answers 503 and no traffic reaches it. The gauge says that and
+              nothing more: it also reads 0 while an unreachable issuer or a Kubernetes
+              preflight that has not passed keeps the informers from starting, and it
+              never returns to 0, so a replica that goes unready later -- draining, an
+              issuer it cannot reach, or a NATS preflight still retrying -- is not what
+              fired this.
         - alert: ProfgateAdmissionSaturated
           expr: sum(rate(profgate_requests_total{code="too_many_profiles"}[5m])) > 0
           for: 10m

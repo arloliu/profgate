@@ -65,7 +65,7 @@ func NewPrometheus(reg prometheus.Registerer) *Prometheus {
 		}),
 		discoverySynced: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "profgate_discovery_synced",
-			Help: "Whether the discovery cache is currently synced: 1 if synced, 0 otherwise.",
+			Help: "Whether the initial discovery sync has completed: 1 once every informer has finished its first list, 0 before that.",
 		}),
 		collections: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "profgate_collections_total",

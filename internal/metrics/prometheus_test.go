@@ -93,7 +93,7 @@ func TestPrometheus_DiscoverySynced(t *testing.T) {
 	rec.DiscoverySynced(true)
 
 	want := `
-# HELP profgate_discovery_synced Whether the discovery cache is currently synced: 1 if synced, 0 otherwise.
+# HELP profgate_discovery_synced Whether the initial discovery sync has completed: 1 once every informer has finished its first list, 0 before that.
 # TYPE profgate_discovery_synced gauge
 profgate_discovery_synced 1
 `

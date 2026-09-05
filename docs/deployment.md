@@ -453,7 +453,7 @@ All metrics are on the ops port at `/metrics`.
 | `profgate_request_duration_seconds` | histogram | `profile` | Duration of completed `/v1` requests |
 | `profgate_confirm_total` | counter | `result` | Pod confirmation attempts |
 | `profgate_profiles_in_flight` | gauge | | Profile fetches currently in progress |
-| `profgate_discovery_synced` | gauge | | 1 when the discovery cache is synced |
+| `profgate_discovery_synced` | gauge | | 1 once the initial discovery sync has completed; never back to 0 |
 | `profgate_collections_total` | counter | `result` | Collections, by terminal result |
 | `profgate_collection_samples_total` | counter | `result` | Collection worker samples |
 | `profgate_collection_duration_seconds` | histogram | | Duration of completed Collections |

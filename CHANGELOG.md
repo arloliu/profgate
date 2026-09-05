@@ -127,6 +127,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `collect` now takes `--file <path>`, the name `pgo policy set` already used;
   `--body` is gone, and no alias is registered for it.
   A script that still sends `--body` now exits 2, `flag provided but not defined: -body`.
+- **`ProfgateNotReady` and `profgate_discovery_synced` say what the gauge measures.**
+  The alert claimed that a replica was not serving,
+  and the gauge's own `HELP` text called it a current cache state,
+  where it reports the completion of the initial informer sync alone and never returns to `0`.
+  The alert now names that gate, names the three readiness gates it does not report,
+  and says that the gauge is also `0` while an issuer or a Kubernetes preflight keeps the informers from starting.
+  The expression, the window, and the severity are unchanged.
 
 ### Fixed
 

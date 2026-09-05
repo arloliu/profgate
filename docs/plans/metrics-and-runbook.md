@@ -601,7 +601,7 @@ The phrase also appears in the roadmap, the accepted spec's amendment table, and
 which are records of the repair rather than operator-facing text,
 so a `grep` across all of `deploy/` and `docs/` finds them and proves nothing.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 No new test, and a red state that already exists.
 `TestPrometheus_DiscoverySynced` pins the `HELP` string in its expected exposition
@@ -624,7 +624,7 @@ The rendered output is confirmed once with:
 helm template deploy/chart/profgate --set prometheusRule.enabled=true --show-only templates/prometheusrule.yaml
 ```
 
-- [ ] **Rewrite the annotations, the two strings, and the two table rows**
+- [x] **Rewrite the annotations, the two strings, and the two table rows**
 
 `CHANGELOG.md`, `### Changed`:
 **`ProfgateNotReady` and `profgate_discovery_synced` say what the gauge measures.**
@@ -634,7 +634,7 @@ The alert now names that gate, names the three readiness gates it does not repor
 and says that the gauge is also `0` while an issuer or a Kubernetes preflight keeps the informers from starting.
 The expression, the window, and the severity are unchanged.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/metrics/prometheus.go internal/metrics/recorder.go \
