@@ -1691,7 +1691,7 @@ start
   v
 [preflight]   list+watch each resource (section 3.1)
   |   403 on any tuple ------------------------------> log pair, exit 1
-  |   other error, including a 10s per-call deadline: retry with backoff 1s..30s,
+  |   other error, including a 10s per-call deadline: retry with backoff 1s..30s, doubling with jitter,
   |   forever, logging resource, verb, and error on each attempt
   v
 [syncing]     informers start; wait for HasSynced

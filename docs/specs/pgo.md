@@ -297,7 +297,7 @@ the process logs the bucket name and the operation or field and exits non-zero.
 A probe key or object left behind by a crash between its create and its delete is ignored by every reader
 and deleted by the sweeper (section 8.9).
 A connection failure is transient and is retried with the same backoff as the Kubernetes preflight
-(`1s..30s`, forever, logging each attempt);
+(`1s..30s`, doubling with the jitter of section 5.1, forever, logging each attempt);
 `/readyz` stays `503` until the NATS preflight has passed when `pgo.enabled` is true.
 
 ### 3.3 NATS permissions
@@ -584,7 +584,8 @@ Sentinel errors, matched with `errors.Is`:
 | `ErrUnavailable` | the connection is down, the request timed out, or the store or cache generation is no longer current |
 
 Every call carries a 5-second context deadline in addition to the caller's;
-the worker's lease renewals use a shorter one (section 8.4).
+the worker's lease renewals use a shorter one (section 8.4),
+and the two transfers carry it per wait on the store rather than over the transfer (below).
 `ErrUnavailable` maps to `503 pgo_unavailable` on the API and to "stop and let the lease expire" in the worker.
 Every store operation goes through a `Stores` view bound to one generation (`View(gen)`);
 the view checks `gen` against the current generation before issuing the call and again when the result arrives,
@@ -592,6 +593,52 @@ and reports `ErrUnavailable` on either mismatch, whatever the server answered,
 because the caller's view of the bucket is no longer the one the result belongs to.
 A disconnect between the check and the call, or between the call and its result,
 therefore surfaces to the caller as unavailability rather than as a success it would act on from stale caches.
+
+**Transfers.**
+The call deadline bounds every wait on the store and never a transfer as a whole.
+For `Get`, establishment is nats.go's read of the object's metadata, one direct get of its last meta message,
+and the creation of the ordered consumer over the object's chunk subject;
+both run under the call deadline before the reader is returned,
+and an absent name is `ErrObjectNotFound` from the metadata read.
+The bytes then follow the caller's context:
+the seam reads the chunk messages itself through that consumer,
+awaits each chunk under the call deadline,
+hands it through a pipe the caller drains at its own pace,
+and verifies the SHA-256 the metadata carries once the last chunk has arrived.
+nats.go's own `ObjectStore.Get` is not used for the transfer,
+because it binds the subscription, every chunk, and every `Read` to the one context the call was given,
+and a `Read` waiting for a chunk returns only at that context's deadline,
+so no single context can bound establishment at 5 seconds and let the bytes follow a request.
+The reader ends with the caller's context or with `Close`, whichever comes first:
+either stops the consumer, closes the pipe, and returns the pending `Read` with the cause.
+A download therefore ends when its request does,
+with the client leaving or with the drain cut of [`gateway.md`](gateway.md) *Startup and shutdown*,
+and a slow client is never the reason a download is cut;
+a store that stops delivering fails the pending `Read` once a wait for the next chunk has lasted the call deadline,
+time spent handing bytes to the caller excluded,
+which section 10.5 reports as `artifact_stream_failed`.
+For `Put`, establishment is nats.go's read of any metadata already stored under the name,
+and the bytes follow the context the caller gave.
+The owner's work goroutine takes that context from the owner loop (section 8.4):
+its cutoff is `committedLeaseUntil - skewMargin`, moved out by every successful renewal, and it carries no deadline,
+and the seam adds none of its own to a `Put`.
+nats.go consults that context before every chunk and while it waits for the last acknowledgement,
+and, because the context carries no deadline,
+bounds the metadata read and each chunk's acknowledgement by its own 5-second default,
+so a store that stops acknowledging fails the upload after one such wait,
+plus the bounded waits nats.go's cleanup of the partial object adds,
+unless the owner's cancellation at the cutoff ends the attempt first;
+the work reports `artifact_store_failed`,
+and the owner commits it only while it still holds the lease and the deadline (section 8.6).
+A `Put` the context cancels returns `ErrUnavailable`,
+and whether an object stands under the name is then indeterminate:
+nats.go publishes the metadata before it waits for the last acknowledgements,
+and its cleanup runs under the same cancelled context.
+Such an object carries this attempt's name, no `completed` record ever names it,
+and the orphan rule of section 8.9 removes it.
+The reader a `Put` consumes is a buffer in memory (section 8.6), so nothing on the caller's side can stall it.
+No configuration key exists for any of this:
+5 seconds is the seam's own constant, and the two streams carry the context their callers already hold.
 
 **The replay barrier.**
 nats.go delivers the current value of every key under a watched prefix first,
@@ -647,6 +694,27 @@ and every cache read it makes takes that generation,
 so a read arriving after those caches were reset answers `503 pgo_unavailable` rather than an empty listing.
 `Caches.Run` clears its four synced flags at the start of every attempt,
 so an attempt that fails partway through the set leaves the barrier shut until a whole set has replayed again.
+
+**Re-opening a watch.**
+A watch cut for the first time after a completed replay is re-opened at once;
+a re-open that fails, and one that succeeds but is cut again before its replay completes,
+each wait on a capped exponential backoff with jitter before the next attempt:
+the wait doubles from 50 ms to a cap of 30 s,
+and each wait is drawn uniformly between half of that figure and the whole of it.
+50 ms is the first wait
+because a bucket cut and recreated at once, the common reason a re-open fails, then costs one short wait;
+30 s is the cap because it is the preflight's cap,
+and an absent bucket then costs each watch waits of 15 to 30 seconds between attempts;
+the draw is from the upper half of the schedule:
+the watches of one process and the replicas of one Deployment spread out,
+and no wait shrinks below half its schedule.
+The backoff resets to its first wait once the re-opened watch has delivered its replay marker under the new generation,
+so a later cut starts short again,
+and a re-open that succeeds but is cut before it replays advances the schedule and waits like a failed open.
+The process-level retries share the shape ([`gateway.md`](gateway.md) *Startup and shutdown*):
+the Kubernetes preflight, the NATS preflight, issuer discovery, and the watched-cache re-open double from 1 s to the same 30 s cap with the same jitter,
+so replicas that lost one dependency at one moment do not retry in step.
+None of these figures is configurable.
 
 **How a move is reported.**
 `Options.OnGenerationMove`, when set, runs after either event has moved the store generation:
@@ -1057,6 +1125,28 @@ or until the sweeper's own pass does (section 8.9),
 so a receipt never names a Collection that does not exist for longer than one of those passes.
 Nothing therefore depends on the sweeper telling "not created yet" from "failed to create".
 
+**The context the writes run under.**
+`publish` runs under its caller's context until the first write, the record's `Create`, has been acknowledged,
+and from then on under a context of its own,
+detached from the caller's and bounded at 30 seconds from that first write,
+so the writes that follow — the active create, the receipt, the `pending` update,
+or the deletes a loser and a withdrawal make — finish whether or not the caller is still there.
+A cancellation that lands while that first write is in flight is the indeterminate case the pseudocode already has:
+the record may exist, the reservation stays tracked, and the release rule resolves it.
+For `POST /collections` the caller's context is the request's,
+and a client that leaves after the `Create` has been acknowledged leaves no `initializing` record behind
+while the continuation runs inside its budget;
+one that leaves while the `Create` is in flight, or a continuation the budget cuts,
+can leave an `initializing` record, which the scan fails `not_published` as it does for a creator that died
+(section 10.2 says what that client sees);
+for the scheduler it is the tick's, which ends only with the process.
+30 seconds is a bounded continuation budget, not a promise that the remaining writes finish inside it:
+it is half the minute after which the scan fails an unfinished record `not_published`,
+a publication its bound cuts leaves the state a creator that died leaves,
+which that scan already resolves, and no new rule is needed for it.
+Shutdown waits for no publication in flight beyond that bound, and needs to wait for none:
+whatever a cut one leaves is that same state.
+
 Two creates decide, and the cache decides nothing:
 the slot key is one Collection per slot,
 the `active.<ns>.<svc>` key is one live Collection per Service, whatever its origin.
@@ -1351,10 +1441,11 @@ after an owner dies, the last thing any watch delivered was a valid lease,
 and nothing else would ever revisit the record.
 
 ```text
-scan, every leaseTTL / 2:
+scan, every leaseTTL / 2, and after every job.* delivery:
   gen := c.Generation(); if !c.Synced(gen): return
   jobs := c.View(gen).Jobs                                // one view for the whole scan
   for each cached record with state in (initializing, pending, running):
+      if !due(cached, now): continue                     // decided from the cache alone; no Get
       entry := jobs.Get("job.<id>")                      // latest, with its revision
       switch:
       case entry.state == initializing and entry.createdAt + 1m + skewMargin < now:
@@ -1365,6 +1456,11 @@ scan, every leaseTTL / 2:
           terminate(entry, failed, deadline_exceeded)
       case claimable(entry):
           claim(entry)
+
+due(cached, now):                                        // leaseUntil, claimBy, deadline, createdAt from the cache
+  cached.state == initializing and cached.createdAt + 1m + skewMargin < now
+  or cached.state == pending and (cached.claimBy + skewMargin < now or a local slot is free)
+  or cached.state == running and (cached.leaseUntil + skewMargin < now or cached.deadline + skewMargin < now)
 
 terminate(entry, state, reason):
   entry.state = state; entry.reason = reason; entry.finishedAt = now
@@ -1398,6 +1494,21 @@ claim(entry):
 
 The `Get` before the `Update` is what makes the revision the replica compares against most recent;
 it is not a pre-check, and the `Update` alone decides.
+The cache entry carries `leaseUntil`, `claimBy`, `deadline`, and `createdAt` beside the state,
+so `due` is decided from the cache alone and a pass reads fresh only the records it may act on:
+a `pending` record while this replica has a free slot or once its `claimBy` has passed,
+a `running` record whose lease or deadline has lapsed,
+and an `initializing` one past its grace.
+A pass still walks every cached nonterminal record, local work bounded by the count of section 7.2,
+and issues one `Get` per cached due candidate rather than one per nonterminal record,
+so what a delivery costs the store is proportional to the records due at that moment,
+not to the live Collections in the bucket.
+The cache is a candidate filter here as everywhere and never the authority:
+a cached lease is never later than the store's, because a renewal only extends it and the cache lags the store,
+so lag in a lease can make a pass read a record it need not and never skip one whose lease has lapsed;
+a change of state — an `initializing` record that became `pending` — is a candidate only once the watch has delivered it,
+which is the rule the claim on delivery already lives by;
+the fresh `Get` still precedes every `Update`, and the `Update` alone decides.
 The ceiling check comes first, on every claim and reclaim alike:
 a record carries the policy snapshot it was created under,
 and the ceilings that validated it then are not the ceilings of whichever collector claims it now —
@@ -1803,6 +1914,17 @@ Because the record is created before the key (section 7.2), a fresh read never f
 a key left by a creator that died is freed once the scan has failed its `initializing` record.
 
 Losers observe `ErrRevisionMismatch` and do nothing; the watch delivers the winner's write.
+A `completed` to `expired` update that fails for any other reason —
+`ErrUnavailable`, or an error the seam does not name —
+is logged at warn with the Collection and the error
+and counted under `profgate_pgo_store_failures_total{op="expire"}` (section 12.3),
+here and on the two read paths that make the same flip (sections 10.5 and 10.6);
+whether the update landed is then indeterminate — a result can be lost after the server committed it —
+and the next pass or the next reader observes what stands:
+a record still `completed` is flipped again, and one already `expired` is left alone.
+A probe key listing that fails gets the same treatment under `op="probe_list"`:
+the pass skips that bucket's probe keys, writes one warn record, counts once, and lists again on its next pass.
+The lost race stays silent, because it is the ordinary outcome of two actors reaching one transition.
 The sweeper never touches `initializing`, `pending`, or `running` records; the worker's scan does.
 
 **Cost.**
@@ -2068,6 +2190,18 @@ Location: /v1/collections/7h2k9m4p6r8t0v1w3x5y
 {"id": "7h2k9m4p6r8t0v1w3x5y", "state": "pending"}
 ```
 
+A publication finishes once it has begun:
+after the record's first write has landed it runs under its own bounded context (section 7.2),
+so a client that leaves between that write and the last ends its request `client_gone`, and nothing else changes.
+When the publication won the active key and its remaining writes were acknowledged inside that budget,
+the Collection exists and is `pending`,
+its receipt names it when the request carried a key,
+the listing of section 10.3 shows it when the request did not,
+and no `initializing` record is left holding the Service;
+a publication ends as section 7.2 already has it
+when it lost the key, could not write its receipt, lost its store generation, or outran the budget,
+and the client's leaving changes none of that.
+
 **The `Idempotency-Key` header.**
 The create commits before it answers,
 so a caller whose response never arrived holds no identifier for a Collection that may be running.
@@ -2325,6 +2459,12 @@ and a client had no way to ask for the rest.
 `limit` still stops at 100:
 a page is built from a cache in memory and returned in one response,
 and a client that wants more asks again with the cursor.
+A page is built from the Service's own records:
+the cache indexes its records per Service, maintained as each `job.*` entry is applied,
+so a listing costs time and memory proportional to that Service's retained records
+and not to every record the bucket holds,
+under the cache lock and outside it alike:
+sorting the Service's `k` candidates costs `k log k` and copying them `k`.
 
 ### 10.4 Get a Collection
 
@@ -2476,6 +2616,16 @@ The body is streamed, not buffered, and the outcome is classified as the gateway
 A download in progress does not protect its object from expiry;
 the sweeper deletes on schedule and the reader sees `artifact_stream_failed`.
 Retention is hours and a download is seconds, so the race is rare and the client retries.
+
+The stream is bounded by the request and by nothing shorter (section 5.1):
+the seam's 5-second call deadline covers opening the object and each wait for a chunk,
+and the bytes follow the request context,
+so a client that drains a large artifact slowly is served to the end,
+and a store that stops delivering mid-body ends the stream `artifact_stream_failed`
+one call deadline into a wait for the next chunk, time spent handing bytes to the client not counted.
+No configuration key bounds a download.
+A flip to `expired` whose update fails for a reason other than a lost race is logged and counted as section 8.9 has it;
+the answer is `410 artifact_gone` either way, because the object is gone whether or not the record says so yet.
 
 ### 10.6 The latest completed Collection
 
@@ -2863,8 +3013,12 @@ The seam emits one record whenever the store generation moves,
 naming what moved it: the disconnected callback, or the watch whose subscription closed and the prefix it carried.
 Re-opening the watches emits a record only when its outcome changes —
 one when a re-open starts failing, carrying the error, and one when every watch is open and has replayed again.
-The re-open retries on a fixed interval and a retry logs nothing,
+The re-open retries on the backoff of section 5.1 and a retry logs nothing,
 so a bucket that stays absent for an hour leaves two records rather than one per retry.
+
+A `completed` to `expired` update that fails for a reason other than a lost race,
+and a probe key listing that fails,
+each write one record at warn naming the error, beside the counter of section 12.3 (section 8.9).
 
 ### 12.2 Health
 
@@ -2901,6 +3055,17 @@ so `/readyz` is green and every PGO route refuses for as long as that lasts.
 | `profgate_pgo_collector_available` (gauge) | — |
 | `profgate_pgo_synced` (gauge) | — |
 | `profgate_nats_connected` (gauge) | — |
+| `profgate_pgo_store_failures_total` (counter) | `op` (`expire`/`probe_list`) |
+
+`profgate_pgo_store_failures_total` counts a store operation that returned an error other than a lost race:
+`expire` is a `completed` to `expired` update that returned an error other than `ErrRevisionMismatch`,
+whose durable outcome may be indeterminate and is observed by the next pass or reader,
+on the sweeper's path and on the two read paths that make the same flip,
+and `probe_list` is a probe key listing the sweeper could not take (section 8.9).
+It is on both roles, because both make the flip, and it exists only when `pgo.enabled`.
+It is a series of its own because no existing counter counts a write that did not land:
+`profgate_collections_total` counts transitions that did, once each,
+and `profgate_sweeper_deletes_total` counts deletions.
 
 `profgate_requests_total` gains `endpoint` values
 `pgo_policy`, `collections`, `collection`, `collection_profile`, `collection_cancel`,
@@ -2980,6 +3145,28 @@ shutdown introduces no state, no reason, and no rule of its own.
 
 The window this bounds is at most `leaseTTL - skewMargin` measured from the owner's last successful renewal,
 which at the shipped 60-second lease and its `leaseTTL / 3` renewal interval is between about 35 and 55 seconds.
+Each owner keeps one cutoff, an absolute time: `committedLeaseUntil - skewMargin` of the lease it last committed.
+A successful renewal moves that one value,
+and the same value is what cancels the work, what the final update is gated on, and what the drain waits to,
+so no two of them can disagree about when an owner's authority ends.
+The drain waits per owner on that cutoff and re-reads it when its timer fires:
+a renewal already in flight when the drain began can still succeed and commit a lease the drain has not seen,
+and an owner whose cutoff has moved by the time the timer fires is waited for again, to the new cutoff.
+A renewal whose result is still being installed when the drain reads is covered the same way,
+because the drain returns for an owner only once that owner has committed
+or has cancelled its work at the cutoff the value then holds;
+cancellation has therefore happened at the final cutoff before the drain returns.
+The cutoff moves at most once after the drain begins,
+because an owner issues no renewal once it has observed the drain
+and only a renewal issued before that can still land,
+so the window above holds as stated:
+at most `leaseTTL - skewMargin` from the last successful renewal, whichever side of the drain it was issued on.
+The set of Collections the drain waits for is keyed by Collection identifier,
+and a replica can hold two owners for one identifier in turn:
+an owner that aborted at its cutoff and whose work may still be draining,
+and the owner its own next scan started by reclaiming the record as the next attempt.
+An owner that exits removes only the entry it registered, never a successor's under the same identifier,
+so the drain waits for the second owner rather than returning while that owner still holds a lease.
 The collector therefore waits up to that window for its owner loops and then exits,
 whether or not a work goroutine is still inside `Merge`, `Compact`, `Write`, or a `Put`:
 those calls take no context (section 8.4), so waiting for them is unbounded and buys nothing,
@@ -3116,8 +3303,26 @@ one server per subtest.
   `List` returns every object with its `ModTime` and nothing for an empty bucket;
   every call against a stopped server returns `ErrUnavailable` within its deadline;
   an Object `Put`/`Get` round-trips 40 MiB byte for byte and `Get` of an absent name is `ErrObjectNotFound`;
+  `Get` of a 2 MiB object drained by a reader that takes ten seconds over it returns every byte,
+  with the call deadline shortened to a second so the test proves the deadline bounds establishment alone;
+  a reader whose context ends mid-stream returns the pending `Read` at once with the cause,
+  and so does one closed mid-stream, and neither leaves a consumer behind;
+  a server that stops delivering chunks fails the pending `Read` one call deadline into the wait for the next chunk,
+  and a reader that holds one chunk for ten seconds before taking the next is not failed;
+  a `Get` whose chunks arrive with a digest other than the metadata's fails the last `Read` rather than returning `EOF`;
+  a `Put` under a context with no deadline that is cancelled mid-upload returns `ErrUnavailable`,
+  and an object it leaves under the name is named by no `completed` record and is gone after the sweeper's orphan pass;
+  a `Put` whose acknowledgements are withheld fails after nats.go's 5-second acknowledgement wait and its bounded cleanup,
+  before a caller's cutoff a minute out,
+  and one that outlasts the call deadline against a caller's context with no deadline still lands;
+  a watch cut against an absent bucket is re-opened on waits that double from 50 ms toward the 30 s cap,
+  each between half of its schedule and the whole of it, counted by a hook,
+  and the backoff resets to 50 ms after the re-opened watch has replayed
+  (the test fails on the fixed 50 ms interval and on a reset made at the re-open rather than at the replay);
+  a re-open that succeeds and is cut again before its marker waits on the same schedule as a failed open
+  (the test fails when only an open error waits);
   a recording of the subjects the client publishes to during every operation is a subset of the section 3.3 list
-  (the NATS analogue of the recording-transport test).
+  (the NATS analogue of the recording-transport test), the chunk read of a `Get` included.
 - `internal/pgo` policy:
   layering one level deep, `null` as unset,
   every ceiling violated one field at a time at write and at read,
@@ -3206,7 +3411,14 @@ one server per subtest.
   `maxLiveCollections` reservations held by indeterminate creates,
   all resolved by later passes, leave the publisher accepting again,
   which is the regression that would otherwise answer `429 capacity_exhausted` for the life of the process;
-  `Publisher.Run(ctx)` performs one pass per 10-second tick of the injected clock and stops when `ctx` ends.
+  `Publisher.Run(ctx)` performs one pass per 10-second tick of the injected clock and stops when `ctx` ends;
+  a publication whose caller's context is cancelled once the first `Create` has returned still finishes its writes:
+  it leaves a `pending` record, an active key, and, when keyed, a receipt,
+  one cancelled before the first write is issued creates nothing,
+  and one cancelled while that write is in flight may leave an `initializing` record and keeps its reservation tracked
+  (the test fails when every write runs under the caller's context);
+  a publication whose own 30-second bound passes mid-way, with the fake store holding one write open,
+  leaves an `initializing` record and its active key, which the scan fails `not_published`.
 - `internal/pgo` collector heartbeat, with a fake clock:
   the writer `Create`s `collector.<instance>` on its first tick and `Update`s at its own revision thereafter,
   once every `leaseTTL / 3`, and writes nothing before the replay barrier clears;
@@ -3282,6 +3494,21 @@ one server per subtest.
   a claim whose `Update` returns `ErrUnavailable` profiles nothing,
   a trap pprof server and a counting `Discovery` prove no `Confirm` and no dial,
   and the replica's local slot is free again;
+  `Drain` begun while a renewal is blocked in the seam, the renewal then succeeding:
+  `Drain` returns at the cutoff of the lease that renewal committed, not at the one it first read,
+  and the work is cancelled before `Drain` returns,
+  with the renewal's result installed at a barrier after `Drain` first read the cutoff
+  (the test fails when the timer reads the cutoff once,
+  and when the work cancels on a timer armed later than the cutoff the drain read);
+  a replica with `maxActiveCollections: 2` that aborts a Collection at its cutoff
+  and reclaims it as the next attempt before the first owner's loop has exited:
+  `Drain` waits for the second owner, and the first owner's exit leaves the second owner's entry in place
+  (the test fails when the first owner's exit removes whatever entry its identifier names);
+  a scan over fifty `running` records whose cached leases are valid issues no `Get`,
+  and one after the fake clock passes `leaseUntil + skewMargin` issues one per record, counted by a fake store;
+  a replica at `maxActiveCollections` reads no `pending` record until one of them passes `claimBy`;
+  a cache whose lease lags the store's reads the record fresh and claims nothing whose fresh lease is valid,
+  which is the candidate-filter rule stated for the scan;
   a running merge whose serialized size crosses `maxMergedBytes` fails `merged_too_large` before the next sample is merged;
   two valid profiles of one version with different sample types: the second is `incompatible_profile`,
   the running profile is unchanged, and the round continues;
@@ -3318,7 +3545,13 @@ one server per subtest.
   `ErrUnavailable` on that `Get` keeps the object;
   an active key whose job is terminal, and one whose job is absent, are deleted; one whose job is `running` is kept;
   a probe key created a minute ago by `Entry.Created` is kept and one created eleven minutes ago is deleted,
-  and the same for a probe object by `ModTime`.
+  and the same for a probe object by `ModTime`;
+  an expired flip whose `Update` returns `ErrUnavailable` writes one warn record
+  and one increment of `profgate_pgo_store_failures_total{op="expire"}`,
+  a lost update writes neither,
+  and the next pass flips a record still `completed` and leaves one the lost result had already flipped;
+  a probe key listing that fails writes one warn record and one increment under `op="probe_list"`,
+  and the rest of the pass still runs.
 - `internal/pgo` caches:
   a per-record subscription receives a pulse for every entry applied for that record,
   is registered before the handler's first read and removed when its request ends,
@@ -3338,7 +3571,13 @@ one server per subtest.
   `CachedOverride`, `Collections` including `LatestCompleted`, and `Live` —
   so a path that reads its cache without the session's generation fails the case that covers it;
   a watch cut under a live connection resets all four caches under the new generation,
-  so a key the re-opened replay no longer carries is absent from the cache once `Synced` is true again.
+  so a key the re-opened replay no longer carries is absent from the cache once `Synced` is true again;
+  a listing for one Service over ten thousand retained records of other Services allocates and sorts that Service's entries alone,
+  asserted by an allocation count and a visited-entry count that do not grow with the other Services' records
+  (the test fails when the listing walks every record under the lock);
+  the per-Service index gains an entry with the record it names and loses it with the record's delete
+  and with a reset under a new generation;
+  a cached record carries `leaseUntil`, `claimBy`, `deadline`, and `createdAt` as the store wrote them.
 - `internal/pgo` idempotency receipts, over the in-process server:
   the receipt key is `idem.` followed by 32 hexadecimal characters,
   the head of the SHA-256 of the four length-prefixed scope fields;
@@ -3378,6 +3617,16 @@ one server per subtest.
   `POST /collections` with the cache holding `maxLiveCollections` active keys
   answering `429 capacity_exhausted` with no write;
   a download whose store reader fails after headers closing the connection with audit code `artifact_stream_failed`;
+  a download of a 2 MiB artifact by a client that reads it over ten seconds completes with every byte
+  (the test fails when the seam's call deadline covers the stream);
+  a client that leaves `POST /collections` once the record's `Create` has been acknowledged,
+  the fake store answering every later write:
+  the record reaches `pending` with its active key and receipt, the audit code is `client_gone`,
+  and a replay with the key answers `200` naming it;
+  one that leaves while the `Create` is still in flight leaves an `initializing` record and a tracked reservation,
+  and the scan fails it `not_published`;
+  a `410` on a completed record whose expired flip fails `ErrUnavailable` still answers `410`
+  and increments `profgate_pgo_store_failures_total{op="expire"}` once, and a lost flip increments nothing;
   `404 collection_not_found` identical for a missing id and a realm-denied one;
   `410` on a `completed` record whose object is gone, and the record observed `expired` afterwards;
   `POST /collections` with the `collector.*` cache empty, and with it holding only a stale key,
@@ -3541,6 +3790,10 @@ one server per subtest.
   an owner that can finish inside the remaining lease commits,
   one that cannot writes nothing and leaves a reclaimable record,
   and the process exits without waiting for a work goroutine held at a barrier inside `Write`;
+  the Kubernetes preflight, the NATS preflight, issuer discovery, and the watched-cache re-open draw their waits from one backoff:
+  over twenty failures each wait lies between half of its doubling schedule from 1 s and the whole of it,
+  none exceeds 30 s, and two loops seeded differently draw different waits
+  (the test fails when a loop retries at its bare schedule);
   `profgate_pgo_synced` is fed from both halves of the barrier in each role:
   it reads `1` only once the watches have replayed
   and the caches have applied that replay under the current generation,
@@ -3753,6 +4006,14 @@ nothing depends on it except `httpapi` and `cmd`.
 | `wait` above `60s` | `400 invalid_parameter` naming `wait`; the value is outside the route's grammar and is not clamped to it |
 | `latest` for a Service whose newest completed record lost its object | that record is flipped to `expired` and the walk continues to the next completed one; `410 artifact_gone` is never the answer while an intact artifact exists |
 | a Service whose effective retention is under its interval, asked for `latest` | `404` for the tail of every interval; the rule of section 6.3 refuses that policy at every write, which is what makes the endpoint dependable |
+| a client drains a download slowly | served to the end: the call deadline bounds each wait on the store and the bytes follow the request; no key bounds a download |
+| the store stops delivering chunks mid-download | the pending read fails one call deadline into a wait for the next chunk, time spent delivering bytes to the client excluded; connection closed; audit `artifact_stream_failed` |
+| the store stops acknowledging chunks mid-upload | the `Put` fails after one 5-second acknowledgement wait and nats.go's bounded cleanup, unless the owner's cutoff cancels it first; the owner commits `artifact_store_failed` only while it still holds its lease and deadline |
+| a client leaves `POST /collections` between the first publication write and the last | the publication continues under its own 30-second context; when it wins the active key and its writes are acknowledged inside that budget, the record reaches `pending` with its active key and, when keyed, its receipt, a retry with the key replays, and the listing shows the Collection; otherwise it ends as a lost, withdrawn, or cut publication does; the request audits `client_gone` either way |
+| a renewal in flight when the drain begins lands afterwards | the drain timer re-reads the one per-owner cutoff when it fires and waits to the new one, and returns only once the work is cancelled or committed there; still at most `leaseTTL - skewMargin` from that renewal |
+| a replica reclaims a Collection it aborted itself, then drains | the drain waits for the second owner; an owner removes only the entry it registered |
+| a `completed` to `expired` update fails for a reason other than a lost race | one warn record and one increment of `profgate_pgo_store_failures_total{op="expire"}`; the durable outcome may be indeterminate; the next pass or reader flips a record still `completed` and leaves one already `expired` |
+| a probe key listing fails in a sweep | that bucket's probe keys wait for the next pass; one warn record and one increment under `op="probe_list"`; the rest of the pass runs |
 
 ---
 
@@ -3990,3 +4251,42 @@ rather than being carried by this build, amends the following text.
 | File | Section | Change |
 |---|---|---|
 | `docs/specs/pgo.md` | *Metrics* | no process exports the collector-availability gauge in this build, and the chart renders `ProfgatePGONotSynced` alone; the design each sentence describes is unchanged and holds from the collector Deployment on |
+
+Bounding what NATS can hold on the PGO path —
+a call deadline that covers each wait on the store and never a transfer,
+a watch re-open that backs off with jitter,
+a drain that follows a lease renewed under it,
+an owner that removes only its own in-flight entry,
+a publication that finishes once it has begun,
+a counted failure in place of a silent one,
+and a scan and a listing that cost what is due rather than what is stored —
+amends the following text.
+
+Amended:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *NATS stores* | the preflight's connection retry doubles with jitter |
+| `docs/specs/pgo.md` | *The seam* | the call deadline bounds establishment and each wait on the store; a `Get` reads chunks under the caller's context through the seam's own consumer and ends with that context or with `Close`; a `Put` follows the work context with no deadline of the seam's and nats.go's own default on each acknowledgement; the re-open backoff, its figures, and its reset; the process-level retries share its shape |
+| `docs/specs/pgo.md` | *Algorithm* | a publication runs under its own 30-second context once its first write has landed, and why 30 seconds |
+| `docs/specs/pgo.md` | *Claim* | the cache entry carries `leaseUntil`, `claimBy`, `deadline`, and `createdAt`; a pass reads fresh only the records that are due; the scan runs after every `job.*` delivery as well as on its timer |
+| `docs/specs/pgo.md` | *Sweeper* | an expired flip that fails for any reason but a lost race, and a probe listing that fails, are logged at warn and counted; the lost race stays silent |
+| `docs/specs/pgo.md` | *Create a Collection* | what a client that leaves mid-publication sees |
+| `docs/specs/pgo.md` | *List Collections* | a page is built from the Service's own records through a per-Service index |
+| `docs/specs/pgo.md` | *Download* | the stream is bounded by the request and by each wait on the store, never by the call deadline as a whole; a flip that fails still answers `410` |
+| `docs/specs/pgo.md` | *Logging* | the re-open retries on the backoff; the two counted failures write a record at warn |
+| `docs/specs/pgo.md` | *Metrics* | `profgate_pgo_store_failures_total`, and why it is a series of its own |
+| `docs/specs/pgo.md` | *Shutdown* | the drain timer re-reads the cutoff when it fires; the window holds; an owner removes only the entry it registered |
+| `docs/specs/pgo.md` | *Unit*, *Failure Scenarios* | the transfer, backoff, drain, in-flight, publication, counter, and scan cases; rows for a slow download, a stalled store on either side, a client gone mid-publication, a renewal landing under the drain, a self-reclaim under the drain, and the two counted failures |
+| `docs/specs/gateway.md` | *Startup and shutdown* | the preflight backoff doubles with jitter |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `internal/natskv` | the seam's own chunk read for `Get`, no seam deadline on `Put`, and the jittered re-open backoff with its reset at the replay |
+| `internal/pgo` | the detached publication context; the cache fields and the per-Service index; the due check ahead of the scan's `Get`; the drain timer re-reading the cutoff; the owner removing only its own entry; the warn record and the counter on a failed flip and on a failed probe listing |
+| `internal/httpapi` | the counted flip failure on the download and latest paths |
+| `internal/metrics` | `profgate_pgo_store_failures_total` |
+| `cmd/profgate` | one jittered backoff for the retry loops |
+| `docs/deployment.md` | the new counter in the metrics table |

@@ -237,38 +237,43 @@ Why here: the first bullet is reproduced and reaches the default limit with sixt
 
 ### 6. Bound what NATS can hold on the PGO path
 
-- [ ] An artifact transfer inherits the five-second call deadline over the whole stream
+- [x] An artifact transfer inherits the five-second call deadline over the whole stream
   (`internal/natskv/client.go:24,815,831-854`): a download the client cannot drain in five seconds is cut mid-body,
   and nothing is tunable.
   Reproduced: 64 KiB of a 2 MiB object, then `nats: timeout`.
   The short deadline bounds establishment;
   the bytes follow the request for a download and the committed lease for an upload.
-- [ ] Watch re-open retries every 50 ms with no backoff, no jitter, and no bound (`internal/natskv/client.go:27-28,694-714`);
+- [x] Watch re-open retries every 50 ms with no backoff, no jitter, and no bound (`internal/natskv/client.go:27-28,694-714`);
   reproduced at 58.7 failed opens per second for the three `PROFGATE_JOBS` watches while the bucket is absent.
   Process-level retries (`cmd/profgate/serve.go:515`) back off without jitter, so replicas retry in step.
   `docs/specs/pgo.md:2863` says "a fixed interval";
   the revision says capped exponential backoff with jitter, reset after a completed replay.
-- [ ] `Drain` reads each owner's cutoff once (`internal/pgo/worker.go:232-246`);
+- [x] `Drain` reads each owner's cutoff once (`internal/pgo/worker.go:232-246`);
   a renewal already past `stopping()` that then succeeds extends the durable lease and the drain timer does not follow.
   Reproduced: `Drain` returned with 24 seconds of lease left and the work uncancelled.
   The timer re-reads the cutoff when it fires.
-- [ ] A replica that reclaims its own aborted Collection has the second owner's `inFlight` entry deleted by the first owner's exit
+- [x] A replica that reclaims its own aborted Collection has the second owner's `inFlight` entry deleted by the first owner's exit
   (`internal/pgo/worker.go:469-479`), and `Drain` returns without waiting; reproduced with `maxActiveCollections` at two.
-- [ ] Publication runs under the request context (`internal/httpapi/pgo_collections.go:572`);
+- [x] Publication runs under the request context (`internal/httpapi/pgo_collections.go:572`);
   a client gone between the first and last write leaves an `initializing` record
   that blocks the Service for about 65 seconds.
   Publication finishes under its own bounded context once the first write has landed.
-- [ ] A `completed` to `expired` transition that fails to persist for a reason other than a lost race is dropped without a record
+- [x] A `completed` to `expired` transition that fails to persist for a reason other than a lost race is dropped without a record
   (`internal/pgo/runtime.go:453`, `internal/httpapi/pgo_collections.go:1079`, `internal/pgo/sweeper.go:255`);
   the probe sweep skips a cut listing without a record (`internal/pgo/sweeper.go:420-424`).
   Log and count the unexpected case; leave the lost race silent.
-- [ ] The worker scan re-reads every nonterminal record on every `job.*` delivery (`internal/pgo/worker.go:167-181,285-299`),
+- [x] The worker scan re-reads every nonterminal record on every `job.*` delivery (`internal/pgo/worker.go:167-181,285-299`),
   quadratic in live Collections.
   Carry `LeaseUntil`, `ClaimBy`, and `Deadline` in the cache entry so a pulse can skip what it cannot claim,
   and index jobs per Service so a one-Service listing stops allocating and sorting against every retained record under the cache lock
   (`internal/pgo/caches.go:743,816`; 31 ms and 10 MiB per listing at the default on-demand ceiling held for a week).
 
-Spec: [`pgo.md`](../specs/pgo.md) for the transfer deadline, the re-open backoff, and the publication context.
+Spec: [`pgo.md`](../specs/pgo.md) *The seam* for the transfer deadline and the re-open backoff;
+*Algorithm* and *Create a Collection* for the publication context;
+*Shutdown* for the drain timer and the in-flight entry an owner removes;
+*Sweeper*, *Logging*, and *Metrics* for the counted flip and probe-listing failures;
+*Claim* and *List Collections* for the scan's due check and the per-Service index;
+[`gateway.md`](../specs/gateway.md) *Startup and shutdown* for the jitter on the preflight backoff.
 Shipped: not built yet.
 Why here: the first two bullets are reproduced; the rest are the same package and the same plan.
 
