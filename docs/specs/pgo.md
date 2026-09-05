@@ -597,13 +597,15 @@ therefore surfaces to the caller as unavailability rather than as a success it w
 **Transfers.**
 The call deadline bounds every wait on the store and never a transfer as a whole.
 For `Get`, establishment is nats.go's read of the object's metadata, one direct get of its last meta message,
-and the creation of the ordered consumer over the object's chunk subject;
+and the creation of a pull consumer of the seam's own over the object's chunk subject;
 both run under the call deadline before the reader is returned,
 and an absent name is `ErrObjectNotFound` from the metadata read.
 The bytes then follow the caller's context:
 the seam reads the chunk messages itself through that consumer,
+one pull request per chunk on a subscription of its own, ended with the pull,
 awaits each chunk under the call deadline,
 hands it through a pipe the caller drains at its own pace,
+replaces a consumer the server removed as idle while the caller was slow with one that starts at the next chunk,
 and verifies the SHA-256 the metadata carries once the last chunk has arrived.
 nats.go's own `ObjectStore.Get` is not used for the transfer,
 because it binds the subscription, every chunk, and every `Read` to the one context the call was given,
@@ -3303,12 +3305,16 @@ one server per subtest.
   `List` returns every object with its `ModTime` and nothing for an empty bucket;
   every call against a stopped server returns `ErrUnavailable` within its deadline;
   an Object `Put`/`Get` round-trips 40 MiB byte for byte and `Get` of an absent name is `ErrObjectNotFound`;
-  `Get` of a 2 MiB object drained by a reader that takes ten seconds over it returns every byte,
+  `Get` of a 2 MiB object drained by a reader that takes about three seconds over it returns every byte,
   with the call deadline shortened to a second so the test proves the deadline bounds establishment alone;
   a reader whose context ends mid-stream returns the pending `Read` at once with the cause,
   and so does one closed mid-stream, and neither leaves a consumer behind;
   a server that stops delivering chunks fails the pending `Read` one call deadline into the wait for the next chunk,
-  and a reader that holds one chunk for ten seconds before taking the next is not failed;
+  and a reader that holds one chunk for three call deadlines before taking the next is not failed;
+  when a store withholds both the next chunk and the pull's expiry answer,
+  the pending `Read` fails one call deadline into the wait;
+  a pull the connection refuses leaves no subscription behind on the connection;
+  a reader parked past the consumer's inactive threshold, shortened to a second, still receives every byte;
   a `Get` whose chunks arrive with a digest other than the metadata's fails the last `Read` rather than returning `EOF`;
   a `Put` under a context with no deadline that is cancelled mid-upload returns `ErrUnavailable`,
   and an object it leaves under the name is named by no `completed` record and is gone after the sweeper's orphan pass;
@@ -3573,7 +3579,7 @@ one server per subtest.
   a watch cut under a live connection resets all four caches under the new generation,
   so a key the re-opened replay no longer carries is absent from the cache once `Synced` is true again;
   a listing for one Service over ten thousand retained records of other Services allocates and sorts that Service's entries alone,
-  asserted by an allocation count and a visited-entry count that do not grow with the other Services' records
+  asserted by the bytes it allocates and a visited-entry count that do not grow with the other Services' records
   (the test fails when the listing walks every record under the lock);
   the per-Service index gains an entry with the record it names and loses it with the record's delete
   and with a reset under a new generation;
@@ -3617,8 +3623,8 @@ one server per subtest.
   `POST /collections` with the cache holding `maxLiveCollections` active keys
   answering `429 capacity_exhausted` with no write;
   a download whose store reader fails after headers closing the connection with audit code `artifact_stream_failed`;
-  a download of a 2 MiB artifact by a client that reads it over ten seconds completes with every byte
-  (the test fails when the seam's call deadline covers the stream);
+  a download through a fake store by a client that reads it slowly completes with every byte,
+  which fences the copy loop, while the transfer regression against the seam's deadline is the `natskv` case above;
   a client that leaves `POST /collections` once the record's `Create` has been acknowledged,
   the fake store answering every later write:
   the record reaches `pending` with its active key and receipt, the audit code is `client_gone`,
