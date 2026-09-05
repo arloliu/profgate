@@ -536,6 +536,90 @@ which is when verification starts failing as `keys_stale`;
 `prometheusRule.rules` replaces the shipped set outright for a deployment that lowers that key,
 since the chart does not render it and cannot follow it.
 
+### Example queries
+
+One query per question an operator asks of the series above.
+Each is checked in as a rule file `promtool` parses in the test suite,
+so a query here has been read as PromQL before a reader copies it.
+There is no dashboard file to import:
+a query goes into whatever the operator already runs.
+
+**The interactive path.**
+
+| Question | Query |
+|---|---|
+| Request rate by route family | `sum by (endpoint) (rate(profgate_requests_total[5m]))` |
+| Share of requests that are not `ok` | `sum(rate(profgate_requests_total{code!="ok"}[5m])) / sum(rate(profgate_requests_total[5m]))` |
+| 95th percentile profile fetch | `histogram_quantile(0.95, sum by (le, profile) (rate(profgate_request_duration_seconds_bucket[5m])))` |
+| Profile fetches in flight, fleet-wide | `sum(profgate_profiles_in_flight)` |
+| The ten refusals with the most volume | `topk(10, sum by (code) (rate(profgate_requests_total{code!="ok"}[1h])))` |
+
+**The certificate.**
+
+| Question | Query |
+|---|---|
+| Days left on each replica's served certificate | `(profgate_tls_certificate_expiry_seconds - time()) / 86400` |
+| Re-read outcomes by result | `sum by (result) (rate(profgate_tls_reloads_total[15m]))` |
+
+**Authentication.**
+
+| Question | Query |
+|---|---|
+| Failures by reason | `sum by (reason) (rate(profgate_auth_failures_total[5m]))` |
+| Signing key age per replica | `profgate_oidc_jwks_age_seconds` |
+| Browser sessions minted | `sum(rate(profgate_auth_sessions_issued_total[1h]))` |
+
+**Readiness.**
+
+| Question | Query |
+|---|---|
+| Replicas that have completed their initial sync | `count(profgate_discovery_synced == 1) or vector(0)` |
+| Replicas exporting the gauge at all, which is the denominator for the row above | `count(profgate_discovery_synced)` |
+| Replicas with no NATS connection | `count(profgate_nats_connected == 0) or vector(0)` |
+| Replicas whose PGO caches have not replayed | `count(profgate_pgo_synced == 0) or vector(0)` |
+
+**Collection.**
+
+| Question | Query |
+|---|---|
+| Collections by terminal result | `sum by (result) (rate(profgate_collections_total[1h]))` |
+| Scheduling outcomes | `sum by (result) (rate(profgate_schedule_slots_total[1h]))` |
+| Collections running now | `sum(profgate_collections_active)` |
+| Sample outcomes | `sum by (result) (rate(profgate_collection_samples_total[15m]))` |
+| 95th percentile Collection duration | `histogram_quantile(0.95, sum by (le) (rate(profgate_collection_duration_seconds_bucket[1h])))` |
+
+Six things about the queries above, which is what makes them readable rather than only copyable:
+
+- Every series the gateway exports is per replica, because every one is scraped per Pod.
+  A query with no aggregation answers per replica, which is what the certificate and key-age rows want;
+  `sum(...)` or `sum by (<label>)` answers for the fleet, which is what every rate row wants.
+  Drop the `sum` to see which replica a number came from.
+- The error-share query reads as a gap wherever there is nothing to divide, never as a healthy `0`.
+  A gateway that answered every request as asked exports no series matching `code!="ok"`,
+  so the numerator has no sample and neither does the ratio.
+  Where the refusal counters exist but neither side moved in the window, the ratio is `0/0`, which is `NaN`.
+  Both draw as a break in the line, so read this query beside the request-rate one rather than alone.
+- `histogram_quantile` needs the `le` label,
+  so a histogram is summed by `le` alongside whatever else the row groups by.
+  Aggregating a `_bucket` series without `le` produces a number that means nothing.
+- `count(<gauge> == 0)` produces no sample when nothing matches, which is again a gap rather than a zero.
+  `or vector(0)` is what turns "nothing is broken" into a zero a panel can draw,
+  and it is why the readiness rows carry it.
+- `code!="ok"` counts the `upstream_<status>` values,
+  which are a target's own answers passed through rather than the gateway refusing anything.
+- `profgate_confirm_total` and `profgate_profiles_in_flight` count the interactive profile path alone,
+  as the metric table above says.
+
+The `endpoint` label is the one label a scrape can take away,
+and the request-rate query is the only one here that reads it.
+The chart's `PodMonitor` drops the target label of that name so the gateway's value keeps it,
+and that query is written for that install.
+A scrape configured by hand that attaches an `endpoint` target label of its own, with `honorLabels` unset,
+moves the gateway's value to `exported_endpoint`;
+group by `exported_endpoint` there instead.
+`ProfgateUpstreamsUnreachable` loses the `endpoint!~"collection.*"` half of its expression on such an install,
+so a replica answering Collection routes while every profile fetch fails does not raise it.
+
 ### Audit log
 
 Every `/v1` request emits one JSON log record named `request` at info level on completion.

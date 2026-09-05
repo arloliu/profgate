@@ -61,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the authentication guide does the same for each authentication failure reason.
   Both guides now say that a NATS disconnect of any length aborts the Collections a replica owns
   and spends an attempt on each.
+- **The deployment guide has a page of example queries.**
+  One per question an operator asks of the metrics — request rate, error share, latency, refusals,
+  certificate lifetime, authentication failures, readiness across replicas, and collection outcomes —
+  so a dashboard starts from a query that already names the right series and labels.
+  `promtool` parses every one of them in the test suite, and the guide and the checked-in set have to agree.
 
 ### Changed
 

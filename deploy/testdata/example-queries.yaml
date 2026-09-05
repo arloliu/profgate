@@ -1,0 +1,66 @@
+# The example queries of docs/deployment.md, as a rule file promtool parses.
+#
+# `go test ./deploy/` runs `promtool check rules` over this file and then
+# compares the expressions here with the ones in the guide's query tables, so a
+# query is valid PromQL before a reader copies it and neither side can be edited
+# without the other. The record names carry no meaning beyond making each
+# expression a rule: nothing recorded here is shipped, scraped, or alerted on.
+#
+# The three expressions whose behaviour the guide explains rather than states --
+# the error share with nothing to divide, the quantile's le grouping, and
+# `or vector(0)` where nothing matches -- are evaluated against series in
+# alerts_test.yaml beside the alerts.
+
+groups:
+  - name: example-queries-interactive
+    rules:
+      - record: example:request_rate_by_endpoint
+        expr: 'sum by (endpoint) (rate(profgate_requests_total[5m]))'
+      - record: example:request_error_share
+        expr: 'sum(rate(profgate_requests_total{code!="ok"}[5m])) / sum(rate(profgate_requests_total[5m]))'
+      - record: example:request_duration_p95
+        expr: 'histogram_quantile(0.95, sum by (le, profile) (rate(profgate_request_duration_seconds_bucket[5m])))'
+      - record: example:profiles_in_flight
+        expr: 'sum(profgate_profiles_in_flight)'
+      - record: example:refusals_by_volume
+        expr: 'topk(10, sum by (code) (rate(profgate_requests_total{code!="ok"}[1h])))'
+
+  - name: example-queries-certificate
+    rules:
+      - record: example:certificate_days_left
+        expr: '(profgate_tls_certificate_expiry_seconds - time()) / 86400'
+      - record: example:certificate_reloads_by_result
+        expr: 'sum by (result) (rate(profgate_tls_reloads_total[15m]))'
+
+  - name: example-queries-authentication
+    rules:
+      - record: example:auth_failures_by_reason
+        expr: 'sum by (reason) (rate(profgate_auth_failures_total[5m]))'
+      - record: example:oidc_signing_key_age
+        expr: 'profgate_oidc_jwks_age_seconds'
+      - record: example:auth_sessions_issued
+        expr: 'sum(rate(profgate_auth_sessions_issued_total[1h]))'
+
+  - name: example-queries-readiness
+    rules:
+      - record: example:replicas_synced
+        expr: 'count(profgate_discovery_synced == 1) or vector(0)'
+      - record: example:replicas_reporting_sync
+        expr: 'count(profgate_discovery_synced)'
+      - record: example:replicas_without_nats
+        expr: 'count(profgate_nats_connected == 0) or vector(0)'
+      - record: example:replicas_pgo_unsynced
+        expr: 'count(profgate_pgo_synced == 0) or vector(0)'
+
+  - name: example-queries-collection
+    rules:
+      - record: example:collections_by_result
+        expr: 'sum by (result) (rate(profgate_collections_total[1h]))'
+      - record: example:schedule_slots_by_result
+        expr: 'sum by (result) (rate(profgate_schedule_slots_total[1h]))'
+      - record: example:collections_active
+        expr: 'sum(profgate_collections_active)'
+      - record: example:collection_samples_by_result
+        expr: 'sum by (result) (rate(profgate_collection_samples_total[15m]))'
+      - record: example:collection_duration_p95
+        expr: 'histogram_quantile(0.95, sum by (le) (rate(profgate_collection_duration_seconds_bucket[1h])))'

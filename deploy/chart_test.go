@@ -1314,6 +1314,100 @@ func TestChartPrometheusRule(t *testing.T) {
 	})
 }
 
+// TestChartExampleQueries holds the deployment guide's example queries to PromQL that parses,
+// and holds the guide and the checked-in fixture to the same set.
+// A query copied out of a guide is a query nothing ever ran,
+// so the same expressions are checked in as a rule file promtool parses,
+// and the set comparison is what stops one side being edited without the other.
+func TestChartExampleQueries(t *testing.T) {
+	fixture := filepath.Join("testdata", "example-queries.yaml")
+
+	t.Run("every expression is valid PromQL", func(t *testing.T) {
+		promtool := promtoolBin(t)
+		//nolint:gosec // the executable comes from PATH and the arguments are this test's literals
+		cmd := exec.CommandContext(t.Context(), promtool, "check", "rules", fixture)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Errorf("promtool check rules %s: %v\n%s", fixture, err, out)
+		}
+	})
+
+	t.Run("the guide and the fixture hold the same queries", func(t *testing.T) {
+		type recordingRule struct {
+			Record string `json:"record"`
+			Expr   string `json:"expr"`
+		}
+		type recordingGroup struct {
+			Name  string          `json:"name"`
+			Rules []recordingRule `json:"rules"`
+		}
+		var file struct {
+			Groups []recordingGroup `json:"groups"`
+		}
+		//nolint:gosec // the path is this repository's own testdata
+		raw, err := os.ReadFile(fixture)
+		if err != nil {
+			t.Fatalf("read the query fixture: %v", err)
+		}
+		if err := yaml.Unmarshal(raw, &file); err != nil {
+			t.Fatalf("parse the query fixture: %v", err)
+		}
+		var checkedIn []string
+		for _, group := range file.Groups {
+			for _, rule := range group.Rules {
+				checkedIn = append(checkedIn, strings.TrimSpace(rule.Expr))
+			}
+		}
+
+		//nolint:gosec // the path is this repository's own documentation
+		guide, err := os.ReadFile(filepath.Join("..", "docs", "deployment.md"))
+		if err != nil {
+			t.Fatalf("read the deployment guide: %v", err)
+		}
+		// The queries live in tables under one heading, one query per row in the last fenced cell.
+		// A row's other cells are prose, which is why the last span on the row wins,
+		// and a pipe inside a query is escaped for the table and unescaped here.
+		fenced := regexp.MustCompile("`([^`]+)`")
+		var documented []string
+		var inSection bool
+		for _, line := range strings.Split(string(guide), "\n") {
+			if strings.HasPrefix(line, "### ") {
+				inSection = line == "### Example queries"
+				continue
+			}
+			if !inSection || !strings.HasPrefix(line, "|") {
+				continue
+			}
+			spans := fenced.FindAllStringSubmatch(line, -1)
+			if len(spans) == 0 {
+				continue
+			}
+			expr := spans[len(spans)-1][1]
+			documented = append(documented, strings.TrimSpace(strings.ReplaceAll(expr, `\|`, "|")))
+		}
+		// A renamed heading or a table rewritten into another shape would leave nothing to compare,
+		// which would otherwise read as the two sides agreeing.
+		if len(documented) == 0 {
+			t.Fatal("no query was read out of the deployment guide: the section heading and this test have parted")
+		}
+
+		slices.Sort(checkedIn)
+		slices.Sort(documented)
+		if !slices.Equal(checkedIn, documented) {
+			for _, expr := range documented {
+				if !slices.Contains(checkedIn, expr) {
+					t.Errorf("the guide documents %q, which testdata/example-queries.yaml does not hold", expr)
+				}
+			}
+			for _, expr := range checkedIn {
+				if !slices.Contains(documented, expr) {
+					t.Errorf("testdata/example-queries.yaml holds %q, which the guide does not document", expr)
+				}
+			}
+		}
+	})
+}
+
 // TestChartConfigVolumeNamesTheConfigMap pins the reference between the two
 // templates. The Deployment reaches the ConfigMap through two name helpers and
 // the checksum reaches it through a template path, so a rename that misses one

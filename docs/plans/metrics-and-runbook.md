@@ -1568,7 +1568,7 @@ These are the sentences that make the table above readable rather than copyable:
   and the first query is the only one on the page that reads it.
   The page says this once, next to that query.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 `deploy/testdata/example-queries.yaml` is a Prometheus rule file holding one recording rule per query above.
 `promtool check rules` parses every `expr` in it, so a typo, an unbalanced bracket,
@@ -1595,9 +1595,9 @@ go test ./deploy/ -run 'TestChartExampleQueries'
 
 The fixture does not exist, so the subtest fails on the missing file.
 
-- [ ] **Write the page**
+- [x] **Write the page**
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 `CHANGELOG.md`, `### Added`:
 **The deployment guide has a page of example queries.**

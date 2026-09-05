@@ -3,6 +3,8 @@
 # rendered rules beside a copy of this file as rules.yaml, and runs
 # `promtool test rules` over it, so every case below runs against the
 # expressions a cluster gets rather than against a copy of them.
+# The cases at the end of the file raise no alert: they evaluate the example
+# queries of docs/deployment.md whose behaviour that guide explains.
 #
 # The rule file the test writes carries each rule's expression, hold, and
 # severity, and leaves its annotations out: promtool compares a firing alert's
@@ -284,3 +286,83 @@ tests:
               severity: warning
               instance: "10.0.0.1:9091"
               pod: profgate-1
+
+  # From here down the cases raise no alert. They evaluate the three example
+  # queries of docs/deployment.md whose behaviour that guide explains rather
+  # than states, so those sentences are checked rather than asserted;
+  # example-queries.yaml is where the whole set of those queries is parsed.
+
+  # A gateway that answered every request as asked. Nothing matches
+  # code!="ok", so the error share has no sample at all rather than a zero,
+  # which is a break in the line on a panel and not a healthy gateway's zero.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="ok",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+6x20'
+    promql_expr_test:
+      - expr: 'sum(rate(profgate_requests_total{code!="ok"}[5m])) / sum(rate(profgate_requests_total[5m]))'
+        eval_time: 10m
+        exp_samples: []
+
+  # Both counters present and neither moving: the error share divides zero by
+  # zero, which is NaN. promtool compares an expected sample by equality and
+  # NaN equals nothing, so the value is pinned by what it is not -- the ratio
+  # produces one sample, and that sample is not 0.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="ok",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '5+0x20'
+      - series: 'profgate_requests_total{endpoint="profile",profile="cpu",code="upstream_500",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '2+0x20'
+    promql_expr_test:
+      - expr: 'count(sum(rate(profgate_requests_total{code!="ok"}[5m])) / sum(rate(profgate_requests_total[5m])))'
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: 'count((sum(rate(profgate_requests_total{code!="ok"}[5m])) / sum(rate(profgate_requests_total[5m]))) == 0)'
+        eval_time: 10m
+        exp_samples: []
+
+  # Two replicas' latency buckets, three of the histogram's boundaries each.
+  # Every request lands between 0.1 and 0.5 seconds, so the 95th percentile is
+  # interpolated inside that bucket. Grouping by le is what leaves
+  # histogram_quantile the boundaries it reads; the sum still carries profile,
+  # which is the only other label the histogram has.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_request_duration_seconds_bucket{le="0.1",profile="cpu",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+0x20'
+      - series: 'profgate_request_duration_seconds_bucket{le="0.5",profile="cpu",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+6x20'
+      - series: 'profgate_request_duration_seconds_bucket{le="+Inf",profile="cpu",instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '0+6x20'
+      - series: 'profgate_request_duration_seconds_bucket{le="0.1",profile="cpu",instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: '0+0x20'
+      - series: 'profgate_request_duration_seconds_bucket{le="0.5",profile="cpu",instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: '0+6x20'
+      - series: 'profgate_request_duration_seconds_bucket{le="+Inf",profile="cpu",instance="10.0.0.2:9091",pod="profgate-2"}'
+        values: '0+6x20'
+    promql_expr_test:
+      - expr: 'histogram_quantile(0.95, sum by (le, profile) (rate(profgate_request_duration_seconds_bucket[5m])))'
+        eval_time: 10m
+        exp_samples:
+          - labels: '{profile="cpu"}'
+            value: 0.48
+
+  # Every replica connected. count over an empty match produces no sample,
+  # which reads as a gap; `or vector(0)` is what makes "nothing is broken" a
+  # zero a panel can draw, and it is why the readiness rows carry it.
+  - interval: 1m
+    input_series:
+      - series: 'profgate_nats_connected{instance="10.0.0.1:9091",pod="profgate-1"}'
+        values: '1+0x10'
+    promql_expr_test:
+      - expr: 'count(profgate_nats_connected == 0)'
+        eval_time: 5m
+        exp_samples: []
+      - expr: 'count(profgate_nats_connected == 0) or vector(0)'
+        eval_time: 5m
+        exp_samples:
+          - labels: '{}'
+            value: 0
