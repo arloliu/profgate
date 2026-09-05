@@ -190,6 +190,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a route that takes no body waited the same way for the one byte that would prove one was sent.
   Both reads now have the ten seconds the headers have,
   and a body that has not arrived by then is answered `400 invalid_parameter` with a `body_malformed` detail that names the bound.
+  A request refused before its body was read waited the same way:
+  `net/http` discards the unread body before it sends the refusal, and that wait had no bound either.
+  The deadline is now set when a request with a body enters the handler,
+  so a refused request whose body never arrives no longer holds the connection.
   The bound is a constant, as the header bound is; there is no key for it.
   A client fetching several short profiles from one Pod still reuses its connection.
 - **Three log lines name the work they belong to.**

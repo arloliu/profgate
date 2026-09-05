@@ -240,7 +240,12 @@ Both listeners, the ops listener included, set `ReadHeaderTimeout` to 10 seconds
 both constants,
 so a keep-alive connection that sends nothing is closed rather than held until the process exits.
 No server-wide `ReadTimeout` or `WriteTimeout` is set, because either would cancel a long profile request.
-Every PGO route of [`pgo.md`](pgo.md) that reads or probes a body sets a 10-second read deadline before the read.
+A request that carries a body is given a 10-second read deadline when it enters the API handler,
+before any route is dispatched,
+so a route that refuses the request unread does not let the drain `net/http` performs on that body wait on the client;
+the refusal reaches the client and the connection is closed.
+Every PGO route of [`pgo.md`](pgo.md) that reads or probes a body sets the same deadline again before the read
+and keeps it through the read.
 It is set through `http.ResponseController.SetReadDeadline`;
 10 seconds is the same constant as the listener's `ReadHeaderTimeout`, and the body is at most 64 KiB,
 so no configuration key exists for it.
@@ -2923,7 +2928,7 @@ Updated with the implementation:
 | File | Change |
 |---|---|
 | `internal/proxy` | `MaxIdleConns` and `IdleConnTimeout` on the transport; the write deadline set at the commit and never cleared by the handler |
-| `internal/httpapi` | the read deadline around `decodeBody` and `rejectBody`, retained after a failed read; the drain cause read on every route so a drain cut is `drain_expired`; `drain_expired` in the audit-only list of `codes.go` and its test |
+| `internal/httpapi` | the read deadline armed at the handler's entry for every request with a body, again around `decodeBody` and `rejectBody`, and retained after a failed read; the drain cause read on every route so a drain cut is `drain_expired`; `drain_expired` in the audit-only list of `codes.go` and its test |
 | `internal/k8s` | `klog.SetSlogLogger` before the client is built; a client gone during `Confirm` returned as a cancellation, not `ErrDiscoveryUnavailable` |
 | `internal/metrics` | `client_gone` as a `result` of `profgate_confirm_total` |
 | `cmd/profgate` | `IdleTimeout` and `ErrorLog` at `error` on both servers; the drain context every API request derives from, cancelled with the `drain_expired` cause when the bound ends; every fatal startup path takes the shutdown mode that skips `server.drainDelay` |

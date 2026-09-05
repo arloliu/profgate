@@ -607,6 +607,48 @@ git commit -m "fix(httpapi): bound the body read to ten seconds" -m "<body: the 
 git log --oneline -1 && git status --short
 ```
 
+**A second commit: the unread body of a refused request.**
+Implementing the two reads showed a third wait with the same shape.
+A route that refuses a request before reading its body —
+`mediaTypeFault` on a write route with no JSON media type (`internal/httpapi/pgo_collections.go:118`),
+or any refusal `fail` writes before the read —
+returns at once, and `net/http` then discards the unread body before it flushes the response
+(`$(go env GOROOT)/src/net/http/server.go`, the `io.CopyN(io.Discard, w.reqBody, ...)` in `chunkWriter.writeHeader`, line 1408 in 1.26.7);
+against a body that never arrives that discard blocks with no deadline, and the refusal never reaches the client.
+The decision: `ServeHTTP` arms the same read deadline, `RequestReadTimeout` from the same field,
+for every request whose `r.ContentLength != 0`, which is a declared body or a chunked one reported as `-1`,
+before the `/auth/` and `/v1` dispatch and so before any route can refuse;
+the body-reading routes keep arming and clearing as above, so a full read still clears it.
+The ops listener is unchanged.
+The spec's *Network* paragraph and the amendment's `internal/httpapi` row carry the entry-point deadline.
+
+- [x] **Write the test**
+
+A third subtest in `TestPGOBodiesAreBounded`, on the same raw client:
+`POST` to the collections path with `Content-Type: text/plain`, `Content-Length: 5`, and no byte,
+which `mediaTypeFault` refuses without a read.
+With `setBodyReadTimeout(handler, 300*time.Millisecond)` the client must receive the `400 invalid_parameter` within 1 second.
+Red: the client's read times out, because the refusal sits behind the drain.
+
+```bash
+go test -race -count=1 ./internal/httpapi/ -run 'TestPGOBodiesAreBounded/a_refused_request'
+```
+
+- [x] **Arm the deadline at entry and say so**
+
+The `CHANGELOG.md` entry of this task gains a sentence:
+a refused request whose body never arrives no longer holds the connection either.
+
+- [x] **Validate and commit**
+
+```bash
+semlf check internal/httpapi/server.go docs/specs/gateway.md CHANGELOG.md
+mise exec golangci-lint@2.12.2 -- golangci-lint run ./... && mise run test && mise run check && mise run prose
+git add internal/httpapi/server.go internal/httpapi/pgo_test.go docs/specs/gateway.md CHANGELOG.md docs/plans/interactive-deadlines.md
+git commit -m "fix(httpapi): bound the drain of an unread body" -m "<body: a refusal written before the body was read waited in net/http's discard of that body with no deadline; the handler now arms the read deadline at entry for every request with a body>"
+git log --oneline -1 && git status --short
+```
+
 ---
 
 ## 4. An idle connection closes, and net/http's own lines reach stdout

@@ -370,6 +370,14 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// A request that carries a body gets the read deadline before any route can refuse it unread.
+	// net/http discards an unread body before it flushes the response, and that discard reads no context,
+	// so against a body that never arrives a refusal would wait on the client.
+	// A route that reads the body arms the deadline again and clears it at the body's end.
+	if r.ContentLength != 0 {
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(s.bodyReadTimeout))
+	}
+
 	rt, decl, ok := match(r.URL.Path)
 	if !ok {
 		q.fail(w, errRouteUnknown)

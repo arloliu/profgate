@@ -480,7 +480,7 @@ func TestPGOBodiesAreBounded(t *testing.T) {
 
 		// Two bytes are promised and one is sent; the second never comes.
 		detail := h.refuseUnfinishedBody(t, "POST "+collectionsPath+" HTTP/1.1\r\n"+
-			"Host: gateway\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{")
+			"Host: gateway\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{", detailBodyMalformed)
 
 		if !strings.Contains(detail.Message, bodyDeadlineForTest.String()) {
 			t.Errorf("detail message = %q, want it to name the %s bound", detail.Message, bodyDeadlineForTest)
@@ -497,13 +497,26 @@ func TestPGOBodiesAreBounded(t *testing.T) {
 
 		// One byte is promised and none is sent.
 		detail := h.refuseUnfinishedBody(t, "POST "+collectionPath(rec.ID, "/cancel")+" HTTP/1.1\r\n"+
-			"Host: gateway\r\nContent-Type: application/json\r\nContent-Length: 1\r\n\r\n")
+			"Host: gateway\r\nContent-Type: application/json\r\nContent-Length: 1\r\n\r\n", detailBodyMalformed)
 
 		if !strings.Contains(detail.Message, bodyDeadlineForTest.String()) {
 			t.Errorf("detail message = %q, want it to name the %s bound", detail.Message, bodyDeadlineForTest)
 		}
 		if state := h.nats.jobs.record(t, rec.ID).State; state != pgo.StateRunning {
 			t.Errorf("state = %q, want the record untouched", state)
+		}
+	})
+
+	t.Run("a refused request whose body never arrives is answered at the deadline", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+
+		// The media type is refused before any read;
+		// net/http then discards the five promised bytes before it flushes the refusal, and none of them ever come.
+		detail := h.refuseUnfinishedBody(t, "POST "+collectionsPath+" HTTP/1.1\r\n"+
+			"Host: gateway\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n", detailHeaderMalformed)
+
+		if detail.Field != "Content-Type" {
+			t.Errorf("detail field = %q, want Content-Type: the refusal is the media type's, not the body's", detail.Field)
 		}
 	})
 }
@@ -514,10 +527,10 @@ const bodyDeadlineForTest = 300 * time.Millisecond
 
 // refuseUnfinishedBody sends one request, headers and whatever body bytes it carries, over a real socket
 // and sends nothing more, then reads the answer under a two-second deadline of its own.
-// It returns the body_malformed detail of the 400 invalid_parameter it expects within one second.
+// It returns the one detail, of the code given, of the 400 invalid_parameter it expects within one second.
 // A ResponseRecorder carries no connection to arm a read deadline on,
 // so only a socket can show the body read ending when the gateway says it ends.
-func (p *pgoHarness) refuseUnfinishedBody(t *testing.T, request string) errorDetail {
+func (p *pgoHarness) refuseUnfinishedBody(t *testing.T, request, detailCode string) errorDetail {
 	t.Helper()
 
 	handler := p.handler()
@@ -541,7 +554,7 @@ func (p *pgoHarness) refuseUnfinishedBody(t *testing.T, request string) errorDet
 	started := time.Now()
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
-		t.Fatalf("ReadResponse() error = %v after %s: the handler is still waiting for a body that will never come",
+		t.Fatalf("ReadResponse() error = %v after %s: the gateway is still waiting for a body that will never come",
 			err, time.Since(started).Round(time.Millisecond))
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -565,8 +578,8 @@ func (p *pgoHarness) refuseUnfinishedBody(t *testing.T, request string) errorDet
 	if envelope.Code != "invalid_parameter" {
 		t.Errorf("code = %q, want invalid_parameter (body %q)", envelope.Code, raw)
 	}
-	if len(envelope.Details) != 1 || envelope.Details[0].Code != detailBodyMalformed {
-		t.Fatalf("details = %+v, want one %s detail", envelope.Details, detailBodyMalformed)
+	if len(envelope.Details) != 1 || envelope.Details[0].Code != detailCode {
+		t.Fatalf("details = %+v, want one %s detail", envelope.Details, detailCode)
 	}
 	p.expectPGOAudit(t, http.StatusBadRequest, "invalid_parameter")
 
