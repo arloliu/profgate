@@ -1322,6 +1322,10 @@ func TestObjects(t *testing.T) {
 			if !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("put with acknowledgements withheld: got %v, want ErrUnavailable", err)
 			}
+			// nats.go's own acknowledgement timer is what ends the put, not a deadline of the seam's.
+			if !errors.Is(err, jetstream.ErrAsyncPublishTimeout) {
+				t.Fatalf("put with acknowledgements withheld: got %v, want ErrAsyncPublishTimeout", err)
+			}
 			if elapsed := time.Since(released); elapsed > 20*time.Second {
 				t.Fatalf("put failed %s after the release, want within twenty seconds", elapsed)
 			}
