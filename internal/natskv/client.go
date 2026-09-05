@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,10 @@ const (
 
 // callTimeout is the deadline every store call carries in addition to the caller's.
 const callTimeout = 5 * time.Second
+
+// chunkInactiveThreshold is how long the server keeps a chunk consumer after its last pull or delivery,
+// so a process that dies mid-read leaves nothing behind for long.
+const chunkInactiveThreshold = 5 * time.Minute
 
 // reopenFirst and reopenCap bound the wait between two attempts to re-open a cut watch:
 // the wait doubles from the first to the cap,
@@ -106,6 +111,11 @@ type client struct {
 	// It is the spec's 5 seconds, the callTimeout constant;
 	// tests shorten it to observe one deadline pass without waiting the full five seconds.
 	callTimeout time.Duration
+
+	// chunkInactiveThreshold is the inactive threshold of every consumer the seam reads an object through.
+	// It is the chunkInactiveThreshold constant;
+	// tests shorten it to have the server remove a consumer under a read that is still live.
+	chunkInactiveThreshold time.Duration
 
 	// onConnectionChange mirrors connectConfig.onConnectionChange.
 	onConnectionChange func(up bool)
@@ -202,14 +212,15 @@ var _ Client = (*client)(nil)
 // calls connect before checking the bucket contract and running its probes.
 func connect(ctx context.Context, cfg connectConfig, log *slog.Logger) (*client, error) {
 	c := &client{
-		log:                log,
-		genMoved:           make(chan struct{}),
-		watches:            make(map[*watchState]struct{}),
-		probeDeadline:      probeTimeout,
-		callTimeout:        callTimeout,
-		newReopenRand:      newReopenRand,
-		onConnectionChange: cfg.onConnectionChange,
-		onGenerationMove:   cfg.onGenerationMove,
+		log:                    log,
+		genMoved:               make(chan struct{}),
+		watches:                make(map[*watchState]struct{}),
+		probeDeadline:          probeTimeout,
+		callTimeout:            callTimeout,
+		chunkInactiveThreshold: chunkInactiveThreshold,
+		newReopenRand:          newReopenRand,
+		onConnectionChange:     cfg.onConnectionChange,
+		onGenerationMove:       cfg.onGenerationMove,
 	}
 
 	reconnectWait := cfg.reconnectWait
@@ -933,24 +944,30 @@ func (v *objView) Put(ctx context.Context, name string, r io.Reader) error {
 	return nil
 }
 
+// Get returns a reader over the object's bytes.
+// Establishment runs under the call deadline: the metadata read and the creation of a consumer over the chunks.
+// The bytes then follow ctx, one chunk at a time.
+// The seam pulls each chunk itself, one request over an inbox subscription it releases on every return,
+// and waits for it under the call deadline, so the deadline bounds every wait on the store and never the transfer.
+// When a reader holds a chunk longer than the consumer's inactive threshold, the server removes the consumer;
+// the read then goes on through a new one from the chunk after the last received, the digest so far kept,
+// so a slow reader is never the reason a read is cut.
 func (v *objView) Get(ctx context.Context, name string) (io.ReadCloser, error) {
 	if err := v.pre(); err != nil {
 		return nil, err
 	}
-	// Establishment runs under the call deadline: the metadata read and the consumer's creation.
-	// The bytes then follow ctx, one chunk at a time, each awaited under the same deadline,
-	// so the deadline bounds every wait on the store and never the transfer.
 	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
 	info, err := v.obs.GetInfo(cctx, name)
-	var cons jetstream.Consumer
 	consumer := ""
 	if err == nil && info.Size > 0 {
 		consumer = newChunkConsumerName()
-		cons, err = v.c.js.CreateConsumer(cctx, artifactsStream, chunkConsumerConfig(consumer, info.NUID))
+		if err = v.createChunkConsumer(cctx, consumer, info.NUID, 0); err != nil {
+			consumer = ""
+		}
 	}
 	cancel()
 	if perr := v.post(); perr != nil {
-		if cons != nil {
+		if consumer != "" {
 			v.c.deleteChunkConsumer(consumer)
 		}
 		return nil, perr
@@ -962,7 +979,7 @@ func (v *objView) Get(ctx context.Context, name string) (io.ReadCloser, error) {
 		}
 		return nil, fmt.Errorf("get object %q in %s: %w", name, v.bucket, failure(err))
 	}
-	return v.openChunks(ctx, name, cons, consumer, info), nil
+	return v.openChunks(ctx, name, consumer, info), nil
 }
 
 // artifactsStream is the stream behind the artifact bucket, named as nats.go names it.
@@ -979,10 +996,30 @@ func newChunkConsumerName() string {
 	return chunkConsumerName + hex.EncodeToString(b[:])
 }
 
+// chunkNextSubject is the subject a pull request for the named consumer goes to.
+func chunkNextSubject(consumer string) string {
+	return "$JS.API.CONSUMER.MSG.NEXT." + artifactsStream + "." + consumer
+}
+
+// createChunkConsumer creates the named consumer over the chunks of the object nuid names,
+// under the call deadline:
+// from the first chunk when after is zero, and from the chunk after stream sequence after otherwise.
+func (v *objView) createChunkConsumer(ctx context.Context, name, nuid string, after uint64) error {
+	cfg := chunkConsumerConfig(name, nuid, v.c.chunkInactiveThreshold)
+	if after > 0 {
+		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
+		cfg.OptStartSeq = after + 1
+	}
+	cctx, cancel := context.WithTimeout(ctx, v.c.callTimeout)
+	defer cancel()
+	_, err := v.c.js.CreateConsumer(cctx, artifactsStream, cfg)
+	return err
+}
+
 // chunkConsumerConfig is the consumer the seam reads an object's chunks through:
 // what nats.go's ordered consumer sends the server, over the one chunk subject the object's identifier names,
 // bound to a name of the seam's own so the pull never resets it.
-func chunkConsumerConfig(name, nuid string) jetstream.ConsumerConfig {
+func chunkConsumerConfig(name, nuid string, inactive time.Duration) jetstream.ConsumerConfig {
 	return jetstream.ConsumerConfig{
 		Name:              name,
 		FilterSubject:     "$O." + artifactsBucket + ".C." + nuid,
@@ -990,7 +1027,7 @@ func chunkConsumerConfig(name, nuid string) jetstream.ConsumerConfig {
 		AckPolicy:         jetstream.AckNonePolicy,
 		MemoryStorage:     true,
 		Replicas:          1,
-		InactiveThreshold: 5 * time.Minute,
+		InactiveThreshold: inactive,
 	}
 }
 
@@ -1015,10 +1052,10 @@ var errReadEnded = errors.New("object read ended")
 // The read ends with ctx or with Close: either closes the pipe's write side with the cause,
 // which returns a pending Read at once whatever the pump is waiting on.
 // An object of size zero has no chunks, no consumer, and an empty reader.
-func (v *objView) openChunks(ctx context.Context, name string, cons jetstream.Consumer, consumer string, info *jetstream.ObjectInfo) io.ReadCloser {
+func (v *objView) openChunks(ctx context.Context, name, consumer string, info *jetstream.ObjectInfo) io.ReadCloser {
 	rctx, cancel := context.WithCancelCause(ctx)
 	pr, pw := io.Pipe()
-	if cons == nil {
+	if consumer == "" {
 		//nolint:errcheck // closing with nil is EOF for the reader and cannot fail
 		_ = pw.Close()
 		return &objectReader{r: pr, cancel: cancel}
@@ -1029,74 +1066,130 @@ func (v *objView) openChunks(ctx context.Context, name string, cons jetstream.Co
 		_ = pw.CloseWithError(context.Cause(rctx))
 	}()
 	go func() {
-		defer v.c.deleteChunkConsumer(consumer)
+		consumer, err := v.pumpChunks(rctx, name, consumer, info, pw)
 		//nolint:errcheck // a pipe already closed by the cancellation keeps the cause
-		_ = pw.CloseWithError(v.pumpChunks(rctx, name, cons, info, pw))
+		_ = pw.CloseWithError(err)
 		cancel(errReadEnded)
+		v.c.deleteChunkConsumer(consumer)
 	}()
 	return &objectReader{r: pr, cancel: cancel}
 }
 
-// pumpChunks fetches the object's chunks one at a time and writes each into pw.
-// Each fetch is bounded by the call deadline;
-// the next fetch is issued only after the previous chunk's write has returned,
+// pumpChunks pulls the object's chunks one at a time and writes each into pw.
+// Each pull is bounded by the call deadline;
+// the next pull is issued only after the previous chunk's write has returned,
 // so time spent handing bytes to the caller is outside every wait on the store.
-// It returns nil once the last chunk has arrived and the bytes sum to the digest the metadata carries,
+// A pull the server no longer serves, because the consumer's inactive threshold ran out during that write,
+// is answered once by a new consumer from the chunk after the last one received;
+// the digest runs on across the two.
+// It returns the consumer the read ended on, and nil once the last chunk has arrived
+// and the bytes sum to the digest the metadata carries,
 // the cause when rctx ended, and the wrapped store error otherwise.
-func (v *objView) pumpChunks(rctx context.Context, name string, cons jetstream.Consumer, info *jetstream.ObjectInfo, pw *io.PipeWriter) error {
+func (v *objView) pumpChunks(rctx context.Context, name, consumer string, info *jetstream.ObjectInfo, pw *io.PipeWriter) (string, error) {
 	digest := sha256.New()
+	var last uint64 // stream sequence of the last chunk received
 	for n := 1; ; n++ {
 		if hook := v.c.testBeforeFetch; hook != nil {
 			hook(name, n)
 		}
 		if rctx.Err() != nil {
-			return context.Cause(rctx)
+			return consumer, context.Cause(rctx)
 		}
-		batch, err := cons.Fetch(1, jetstream.FetchMaxWait(v.c.callTimeout))
-		if err != nil {
-			return fmt.Errorf("get object %q in %s: chunk %d: %w", name, v.bucket, n, failure(err))
-		}
-		var msg jetstream.Msg
-		select {
-		case msg = <-batch.Messages():
-		case <-rctx.Done():
-			return context.Cause(rctx)
-		}
-		if msg == nil {
-			// A batch that ended with no message and no error waited out its expiry.
-			err := batch.Error()
-			if err == nil {
-				err = nats.ErrTimeout
+		msg, err := v.pullChunk(rctx, consumer)
+		if errors.Is(err, errConsumerGone) {
+			next := newChunkConsumerName()
+			if err = v.createChunkConsumer(rctx, next, info.NUID, last); err == nil {
+				consumer = next
+				msg, err = v.pullChunk(rctx, consumer)
 			}
-			return fmt.Errorf("get object %q in %s: chunk %d: %w", name, v.bucket, n, failure(err))
 		}
-		data := msg.Data()
-		if _, err := pw.Write(data); err != nil {
+		if err != nil {
+			if cause := context.Cause(rctx); cause != nil {
+				return consumer, cause
+			}
+			return consumer, fmt.Errorf("get object %q in %s: chunk %d: %w", name, v.bucket, n, failure(err))
+		}
+		if _, err := pw.Write(msg.Data); err != nil {
 			// The write side was closed under the pump, which only the read's end does.
 			if cause := context.Cause(rctx); cause != nil {
-				return cause
+				return consumer, cause
 			}
-			return err
+			return consumer, err
 		}
-		digest.Write(data)
+		digest.Write(msg.Data)
 		if hook := v.c.testChunkWritten; hook != nil {
 			hook(name, n)
 		}
 		meta, err := msg.Metadata()
 		if err != nil {
-			return fmt.Errorf("get object %q in %s: chunk %d: %w", name, v.bucket, n, err)
+			return consumer, fmt.Errorf("get object %q in %s: chunk %d: %w", name, v.bucket, n, err)
 		}
+		last = meta.Sequence.Stream
 		if meta.NumPending > 0 {
 			continue
 		}
 		want, err := jetstream.DecodeObjectDigest(info.Digest)
 		if err != nil {
-			return fmt.Errorf("get object %q in %s: %w", name, v.bucket, err)
+			return consumer, fmt.Errorf("get object %q in %s: %w", name, v.bucket, err)
 		}
 		if !bytes.Equal(digest.Sum(nil), want) {
-			return fmt.Errorf("get object %q in %s: %w", name, v.bucket, jetstream.ErrDigestMismatch)
+			return consumer, fmt.Errorf("get object %q in %s: %w", name, v.bucket, jetstream.ErrDigestMismatch)
 		}
-		return nil
+		return consumer, nil
+	}
+}
+
+// errConsumerGone is a pull the server no longer serves:
+// nobody answers on the consumer's subject, or the request was waiting when the consumer was removed.
+var errConsumerGone = fmt.Errorf("%w: chunk consumer gone", nats.ErrNoResponders)
+
+// chunkPull is the request one pull sends: one chunk, waited for by the server up to Expires.
+type chunkPull struct {
+	Batch   int           `json:"batch"`
+	Expires time.Duration `json:"expires"`
+}
+
+// pullChunk asks the named consumer for its next chunk and waits for it under the call deadline.
+// The seam sends the request itself, over an inbox subscription it releases on every return,
+// rather than through nats.go's Fetch:
+// that one keeps its subscription when the request cannot be sent,
+// and waits a second past the expiry for a response the store never sends.
+// The server's own expiry answer, an empty message with a status, is nats.ErrTimeout,
+// so the wait ends within the deadline whichever side ends it.
+func (v *objView) pullChunk(rctx context.Context, consumer string) (*nats.Msg, error) {
+	ctx, cancel := context.WithTimeout(rctx, v.c.callTimeout)
+	defer cancel()
+	nc := v.c.nc
+	sub, err := nc.SubscribeSync(nc.NewInbox())
+	if err != nil {
+		return nil, err
+	}
+	//nolint:errcheck // a subscription the connection has already dropped has nothing to release
+	defer sub.Unsubscribe()
+	req, err := json.Marshal(chunkPull{Batch: 1, Expires: v.c.callTimeout})
+	if err != nil {
+		return nil, err
+	}
+	if err := nc.PublishRequest(chunkNextSubject(consumer), sub.Subject, req); err != nil {
+		return nil, err
+	}
+	msg, err := sub.NextMsgWithContext(ctx)
+	if err != nil {
+		if errors.Is(err, nats.ErrNoResponders) {
+			return nil, errConsumerGone
+		}
+		return nil, err
+	}
+	status := msg.Header.Get("Status")
+	switch {
+	case status == "":
+		return msg, nil
+	case status == "408":
+		return nil, nats.ErrTimeout
+	case status == "409" && strings.Contains(msg.Header.Get("Description"), "Consumer Deleted"):
+		return nil, errConsumerGone
+	default:
+		return nil, fmt.Errorf("pull answered %s %s", status, msg.Header.Get("Description"))
 	}
 }
 

@@ -487,6 +487,21 @@ func (f *fixture) artifactConsumers(t *testing.T) int {
 	return n
 }
 
+// purgeChunks removes every chunk message of the object whose chunk subject nuid names,
+// which is a store that stops delivering to a read that has not fetched them.
+func (f *fixture) purgeChunks(t *testing.T, nuid string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
+	defer cancel()
+	stream, err := f.js.Stream(ctx, "OBJ_"+artifactsBucket)
+	if err != nil {
+		t.Fatalf("artifact stream: %v", err)
+	}
+	if err := stream.Purge(ctx, jetstream.WithPurgeSubject("$O."+artifactsBucket+".C."+nuid)); err != nil {
+		t.Fatalf("purge chunks: %v", err)
+	}
+}
+
 // putBytes stores n bytes of a known pattern under name through the admin connection
 // and returns them.
 func (f *fixture) putBytes(t *testing.T, name string, n int) []byte {

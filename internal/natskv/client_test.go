@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -977,15 +978,7 @@ func TestObjects(t *testing.T) {
 		<-s.written
 
 		// The store stops delivering: the chunks left are purged while the pump has not fetched.
-		ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
-		defer cancel()
-		stream, err := f.js.Stream(ctx, "OBJ_"+artifactsBucket)
-		if err != nil {
-			t.Fatalf("artifact stream: %v", err)
-		}
-		if err := stream.Purge(ctx, jetstream.WithPurgeSubject("$O."+artifactsBucket+".C."+nuid)); err != nil {
-			t.Fatalf("purge chunks: %v", err)
-		}
+		f.purgeChunks(t, nuid)
 
 		result := make(chan error, 1)
 		go func() {
@@ -1000,14 +993,126 @@ func TestObjects(t *testing.T) {
 			if !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("pending read: got %v, want ErrUnavailable", err)
 			}
-			// The wait is measured from the fetch, not from the Get seconds earlier:
-			// the server ends the request at the deadline and the client's own fallback a second later.
-			if elapsed < f.c.callTimeout-100*time.Millisecond || elapsed > 2*f.c.callTimeout {
-				t.Fatalf("pending read failed %s after the release, want between one and two call deadlines", elapsed)
+			// The wait is measured from the pull, not from the Get seconds earlier:
+			// the server ends the request at the deadline and so does the client, whichever answers first.
+			if elapsed < f.c.callTimeout-100*time.Millisecond || elapsed > f.c.callTimeout+500*time.Millisecond {
+				t.Fatalf("pending read failed %s after the release, want one call deadline within half a second", elapsed)
 			}
 		case <-time.After(fixtureTimeout):
 			t.Fatalf("the pending read did not fail within %s", fixtureTimeout)
 		}
+	})
+
+	t.Run("a pull the connection cannot send leaves no subscription behind", func(t *testing.T) {
+		f := startFixture(t)
+		name, _, s := stalledAt(t, f, 2)
+
+		r, err := f.view().Artifacts.Get(t.Context(), name)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		if _, err := io.ReadFull(r, make([]byte, chunkSize)); err != nil {
+			t.Fatalf("read chunk 1: %v", err)
+		}
+		<-s.written
+
+		// The server goes away and the connection's reconnect buffer fills,
+		// so the next publish is refused at once while a subscription still registers.
+		f.stopServer()
+		waitFor(t, "reconnecting", func() bool { return f.c.nc.Status() == nats.RECONNECTING })
+		filled := false
+		for range 64 {
+			if err := f.c.nc.Publish("fill", make([]byte, 1<<20)); errors.Is(err, nats.ErrReconnectBufExceeded) {
+				filled = true
+				break
+			}
+		}
+		if !filled {
+			t.Fatalf("the reconnect buffer did not fill")
+		}
+		before := f.c.nc.NumSubscriptions()
+
+		s.free()
+		if _, err := r.Read(make([]byte, chunkSize)); err == nil {
+			t.Fatalf("read with the pull refused returned bytes")
+		}
+		if got := f.c.nc.NumSubscriptions(); got != before {
+			t.Fatalf("connection holds %d subscriptions after the refused pull, want %d", got, before)
+		}
+	})
+
+	t.Run("a store that withholds the chunk and the expiry fails the pending read one call deadline into the wait", func(t *testing.T) {
+		f := startServerFixture(t)
+		tap := f.connectTapped()
+		f.c.callTimeout = time.Second
+		name, _, s := stalledAt(t, f, 3)
+		nuid := f.chunkNUID(t, name)
+
+		r, err := f.view().Artifacts.Get(t.Context(), name)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		if _, err := io.ReadFull(r, make([]byte, 2*chunkSize)); err != nil {
+			t.Fatalf("read chunks 1 and 2: %v", err)
+		}
+		<-s.written
+
+		// The chunks left are purged, so the server holds the request until it expires,
+		// and from here nothing it sends to an inbox reaches the client, the expiry included:
+		// only the client's own deadline can end the wait.
+		f.purgeChunks(t, nuid)
+		tap.setDropInbox(true)
+		t.Cleanup(func() { tap.setDropInbox(false) })
+		result := make(chan error, 1)
+		go func() {
+			_, err := r.Read(make([]byte, chunkSize))
+			result <- err
+		}()
+		released := time.Now()
+		s.free()
+		select {
+		case err := <-result:
+			elapsed := time.Since(released)
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("pending read: got %v, want ErrUnavailable", err)
+			}
+			if elapsed < f.c.callTimeout-100*time.Millisecond || elapsed > f.c.callTimeout+500*time.Millisecond {
+				t.Fatalf("pending read failed %s after the release, want one call deadline within half a second", elapsed)
+			}
+		case <-time.After(fixtureTimeout):
+			t.Fatalf("the pending read did not fail within %s", fixtureTimeout)
+		}
+	})
+
+	t.Run("a reader that holds a chunk past the consumer's inactive threshold still gets every byte", func(t *testing.T) {
+		f := startFixture(t)
+		f.c.chunkInactiveThreshold = time.Second
+		data := f.putBytes(t, "held.pprof", 512<<10)
+
+		r, err := f.view().Artifacts.Get(t.Context(), "held.pprof")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		first := make([]byte, chunkSize)
+		if _, err := io.ReadFull(r, first); err != nil {
+			t.Fatalf("read chunk 1: %v", err)
+		}
+		// The pump has the next chunk and is blocked handing it over;
+		// no pull is pending, and the server removes the consumer once the threshold has passed.
+		waitFor(t, "the consumer's removal", func() bool { return f.artifactConsumers(t) == 0 })
+		rest, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("read the rest: %v", err)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if got := append(first, rest...); !bytes.Equal(got, data) {
+			t.Fatalf("object bytes differ: got %d bytes, want %d", len(got), len(data))
+		}
+		waitFor(t, "consumer release", func() bool { return f.artifactConsumers(t) == 0 })
 	})
 
 	t.Run("a reader whose context ends mid-stream returns the pending read with the cause", func(t *testing.T) {
