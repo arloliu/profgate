@@ -1,11 +1,16 @@
 package httpapi
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/metrics"
@@ -469,6 +474,103 @@ func TestPGOBodiesAreBounded(t *testing.T) {
 
 		h.expectPGOError(t, got, http.StatusBadRequest, "invalid_parameter", "invalid_parameter")
 	})
+
+	t.Run("a body that drips is refused at the deadline", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+
+		// Two bytes are promised and one is sent; the second never comes.
+		detail := h.refuseUnfinishedBody(t, "POST "+collectionsPath+" HTTP/1.1\r\n"+
+			"Host: gateway\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{")
+
+		if !strings.Contains(detail.Message, bodyDeadlineForTest.String()) {
+			t.Errorf("detail message = %q, want it to name the %s bound", detail.Message, bodyDeadlineForTest)
+		}
+		if strings.Contains(detail.Message, "127.0.0.1") || strings.Contains(detail.Message, "->") {
+			t.Errorf("detail message = %q names a socket address", detail.Message)
+		}
+	})
+
+	t.Run("a claimed body that never arrives is refused at the deadline", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		// A running Collection, or the dispatch answers 404 before the body is probed.
+		rec := h.seedRecord(t, h.newRecord(pgo.StateRunning))
+
+		// One byte is promised and none is sent.
+		detail := h.refuseUnfinishedBody(t, "POST "+collectionPath(rec.ID, "/cancel")+" HTTP/1.1\r\n"+
+			"Host: gateway\r\nContent-Type: application/json\r\nContent-Length: 1\r\n\r\n")
+
+		if !strings.Contains(detail.Message, bodyDeadlineForTest.String()) {
+			t.Errorf("detail message = %q, want it to name the %s bound", detail.Message, bodyDeadlineForTest)
+		}
+		if state := h.nats.jobs.record(t, rec.ID).State; state != pgo.StateRunning {
+			t.Errorf("state = %q, want the record untouched", state)
+		}
+	})
+}
+
+// bodyDeadlineForTest is the body read deadline the real-socket tests shorten to,
+// so a body that never arrives is refused in a fraction of the client's own two-second bound.
+const bodyDeadlineForTest = 300 * time.Millisecond
+
+// refuseUnfinishedBody sends one request, headers and whatever body bytes it carries, over a real socket
+// and sends nothing more, then reads the answer under a two-second deadline of its own.
+// It returns the body_malformed detail of the 400 invalid_parameter it expects within one second.
+// A ResponseRecorder carries no connection to arm a read deadline on,
+// so only a socket can show the body read ending when the gateway says it ends.
+func (p *pgoHarness) refuseUnfinishedBody(t *testing.T, request string) errorDetail {
+	t.Helper()
+
+	handler := p.handler()
+	setBodyReadTimeout(handler, bodyDeadlineForTest)
+	gateway := httptest.NewServer(handler)
+	t.Cleanup(gateway.Close)
+
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "tcp", gateway.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	// The close at cleanup is what would end the blocked read if the deadline did not.
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+	if _, err := io.WriteString(conn, request); err != nil {
+		t.Fatalf("write request error = %v", err)
+	}
+
+	started := time.Now()
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse() error = %v after %s: the handler is still waiting for a body that will never come",
+			err, time.Since(started).Round(time.Millisecond))
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Errorf("answered after %s, want within 1s of a %s deadline", elapsed.Round(time.Millisecond), bodyDeadlineForTest)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (body %q)", resp.StatusCode, raw)
+	}
+	var envelope struct {
+		Code    string        `json:"code"`
+		Details []errorDetail `json:"details"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("body %q is not a JSON envelope: %v", raw, err)
+	}
+	if envelope.Code != "invalid_parameter" {
+		t.Errorf("code = %q, want invalid_parameter (body %q)", envelope.Code, raw)
+	}
+	if len(envelope.Details) != 1 || envelope.Details[0].Code != detailBodyMalformed {
+		t.Fatalf("details = %+v, want one %s detail", envelope.Details, detailBodyMalformed)
+	}
+	p.expectPGOAudit(t, http.StatusBadRequest, "invalid_parameter")
+
+	return envelope.Details[0]
 }
 
 // TestPGOMetricsLabels pins the endpoint and profile labels of the new routes:

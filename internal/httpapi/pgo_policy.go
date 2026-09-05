@@ -117,7 +117,7 @@ func (s *server) servePolicyWrite(
 	}
 
 	var override pgo.PolicyOverride
-	if berr := decodeBody(w, r, &override, false); berr != nil {
+	if berr := s.decodeBody(w, r, &override, false); berr != nil {
 		q.fail(w, berr)
 
 		return
@@ -194,7 +194,7 @@ func (s *server) servePolicyDelete(
 		return
 	}
 
-	if berr := rejectBody(w, r); berr != nil {
+	if berr := s.rejectBody(w, r); berr != nil {
 		q.fail(w, berr)
 
 		return

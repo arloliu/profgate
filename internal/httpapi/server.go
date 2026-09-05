@@ -26,6 +26,10 @@ import (
 )
 
 const (
+	// RequestReadTimeout is how long a client gets to deliver its request headers,
+	// and, on a route that reads or probes a body, how long it gets to deliver the body.
+	// Both listeners read it for ReadHeaderTimeout; a body is at most 64 KiB, so one bound serves both.
+	RequestReadTimeout = 10 * time.Second
 	// budgetGrace is added to the effective duration to form the overall request budget;
 	// it is the whole budget for profiles without a duration.
 	budgetGrace = 30 * time.Second
@@ -90,6 +94,9 @@ type server struct {
 	// budgetGrace is the grace the overall request budget adds to the effective duration.
 	// Production sets it from the constant above; a test on a real socket shortens it.
 	budgetGrace time.Duration
+	// bodyReadTimeout is how long a PGO route gives a client to deliver its body, or to prove it sent none.
+	// Production sets it from RequestReadTimeout; a test on a real socket shortens it.
+	bodyReadTimeout time.Duration
 	// beforeAllowlist, when set, runs after the realm check and before the allowlist check.
 	// Production leaves it nil; a test uses it to swap the configuration pointer mid-request.
 	beforeAllowlist func()
@@ -114,7 +121,7 @@ func New(d Deps) http.Handler {
 		d.Auth = auth.Disabled{}
 	}
 
-	return &server{deps: d, budgetGrace: budgetGrace}
+	return &server{deps: d, budgetGrace: budgetGrace, bodyReadTimeout: RequestReadTimeout}
 }
 
 // routeKind is which of the /v1 routes a path matched.

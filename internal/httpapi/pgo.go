@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"time"
@@ -203,16 +204,18 @@ func storeError(err error) *requestError {
 // The unknown field is located before the value is decoded, because the
 // standard decoder reports a field name with no path and a create body nests:
 // sampling.rounds and {"bogus": 1} would otherwise answer alike.
-func decodeBody(w http.ResponseWriter, r *http.Request, v any, allowEmpty bool) *requestError {
+func (s *server) decodeBody(w http.ResponseWriter, r *http.Request, v any, allowEmpty bool) *requestError {
+	// A body that arrives one byte at a time held this read for as long as the client chose.
+	// A read that fails leaves the deadline armed:
+	// net/http reads the rest of an unread body after the handler returns, up to 256 KiB,
+	// and the same deadline ends that read at once instead of letting the same client stall it.
+	control := http.NewResponseController(w)
+	_ = control.SetReadDeadline(time.Now().Add(s.bodyReadTimeout))
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			return bodyMalformed(fmt.Sprintf("the request body is larger than %d bytes", maxBodyBytes))
-		}
-
-		return bodyMalformed(fmt.Sprintf("the request body is not readable: %v", err))
+		return s.bodyUnreadable(err)
 	}
+	_ = control.SetReadDeadline(time.Time{})
 	if allowEmpty && len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}
@@ -240,16 +243,42 @@ func bodyMalformed(message string) *requestError {
 	return invalidParameter(message, bodyFault(detailBodyMalformed, "", message))
 }
 
+// bodyUnreadable refuses a body whose read failed.
+// The deadline's error names both socket addresses,
+// so it is answered with a fixed message that names the bound and nothing else.
+func (s *server) bodyUnreadable(err error) *requestError {
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		return bodyMalformed(fmt.Sprintf("the request body did not arrive within %s", s.bodyReadTimeout))
+	case errors.As(err, &tooLarge):
+		return bodyMalformed(fmt.Sprintf("the request body is larger than %d bytes", maxBodyBytes))
+	default:
+		return bodyMalformed(fmt.Sprintf("the request body is not readable: %v", err))
+	}
+}
+
 // rejectBody refuses a request that carries one where the route accepts none.
-func rejectBody(w http.ResponseWriter, r *http.Request) *requestError {
+// The probe read takes the same deadline decodeBody's read does,
+// and a probe that fails is answered the way an unreadable body is;
+// only a probe that reached the body's end, finding nothing, clears it.
+func (s *server) rejectBody(w http.ResponseWriter, r *http.Request) *requestError {
+	control := http.NewResponseController(w)
+	_ = control.SetReadDeadline(time.Now().Add(s.bodyReadTimeout))
 	var probe [1]byte
-	if n, _ := io.ReadFull(http.MaxBytesReader(w, r.Body, 1), probe[:]); n > 0 {
+	n, err := io.ReadFull(http.MaxBytesReader(w, r.Body, 1), probe[:])
+	switch {
+	case n > 0:
 		const message = "this endpoint takes no request body"
 
 		return invalidParameter(message, bodyFault(detailBodyNotAllowed, "", message))
-	}
+	case errors.Is(err, io.EOF):
+		_ = control.SetReadDeadline(time.Time{})
 
-	return nil
+		return nil
+	default:
+		return s.bodyUnreadable(err)
+	}
 }
 
 // The two interfaces that make a type decode itself.

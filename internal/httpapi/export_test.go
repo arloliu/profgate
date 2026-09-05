@@ -16,3 +16,9 @@ func setBeforeAllowlist(h http.Handler, fn func()) {
 func setBudgetGrace(h http.Handler, d time.Duration) {
 	h.(*server).budgetGrace = d
 }
+
+// setBodyReadTimeout shortens the body read deadline on a handler built by New,
+// so a test on a real socket sees a body that never arrives refused in milliseconds rather than ten seconds.
+func setBodyReadTimeout(h http.Handler, d time.Duration) {
+	h.(*server).bodyReadTimeout = d
+}

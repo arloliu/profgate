@@ -563,7 +563,7 @@ and the `400` envelope is written to a connection that is still open.
 `cmd/profgate/serve.go:234-235` reads `httpapi.RequestReadTimeout` for both `ReadHeaderTimeout` values,
 and the constant at `:43-44` is deleted.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 Two subtests in `internal/httpapi/pgo_test.go`, on a real socket over the PGO harness
 (`newPGOHarness`, `internal/httpapi/fixtures_test.go:1604`),
@@ -584,7 +584,7 @@ Both report the client's read timing out with no response.
 The existing `decodeBody` rows on a `ResponseRecorder` stay green:
 the recorder answers `ErrNotSupported`, which is ignored.
 
-- [ ] **Bound the reads and say so**
+- [x] **Bound the reads and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **A request body that arrives slowly is refused after ten seconds.**
@@ -595,7 +595,7 @@ Both reads now have the ten seconds the headers have,
 and a body that has not arrived by then is answered `400 invalid_parameter` with a `body_malformed` detail that names the bound.
 The bound is a constant, as the header bound is; there is no key for it.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/httpapi/server.go internal/httpapi/pgo.go cmd/profgate/serve.go CHANGELOG.md

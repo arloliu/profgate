@@ -184,6 +184,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the pool grew with every Pod ever profiled.
   The transport now keeps at most 100 idle connections and closes one idle for 90 seconds,
   the standard transport's values; two per Pod, as before.
+- **A request body that arrives slowly is refused after ten seconds.**
+  A PGO route read its JSON body with no bound once the headers were in,
+  so a body sent one byte at a time held a handler goroutine for as long as the client chose,
+  and a route that takes no body waited the same way for the one byte that would prove one was sent.
+  Both reads now have the ten seconds the headers have,
+  and a body that has not arrived by then is answered `400 invalid_parameter` with a `body_malformed` detail that names the bound.
+  The bound is a constant, as the header bound is; there is no key for it.
   A client fetching several short profiles from one Pod still reuses its connection.
 - **Three log lines name the work they belong to.**
   A failed collection sample names its Collection,

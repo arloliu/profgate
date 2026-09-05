@@ -40,8 +40,6 @@ const (
 	drainSlack = 30 * time.Second
 	// opsDrainTimeout bounds the ops listener's shutdown.
 	opsDrainTimeout = 5 * time.Second
-	// readHeaderTimeout bounds how long a connection may take to send its request headers.
-	readHeaderTimeout = 10 * time.Second
 	// syncedPollInterval is how often the lifecycle re-checks HasSynced after the informers start.
 	syncedPollInterval = 50 * time.Millisecond
 	// syncedReportInterval is how often an informer sync still waiting says so.
@@ -231,8 +229,8 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		defer inFlightRequests.Add(-1)
 		api.ServeHTTP(w, r)
 	})
-	apiServer := &http.Server{Handler: counted, ReadHeaderTimeout: readHeaderTimeout}
-	opsServer := &http.Server{Handler: ops.New(ready, deps.registry), ReadHeaderTimeout: readHeaderTimeout}
+	apiServer := &http.Server{Handler: counted, ReadHeaderTimeout: httpapi.RequestReadTimeout}
+	opsServer := &http.Server{Handler: ops.New(ready, deps.registry), ReadHeaderTimeout: httpapi.RequestReadTimeout}
 
 	// The API listener serves HTTPS when the configuration names a certificate,
 	// and the ops listener never does: its readers are the kubelet and the

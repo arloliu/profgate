@@ -468,7 +468,7 @@ func (s *server) serveCollectionCreate(
 	}
 
 	var body pgo.PolicyOverride
-	if berr := decodeBody(w, r, &body, true); berr != nil {
+	if berr := s.decodeBody(w, r, &body, true); berr != nil {
 		q.fail(w, berr)
 
 		return
@@ -1096,7 +1096,7 @@ func (s *server) expireCollection(r *http.Request, q *request, sess *pgo.Session
 func (s *server) serveCollectionCancel(
 	w http.ResponseWriter, r *http.Request, q *request, sess *pgo.Session, stored pgo.StoredRecord,
 ) {
-	if berr := rejectBody(w, r); berr != nil {
+	if berr := s.rejectBody(w, r); berr != nil {
 		q.fail(w, berr)
 
 		return
