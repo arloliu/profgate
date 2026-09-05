@@ -1141,9 +1141,14 @@ func TestWorkerDrain(t *testing.T) {
 				scanNow(t, w)
 				claimed := waitClaimed(t, f, id, 1)
 				stub.waitStarted(t)
+				waitFor(t, "the owner armed its cutoff timer", func() bool { return r.clock.armedTimers() == 1 })
 
+				// The clock moves only once the drain has stopped the renewals:
+				// a renewal the ticker issues before the drain begins lands,
+				// and the drain then waits to the lease it committed.
 				drained := make(chan error, 1)
 				go func() { drained <- w.Drain(context.Background()) }()
+				waitFor(t, "the drain armed its timer", func() bool { return r.clock.armedTimers() == 2 })
 
 				cutoff := claimed.LeaseUntil.Add(-skewMargin)
 				r.clock.Set(cutoff.Add(-time.Second))
@@ -1218,6 +1223,257 @@ func TestWorkerDrain(t *testing.T) {
 		rec := waitClaimed(t, f, id, 2)
 		if rec.Owner == nil || rec.Owner.Instance != "replica-two" {
 			t.Fatalf("owner is %+v, want the reclaiming replica", rec.Owner)
+		}
+	})
+
+	t.Run("follows a renewal that lands after it began", func(t *testing.T) {
+		// A renewal already inside the store when the drain begins can still land.
+		// Whether its result is installed before the cutoff timer fires or is still pending when it does,
+		// the drain returns only once the work has been cancelled at the cutoff the entry holds then.
+		cases := []struct {
+			name string
+			// pending holds the renewal's result after the store has answered,
+			// rather than the call before it reaches the store.
+			pending bool
+		}{
+			{name: "installed before the timer fires", pending: false},
+			{name: "fired while the result is pending installation", pending: true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				f := startPGO(t)
+				id := f.seedClaimable("payment", "payment-api")
+
+				var (
+					hook    = &kvHook{}
+					blocked = make(chan struct{}, 1)
+					resume  = make(chan struct{})
+					claimed = make(chan struct{})
+					once    sync.Once
+				)
+				r := f.newReplica("replica", replicaOpts{
+					wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+				})
+				r.waitSynced()
+				r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+
+				// A merge runs to completion once entered,
+				// so the drain has to return without the work goroutine;
+				// the context it was given is what says the work was cancelled.
+				stub := newRunStub(workResult{})
+				stub.ignoreCancel = true
+				t.Cleanup(stub.release)
+				captured := &ctxCapture{}
+				w := r.newWorker(captured.wrap(stub.fn()))
+
+				hold := func(op, key string) bool {
+					if op != "update" || key != jobKey(id) {
+						return false
+					}
+					select {
+					case <-claimed:
+					default:
+						return false // the claim itself
+					}
+					once.Do(func() {
+						blocked <- struct{}{}
+						<-resume
+					})
+
+					return true
+				}
+				if tc.pending {
+					hook.setAfter(func(op, key string, err error) error {
+						hold(op, key)
+
+						return err
+					})
+				} else {
+					hook.setBefore(func(op, key string) (error, bool) {
+						hold(op, key)
+
+						return nil, false
+					})
+				}
+
+				scanNow(t, w)
+				rec := waitClaimed(t, f, id, 1)
+				close(claimed)
+				stub.waitStarted(t)
+				waitFor(t, "the owner armed its cutoff timer", func() bool { return r.clock.armedTimers() == 1 })
+				first := rec.LeaseUntil.Add(-skewMargin)
+				fl := w.entryOf(id)
+				if got := entryCutoff(fl); !got.Equal(first) {
+					t.Fatalf("the entry's cutoff is %s, want %s", got, first)
+				}
+
+				// The first renewal is inside the store when the drain begins.
+				r.clock.Advance(testLeaseTTL / 3)
+				<-blocked
+				drained := make(chan error, 1)
+				go func() { drained <- w.Drain(context.Background()) }()
+				waitFor(t, "the drain armed its timer", func() bool { return r.clock.armedTimers() == 2 })
+
+				if tc.pending {
+					// The cutoff timer fires first:
+					// the work is cancelled and the drain returns at the cutoff the entry holds.
+					r.clock.Set(first.Add(time.Second))
+					waitFor(t, "the work context was cancelled", captured.cancelled)
+					select {
+					case err := <-drained:
+						if err != nil {
+							t.Fatalf("Drain returned %v, want nil", err)
+						}
+					case <-time.After(fixtureTimeout):
+						t.Fatal("Drain did not return once the work was cancelled at the cutoff")
+					}
+
+					// The result lands on a cancelled owner: it moves nothing,
+					// and the owner commits nothing.
+					close(resume)
+					stub.release()
+					waitFor(t, "the owner loop stopped", func() bool { return w.activeSlots() == 0 })
+					if got := entryCutoff(fl); !got.Equal(first) {
+						t.Fatalf("the entry's cutoff moved to %s after the drain returned, want %s", got, first)
+					}
+					got := f.record(id)
+					if got.State != StateRunning || got.Attempt != 1 {
+						t.Fatalf("record is %q attempt %d, want running attempt 1: a cancelled owner commits nothing",
+							got.State, got.Attempt)
+					}
+					if got.LeaseUntil == nil || !got.LeaseUntil.After(*rec.LeaseUntil) {
+						t.Fatalf("the record's lease is %v, want the renewed lease past %s", got.LeaseUntil, rec.LeaseUntil)
+					}
+
+					return
+				}
+
+				// The result is installed before either timer fires.
+				close(resume)
+				waitFor(t, "the renewed lease was installed", func() bool { return !entryCutoff(fl).Equal(first) })
+				renewed := f.record(id)
+				if renewed.LeaseUntil == nil || !renewed.LeaseUntil.After(*rec.LeaseUntil) {
+					t.Fatalf("the record's lease is %v, want the renewed lease past %s", renewed.LeaseUntil, rec.LeaseUntil)
+				}
+				next := renewed.LeaseUntil.Add(-skewMargin)
+
+				// The first lease's cutoff passes:
+				// both timers find the cutoff moved, and neither the drain nor the work ends there.
+				r.clock.Set(first.Add(time.Second))
+				select {
+				case err := <-drained:
+					t.Fatalf("Drain returned %v at the cutoff of a lease the owner had renewed", err)
+				case <-time.After(50 * time.Millisecond):
+				}
+				if captured.cancelled() {
+					t.Fatal("the work was cancelled at the cutoff of a lease the owner had renewed")
+				}
+
+				// The renewed lease's cutoff passes: the work is cancelled there,
+				// and the drain returns without waiting for the work goroutine.
+				r.clock.Set(next.Add(time.Second))
+				select {
+				case err := <-drained:
+					if err != nil {
+						t.Fatalf("Drain returned %v, want nil", err)
+					}
+				case <-time.After(fixtureTimeout):
+					t.Fatal("Drain did not return at the renewed lease's cutoff")
+				}
+				if !captured.cancelled() {
+					t.Fatal("Drain returned before the work was cancelled at the cutoff")
+				}
+				stub.release()
+				waitFor(t, "the owner loop stopped", func() bool { return w.activeSlots() == 0 })
+			})
+		}
+	})
+
+	t.Run("waits for the second owner of a collection this replica reclaimed", func(t *testing.T) {
+		f := startPGO(t)
+		id := f.seedClaimable("payment", "payment-api")
+
+		// No renewal lands after the claim,
+		// so the first owner runs to its cutoff and this replica's own scan reclaims the record.
+		hook := &kvHook{}
+		claimed := make(chan struct{})
+		hook.setBefore(func(op, key string) (error, bool) {
+			if op != "update" || key != jobKey(id) {
+				return nil, false
+			}
+			select {
+			case <-claimed:
+				return natskv.ErrUnavailable, true
+			default:
+				return nil, false // the claim itself
+			}
+		})
+		r := f.newReplica("replica", replicaOpts{
+			wrapClient: func(c natskv.Client) natskv.Client { return newHookClient(c, hook) },
+		})
+		r.waitSynced()
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+
+		// Both attempts run to completion once entered,
+		// and the first is still draining its work when the second is claimed.
+		first := newRunStub(workResult{Reason: ReasonNoSamples})
+		first.ignoreCancel = true
+		second := newRunStub(workResult{Reason: ReasonNoSamples})
+		second.ignoreCancel = true
+		t.Cleanup(first.release)
+		t.Cleanup(second.release)
+		w := r.newWorker(func(ctx context.Context, in workInput) workResult {
+			if in.Record.Attempt == 1 {
+				return first.fn()(ctx, in)
+			}
+
+			return second.fn()(ctx, in)
+		}, func(c *config.PGOConfig) { c.Limits.MaxActiveCollections = 2 })
+
+		scanNow(t, w)
+		rec := waitClaimed(t, f, id, 1)
+		close(claimed)
+		first.waitStarted(t)
+		firstEntry := w.entryOf(id)
+
+		// The first owner aborts at its cutoff and keeps its slot while its work drains.
+		r.clock.Set(rec.LeaseUntil.Add(-skewMargin + time.Second))
+		first.waitCancelled(t)
+
+		// The lease lapses for every replica, and this one reclaims it.
+		hook.setBefore(nil)
+		r.clock.Set(rec.LeaseUntil.Add(skewMargin + time.Second))
+		scanNow(t, w)
+		reclaimed := waitClaimed(t, f, id, 2)
+		if reclaimed.Owner == nil || reclaimed.Owner.Instance != "replica" {
+			t.Fatalf("owner is %+v, want this replica", reclaimed.Owner)
+		}
+		second.waitStarted(t)
+		waitFor(t, "the second owner registered its entry", func() bool { return w.entryOf(id) != firstEntry })
+
+		// The first owner's exit leaves the second owner's entry alone.
+		first.release()
+		waitFor(t, "the first owner loop stopped", func() bool { return w.activeSlots() == 1 })
+
+		drained := make(chan error, 1)
+		go func() { drained <- w.Drain(context.Background()) }()
+		select {
+		case err := <-drained:
+			t.Fatalf("Drain returned %v while the second owner still held its lease", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		if got := w.entryOf(id); got == nil || got == firstEntry {
+			t.Fatalf("the drain entry is %p, want the second owner's, not %p", got, firstEntry)
+		}
+
+		second.release()
+		select {
+		case err := <-drained:
+			if err != nil {
+				t.Fatalf("Drain returned %v, want nil", err)
+			}
+		case <-time.After(fixtureTimeout):
+			t.Fatal("Drain did not return once the second owner had committed")
 		}
 	})
 
@@ -1563,4 +1819,46 @@ func TestWorkerScanReadsOnlyWhatIsDue(t *testing.T) {
 			t.Fatalf("record is attempt %d owned by %s, want the renewing owner's attempt 1", got.Attempt, got.Owner.Instance)
 		}
 	})
+}
+
+// ctxCapture records the context the work body was given,
+// so a test reads cancellation from the context itself rather than from the stub's goroutine.
+type ctxCapture struct {
+	mu  sync.Mutex
+	ctx context.Context
+}
+
+// wrap returns a run function that records its context before it defers to run.
+func (c *ctxCapture) wrap(run runFunc) runFunc {
+	return func(ctx context.Context, in workInput) workResult {
+		c.mu.Lock()
+		c.ctx = ctx
+		c.mu.Unlock()
+
+		return run(ctx, in)
+	}
+}
+
+// cancelled reports whether the captured context has been cancelled;
+// a context not yet captured has not been.
+func (c *ctxCapture) cancelled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.ctx != nil && c.ctx.Err() != nil
+}
+
+// entryOf is the drain entry this worker holds for a Collection, or nil.
+func (w *Worker) entryOf(id string) *inFlight {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.inFlight[id]
+}
+
+// entryCutoff is the cutoff an entry holds.
+func entryCutoff(fl *inFlight) time.Time {
+	cutoff, _ := fl.state()
+
+	return cutoff
 }

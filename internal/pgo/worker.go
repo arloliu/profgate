@@ -63,29 +63,77 @@ type workResult struct {
 type runFunc func(ctx context.Context, in workInput) workResult
 
 // inFlight is one Collection this replica owns, for Drain to wait on.
-// cutoff is how long its owner may still commit under the lease it last renewed,
-// and the owner moves it out on every renewal.
+// cutoff is the one absolute time an owner's authority ends at, committedLeaseUntil - skewMargin of the lease it last committed:
+// a renewal moves it, the work is cancelled at it, the final update is gated on it, and the drain waits to it,
+// so no two of them can disagree.
+// install and cancel are the only writes, both under mu, so a renewal's result and a cancellation are ordered one way:
+// a result installed first moves the cutoff the timer then re-reads,
+// and a cancellation declared first refuses the result, which the owner then treats as a lease it cannot use.
 type inFlight struct {
-	id   string
-	done chan struct{}
+	id          string
+	done        chan struct{} // closed when the owner loop exits
+	cancelledCh chan struct{} // closed once cancel or abort has set cancelled
 
-	mu     sync.Mutex
-	cutoff time.Time
+	mu        sync.Mutex
+	cutoff    time.Time
+	cancelled bool
 }
 
-// setCutoff records the cutoff of a lease the owner has just committed.
-func (fl *inFlight) setCutoff(t time.Time) {
-	fl.mu.Lock()
-	defer fl.mu.Unlock()
-	fl.cutoff = t
+// newInFlight is the entry for a Collection claimed under a lease.
+func newInFlight(id string, lease time.Time) *inFlight {
+	return &inFlight{
+		id:          id,
+		done:        make(chan struct{}),
+		cancelledCh: make(chan struct{}),
+		cutoff:      lease.Add(-skewMargin),
+	}
 }
 
-// cutoffAt is the cutoff of the last lease the owner committed.
-func (fl *inFlight) cutoffAt() time.Time {
+// install records the cutoff of a lease the owner has just committed, unless the work has been cancelled already.
+func (fl *inFlight) install(cutoff time.Time) bool {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	if fl.cancelled {
+		return false
+	}
+	fl.cutoff = cutoff
+
+	return true
+}
+
+// cancel marks the work cancelled when now is not before the cutoff, and reports whether this call did so.
+// A timer that finds the cutoff moved re-arms for the new one.
+func (fl *inFlight) cancel(now time.Time) bool {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	if fl.cancelled || now.Before(fl.cutoff) {
+		return false
+	}
+	fl.cancelled = true
+	close(fl.cancelledCh)
+
+	return true
+}
+
+// abort marks the work cancelled whatever the cutoff, for the lost record and the lapsed lease.
+func (fl *inFlight) abort() bool {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	if fl.cancelled {
+		return false
+	}
+	fl.cancelled = true
+	close(fl.cancelledCh)
+
+	return true
+}
+
+// state is the cutoff and whether the work was cancelled, read together.
+func (fl *inFlight) state() (time.Time, bool) {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
 
-	return fl.cutoff
+	return fl.cutoff, fl.cancelled
 }
 
 // Worker claims Collections and owns them until they end.
@@ -220,25 +268,43 @@ func (w *Worker) Drain(ctx context.Context) error {
 }
 
 // waitCollection waits for one Collection's owner loop to exit,
-// no longer than the cutoff of the lease that owner last committed.
+// or for its work to be cancelled at the cutoff of the lease that owner last committed.
+// It re-reads the cutoff when its timer fires rather than trusting the one it armed for:
+// a renewal already in the store when the drain began can still land and move it,
+// and the owner is then waited for again, to the new cutoff.
+// Once the cutoff has passed it waits for the cancellation itself,
+// so it returns only once the work has been cancelled at the cutoff the entry holds then or the owner has committed.
 func (w *Worker) waitCollection(ctx context.Context, fl *inFlight) error {
-	// An owner that has already exited is never left behind,
-	// however long an earlier one in this pass held the wait.
+	for {
+		// An owner that has already exited is never left behind,
+		// however long an earlier one in this pass held the wait.
+		select {
+		case <-fl.done:
+			return nil
+		default:
+		}
+		cutoff, _ := fl.state()
+		wait := cutoff.Sub(w.clock.Now())
+		if wait <= 0 {
+			break
+		}
+		timer := w.clock.NewTimer(wait)
+		select {
+		case <-fl.done:
+			timer.Stop()
+
+			return nil
+		case <-timer.C():
+		case <-ctx.Done():
+			timer.Stop()
+
+			return fmt.Errorf("pgo: drain: %w", ctx.Err())
+		}
+	}
 	select {
 	case <-fl.done:
 		return nil
-	default:
-	}
-	wait := fl.cutoffAt().Sub(w.clock.Now())
-	if wait < 0 {
-		wait = 0
-	}
-	timer := w.clock.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-fl.done:
-		return nil
-	case <-timer.C():
+	case <-fl.cancelledCh:
 		w.log.Warn("pgo: collection left for another replica at its lease cutoff", "collection", fl.id)
 
 		return nil
@@ -498,7 +564,7 @@ func (w *Worker) releaseLocalSlot() {
 // The local slot and the memory it stands for stay held until the work
 // goroutine has exited, so a replacement Collection on this replica waits.
 func (w *Worker) startOwner(stores natskv.Stores, rec Record, rev uint64) {
-	fl := &inFlight{id: rec.ID, done: make(chan struct{}), cutoff: rec.LeaseUntil.Add(-skewMargin)}
+	fl := newInFlight(rec.ID, *rec.LeaseUntil)
 	w.mu.Lock()
 	w.inFlight[rec.ID] = fl
 	w.mu.Unlock()
@@ -506,8 +572,15 @@ func (w *Worker) startOwner(stores natskv.Stores, rec Record, rev uint64) {
 	go func() {
 		defer close(fl.done)
 		defer func() {
+			// A replica can hold two owners for one identifier in turn:
+			// one that aborted at its cutoff and is still draining its work,
+			// and the one its own scan started by reclaiming the record.
+			// An owner removes only the entry it registered;
+			// a successor's entry is the drain's to wait for.
 			w.mu.Lock()
-			delete(w.inFlight, rec.ID)
+			if w.inFlight[rec.ID] == fl {
+				delete(w.inFlight, rec.ID)
+			}
 			w.mu.Unlock()
 			// The gauge falls before the slot does, so an observer that sees
 			// the slot free sees the gauge already down.
@@ -549,8 +622,9 @@ func (w *Worker) ownerLoop(fl *inFlight, stores natskv.Stores, entry Record, rev
 		results <- w.run(workCtx, input)
 	}()
 
-	cutoff := w.startCutoff(committed, cancelWork)
-	defer cutoff.stop()
+	cutoffDone := make(chan struct{})
+	defer close(cutoffDone)
+	go w.runCutoff(fl, cancelWork, cutoffDone)
 
 	ticker := w.clock.NewTicker(w.leaseTTL / 3)
 	defer ticker.Stop()
@@ -568,7 +642,7 @@ func (w *Worker) ownerLoop(fl *inFlight, stores natskv.Stores, entry Record, rev
 
 				return
 			}
-			w.finish(stores, entry, rev, committed, deadline, res)
+			w.finish(fl, stores, entry, rev, deadline, res)
 
 			return
 		case <-ticker.C():
@@ -584,20 +658,32 @@ func (w *Worker) ownerLoop(fl *inFlight, stores natskv.Stores, entry Record, rev
 			newRev, lease, err := w.renew(jobs, entry, rev, current, committed)
 			switch {
 			case err == nil:
+				if !fl.install(lease.Add(-skewMargin)) {
+					// The work was cancelled at the cutoff while this renewal was in the store.
+					// The lease it committed is one this owner cannot use, as a lapsed one is;
+					// the owner writes nothing more, and another replica reclaims the record once that lease lapses.
+					aborted = true
+					fl.abort()
+					cancelWork()
+					w.log.Warn("pgo: collection lease renewed after its work was cancelled at the cutoff",
+						"collection", entry.ID, "instance", w.owner.Instance)
+
+					continue
+				}
 				rev = newRev
 				entry.LeaseUntil = &lease
 				entry.Progress = current
 				committed = lease
-				cutoff.reset(committed.Sub(w.clock.Now()) - skewMargin)
-				fl.setCutoff(committed.Add(-skewMargin))
 			case errors.Is(err, natskv.ErrRevisionMismatch):
 				// Cancelled by the API, or reclaimed after a stall: the work
 				// context is cancelled at once, without waiting for the cutoff.
 				aborted = true
+				fl.abort()
 				cancelWork()
 				w.logLostRecord(jobs, entry)
 			case errors.Is(err, errLeaseLapsed):
 				aborted = true
+				fl.abort()
 				cancelWork()
 				w.log.Warn("pgo: collection lease lapsed", "collection", entry.ID, "instance", w.owner.Instance)
 			default:
@@ -647,17 +733,18 @@ func (w *Worker) renew(
 	return newRev, lease, nil
 }
 
-// finish issues the one final update, gated on the committed lease, the
-// deadline, and the state the owner alone can read.
-// The lease and deadline are re-checked at the last moment because the Put may
-// have taken long enough for a scan elsewhere to have lawfully reclaimed the
-// record; an owner whose lease has lapsed by then has nothing to commit and
-// removes what it wrote.
+// finish issues the one final update,
+// gated on the entry's cutoff and cancellation, the deadline, and the state the owner alone can read.
+// The cutoff and deadline are re-checked at the last moment
+// because the Put may have taken long enough for a scan elsewhere to have lawfully reclaimed the record;
+// an owner whose lease has lapsed by then has nothing to commit and removes what it wrote.
+// The cutoff is the entry's, the value the drain reads, so its gate and the drain's read one value.
 func (w *Worker) finish(
-	stores natskv.Stores, entry Record, rev uint64, committed, deadline time.Time, res workResult,
+	fl *inFlight, stores natskv.Stores, entry Record, rev uint64, deadline time.Time, res workResult,
 ) {
 	now := w.clock.Now().UTC()
-	if !now.Before(committed.Add(-skewMargin)) || !now.Before(deadline.Add(-skewMargin)) {
+	cutoff, cancelled := fl.state()
+	if cancelled || !now.Before(cutoff) || !now.Before(deadline.Add(-skewMargin)) {
 		w.discardArtifact(stores.Artifacts, res)
 		w.log.Warn("pgo: final update skipped, the lease or the deadline had passed",
 			"collection", entry.ID, "instance", w.owner.Instance)
@@ -746,46 +833,30 @@ func (w *Worker) logLostRecord(kv natskv.KV, entry Record) {
 		"collection", entry.ID, "state", string(rec.State), "reason", rec.Reason, "instance", w.owner.Instance)
 }
 
-// leaseCutoff cancels the work context when the committed lease is about to
-// lapse, whatever the owner loop is doing at the time.
-type leaseCutoff struct {
-	reseted chan time.Duration
-	done    chan struct{}
-	once    sync.Once
-}
+// runCutoff cancels the work when the committed lease is about to lapse, whatever the owner loop is doing.
+// It reads the entry's cutoff when its timer fires rather than being told a new one:
+// a renewal moves the value, and a timer that finds it moved re-arms for the new one,
+// so the work is cancelled at the cutoff the entry holds then and never at an older one.
+// It returns once it has cancelled the work, once the owner loop has closed done,
+// or once its timer fires on an entry the owner loop aborted itself.
+func (w *Worker) runCutoff(fl *inFlight, cancelWork context.CancelFunc, done <-chan struct{}) {
+	for {
+		cutoff, cancelled := fl.state()
+		if cancelled {
+			return
+		}
+		timer := w.clock.NewTimer(cutoff.Sub(w.clock.Now()))
+		select {
+		case <-done:
+			timer.Stop()
 
-// startCutoff arms the cutoff for the first committed lease.
-func (w *Worker) startCutoff(committed time.Time, cancelWork context.CancelFunc) *leaseCutoff {
-	c := &leaseCutoff{reseted: make(chan time.Duration, 1), done: make(chan struct{})}
-	d := committed.Sub(w.clock.Now()) - skewMargin
-	go func() {
-		timer := w.clock.NewTimer(d)
-		defer timer.Stop()
-		for {
-			select {
-			case <-c.done:
-				return
-			case next := <-c.reseted:
-				timer.Stop()
-				timer.Reset(next)
-			case <-timer.C():
+			return
+		case <-timer.C():
+			if fl.cancel(w.clock.Now()) {
 				cancelWork()
 
 				return
 			}
 		}
-	}()
-
-	return c
-}
-
-// reset moves the cutoff out to a lease that has just been committed.
-func (c *leaseCutoff) reset(d time.Duration) {
-	select {
-	case c.reseted <- d:
-	default:
 	}
 }
-
-// stop releases the cutoff goroutine.
-func (c *leaseCutoff) stop() { c.once.Do(func() { close(c.done) }) }

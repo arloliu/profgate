@@ -196,6 +196,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The collector's drain follows a lease renewed under it, and waits for every owner it holds.**
+  The drain read each owner's cutoff once,
+  so a renewal already in flight when the drain began extended a lease the drain did not wait for,
+  and the work could still be running with a lease other replicas honoured when the process exited.
+  The drain now re-reads the cutoff when its timer fires
+  and returns only once the work has been cancelled or committed there.
+  A replica that reclaimed a Collection it had aborted itself lost the second owner's entry when the first owner exited,
+  and the drain returned at once; an owner now removes only the entry it registered.
 - **A publication finishes once its first write has landed.**
   `POST /collections` ran every write under the request,
   so a client that left between the record's first write and the last left an `initializing` record

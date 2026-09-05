@@ -1330,7 +1330,7 @@ a timer at the cutoff `fl.state()` reports; when it fires, a cutoff still ahead 
 with a comment that a replica can hold two owners for one identifier in turn
 and a successor's entry is the drain's to wait for.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 All in `TestWorkerDrain` (`internal/pgo/worker_test.go:1029-1292`).
 Three barriers serve every row:
@@ -1360,7 +1360,7 @@ The red state:
 go test -race -count=1 ./internal/pgo/ -run 'TestWorkerDrain/follows_a_renewal|TestWorkerDrain/waits_for_the_second_owner'
 ```
 
-- [ ] **Re-read the cutoff and say so**
+- [x] **Re-read the cutoff and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **The collector's drain follows a lease renewed under it, and waits for every owner it holds.**
@@ -1372,7 +1372,7 @@ and returns only once the work has been cancelled or committed there.
 A replica that reclaimed a Collection it had aborted itself lost the second owner's entry when the first owner exited,
 and the drain returned at once; an owner now removes only the entry it registered.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/pgo/worker.go CHANGELOG.md
