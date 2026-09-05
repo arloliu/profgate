@@ -274,7 +274,7 @@ Spec: [`pgo.md`](../specs/pgo.md) *The seam* for the transfer deadline and the r
 *Sweeper*, *Logging*, and *Metrics* for the counted flip and probe-listing failures;
 *Claim* and *List Collections* for the scan's due check and the per-Service index;
 [`gateway.md`](../specs/gateway.md) *Startup and shutdown* for the jitter on the preflight backoff.
-Shipped: not built yet.
+Shipped: pull request #28.
 Why here: the first two bullets are reproduced; the rest are the same package and the same plan.
 
 ### 7. Make the console safe to click and honest about what it shows
