@@ -491,6 +491,38 @@ func dialRequest(t *testing.T, srv *httptest.Server, target string) net.Conn {
 	return conn
 }
 
+// answerCounter wraps a handler and records whether its handler wrote a status or a byte,
+// so a row can show a request that was answered nothing wrote nothing
+// on a socket the client has already closed, where nothing can be read back.
+type answerCounter struct {
+	http.Handler
+	answered atomic.Bool
+}
+
+func (a *answerCounter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.Handler.ServeHTTP(&answerWriter{ResponseWriter: w, answered: &a.answered}, r)
+}
+
+// answerWriter is the writer answerCounter serves its handler with.
+type answerWriter struct {
+	http.ResponseWriter
+	answered *atomic.Bool
+}
+
+func (a *answerWriter) WriteHeader(status int) {
+	a.answered.Store(true)
+	a.ResponseWriter.WriteHeader(status)
+}
+
+func (a *answerWriter) Write(p []byte) (int, error) {
+	a.answered.Store(true)
+
+	return a.ResponseWriter.Write(p)
+}
+
+// Unwrap keeps http.ResponseController reaching the connection.
+func (a *answerWriter) Unwrap() http.ResponseWriter { return a.ResponseWriter }
+
 // expectNothingRead asserts the connection delivers no byte before the server closes it:
 // a request the drain cut ends with nothing written, not with an envelope and not with an empty 200.
 func expectNothingRead(t *testing.T, conn net.Conn) {

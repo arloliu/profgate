@@ -244,12 +244,16 @@ func bodyMalformed(message string) *requestError {
 
 // bodyUnreadable refuses a body whose read failed.
 // The deadline's error names both socket addresses,
-// so it is answered with a fixed message that names the bound and nothing else.
+// so it is answered with a fixed message that names the bound and nothing else,
+// and the refusal is marked as the deadline's so fail writes it to the request the failed read has already cancelled.
 func (s *server) bodyUnreadable(err error) *requestError {
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.Is(err, os.ErrDeadlineExceeded):
-		return bodyMalformed(fmt.Sprintf("the request body did not arrive within %s", s.bodyReadTimeout))
+		e := bodyMalformed(fmt.Sprintf("the request body did not arrive within %s", s.bodyReadTimeout))
+		e.bodyDeadline = true
+
+		return e
 	case errors.As(err, &tooLarge):
 		return bodyMalformed(fmt.Sprintf("the request body is larger than %d bytes", maxBodyBytes))
 	default:

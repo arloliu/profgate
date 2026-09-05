@@ -83,6 +83,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The cut now carries its own code, `drain_expired`, in the audit record and the `code` label, on every route;
   it is audit-only, never an envelope, and nothing is written to a request it names,
   so a query over `client_gone` stops matching it.
+  A client that leaves in the middle of a store call or a browser token exchange is `client_gone` rather than `pgo_unavailable` or `auth_unavailable`,
+  and no longer counts an authentication failure.
   `cancelled` was documented among the audit-only values and written by nothing;
   it is no longer documented, and a query that named it matched nothing before and matches nothing now.
 - **BREAKING: the round display counts from one.**

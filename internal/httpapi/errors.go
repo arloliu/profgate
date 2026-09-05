@@ -23,6 +23,10 @@ type requestError struct {
 	// A code with no vocabulary carries none, and the encoded body then has no
 	// details key at all.
 	details []errorDetail
+	// bodyDeadline marks the refusal of a body that missed its read deadline.
+	// The failed read cancels the request context the way a client leaving does,
+	// and the envelope is written anyway: that client is there, it was slow.
+	bodyDeadline bool
 }
 
 // errorDetail is one input the caller has to change.

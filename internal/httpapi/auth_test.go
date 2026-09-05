@@ -803,6 +803,32 @@ func TestAuthRoutes(t *testing.T) {
 		h.expectMetric(t, metrics.EndpointAuth, "none")
 	})
 
+	t.Run("an exchange held when the client leaves is client_gone", func(t *testing.T) {
+		h, routes := routed(auth.RouteOutcome{Status: 503, Code: "auth_unavailable", Reason: auth.ReasonExchange, Principal: "-"})
+		entered := routes.blockUntilCancelled()
+		counter := &answerCounter{Handler: h.handler()}
+		srv, _ := cutServer(t, counter)
+
+		// The client closes its socket with the route inside its exchange, which answers 503 once its context ends;
+		// nobody is there to read that answer, and the record must say the client left, not that the issuer failed.
+		conn := dialRequest(t, srv, "/auth/callback?code=x")
+		select {
+		case <-entered:
+		case <-time.After(heldOpenTimeout):
+			t.Fatal("the route was not entered within the wait")
+		}
+		_ = conn.Close()
+
+		waitForAudit(t, h, codeClientGone)
+		expectRouteAudit(t, h, "auth_callback", "-", 0, codeClientGone, "")
+		h.expectAuthFailureMetric(t)
+		h.expectMetricCode(t, codeClientGone)
+		h.expectMetric(t, metrics.EndpointAuth, "none")
+		if counter.answered.Load() {
+			t.Error("the route answered a client that had left: the cancelled exchange must not become an envelope")
+		}
+	})
+
 	t.Run("auth routes not under /v1", func(t *testing.T) {
 		h, routes := routed(auth.RouteOutcome{Status: 302, Code: "auth_redirect", Principal: "-"})
 		rec := h.do(t, http.MethodGet, "/v1/auth/login")

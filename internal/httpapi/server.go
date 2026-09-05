@@ -350,14 +350,32 @@ func (q *request) cut() bool {
 	return errors.Is(context.Cause(q.ctx), ErrDrainExpired)
 }
 
+// gone reports whether the request's context was cancelled by something other than the drain:
+// the client left, or a read on its connection failed.
+func (q *request) gone() bool {
+	if q.ctx == nil {
+		return false
+	}
+
+	return errors.Is(q.ctx.Err(), context.Canceled) && !q.cut()
+}
+
 // fail writes a gateway-generated error and records it.
 // A request the drain cut is recorded as the cut and answered nothing:
 // the error it reached is what the cancelled call mapped to, not what happened,
 // and the abort keeps net/http from writing the empty 200 a handler that returns silently gets.
+// A request whose client left is recorded as client_gone and answered nothing for the same reason.
+// The one cancellation a client did not cause is its body missing the read deadline,
+// which net/http reports by cancelling the context too; that client is still there, and gets its envelope.
 func (q *request) fail(w http.ResponseWriter, e *requestError) {
 	if q.cut() {
 		q.audit.status = 0
 		q.audit.code = codeDrainExpired
+		panic(http.ErrAbortHandler)
+	}
+	if q.gone() && !e.bodyDeadline {
+		q.audit.status = 0
+		q.audit.code = codeClientGone
 		panic(http.ErrAbortHandler)
 	}
 	q.audit.status = e.status
@@ -815,9 +833,15 @@ func (s *server) serveProfile(w http.ResponseWriter, r *http.Request, q *request
 	q.audit.status = out.Status
 	q.audit.code = out.Code
 	if !out.Committed {
+		// A request the drain cut is answered nothing, for the timeout that lands in the same instant as the cut;
+		// the abort keeps net/http from writing the empty 200 a handler that returns silently gets.
+		if q.cut() {
+			q.audit.status = 0
+			q.audit.code = codeDrainExpired
+			panic(http.ErrAbortHandler)
+		}
 		// Status 0 is a client that left before anything was written: nobody to answer.
-		// A request the drain cut is answered nothing either, for the timeout that lands in the same instant as the cut.
-		if out.Status != 0 && !q.cut() {
+		if out.Status != 0 {
 			WriteError(w, out.Status, out.Code, upstreamMessage(out.Code, target.Pod))
 		}
 

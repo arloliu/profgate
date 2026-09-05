@@ -988,6 +988,35 @@ func TestProxyOutcomes(t *testing.T) {
 		}
 	})
 
+	t.Run("a timeout that lands with the drain cut is drain_expired", func(t *testing.T) {
+		tr := newTrap(t, nil)
+		h := newHarness(tr.target())
+		up := &timeoutUpstream{expired: make(chan struct{}), answer: make(chan struct{})}
+		h.upstream = up
+		handler := h.handler()
+		setBudgetGrace(handler, 100*time.Millisecond)
+		srv, cut := cutServer(t, handler)
+
+		conn := dialRequest(t, srv, profilePath+"heap")
+		select {
+		case <-up.expired:
+		case <-time.After(heldOpenTimeout):
+			t.Fatal("the budget did not end within the wait")
+		}
+		// The drain bound ends after the budget did and before the upstream's outcome is classified,
+		// with the socket still open: neither the timeout envelope nor an empty 200 may reach the client.
+		cut()
+		close(up.answer)
+
+		expectNothingRead(t, conn)
+		waitForAudit(t, h, codeDrainExpired)
+		h.expectAudit(t, 0, codeDrainExpired)
+		h.expectMetricCode(t, codeDrainExpired)
+		if tr.hits.Load() != 0 {
+			t.Errorf("trap hits = %d, want 0", tr.hits.Load())
+		}
+	})
+
 	t.Run("the drain cut during confirmation audits drain_expired and counts client_gone", func(t *testing.T) {
 		tr := newTrap(t, nil)
 		h := newHarness(tr.target())
@@ -1049,6 +1078,22 @@ func (b *budgetRecorder) Do(ctx context.Context, w http.ResponseWriter, req prox
 	}
 
 	return b.next.Do(ctx, w, req)
+}
+
+// timeoutUpstream answers the budget's expiry the way the proxy does, upstream_timeout before any header,
+// and lets a row place the drain cut between the expiry and the answer:
+// expired closes once the budget ended, and Do returns only once the row closes answer.
+type timeoutUpstream struct {
+	expired chan struct{}
+	answer  chan struct{}
+}
+
+func (u *timeoutUpstream) Do(ctx context.Context, _ http.ResponseWriter, _ proxy.Request) proxy.Outcome {
+	<-ctx.Done()
+	close(u.expired)
+	<-u.answer
+
+	return proxy.Outcome{Code: "upstream_timeout", Status: http.StatusGatewayTimeout}
 }
 
 // countingWriter discards what it is given and counts it, so a test can see a stream flowing before it ends it.

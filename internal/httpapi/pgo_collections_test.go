@@ -1339,6 +1339,33 @@ func TestAStoreCallHeldAcrossTheDrainCutWritesNothing(t *testing.T) {
 	h.expectMetricCode(t, codeDrainExpired)
 }
 
+// TestAStoreCallHeldWhenTheClientLeavesIsClientGone is the ordinary-disconnect counterpart of the cut:
+// the client closes its socket with the request inside the store call.
+// The cancelled call maps to a 503 nobody is there to read;
+// the record says the client left, and nothing is written.
+func TestAStoreCallHeldWhenTheClientLeavesIsClientGone(t *testing.T) {
+	h := newPGOHarness(t, pgoOpts{})
+	rec := h.seedRecord(t, h.newRecord(pgo.StatePending))
+	started := h.nats.jobs.blockGets()
+	counter := &answerCounter{Handler: h.handler()}
+	srv, _ := cutServer(t, counter)
+
+	conn := dialRequest(t, srv, collectionPath(rec.ID, ""))
+	select {
+	case <-started:
+	case <-time.After(heldOpenTimeout):
+		t.Fatal("the request did not reach the store within the wait")
+	}
+	_ = conn.Close()
+
+	waitForAudit(t, h.harness, codeClientGone)
+	h.expectPGOAudit(t, 0, codeClientGone)
+	h.expectMetricCode(t, codeClientGone)
+	if counter.answered.Load() {
+		t.Error("the handler answered a client that had left: the cancelled store call must not become an envelope")
+	}
+}
+
 // waitForAudit blocks until one audit record has been written and checks its code.
 func waitForAudit(t *testing.T, h *harness, code string) {
 	t.Helper()

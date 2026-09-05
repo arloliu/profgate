@@ -23,21 +23,22 @@ const (
 	noPrincipal = "-"
 )
 
-// errRequestCut is what a write after the drain cut returns:
+// errRequestEnded is what a write after the request's context ended returns:
 // the route's own error handling sees a failed write, and the client sees nothing.
-var errRequestCut = errors.New("the drain bound cut this request")
+var errRequestEnded = errors.New("the request ended before the route answered")
 
 // cutWriter is the writer the /auth/ routes answer through.
-// Once the drain bound has cut the request it refuses every write,
-// so a route that answers after the cut writes nothing the client could mistake for an answer.
+// Once the request's context has ended, by the drain cut or by the client leaving, it refuses every write,
+// so a route that answers after that writes nothing the client could mistake for an answer,
+// and the boundary can tell an answer the route gave from one it could not.
 type cutWriter struct {
 	http.ResponseWriter
 	q         *request
-	committed bool // a status was written before any cut
+	committed bool // a status was written before the request ended
 }
 
 func (c *cutWriter) WriteHeader(status int) {
-	if c.q.cut() {
+	if c.q.cut() || c.q.gone() {
 		return
 	}
 	c.committed = true
@@ -45,8 +46,8 @@ func (c *cutWriter) WriteHeader(status int) {
 }
 
 func (c *cutWriter) Write(p []byte) (int, error) {
-	if c.q.cut() {
-		return 0, errRequestCut
+	if c.q.cut() || c.q.gone() {
+		return 0, errRequestEnded
 	}
 	c.committed = true
 
@@ -199,14 +200,22 @@ func (s *server) serveAuthRoute(
 	}
 	cw := &cutWriter{ResponseWriter: w, q: q}
 	out := s.deps.AuthRoutes.ServeAuth(cw, r, cfg)
-	// A route still answering when the drain cut the request wrote nothing through the writer above;
-	// its outcome is what the cancelled exchange mapped to, so the record carries the cut instead,
+	// A route still answering when the request ended wrote nothing through the writer above;
+	// its outcome is what the cancelled exchange mapped to, so the record carries what ended the request instead,
+	// the drain cut or the client leaving, no authentication failure is counted,
 	// and the abort keeps net/http from finishing the response the route never wrote.
-	// A route that had committed its answer before the cut keeps the outcome it returned.
-	if q.cut() && !cw.committed {
-		q.audit.status = 0
-		q.audit.code = codeDrainExpired
-		panic(http.ErrAbortHandler)
+	// A route that had committed its answer before that keeps the outcome it returned.
+	if !cw.committed {
+		switch {
+		case q.cut():
+			q.audit.status = 0
+			q.audit.code = codeDrainExpired
+			panic(http.ErrAbortHandler)
+		case q.gone():
+			q.audit.status = 0
+			q.audit.code = codeClientGone
+			panic(http.ErrAbortHandler)
+		}
 	}
 	q.audit.status = out.Status
 	q.audit.code = out.Code
