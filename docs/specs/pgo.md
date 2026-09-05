@@ -2924,6 +2924,8 @@ because both roles open watches and both refuse to decide behind the barrier.
 a collector cannot report its own absence, and the replicas that refuse work for it can.
 It is `1` while that replica sees a fresh heartbeat and `0` otherwise (section 7.5),
 and it exists only when `pgo.enabled`.
+No process exports it in this build: it arrives with the collector Deployment,
+and the sentences above describe it from that point on.
 
 `profgate_pgo_synced` is the replay barrier as a gauge, and it tracks the current store generation:
 `1` only when both halves hold for that generation —
@@ -2955,6 +2957,8 @@ and that, on a gateway replica, every PGO route is refusing.
 Ten minutes is the window `ProfgateNotReady` gives `profgate_discovery_synced`,
 and it is far longer than a reconnect and its replay,
 so what holds it firing is a store a watch cannot re-open.
+Of the two, the chart renders `ProfgatePGONotSynced` alone in this build:
+the collector alert ships with the gauge it reads, which is to say with the collector Deployment.
 
 ### 12.4 Shutdown
 
@@ -3976,3 +3980,10 @@ amends the following text.
 | File | Section | Change |
 |---|---|---|
 | `docs/specs/pgo.md` | *Metrics* | `profgate_pgo_synced` tracks the current store generation, and the discovery gauge is not its counterpart |
+
+`profgate_pgo_collector_available` and the alert over it arriving with the collector Deployment,
+rather than being carried by this build, amends the following text.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *Metrics* | no process exports the collector-availability gauge in this build, and the chart renders `ProfgatePGONotSynced` alone; the design each sentence describes is unchanged and holds from the collector Deployment on |

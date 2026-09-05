@@ -1552,10 +1552,17 @@ and the NATS preflight, which retries the same way while the connection is unava
 (*Startup and shutdown*, [`pgo.md`](pgo.md) *NATS stores*).
 Those sections name the failures that exit the process instead,
 so a `503` held by either of those gates means a replica still waiting, not one about to exit.
-`profgate_nats_connected` reports the NATS transport alone:
-it reads `1` as soon as the connection is up,
+`profgate_nats_connected` reports the NATS transport alone, in three cases.
+It is registered on every install and reads `NaN` on a process that makes no connection,
+as `profgate_tls_certificate_expiry_seconds` reads `NaN` before a certificate is loaded,
+so `profgate_nats_connected == 0` is inert on an install that runs no collection, rather than firing on it forever.
+It reads `0` from the moment the process is configured to reach NATS, before its first connection attempt,
+so a rule over the gauge fires through a NATS outage at startup —
+the one outage `profgate_pgo_synced` cannot report,
+because that gauge is registered only after the NATS preflight passes ([`pgo.md`](pgo.md) *Metrics*).
+It reads `1` as soon as the connection is up,
 while the preflight's bucket checks and probes are still running and `/readyz` is `503`,
-and it reads `0` for as long as that connection is down ([`pgo.md`](pgo.md)).
+and it returns to `0` for as long as a connection it once had is down.
 
 `profgate_tls_reloads_total` has no series until the successful startup load or a later re-read records a result,
 and nothing records one unless `server.tls` is configured,
@@ -2801,19 +2808,22 @@ amends the following text.
 
 `profgate_tls_certificate_expiry_seconds` has no certificate to report on an install without TLS.
 `profgate_discovery_synced` does not report readiness.
+`profgate_nats_connected` has no transport to report on a process that makes no connection,
+and reports one it is configured to make and has not yet made as down.
 Their meanings amend the following text.
 The first table lists the edits made in the same change as this block;
 the second lists the documents and packages that carry the behavior once it is implemented.
 
 | File | Section | Change |
 |---|---|---|
-| `docs/specs/gateway.md` | *Metrics* | `profgate_discovery_synced` is the initial informer sync alone and never returns to `0`, the four `/readyz` gates it does not carry and what reports each; `profgate_tls_reloads_total` mints no series until the startup load or a later re-read records a result; `profgate_tls_certificate_expiry_seconds` is registered on every install and reads `NaN` until a certificate is loaded, and what `NaN` means to a PromQL rule; the cookie key fingerprint is the one label whose values are not a closed set |
+| `docs/specs/gateway.md` | *Metrics* | `profgate_discovery_synced` is the initial informer sync alone and never returns to `0`, the four `/readyz` gates it does not carry and what reports each; `profgate_tls_reloads_total` mints no series until the startup load or a later re-read records a result; `profgate_tls_certificate_expiry_seconds` is registered on every install and reads `NaN` until a certificate is loaded, and what `NaN` means to a PromQL rule; the cookie key fingerprint is the one label whose values are not a closed set; `profgate_nats_connected` reads `NaN` on a process that makes no NATS connection, `0` from the moment one is configured and before the first attempt, and `1` while it is up, and what each of the three means to a rule |
 | `docs/specs/pgo.md` | *Metrics* | `profgate_pgo_synced` tracks the store generation and is not the counterpart of the discovery gauge, listed in that document's own amendment block |
 
 Updated with the implementation:
 
 | File | Change |
 |---|---|
-| `internal/metrics` | the expiry gauge seeded `NaN` where it is constructed, and a test pinning the initial exposition: the expiry gauge at `NaN` and `profgate_tls_reloads_total` with no series while its counter vector is empty |
+| `internal/metrics` | the expiry gauge and the connection gauge each seeded `NaN` where they are constructed, the connection gauge's `HELP` string naming that case, and a test pinning the initial exposition: both gauges at `NaN` and `profgate_tls_reloads_total` with no series while its counter vector is empty |
+| `cmd/profgate` | the connection gauge written `0` on the path configured for NATS, before the preflight's first connection attempt, so a rule over it fires through an outage at startup |
 | `deploy/chart/profgate/templates/prometheusrule.yaml` | `ProfgateNotReady` says that a replica has not completed its initial discovery sync, not that it is not serving |
 | `docs/deployment.md` | the expiry gauge's row: `NaN` until a certificate is loaded |

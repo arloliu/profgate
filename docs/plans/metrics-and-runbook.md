@@ -1,6 +1,6 @@
 # The Alerts Fire in the Outages They Name
 
-**Status:** Draft
+**Status:** Approved
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -12,6 +12,9 @@ give every failure the gateway already measures a rule that fires in it,
 and give the person holding the pager a page that names the symptom, the series, and the step.
 `profgate_tls_certificate_expiry_seconds` reads `NaN` on an install with no certificate,
 so an expiry rule is inert there instead of firing on a certificate that expired at the epoch.
+`profgate_nats_connected` reads `NaN` where no connection is ever made and `0` from the moment one is configured,
+so a rule over it is inert on an install that runs no collection
+and fires throughout a NATS outage at startup.
 `ProfgateNotReady` says a replica has not completed its initial discovery sync,
 which is what its gauge measures, and the gauge's own `HELP` text says the same.
 Every rule ships with a test that evaluates it, so a rule that cannot fire in the outage it names fails the suite.
@@ -21,8 +24,10 @@ The `code` label's value set is written down, and so is the fact that two metric
 Three log lines that named no Collection and no request gain the identifier that joins them to the rest of the record.
 An operator building a dashboard starts from queries that already work.
 
-**Architecture:** one gauge gains a seed at construction in `internal/metrics/prometheus.go`
-and a second gains the description it always should have had;
+**Architecture:** two gauges gain a seed at construction in `internal/metrics/prometheus.go`,
+one of the two also gains an explicit `0` in `cmd/profgate/serve.go`,
+on the path configured to reach NATS and before its first connection attempt,
+and a third gauge gains the description it always should have had;
 `deploy/chart/profgate/templates/podmonitor.yaml` grows one target relabeling,
 so the `endpoint` label the gateway sets reaches a query under the name it exports;
 `deploy/chart/profgate/templates/prometheusrule.yaml` grows six rules and rewrites one annotation pair;
@@ -35,14 +40,16 @@ and `go.mod` gains nothing.
 No new metric is created: every rule below reads a series the binary exports today,
 which `deploy/chart_test.go` checks by reading `internal/metrics/prometheus.go` for each metric name.
 
-**Spec:** the two behavior changes here are already accepted text.
+**Spec:** the three behavior changes here are already accepted text.
 [`gateway.md`](../specs/gateway.md) *Metrics* states that
 `profgate_tls_certificate_expiry_seconds` is registered on every install and reads `NaN` until a certificate is loaded
-(`docs/specs/gateway.md:1564-1576`),
+(`docs/specs/gateway.md:1570-1582`),
+that `profgate_nats_connected` reads `NaN` on a process that makes no connection,
+`0` from the moment one is configured and before the first attempt, and `1` while it is up (`:1555-1566`),
 and that `profgate_discovery_synced` is the initial informer sync alone,
-never returns to `0`, and is not a readiness gauge (`:1531-1547`).
-Its amendment block names the three files this plan changes to carry those meanings
-(`docs/specs/gateway.md:2816-2820`).
+never returns to `0`, and is not a readiness gauge (`:1530-1543`).
+Its amendment block names the four files this plan changes to carry those meanings
+(`docs/specs/gateway.md:2826-2829`).
 Everything else here adds no behavior the specs describe:
 the six rules read series [`gateway.md`](../specs/gateway.md) *Metrics* and [`pgo.md`](../specs/pgo.md) *Metrics* already define,
 the runbook restates behavior [`gateway.md`](../specs/gateway.md) *Failure Scenarios*,
@@ -63,7 +70,7 @@ They are stated as properties of the system, not as the defects that revealed th
   A series whose writer never runs must not read as a legitimate value.
   `profgate_oidc_jwks_age_seconds` already holds this with `NaN`
   (`internal/metrics/prometheus.go:139-149`);
-  `profgate_tls_certificate_expiry_seconds` does not.
+  neither `profgate_tls_certificate_expiry_seconds` nor `profgate_nats_connected` does.
 - **An alert fires in the outage it names and is silent otherwise.**
   A rule whose expression cannot become true during the failure its text describes is worse than no rule:
   it reads as coverage.
@@ -86,32 +93,57 @@ They are stated as properties of the system, not as the defects that revealed th
 
 ## Decisions
 
-Three choices here settle something the roadmap left open.
+Three choices here settle something the roadmap left open, and the first departs from what its bullet proposed.
 
-**`profgate_nats_connected` gets a rule inside the chart's `pgoEnabled` guard, not a seed of its own.**
-The gauge has the same shape as the expiry gauge did:
-`internal/metrics/prometheus.go:95-98` constructs it and `:154` registers it on every install,
-while its only writer is the connection callback wired at `cmd/profgate/serve.go:590`,
-inside the NATS options built only on the PGO path.
-So an install with `pgo.enabled: false` exports `profgate_nats_connected 0` forever,
-and a bare `profgate_nats_connected == 0` rule would fire on every such install.
-The guard settles it for this plan:
-`deploy/chart/profgate/templates/prometheusrule.yaml:54` already renders `ProfgatePGONotSynced` only when `pgo.enabled`,
+**`profgate_nats_connected` reports three cases, and the chart's `pgoEnabled` guard stays.**
+The gauge is constructed at `internal/metrics/prometheus.go:95-98` and registered at `:154`, on every install,
+while its only writer is `NATSConnected` (`:236-242`),
+reached from the callback wired at `cmd/profgate/serve.go:590`, inside the NATS options built only on the PGO path.
+`internal/natskv/preflight.go:52-53` calls that callback only after the initial connection succeeds,
+which `internal/natskv/natskv.go:128-133` states as the contract,
+so the callback never runs during a NATS outage at startup.
+One constructed `0` therefore carries two opposite consequences:
+an install with `pgo.enabled: false` exports `profgate_nats_connected 0` forever,
+which no threshold can be written over,
+and a startup outage on a `pgo.enabled` install reads `0` throughout,
+which is exactly what a rule needs.
+The gauge reports three cases instead, so both hold on their own.
+
+`NaN`, seeded at construction the way the expiry gauge is,
+is what a process that makes no NATS connection reports,
+so an install with collection off crosses no threshold.
+`0`, written once on the path that *is* configured for NATS —
+in `natsPreflight` before its retry loop and therefore before the first dial —
+is what keeps `ProfgateNATSDisconnected` firing during a NATS outage at startup.
+That is the one outage `ProfgatePGONotSynced` cannot see,
+because `profgate_pgo_synced` is not registered until `startPGO` runs (`cmd/profgate/serve.go:668`),
+which such an outage never reaches.
+`1` while the connection is up and `0` again while it is down is the existing behavior, unchanged.
+[`gateway.md`](../specs/gateway.md) *Metrics* carries all three cases (`docs/specs/gateway.md:1555-1566`),
+and its amendment block names the packages that hold them (`:2826-2829`).
+
+The `0` write goes in `cmd/profgate` and not inside `natskv.Preflight`.
+`internal/natskv` reports connection events and holds no opinion about a connection not yet attempted;
+the gateway is where the decision to run NATS at all is made,
+and `natsPreflight` is the one function reached only under that decision.
+The roadmap bullet proposes the rule "without a code change" and its `Spec:` line declares no revision for it;
+both are superseded here, and the closing task updates that line.
+
+The chart's `pgoEnabled` guard on `ProfgateNATSDisconnected` stays.
+With the seed the rule would be safe unguarded, because `NaN == 0` is false,
+but `TestChartPrometheusRule` compares rendered alert names with `slices.Equal`,
+so the rendered order is part of the assertion,
+and moving the rule out of the guarded block churns both `want` lists for nothing.
+`deploy/chart/profgate/templates/prometheusrule.yaml:54` renders `ProfgatePGONotSynced` only when `pgo.enabled`,
 the new rule joins that block,
 and the chart renders the gauge's rule exactly where the binary is configured to write the gauge.
-It needs no code change, which matters here:
-the roadmap item's `Spec:` line names a revision for the expiry seed and the discovery gauge and *none for the rest*,
-and a `NaN` seed for this gauge would change an accepted meaning:
-[`gateway.md`](../specs/gateway.md) *Metrics* says it "reads `0` for as long as that connection is down"
-(`docs/specs/gateway.md:1555-1558`), with no case for a process that has no connection to make.
-The `NaN` seed is the consistent answer and it needs that revision first;
-this plan does not make it, and *Risks and What This Plan Does Not Cover* records it as the open one.
 
 [`pgo.md`](../specs/pgo.md) *Metrics* is not wrong about this gauge:
-it writes "exists only when `pgo.enabled`" for `profgate_pgo_synced` (`docs/specs/pgo.md:2935`)
+it writes "exists only when `pgo.enabled`" for `profgate_pgo_synced` (`docs/specs/pgo.md:2937`)
 and for `profgate_pgo_collector_available` (`:2925-2926`), and never for `profgate_nats_connected`.
 The first claim is true of the code — `PGOSyncedFrom` registers the gauge from inside `startPGO`.
-The second describes a gauge no Go file names; that discrepancy is recorded under *Risks* and is out of scope here.
+The second describes a gauge no Go file names,
+which that spec now says in the sentences that follow it rather than leaving a reader to find out.
 
 **The rule's wording narrows; the gauge does not follow `ready()`.**
 The roadmap offers both.
@@ -161,7 +193,7 @@ and it buys one test file.
 Parsing without evaluating needs that same parser, so it costs the same and proves much less:
 a rule can parse perfectly and still be unable to fire.
 `promtool test rules` is the facility Prometheus ships for exactly this,
-`mise registry` resolves `promtool` to `aqua:prometheus/prometheus`,
+`mise registry` resolves `promtool` to `aqua:prometheus/prometheus`, which installs at `3.7.3`,
 and `deploy/chart_test.go` already runs a mise-pinned binary and skips when it is absent
 (`helmBin`, `deploy/chart_test.go:34-40`).
 So `promtool` joins `[tools]` in `mise.toml` beside `helm`;
@@ -188,7 +220,7 @@ What that buys and what it leaves to review is written out in the alert task.
   The fourth and fifth are new; the first three exist.
   A rule the chart cannot render, or the tests cannot check, is not shippable.
 - **A new tool is pinned, and no new Go module.**
-  `mise.toml` gains `promtool` in `[tools]`.
+  `mise.toml` gains `promtool = "3.7.3"` in `[tools]`.
   `go.mod` gains nothing: the evaluation runs in a subprocess, as the Helm renders already do.
 - **The shipped alert order is append-only.**
   `TestChartPrometheusRule` compares the rendered alert names with `slices.Equal`,
@@ -197,15 +229,15 @@ What that buys and what it leaves to review is written out in the alert task.
   and the one guarded rule goes before `ProfgatePGONotSynced` inside the existing `pgoEnabled` block,
   which leaves every shipped name where it is today.
 - **Every task that changes what a machine reads shows a red test before the fix.**
-  Six of the eight do: the two that change Go behavior, the one that changes the chart's scrape,
-  the one that changes the chart's rules, the one that changes the gauge's `HELP` string,
+  Seven of the nine do: the three that change Go behavior, the one that changes the chart's scrape,
+  the one that changes the chart's rules, the one that changes the discovery gauge's `HELP` string,
   and the one that adds the query fixture each name the test and the exact command that shows it red.
   The two that only add prose to a guide — the `code` label reference and the troubleshooting sections —
   add no behavior and have no red state to show, which the *Risks* section records as the gap it is.
 - **One change here is breaking, and `CHANGELOG.md` marks it.**
   `v0.5.0` is a tagged, published release, so every entry describes a change to a shipped installation.
   None of them narrows an admitted configuration, removes a series, or changes a status code,
-  and the entry for the expiry gauge says what an operator's own rule sees.
+  and the entries for the expiry gauge and the connection gauge each say what an operator's own rule sees.
   The scrape task is the exception:
   on an install running `podMonitor.enabled: true` it moves the values of `profgate_requests_total`'s
   `endpoint` label out of `exported_endpoint` and back under `endpoint`,
@@ -235,9 +267,11 @@ mise run lint && mise run test && mise run check
 ## File Structure
 
 ```text
-internal/metrics/prometheus.go                        # the expiry gauge seeded NaN at construction; the discovery gauge's HELP
-internal/metrics/prometheus_test.go                   # the initial exposition of both TLS series; the discovery gauge's pinned HELP
+internal/metrics/prometheus.go                        # the expiry and connection gauges seeded NaN at construction; two HELP strings
+internal/metrics/prometheus_test.go                   # the initial exposition of both TLS series and of the connection gauge; two pinned HELP strings
 internal/metrics/recorder.go                          # what DiscoverySynced's doc comment says the gauge means
+cmd/profgate/serve.go                                 # the connection gauge written 0 before the preflight's first dial
+cmd/profgate/serve_test.go                            # the call sequence the two preflight tests expect
 internal/pgo/rounds.go                                # the sample record names its Collection
 internal/pgo/rounds_test.go                           # the attribute is asserted
 internal/httpapi/auth.go                              # the authenticator error names the request
@@ -305,7 +339,7 @@ The type is unchanged and `TLSCertificateExpiry` (`internal/metrics/prometheus.g
 
 **What a rule then reads.**
 [`gateway.md`](../specs/gateway.md) *Metrics* states the consequence and gives the expression to copy
-(`docs/specs/gateway.md:1568-1573`):
+(`docs/specs/gateway.md:1572-1576`):
 the text exposition carries `profgate_tls_certificate_expiry_seconds NaN`,
 so the series is present and `absent()` does not match it;
 arithmetic on it stays `NaN` and the ordered comparisons filter it out;
@@ -361,6 +395,122 @@ mise run lint && mise run test && mise run check
 git add internal/metrics/prometheus.go internal/metrics/prometheus_test.go \
   docs/deployment.md CHANGELOG.md
 git commit -m "fix(metrics): seed the expiry gauge NaN" -m "<body: the gauge is registered on every install and written only under server.tls, so an install without TLS read an expiry at the epoch; what NaN does to a threshold>"
+```
+
+---
+
+## The connection gauge reports nothing where no connection is made
+
+Carries the roadmap bullet beginning
+*With `pgo.enabled` and NATS unreachable, `profgate_pgo_synced` is absent rather than `0`*,
+which the alert task closes:
+the rule that bullet asks for fires in the outage it names only because of the write this task adds.
+
+**Files:**
+- Modify: `internal/metrics/prometheus.go`, `internal/metrics/prometheus_test.go`,
+  `cmd/profgate/serve.go`, `cmd/profgate/serve_test.go`,
+  `docs/deployment.md`, `CHANGELOG.md`
+
+**The decision, and why.**
+*Decisions* above states it: the gauge reports `NaN`, `0`, and `1`,
+where today one constructed `0` has to serve two purposes that pull apart.
+The gauge is constructed at `internal/metrics/prometheus.go:95-98` and registered at `:154`, on every install;
+its only writer is `NATSConnected` (`:236-242`),
+reached from `cmd/profgate/serve.go:590` through `natskv.Options.OnConnectionChange`;
+and `internal/natskv/preflight.go:52-53` invokes that callback only after the initial connection succeeds
+(`internal/natskv/natskv.go:128-133` is where that contract is written).
+So an install without `pgo.enabled` reports a transport it never configured as down,
+and a startup outage reports nothing the callback wrote.
+
+The seed goes at construction, beside the expiry gauge's:
+
+```go
+natsConnected: prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "profgate_nats_connected",
+	Help: "Whether the NATS connection is currently up: 1 if up, 0 if down, or NaN on a process that makes none.",
+}),
+```
+
+followed, before the `reg.MustRegister` call at `:151`, by
+
+```go
+p.natsConnected.Set(math.NaN())
+```
+
+`math` is already imported by this file, for `jwksAge`.
+`NATSConnected` is unchanged: it sets `1` or `0` and overwrites the seed on its first call.
+
+The write goes in `natsPreflight` (`cmd/profgate/serve.go:579-616`),
+between the options literal and `backoff := preflightBackoffFirst` (`:597`),
+so it runs once and before the first dial:
+
+```go
+// The gauge reads NaN on a process that makes no connection.
+// This process makes one, so the transport is down until the callback below reports otherwise,
+// and a rule over the gauge fires through an outage that never reaches the callback at all.
+deps.recorder.NATSConnected(false)
+```
+
+It goes here and not inside `natskv.Preflight` for the reason *Decisions* gives:
+`internal/natskv` reports connection events and has no opinion about a connection not yet attempted.
+The comment above `OnConnectionChange` (`:587-589`) says today that without the report `Preflight` makes
+"the gauge would read zero until the first reconnect";
+that describes the constructed `0` and is rewritten to describe the written one.
+
+**What a rule then reads.**
+[`gateway.md`](../specs/gateway.md) *Metrics* states all three cases (`docs/specs/gateway.md:1555-1566`).
+`NaN` crosses no comparison, so `profgate_nats_connected == 0` is inert on an install that runs no collection.
+`0` from before the first connection attempt is what makes that same expression fire through a NATS outage at startup.
+That is the one outage `profgate_pgo_synced` cannot report at all,
+because it is not registered until `startPGO` runs (`cmd/profgate/serve.go:668`).
+`1` while the connection is up, and `0` again when it drops, is what the gauge already did.
+That expression is the one the alert task ships as `ProfgateNATSDisconnected`.
+
+- [ ] **Write the test**
+
+Three existing tests move and one is new, in two packages.
+
+| Test | What it asserts, and how it fails today |
+|---|---|
+| `TestServePGO/the connected gauge reports the initial connection` (`cmd/profgate/serve_test.go:1742-1751`) | the call sequence becomes `[false, true]`: the write before the retry loop, then the callback on the connection. The assertion reads `len(got) != 1 \|\| !got[0]` today, which is `[true]`, and it fails on the new first call |
+| `TestNATSCallbacksSplitTheirDuties` (`cmd/profgate/serve_test.go:1566-1621`) | it drives the real `natsPreflight` with a stub that returns a client without ever invoking `OnConnectionChange`, so `connectedCalls()` is empty when preflight returns today and `[false]` afterwards. Both of its counts move: the check after `opts.OnConnectionChange(false)` (`:1604-1606`) expects `[false, false]`, and the count after `OnGenerationMove` (`:1618-1621`) moves with it. What the test pins — that a generation move is not a connection report — does not change, and neither does its prose |
+| `TestPrometheus_NATSConnected` (`internal/metrics/prometheus_test.go:248-262`) | its exposition pins the gauge's `HELP` string (`:255`), which the `NaN` case rewrites. It records `NATSConnected(true)` before comparing, so the seed itself never reaches its assertion |
+| `TestPrometheus_NATSBeforeAnyConnection`, new, beside it | on a fresh `prometheus.NewPedanticRegistry()` with nothing recorded: `testutil.ToFloat64(rec.natsConnected)` is `NaN` under `math.IsNaN`, as `TestPrometheus_JWKSAge` checks its own gauge, and `testutil.GatherAndCompare` matches the exposition `profgate_nats_connected NaN` under its `# HELP` and `# TYPE` lines. Today both read `0` |
+
+The red state, before the seed and the write land:
+
+```bash
+go test ./internal/metrics/ -run 'TestPrometheus_NATS'
+go test ./cmd/profgate/ -run 'TestServePGO|TestNATSCallbacksSplitTheirDuties'
+```
+
+The metrics tests fail on the `HELP` string and on `0` where `NaN` is expected;
+the two in `cmd/profgate` fail on the call sequence, each naming the calls it got.
+
+- [ ] **Seed the gauge, write the zero, and say so where it is documented**
+
+`docs/deployment.md:460`, the gauge's row in the metrics table, reads "1 while the NATS connection is up"
+and gains the two cases it does not name:
+`NaN` where the process makes no connection, and `0` from the moment one is configured.
+
+`CHANGELOG.md`, `### Fixed`:
+**`profgate_nats_connected` reads `NaN` where no NATS connection is ever made.**
+It read `0` on every install with `pgo.enabled: false` — a transport that was never configured, reported as down —
+which no rule could be written over.
+It now reads `0` from the moment a process is configured to reach NATS, before its first attempt,
+rather than only once a connection has been made and lost.
+An operator's own `profgate_nats_connected == 0` rule no longer matches on an install that runs no collection,
+and it now matches from the start of a NATS outage at startup instead of staying silent through it.
+
+- [ ] **Validate and commit**
+
+```bash
+semlf check internal/metrics/prometheus.go internal/metrics/prometheus_test.go \
+  cmd/profgate/serve.go cmd/profgate/serve_test.go docs/deployment.md CHANGELOG.md
+mise run lint && mise run test && mise run check
+git add internal/metrics/prometheus.go internal/metrics/prometheus_test.go \
+  cmd/profgate/serve.go cmd/profgate/serve_test.go docs/deployment.md CHANGELOG.md
+git commit -m "fix(metrics): seed the NATS gauge NaN" -m "<body: the gauge is registered on every install and written only by the connection callback, so an install with collection off reported a transport it never configured as down; the explicit zero before the first dial is what keeps a rule live through an outage at startup>"
 ```
 
 ---
@@ -660,11 +810,13 @@ and the bullet beginning
 The NATS bullet asks for `profgate_nats_connected == 0` inside the existing `pgoEnabled` guard,
 and "NATS disconnected while running" is one of the six failure modes the other bullet lists.
 That is one rule, shipped once.
-It covers both because the gauge is written by the connection callback (`cmd/profgate/serve.go:590`)
-before the preflight's bucket checks run (`internal/natskv/preflight.go:52-54`),
-so it reads `0` throughout an outage that never reaches `startPGO` (`cmd/profgate/serve.go:668`)
+It covers both because the gauge task above writes `0` in `natsPreflight` before the first dial,
+so the gauge reads `0` throughout an outage that never reaches `startPGO` (`cmd/profgate/serve.go:668`)
 and therefore never registers `profgate_pgo_synced` at all.
 `ProfgatePGONotSynced` is silent through exactly that outage, and this rule is not.
+The same task seeds the gauge `NaN` where no connection is made,
+which is why `profgate_nats_connected == 0` can stay inside the `pgoEnabled` guard
+and still not fire on every install that runs no collection.
 
 **What every expression here holds to.**
 Each names only metrics `internal/metrics/prometheus.go` constructs
@@ -823,7 +975,7 @@ and the fifteen-minute window is roughly thirty re-reads at the loader's thirty-
 Its denominator is zero exactly when the numerator is, which yields `NaN` and no sample,
 so the rule is silent on a replica doing no reloads and absent entirely without `server.tls`.
 `ProfgateTLSCertificateExpiring` holds for an hour because the condition changes once a day at most;
-the expression is the one [`gateway.md`](../specs/gateway.md) *Metrics* wrote to be copied (`docs/specs/gateway.md:1571`).
+the expression is the one [`gateway.md`](../specs/gateway.md) *Metrics* wrote to be copied (`docs/specs/gateway.md:1576`).
 `ProfgateNATSDisconnected` uses five minutes rather than the ten `ProfgatePGONotSynced` uses,
 because the transport repairs itself in seconds on a reconnect,
 because five minutes is the window [`pgo.md`](../specs/pgo.md) *Metrics* already gives a collection outage,
@@ -865,7 +1017,7 @@ which passes harmlessly where the label is missing, so the rule degrades rather 
 
 Three edits in `deploy/chart_test.go`, one new subtest, one new fixture, and one line in `mise.toml`.
 
-`mise.toml` gains `promtool` in `[tools]`, pinned to an exact version as every tool there is.
+`mise.toml` gains `promtool = "3.7.3"` in `[tools]`, pinned to an exact version as every tool there is.
 `deploy/testdata/alerts_test.yaml` is the `promtool test rules` unit-test file,
 in a `testdata` directory `deploy/` does not have yet and three other packages already do
 (`cmd/profgate/testdata`, `internal/pgo/testdata`, `internal/config/testdata`).
@@ -922,7 +1074,7 @@ One case per property an annotation claims, so a wrong expression fails rather t
 | no `profgate_tls_reloads_total` series | neither reload case fires, which is an install without `server.tls` |
 | `profgate_tls_certificate_expiry_seconds` at `NaN` | `ProfgateTLSCertificateExpiring` does not fire |
 | the gauge six days ahead, and the gauge a day in the past | it fires in both, which is what "or has expired" claims |
-| `profgate_nats_connected` `0` for six minutes, and the series absent | `ProfgateNATSDisconnected` fires in the first and not the second |
+| `profgate_nats_connected` `0` for six minutes, the gauge at `NaN`, and the series absent | `ProfgateNATSDisconnected` fires in the first and in neither of the others; `NaN` is what an install running no collection exports, and `== 0` does not match it |
 | `profgate_discovery_synced` `0` for eleven minutes, then `1` | `ProfgateNotReady` fires and then stops |
 | `too_many_profiles` in every window for eleven minutes | `ProfgateAdmissionSaturated` fires |
 | one `too_many_profiles` refusal, then eleven quiet minutes | it does not fire: a burst that decays is not a saturated gate |
@@ -1183,7 +1335,7 @@ and a `## Troubleshooting` section at the end of `docs/authentication.md`.
 Each opens with a table of symptom, the series or log line that shows it, and the step;
 each closes with the cases that need more than a row.
 Every row cites behavior already stated in an accepted spec —
-[`gateway.md`](../specs/gateway.md) *Failure Scenarios* (`docs/specs/gateway.md:2487-2531`),
+[`gateway.md`](../specs/gateway.md) *Failure Scenarios* (`docs/specs/gateway.md:2494-2538`),
 [`pgo.md`](../specs/pgo.md) *Health* (`docs/specs/pgo.md:2866-2887`) —
 so this section restates, in the operator's order, what those tables state in the designer's.
 
@@ -1193,7 +1345,7 @@ At least these, each written from the file cited:
 | Symptom | Where it shows |
 |---|---|
 | `/readyz` 503 from startup and never green | `profgate_discovery_synced` `0`; the log repeats `preflight attempt` with a resource and a verb (`cmd/profgate/serve.go:457-471`) |
-| the process exits at startup naming a resource and a verb | the preflight received `403`; the ClusterRole lacks a tuple (`docs/specs/gateway.md:2491`) |
+| the process exits at startup naming a resource and a verb | the preflight received `403`; the ClusterRole lacks a tuple (`docs/specs/gateway.md:2499`) |
 | `/readyz` 503 under `auth.mode: oidc`, no `issuer discovered` line | issuer discovery is retrying; the process exits after `auth.oidc.discoveryTimeout` (`docs/deployment.md:366-372`) |
 | `/readyz` 503 under `pgo.enabled`, with `nats preflight attempt` repeating | the connection is unavailable and `profgate_nats_connected` reads `0`; only that failure retries, and it retries for as long as it lasts (`cmd/profgate/serve.go:597-614`). `ProfgateNATSDisconnected` is what fires |
 | the process exits at startup after one `nats preflight failed` at error | a missing bucket, a bucket of the wrong kind, configuration outside the contract, or a probe the account is denied. None of those retries: the error names the bucket and the operation or the field (`cmd/profgate/serve.go:477-486,573-578`) |
@@ -1206,7 +1358,7 @@ At least these, each written from the file cited:
 **One row the table does not carry.**
 [`pgo.md`](../specs/pgo.md) *Failure modes* describes a collector Deployment going absent,
 `profgate_pgo_collector_available` falling to `0`, and `POST /collections` answering `503 collector_unavailable`
-(`docs/specs/pgo.md:3717`).
+(`docs/specs/pgo.md:3721`).
 None of that is behavior this build has.
 `internal/httpapi/codes.go:90-92` says of the constant, in the source, that no route answers it,
 the gauge appears in no Go file,
@@ -1482,13 +1634,15 @@ tick all eight bullets of the *Make the gauges and the alerts true, and write th
 [`roadmap.md`](roadmap.md);
 set its `Shipped:` line, today `Shipped: not built yet.`, to `Shipped: pull request #<N>`,
 the number of the pull request opened above;
-leave its `Spec:` line as it stands, since the revision it names is already in
-[`gateway.md`](../specs/gateway.md) and this work made none of its own;
+extend its `Spec:` line,
+which today names a revision for the expiry seed and the discovery gauge and none for the rest,
+to name the third this work rests on:
+the three cases `profgate_nats_connected` reports, in [`gateway.md`](../specs/gateway.md) *Metrics*;
 set line 3 of this file to `**Status:** Done`;
 and insert `**Outcome:**` as line 4, naming the pull request and not a commit:
 
 ```text
-**Outcome:** pull request #<N> carries the seed, the six rules, the three log attributes, and the runbook; the commit that carries this line closes the plan.
+**Outcome:** pull request #<N> carries the two seeds, the six rules, the three log attributes, and the runbook; the commit that carries this line closes the plan.
 ```
 
 The pull request is named rather than a commit because the merge rebases this branch onto `main`
@@ -1541,8 +1695,9 @@ lists `internal/pgo` and `deploy/` among the eight packages
 that need the suite on the `current` lane before a pull request:
 the log-line task changes `internal/pgo/rounds.go`,
 and the scrape task and the alert task change the chart and `deploy/chart_test.go`.
-`internal/httpapi` and `internal/metrics` are not on that list,
-so the seed and the two handler log attributes would not have required it on their own.
+`internal/httpapi`, `internal/metrics`, and `cmd/profgate` are not on that list,
+so the two seeds, the write before the first dial,
+and the two handler log attributes would not have required it on their own.
 What the suite proves here is narrow and worth stating:
 it deploys the chart and the kustomize overlays, so a template that renders invalid YAML fails it,
 and it runs the PGO scenarios against a real NATS server, so the sample record's new attribute is written under load.
@@ -1558,27 +1713,15 @@ on every Markdown file and every Go file with doc comments a task edits;
 
 ## Risks and What This Plan Does Not Cover
 
-- **`profgate_nats_connected` still reads `0` forever on an install with collection off.**
-  The chart's `pgoEnabled` guard means the shipped rule is not rendered there,
-  which is the whole of the mitigation.
-  An operator who writes their own rule over that gauge, or sets `prometheusRule.rules`,
-  gets an alert that fires on every such install.
-  The consistent fix is the seed the expiry gauge just got —
-  `NaN` until the connection callback runs, since a process with no NATS configured has no transport to report —
-  and it needs a revision of [`gateway.md`](../specs/gateway.md) *Metrics*,
-  which states today that the gauge "reads `0` for as long as that connection is down"
-  with no case for a process that never connects (`docs/specs/gateway.md:1555-1558`).
-  This plan does not make that revision, because the roadmap item's `Spec:` line declares none for this bullet.
-- **[`pgo.md`](../specs/pgo.md) describes a gauge and an alert that do not exist.**
-  Its *Metrics* section says the chart's `PrometheusRule` carries two PGO alerts,
-  one of them `profgate_pgo_collector_available == 0` for five minutes (`docs/specs/pgo.md:2945-2951`),
-  and describes that gauge as a gateway replica's (`:2920-2926`).
-  No Go file in the tree names `profgate_pgo_collector_available`;
-  the chart carries one PGO alert.
-  That is the deferred collector Deployment showing through, and it is not one of the six failure modes,
-  so it stays out of scope.
+- **[`pgo.md`](../specs/pgo.md) still describes a gauge and an alert that no build carries.**
+  `profgate_pgo_collector_available` is named by no Go file,
+  and the chart renders one PGO alert rather than the two that spec's *Metrics* section designs.
+  The design is right and unchanged; what changed is that the spec now says which of it this build carries
+  (`docs/specs/pgo.md:2927-2928`, `:2960-2961`),
+  so a reader is no longer left to discover it against the tree.
+  Closing the gap is the deferred collector Deployment's work, not one of the six failure modes, and stays out of scope.
   The metric-name loop in `TestChartPrometheusRule` (`deploy/chart_test.go:1105-1116`)
-  is what stops anyone shipping a rule over it in the meantime.
+  is what stops anyone shipping a rule over that gauge in the meantime.
 - **`ProfgateUpstreamsUnreachable` is silent on a gateway nobody is asking for profiles.**
   Both sides of its expression are rates over profile requests,
   so an outage that starts during a quiet period is not alerted until traffic returns.
@@ -1618,7 +1761,7 @@ on every Markdown file and every Go file with doc comments a task edits;
   that is still review against the metric table.
 - **The collector row the accepted spec describes is not in the runbook.**
   [`pgo.md`](../specs/pgo.md) *Failure modes* documents `503 collector_unavailable`
-  and `profgate_pgo_collector_available` (`docs/specs/pgo.md:3717`),
+  and `profgate_pgo_collector_available` (`docs/specs/pgo.md:3721`),
   and this build answers neither.
   An operator reading only the spec will look for both;
   the runbook does not repeat them, so the guide and the binary agree and the guide and the spec do not.
@@ -1635,7 +1778,7 @@ on every Markdown file and every Go file with doc comments a task edits;
 - Bullet coverage, one line each:
   the absent `profgate_pgo_synced` during a NATS outage and the rule that covers it
   (*Six failure modes each have a rule that fires in them*, which also carries the six);
-  the `NaN` seed and its test (*The expiry gauge reports nothing until a certificate is loaded*);
+  the expiry gauge's `NaN` seed and its test (*The expiry gauge reports nothing until a certificate is loaded*);
   the `ProfgateNotReady` wording, the gauge's own `HELP` string, and its two documented rows
   (*The readiness alert and the gauge's own text say what the gauge measures*);
   the troubleshooting sections, the bucket, the restore, the maintenance, and the cost of a disconnect
@@ -1644,9 +1787,11 @@ on every Markdown file and every Go file with doc comments a task edits;
   (*The metrics reference names every `code` value and the path two metrics watch*);
   the three log lines (*Three log lines name the work they belong to*);
   the example queries (*A dashboard starts from queries that already work*).
-  One task closes no bullet:
+  Two tasks close no bullet of their own:
   *The gateway's `endpoint` label reaches a query under the name it exports*,
-  which makes the label the rules and the queries use mean anything on an install the chart builds.
+  which makes the label the rules and the queries use mean anything on an install the chart builds;
+  and *The connection gauge reports nothing where no connection is made*,
+  without which the rule the first bullet asks for is silent in the outage that bullet names.
 - Current-source facts this plan rests on, each confirmed by reading the file:
   `profgate_tls_certificate_expiry_seconds` is constructed at `internal/metrics/prometheus.go:103`
   and registered at `:154` with everything else,
@@ -1659,8 +1804,17 @@ on every Markdown file and every Go file with doc comments a task edits;
   `deps.recorder.DiscoverySynced(true)` runs once, at `cmd/profgate/serve.go:475`,
   and `ready()` at `:172-174` reads four gates;
   `profgate_nats_connected` is constructed at `internal/metrics/prometheus.go:95` and registered at `:154`,
-  and its callback is wired only at `cmd/profgate/serve.go:590`, in the PGO options,
-  fired at `internal/natskv/preflight.go:52-54` before the bucket checks;
+  and `NATSConnected` (`:236-242`) is its only writer today,
+  reached from the callback wired at `cmd/profgate/serve.go:590`, in the PGO options,
+  which `internal/natskv/preflight.go:52-53` fires only after the initial connection succeeds —
+  the contract `internal/natskv/natskv.go:128-133` states —
+  so it runs before the bucket checks and not at all during an outage at startup;
+  `TestPrometheus_NATSConnected` pins the gauge's `HELP` string in an exposition
+  (`internal/metrics/prometheus_test.go:255`) after recording `NATSConnected(true)`,
+  `TestServePGO/the connected gauge reports the initial connection` asserts the call sequence is `[true]`
+  (`cmd/profgate/serve_test.go:1742-1751`),
+  and `TestNATSCallbacksSplitTheirDuties` (`:1566-1621`) drives the real `natsPreflight` with a stub
+  that invokes no connection callback, so it counts calls that a write before the loop moves;
   the NATS preflight retries `ErrUnavailable` forever in the loop at `cmd/profgate/serve.go:597-614`,
   and returns every other failure for `cmd/profgate/serve.go:477-486` to end startup with;
   `profgate_requests_total` carries `endpoint`, `profile`, and `code` and nothing else the gateway sets,
@@ -1715,13 +1869,18 @@ on every Markdown file and every Go file with doc comments a task edits;
   and `ReasonThrottled` is produced only by `internal/auth/basic.go:138`;
   every commit header above is under 50 characters.
 - Roadmap claims the code contradicts, each carried by the task that owns it:
+  the first bullet proposes the NATS rule "without a code change",
+  and the item's `Spec:` line declares no revision for anything but the expiry seed and the discovery gauge,
+  where the connection gauge needs both;
+  *Decisions* settles that and the closing task writes it back;
   every line number in the item's bullets has drifted,
   most by a few lines and the failure-scenario reference by about fifty,
   because the accepted spec revision added lines above them —
   this plan cites what it read, not what the bullets say.
 - Decided here, with the reason stated at the task or the decision that carries it:
-  the NATS gauge covered by the chart's existing guard rather than by a seed,
-  with the seed named as needing a spec revision this plan does not make;
+  the NATS gauge reporting three cases — `NaN` where no connection is made, an explicit `0` from before the first dial,
+  and the connection state after that — with the `0` written in `cmd/profgate` rather than in `internal/natskv`,
+  and the chart's `pgoEnabled` guard on its rule kept so the rendered alert order does not churn;
   the readiness alert's wording narrowed rather than the gauge widened, which the spec had already chosen;
   the upstream rule written as failures without successes on one replica, rather than a fleet-wide ratio;
   the chart's `PodMonitor` dropping the operator's `endpoint` target label in `relabelings`,
