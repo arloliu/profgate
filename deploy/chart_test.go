@@ -1285,6 +1285,7 @@ func TestChartPrometheusRule(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the alert fixture: %v", err)
 		}
+		//nolint:gosec // the destination is this test's temporary directory and a literal name
 		if err := os.WriteFile(filepath.Join(dir, "alerts_test.yaml"), fixture, 0o600); err != nil {
 			t.Fatalf("write the alert fixture: %v", err)
 		}
