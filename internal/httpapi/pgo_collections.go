@@ -586,10 +586,12 @@ func (s *server) serveCollectionCreate(
 	// The publication finished under its own context once its first write had landed,
 	// so a client that left meanwhile is recorded and answered nothing, whatever the outcome was:
 	// there is nobody to answer, and what the publication wrote stands.
+	// The abort keeps net/http from writing the empty 200 a handler that returns silently gets,
+	// which a client that half-closed its write side is still there to read.
 	if r.Context().Err() != nil {
+		q.audit.status = 0
 		q.audit.code = codeClientGone
-
-		return
+		panic(http.ErrAbortHandler)
 	}
 	switch {
 	case err != nil:

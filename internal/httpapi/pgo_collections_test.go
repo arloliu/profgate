@@ -1583,6 +1583,62 @@ func TestCollectionCreateClientGone(t *testing.T) {
 			t.Errorf("reservations = %d, want 1: the indeterminate write is tracked for the release rule", held)
 		}
 	})
+
+	// A client that half-closes its write side leaves the response direction open,
+	// so the wire shows what the request was answered.
+	// A client that closes the whole socket cannot show that:
+	// nothing is left to read from,
+	// and the empty 200 net/http writes for a handler that returns without writing goes unseen.
+	t.Run("a half-closed client is answered nothing", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		contexts := make(chan context.Context, 1)
+		handler := h.handler()
+		gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			contexts <- r.Context()
+			handler.ServeHTTP(w, r)
+		}))
+		t.Cleanup(gateway.Close)
+
+		// The write side is half-closed on the active key's create, once the record's create has landed,
+		// and the hook returns only once the read-side end of file has cancelled the request.
+		conns := make(chan net.Conn, 1)
+		var once sync.Once
+		h.nats.jobs.setBefore(func(op, k string) {
+			if op != "create" || !strings.HasPrefix(k, activeKeyPrefix) {
+				return
+			}
+			once.Do(func() {
+				select {
+				case conn := <-conns:
+					if err := conn.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
+						t.Errorf("CloseWrite() error = %v", err)
+
+						return
+					}
+				case <-time.After(heldOpenTimeout):
+					t.Error("the connection was not handed to the hook within the wait")
+
+					return
+				}
+				select {
+				case ctx := <-contexts:
+					select {
+					case <-ctx.Done():
+					case <-time.After(heldOpenTimeout):
+						t.Error("the request's cancellation was not visible within the wait")
+					}
+				case <-time.After(heldOpenTimeout):
+					t.Error("the request never reached the handler")
+				}
+			})
+		})
+		conn := dialRaw(t, gateway, request)
+		conns <- conn
+
+		expectNothingRead(t, conn)
+		waitForAudit(t, h.harness, codeClientGone)
+		h.expectPGOAudit(t, 0, codeClientGone)
+	})
 }
 
 // waitForAudit blocks until one audit record has been written and checks its code.

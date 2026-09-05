@@ -546,14 +546,14 @@ func (a *answerWriter) Write(p []byte) (int, error) {
 func (a *answerWriter) Unwrap() http.ResponseWriter { return a.ResponseWriter }
 
 // expectNothingRead asserts the connection delivers no byte before the server closes it:
-// a request the drain cut ends with nothing written, not with an envelope and not with an empty 200.
+// a request that is answered nothing ends with nothing written, not with an envelope and not with an empty 200.
 func expectNothingRead(t *testing.T, conn net.Conn) {
 	t.Helper()
 
 	buf := make([]byte, 512)
 	n, err := conn.Read(buf)
 	if n != 0 || !errors.Is(err, io.EOF) {
-		t.Errorf("Read() = %d bytes %q, error %v; want 0 bytes and io.EOF: nothing is written to a request the drain cut", n, buf[:n], err)
+		t.Errorf("Read() = %d bytes %q, error %v; want 0 bytes and io.EOF: nothing is written to a request answered nothing", n, buf[:n], err)
 	}
 }
 
