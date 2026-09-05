@@ -157,44 +157,45 @@ Why here: the CLI is `v0.5.0`'s headline, and its first contact — `--help` —
 
 ### 4. Make the gauges and the alerts true, and write the runbook
 
-- [ ] With `pgo.enabled` and NATS unreachable, `profgate_pgo_synced` is absent rather than `0`:
+- [x] With `pgo.enabled` and NATS unreachable, `profgate_pgo_synced` is absent rather than `0`:
   the gauge registers inside `startPGO` (`cmd/profgate/serve.go:668`), reached only after a preflight
   that retries `ErrUnavailable` forever (`:597-614`).
   `ProfgatePGONotSynced` is silent through the outage it names while `/readyz` stays 503.
   A `profgate_nats_connected == 0` rule inside the existing `pgoEnabled` guard covers it without a code change.
-- [ ] `profgate_tls_certificate_expiry_seconds` registers unconditionally (`internal/metrics/prometheus.go:150-153`)
+- [x] `profgate_tls_certificate_expiry_seconds` registers unconditionally (`internal/metrics/prometheus.go:150-153`)
   and is written only under `server.tls` (`internal/tlscert/loader.go:149`),
   so a default install reads `0` — a certificate that expired at the epoch —
   and no threshold rule can keep the promise at `docs/deployment.md:218-219`.
   Seed it `NaN`, as `jwksAge` already is.
-- [ ] `profgate_discovery_synced` moves once, `0` to `1`, at `cmd/profgate/serve.go:475`;
+- [x] `profgate_discovery_synced` moves once, `0` to `1`, at `cmd/profgate/serve.go:475`;
   `ProfgateNotReady` (`deploy/chart/profgate/templates/prometheusrule.yaml:22-31`) says "not serving"
   where three of the four readiness gates (`serve.go:172-173`) can be red with the gauge at `1`.
   Either the rule's wording narrows to what the gauge means, or the gauge follows `ready()`.
-- [ ] Six failure modes have a metric and no alert: TLS reload failing, certificate expiry,
+- [x] Six failure modes have a metric and no alert: TLS reload failing, certificate expiry,
   NATS disconnected while running, authenticator unavailable, every upstream refusing, the auth limiter saturated.
   Ship the rules and the table row for each.
-- [ ] `docs/deployment.md` and `docs/authentication.md` have no troubleshooting section;
+- [x] `docs/deployment.md` and `docs/authentication.md` have no troubleshooting section;
   the only failure table is `docs/specs/gateway.md:2439`, which names behavior and almost never a signal.
   Write the section: symptom, the metric or log line, the recovery step —
   including a bucket deleted or recreated under a running process (`docs/specs/pgo.md:2883-2888`),
   a restore from backup, NATS maintenance,
   and the fact that any NATS disconnect aborts the Collections a replica owns and costs each an attempt (`docs/specs/pgo.md:1450`),
   which `docs/pgo.md:310-316` and `docs/deployment.md:356` describe only as an outage.
-- [ ] The `code` label's value set is undocumented:
+- [x] The `code` label's value set is undocumented:
   forty envelope codes, seven audit-only outcomes, and the `upstream_<status>` family
   (`internal/httpapi/codes.go:11-105`, `internal/proxy/proxy.go:171`); `docs/deployment.md:439,464` names one.
   `profgate_confirm_total` and `profgate_profiles_in_flight` observe the interactive path only (`internal/pgo/rounds.go:448`);
   say so at `docs/deployment.md:441-442`.
-- [ ] A failed PGO sample logs at debug with no Collection identifier (`internal/pgo/rounds.go:411-412`);
+- [x] A failed PGO sample logs at debug with no Collection identifier (`internal/pgo/rounds.go:411-412`);
   `authenticator failed` (`internal/httpapi/auth.go:86`) carries no `requestId`,
   and `idempotency receipt is not readable` (`internal/httpapi/pgo_collections.go:633`) carries neither that nor the Service.
-- [ ] One page of example queries under `docs/deployment.md`, so an operator building a dashboard knows which series to plot.
+- [x] One page of example queries under `docs/deployment.md`, so an operator building a dashboard knows which series to plot.
   A dashboard file is a feature and stays off this list.
 
-Spec: [`gateway.md`](../specs/gateway.md) *Metrics* for the `NaN` seed of the expiry gauge and the meaning of `profgate_discovery_synced`;
+Spec: [`gateway.md`](../specs/gateway.md) *Metrics* for the `NaN` seed of the expiry gauge,
+the meaning of `profgate_discovery_synced`, and the three cases `profgate_nats_connected` reports;
 none for the rest.
-Shipped: not built yet.
+Shipped: pull request #24.
 Why here: three gauges read wrong or read nothing in exactly the outage they exist for,
 and an operator on call has no page that says what to look at.
 

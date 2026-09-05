@@ -1,6 +1,8 @@
 # The Alerts Fire in the Outages They Name
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #24 carries the two seeds, the six rules, the three log attributes, and the runbook;
+the commit that carries this line closes the plan.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -1669,7 +1671,7 @@ That commit deletes this file and rewrites every link that cited it, which `chec
 it changes nothing else.
 Run `grep -rn metrics-and-runbook --include='*.md' .` before the deletion to find the links.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/plans/roadmap.md docs/plans/metrics-and-runbook.md
