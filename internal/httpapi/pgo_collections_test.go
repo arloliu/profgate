@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1466,6 +1467,122 @@ func TestAStoreCallHeldWhenTheClientLeavesIsClientGone(t *testing.T) {
 	if counter.answered.Load() {
 		t.Error("the handler answered a client that had left: the cancelled store call must not become an envelope")
 	}
+}
+
+// TestCollectionCreateClientGone proves what a client that leaves mid-publication leaves behind.
+// After the record's first write the publication finishes without the client,
+// and the request is audited client_gone with nothing written;
+// during that first write the reservation stays tracked and the record stays initializing,
+// which is what a creator that died leaves and what the scan resolves.
+func TestCollectionCreateClientGone(t *testing.T) {
+	const key = "k-gone"
+	request := "POST " + collectionsPath + " HTTP/1.1\r\nHost: gateway\r\nContent-Type: application/json\r\n" +
+		idempotencyKeyHeader + ": " + key + "\r\nContent-Length: 2\r\n\r\n{}"
+
+	t.Run("after the record's create", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		contexts := make(chan context.Context, 1)
+		counter := &answerCounter{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			contexts <- r.Context()
+			h.handler().ServeHTTP(w, r)
+		})}
+		gateway := httptest.NewServer(counter)
+		t.Cleanup(gateway.Close)
+
+		// The connection is closed on the active key's create, once the record's create has landed,
+		// and the hook returns only once the request's cancellation is visible to the store call it precedes.
+		conns := make(chan net.Conn, 1)
+		var once sync.Once
+		h.nats.jobs.setBefore(func(op, k string) {
+			if op != "create" || !strings.HasPrefix(k, activeKeyPrefix) {
+				return
+			}
+			once.Do(func() {
+				select {
+				case conn := <-conns:
+					_ = conn.Close()
+				case <-time.After(heldOpenTimeout):
+					t.Error("the connection was not handed to the hook within the wait")
+
+					return
+				}
+				select {
+				case ctx := <-contexts:
+					select {
+					case <-ctx.Done():
+					case <-time.After(heldOpenTimeout):
+						t.Error("the request's cancellation was not visible within the wait")
+					}
+				case <-time.After(heldOpenTimeout):
+					t.Error("the request never reached the handler")
+				}
+			})
+		})
+		conns <- dialRaw(t, gateway, request)
+
+		waitForAudit(t, h.harness, codeClientGone)
+		h.expectPGOAudit(t, 0, codeClientGone)
+		if counter.answered.Load() {
+			t.Error("the handler answered a client that had left")
+		}
+		receipt := h.nats.jobs.receipt(t, fixtureReceiptKey(key))
+		if state := h.nats.jobs.record(t, receipt.ID).State; state != pgo.StatePending {
+			t.Errorf("state = %q, want %q: the publication finishes without its client", state, pgo.StatePending)
+		}
+		for prefix, want := range map[string]int{jobKeyPrefix: 1, activeKeyPrefix: 1, idemKeyPrefix: 1} {
+			if n := h.nats.jobs.countKeys(prefix); n != want {
+				t.Errorf("%s keys = %d, want %d", prefix, n, want)
+			}
+		}
+
+		// The client's retry reads the identifier back and creates nothing.
+		h.nats.jobs.setBefore(nil)
+		replay := h.doPGO(t, http.MethodPost, collectionsPath, `{}`, keyed(key))
+		if replay.Code != http.StatusOK {
+			t.Fatalf("replay status = %d, want 200 (body %q)", replay.Code, replay.Body.String())
+		}
+		if got := acceptedBodyOf(t, replay).ID; got != receipt.ID {
+			t.Errorf("replay names %q, want the collection %q", got, receipt.ID)
+		}
+	})
+
+	t.Run("during the record's create", func(t *testing.T) {
+		h := newPGOHarness(t, pgoOpts{})
+		started := h.nats.jobs.loseCreate()
+		counter := &answerCounter{Handler: h.handler()}
+		gateway := httptest.NewServer(counter)
+		t.Cleanup(gateway.Close)
+
+		conn := dialRaw(t, gateway, request)
+		select {
+		case <-started:
+		case <-time.After(heldOpenTimeout):
+			t.Fatal("the request did not reach the record's create within the wait")
+		}
+		_ = conn.Close()
+
+		waitForAudit(t, h.harness, codeClientGone)
+		h.expectPGOAudit(t, 0, codeClientGone)
+		if counter.answered.Load() {
+			t.Error("the handler answered a client that had left")
+		}
+		keys, err := h.nats.jobs.Keys(context.Background(), jobKeyPrefix)
+		if err != nil || len(keys) != 1 {
+			t.Fatalf("job keys = %v (%v), want the one record the lost create stored", keys, err)
+		}
+		id := strings.TrimPrefix(keys[0], jobKeyPrefix)
+		if state := h.nats.jobs.record(t, id).State; state != pgo.StateInitializing {
+			t.Errorf("state = %q, want %q: the first write was indeterminate", state, pgo.StateInitializing)
+		}
+		for _, prefix := range []string{activeKeyPrefix, idemKeyPrefix} {
+			if n := h.nats.jobs.countKeys(prefix); n != 0 {
+				t.Errorf("%s keys = %d, want none: nothing follows a first write that did not return", prefix, n)
+			}
+		}
+		if held := h.pub.Reserved(); held != 1 {
+			t.Errorf("reservations = %d, want 1: the indeterminate write is tracked for the release rule", held)
+		}
+	})
 }
 
 // waitForAudit blocks until one audit record has been written and checks its code.

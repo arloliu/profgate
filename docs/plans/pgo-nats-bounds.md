@@ -1199,7 +1199,7 @@ when it is non-nil, the request is audited `codeClientGone` (`internal/httpapi/p
 the shape `waitForCollection` takes at `:898-902`, whatever the outcome was;
 the three branches below run only for a client still there.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 The `internal/pgo` rows run through `publishOne` (`internal/pgo/publisher_test.go:19-42`)
 with a caller's context the row owns,
@@ -1235,7 +1235,7 @@ go test -race -count=1 ./internal/pgo/ -run 'TestPublishFinishesOnceBegun/a_call
 go test -race -count=1 ./internal/httpapi/ -run 'TestCollectionCreateClientGone/after_the_record'
 ```
 
-- [ ] **Detach the continuation and say so**
+- [x] **Detach the continuation and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **A publication finishes once its first write has landed.**
@@ -1246,7 +1246,7 @@ and a request whose client left is audited `client_gone` with nothing written, w
 a client that leaves during the first write, or a continuation the bound cuts, leaves what a creator that died leaves,
 which the scan already fails `not_published`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/pgo/publisher.go internal/httpapi/pgo_collections.go CHANGELOG.md

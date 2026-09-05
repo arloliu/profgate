@@ -16,6 +16,17 @@ import (
 // The scheduler counts the refusal against the slot, and the on-demand route answers 429 capacity_exhausted.
 var ErrCapacityExhausted = errors.New("live collection ceiling reached")
 
+// publishBudget bounds the writes of a publication that follow its record's Create:
+// once that write has been acknowledged the rest run under a context of their own,
+// so a caller that leaves — a client gone from POST /collections — leaves no initializing record behind.
+// It is a bound and not a promise: it is half the minute after which the scan fails an unfinished record not_published,
+// and a publication it cuts leaves the state a creator that died leaves, which that scan already resolves.
+// A constant, not configuration.
+const publishBudget = 30 * time.Second
+
+// errPublishBudget is the cause a continuation's context carries when the budget passed.
+var errPublishBudget = errors.New("the publication's continuation budget passed")
+
 // createdBySchedule is the createdBy of a scheduled Collection.
 // A scheduled Collection has no requesting principal, and the field is a
 // principal everywhere else, so it names the scheduler rather than borrowing
@@ -244,6 +255,9 @@ func (p *Publisher) resolved(ctx context.Context, jobs natskv.KV, id string, ref
 // A keyed record becomes claimable only after the store has acknowledged the receipt that binds it,
 // so no Collection a caller can poll is unbound.
 // The caller holds res, and Publish gives it back only where nothing can exist.
+// The first write runs under ctx;
+// once it has been acknowledged the rest run under a context of their own, bounded by publishBudget,
+// so a caller that leaves mid-publication leaves no initializing record behind.
 //
 // OutcomeBusy means the Service already had a live Collection.
 // An error means the publication did not complete: either nothing was written,
@@ -279,6 +293,10 @@ func (p *Publisher) Publish(
 	}
 	logTransition(p.log, p.instance, rec, slog.String("trigger", string(rec.Origin)))
 
+	// From here the writes finish whether or not the caller is still there.
+	ctx, stop := p.continuation(ctx)
+	defer stop()
+
 	activeRev, activeErr := p.createActive(ctx, jobs, id, now, in)
 	if errors.Is(activeErr, natskv.ErrKeyExists) {
 		p.discardLostRecord(ctx, jobs, res, id, rev)
@@ -312,6 +330,32 @@ func (p *Publisher) Publish(
 	logTransition(p.log, p.instance, rec, slog.String("trigger", string(rec.Origin)))
 
 	return id, OutcomeWon, nil
+}
+
+// continuation is the context the writes after the record's Create run under:
+// detached from the caller's cancellation, and cancelled with errPublishBudget
+// when publishBudget has passed on the publisher's clock.
+// The returned stop releases the timer and the goroutine that watches it.
+func (p *Publisher) continuation(ctx context.Context) (context.Context, func()) {
+	detached, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+	timer := p.clock.NewTimer(publishBudget)
+	stopped := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-timer.C():
+			cancel(errPublishBudget)
+		case <-stopped:
+		}
+	}()
+
+	return detached, func() {
+		close(stopped)
+		timer.Stop()
+		<-done
+		cancel(nil)
+	}
 }
 
 // record builds the initializing record one publication creates.

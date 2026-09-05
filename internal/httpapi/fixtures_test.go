@@ -487,8 +487,15 @@ func cutServer(t *testing.T, handler http.Handler) (*httptest.Server, func()) {
 
 // dialRequest opens a raw connection to srv and sends one GET with no body,
 // so the test holds the socket itself rather than through a client that would read, retry, or close it.
-// Every read and write on the connection is bounded, so a request nothing ends fails the test rather than hangs it.
 func dialRequest(t *testing.T, srv *httptest.Server, target string) net.Conn {
+	t.Helper()
+
+	return dialRaw(t, srv, "GET "+target+" HTTP/1.1\r\nHost: gateway\r\n\r\n")
+}
+
+// dialRaw opens a raw connection to srv and writes one request as the bytes given.
+// Every read and write on the connection is bounded, so a request nothing ends fails the test rather than hangs it.
+func dialRaw(t *testing.T, srv *httptest.Server, request string) net.Conn {
 	t.Helper()
 
 	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "tcp", srv.Listener.Addr().String())
@@ -499,7 +506,7 @@ func dialRequest(t *testing.T, srv *httptest.Server, target string) net.Conn {
 	if err := conn.SetDeadline(time.Now().Add(heldOpenTimeout)); err != nil {
 		t.Fatalf("SetDeadline() error = %v", err)
 	}
-	if _, err := io.WriteString(conn, "GET "+target+" HTTP/1.1\r\nHost: gateway\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(conn, request); err != nil {
 		t.Fatalf("write request error = %v", err)
 	}
 
@@ -1011,6 +1018,11 @@ type fakeKV struct {
 	holdsGets  bool
 	getStarted chan struct{}
 	startOnce  sync.Once
+	// loseCreateOnCancel makes the next Create store its value, close createStarted,
+	// wait for its context to end, and answer ErrUnavailable:
+	// a write the server committed whose acknowledgement the caller's leaving lost.
+	loseCreateOnCancel bool
+	createStarted      chan struct{}
 
 	updates atomic.Int32
 	creates atomic.Int32
@@ -1072,26 +1084,65 @@ func (k *fakeKV) Get(ctx context.Context, key string) (natskv.Entry, error) {
 	return e, nil
 }
 
-func (k *fakeKV) Create(_ context.Context, key string, value []byte) (uint64, error) {
+// ended is what the seam answers a call whose context had ended before it was made.
+func ended(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %w", natskv.ErrUnavailable, err)
+	}
+
+	return nil
+}
+
+func (k *fakeKV) Create(ctx context.Context, key string, value []byte) (uint64, error) {
 	k.calls.Add(1)
 	k.creates.Add(1)
 	k.hold("create", key)
+	if err := ended(ctx); err != nil {
+		return 0, err
+	}
 	k.mu.Lock()
-	defer k.mu.Unlock()
 	if k.createErr != nil {
+		k.mu.Unlock()
+
 		return 0, k.createErr
 	}
 	if _, ok := k.entries[key]; ok {
+		k.mu.Unlock()
+
 		return 0, fmt.Errorf("create %q: %w", key, natskv.ErrKeyExists)
 	}
+	rev := k.storeLocked(key, value)
+	lose, started := k.loseCreateOnCancel, k.createStarted
+	k.loseCreateOnCancel = false
+	k.mu.Unlock()
 
-	return k.storeLocked(key, value), nil
+	if lose {
+		close(started)
+		<-ctx.Done()
+
+		return 0, fmt.Errorf("create %q: %w: %w", key, natskv.ErrUnavailable, ctx.Err())
+	}
+
+	return rev, nil
 }
 
-func (k *fakeKV) Update(_ context.Context, key string, value []byte, expected uint64) (uint64, error) {
+// loseCreate arms loseCreateOnCancel and returns the channel the held Create closes once its value is stored.
+func (k *fakeKV) loseCreate() <-chan struct{} {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.loseCreateOnCancel = true
+	k.createStarted = make(chan struct{})
+
+	return k.createStarted
+}
+
+func (k *fakeKV) Update(ctx context.Context, key string, value []byte, expected uint64) (uint64, error) {
 	k.calls.Add(1)
 	k.updates.Add(1)
 	k.hold("update", key)
+	if err := ended(ctx); err != nil {
+		return 0, err
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.updateErr != nil {
@@ -1105,9 +1156,12 @@ func (k *fakeKV) Update(_ context.Context, key string, value []byte, expected ui
 	return k.storeLocked(key, value), nil
 }
 
-func (k *fakeKV) Delete(_ context.Context, key string, expected uint64) error {
+func (k *fakeKV) Delete(ctx context.Context, key string, expected uint64) error {
 	k.calls.Add(1)
 	k.hold("delete", key)
+	if err := ended(ctx); err != nil {
+		return err
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	e, ok := k.entries[key]

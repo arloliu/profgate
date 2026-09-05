@@ -15,13 +15,24 @@ import (
 	"github.com/arloliu/profgate/internal/natskv"
 )
 
-// publishOne runs one publication for a Service through r's publisher.
+// publishOne runs one publication for a Service through r's publisher,
+// under a caller's context that outlives the publication.
 func (r *replica) publishOne(
 	t *testing.T, jobs natskv.KV, ns, svc string, mutate ...func(*PublishInput),
 ) (string, Outcome, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), fixtureTimeout)
 	defer cancel()
+
+	return r.publishUnder(ctx, t, jobs, ns, svc, mutate...)
+}
+
+// publishUnder runs one publication for a Service through r's publisher under the caller's context the test owns,
+// which is what a row that ends that context mid-publication needs.
+func (r *replica) publishUnder(
+	ctx context.Context, t *testing.T, jobs natskv.KV, ns, svc string, mutate ...func(*PublishInput),
+) (string, Outcome, error) {
+	t.Helper()
 
 	res, err := r.pub.Reserve(r.client.Generation(), ns, svc)
 	if err != nil {
@@ -1096,6 +1107,182 @@ func TestKeyedCreatorDied(t *testing.T) {
 		scanNow(t, r.newWorker(trapRun(t)))
 		if rec := f.record(id); rec.State != StateFailed || rec.Reason != ReasonNotPublished {
 			t.Fatalf("record is %q %q, want failed %q", rec.State, rec.Reason, ReasonNotPublished)
+		}
+	})
+}
+
+// ctxKV is a Jobs bucket whose Update on a key under holdPrefix waits on its context
+// and answers ErrUnavailable carrying the context's cause,
+// which is a store call that ends with the context it was given and no earlier.
+// entered is closed once the first such Update has been reached.
+type ctxKV struct {
+	natskv.KV
+	holdPrefix string
+	entered    chan struct{}
+	once       sync.Once
+}
+
+func (k *ctxKV) Update(ctx context.Context, key string, value []byte, expected uint64) (uint64, error) {
+	if !strings.HasPrefix(key, k.holdPrefix) {
+		return k.KV.Update(ctx, key, value, expected)
+	}
+	k.once.Do(func() { close(k.entered) })
+	<-ctx.Done()
+
+	return 0, fmt.Errorf("update %q: %w: %w", key, natskv.ErrUnavailable, context.Cause(ctx))
+}
+
+// TestPublishFinishesOnceBegun proves the writes after the record's Create finish
+// whether or not the caller is still there, under a bound the publisher's own clock sets,
+// and that a caller gone before or during that first write leaves what it left before.
+func TestPublishFinishesOnceBegun(t *testing.T) {
+	const principal, key = "tester", "k-1"
+	receipt := ReceiptKey(principal, "payment", "payment-api", key)
+
+	t.Run("a caller cancelled after the first write leaves a pending record, its key, and its receipt", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		hook := &kvHook{after: func(op, k string, err error) error {
+			if op == "create" && strings.HasPrefix(k, jobPrefix) {
+				cancel()
+			}
+
+			return err
+		}}
+
+		id, outcome, err := r.publishUnder(ctx, t, &hookKV{KV: r.jobsView(), hook: hook},
+			"payment", "payment-api", keyed(principal, key))
+		if err != nil || outcome != OutcomeWon {
+			t.Fatalf("publish returned (%q, %v), want a won publication", outcome, err)
+		}
+		if got := f.record(id).State; got != StatePending {
+			t.Errorf("record state is %q, want %q: the writes after the first finish without the caller", got, StatePending)
+		}
+		var active activeValue
+		f.getJSON(f.jobs, activeKey("payment", "payment-api"), &active)
+		if active.ID != id {
+			t.Errorf("active key names %q, want %q", active.ID, id)
+		}
+		if got := f.receipt(receipt).ID; got != id {
+			t.Errorf("the receipt names %q, want %q", got, id)
+		}
+	})
+
+	t.Run("a caller cancelled before the first write creates nothing", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, _, err := r.publishUnder(ctx, t, r.jobsView(), "payment", "payment-api", keyed(principal, key))
+		if !errors.Is(err, natskv.ErrUnavailable) {
+			t.Fatalf("publish returned %v, want ErrUnavailable", err)
+		}
+		if got := f.jobKeys(); len(got) != 0 {
+			t.Fatalf("a create under an ended context left %v, want nothing", got)
+		}
+		if got := r.pub.Reserved(); got != 1 {
+			t.Fatalf("reservations held are %d right after the write, want 1", got)
+		}
+		r.releaseResolved()
+		if got := r.pub.Reserved(); got != 0 {
+			t.Fatalf("reservations held are %d, want 0: the fresh reads find nothing", got)
+		}
+	})
+
+	t.Run("a caller cancelled while the first write is in flight keeps its reservation", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		hook := &kvHook{before: func(op, k string) (error, bool) {
+			if op == "create" && strings.HasPrefix(k, jobPrefix) {
+				cancel()
+			}
+
+			return nil, false
+		}}
+		id, _, err := r.publishUnder(ctx, t, &hookKV{KV: r.jobsView(), hook: hook},
+			"payment", "payment-api", keyed(principal, key))
+		if !errors.Is(err, natskv.ErrUnavailable) {
+			t.Fatalf("publish returned %v, want ErrUnavailable", err)
+		}
+		if got := r.pub.Reserved(); got != 1 {
+			t.Fatalf("reservations held are %d, want 1: the first write is indeterminate", got)
+		}
+		if f.hasKey(f.jobs, jobKey(id)) {
+			if got := f.record(id).State; got != StateInitializing {
+				t.Errorf("record state is %q, want %q or no record", got, StateInitializing)
+			}
+		}
+		if f.hasKey(f.jobs, receipt) {
+			t.Error("a receipt was written for a publication whose first write never returned")
+		}
+	})
+
+	t.Run("a continuation the budget cuts leaves an initializing record the scan fails", func(t *testing.T) {
+		f := startPGO(t)
+		r := f.newReplica("replica", replicaOpts{})
+		r.waitSynced()
+
+		held := &ctxKV{KV: r.jobsView(), holdPrefix: jobPrefix, entered: make(chan struct{})}
+		type result struct {
+			id      string
+			outcome Outcome
+			err     error
+		}
+		results := make(chan result, 1)
+		go func() {
+			id, outcome, err := r.publishUnder(context.Background(), t, held,
+				"payment", "payment-api", keyed(principal, key))
+			results <- result{id, outcome, err}
+		}()
+		select {
+		case <-held.entered:
+		case res := <-results:
+			t.Fatalf("publish returned (%q, %v) before its pending update was held", res.outcome, res.err)
+		case <-time.After(fixtureTimeout):
+			t.Fatal("the publication never reached its pending update")
+		}
+
+		r.clock.Advance(publishBudget)
+		var res result
+		select {
+		case res = <-results:
+		case <-time.After(fixtureTimeout):
+			t.Fatal("the held update did not return once the budget passed")
+		}
+		if !errors.Is(res.err, natskv.ErrUnavailable) || !errors.Is(res.err, errPublishBudget) {
+			t.Fatalf("publish returned %v, want ErrUnavailable caused by the budget", res.err)
+		}
+		id := res.id
+		if got := f.record(id).State; got != StateInitializing {
+			t.Fatalf("record state is %q, want %q: the pending update never landed", got, StateInitializing)
+		}
+		var active activeValue
+		f.getJSON(f.jobs, activeKey("payment", "payment-api"), &active)
+		if active.ID != id {
+			t.Errorf("active key names %q, want %q", active.ID, id)
+		}
+		if got := f.receipt(receipt).ID; got != id {
+			t.Errorf("the receipt names %q, want %q", got, id)
+		}
+
+		r.waitCache("holds the record", func(c *Caches) bool { return c.hasJob(id) })
+		r.clock.Set(slotBase.Add(publishGrace + skewMargin + time.Second))
+		scanNow(t, r.newWorker(trapRun(t)))
+		if rec := f.record(id); rec.State != StateFailed || rec.Reason != ReasonNotPublished {
+			t.Fatalf("record is %q %q, want failed %q", rec.State, rec.Reason, ReasonNotPublished)
+		}
+		if f.hasKey(f.jobs, activeKey("payment", "payment-api")) {
+			t.Error("the active key survived the scan that failed its record")
 		}
 	})
 }

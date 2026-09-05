@@ -196,6 +196,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A publication finishes once its first write has landed.**
+  `POST /collections` ran every write under the request,
+  so a client that left between the record's first write and the last left an `initializing` record
+  that held the Service for about a minute.
+  The writes after the first now run under a context of their own, bounded at thirty seconds,
+  and a request whose client left is audited `client_gone` with nothing written, whether or not the publication won;
+  a client that leaves during the first write, or a continuation the bound cuts,
+  leaves what a creator that died leaves, which the scan already fails `not_published`.
 - **The worker scan reads only what is due.**
   Every scan, on its timer and after every record delivery, read every nonterminal record fresh,
   quadratic in live Collections.

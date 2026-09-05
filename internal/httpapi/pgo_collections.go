@@ -579,10 +579,20 @@ func (s *server) serveCollectionCreate(
 		CreatedBy:      principal,
 		IdempotencyKey: key,
 	})
-	switch {
-	case err != nil:
+	if err != nil {
 		s.deps.Logger.Warn("pgo: publishing an on-demand collection failed",
 			"namespace", rt.namespace, "service", rt.service, "collection", id, "error", err)
+	}
+	// The publication finished under its own context once its first write had landed,
+	// so a client that left meanwhile is recorded and answered nothing, whatever the outcome was:
+	// there is nobody to answer, and what the publication wrote stands.
+	if r.Context().Err() != nil {
+		q.audit.code = codeClientGone
+
+		return
+	}
+	switch {
+	case err != nil:
 		q.fail(w, errPGOUnavailable)
 	case outcome == pgo.OutcomeBusy:
 		s.refuseLoser(w, r, q, sess, receiptKey, hash, key)
