@@ -342,6 +342,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a bucket that stayed absent cost the process about sixty failed opens a second for as long as it lasted.
   The wait now doubles from 50 milliseconds to thirty seconds, with each wait drawn from the upper half of its schedule,
   and resets once the re-opened watch has replayed.
+- **The startup retries do not retry in step.**
+  Four loops doubled their wait from one second to thirty with no jitter —
+  the Kubernetes preflight, the NATS preflight, issuer discovery, and the watched-cache re-open —
+  so every replica that lost a dependency at one moment retried it at the same moments afterwards.
+  Each wait is now drawn from the upper half of its schedule.
 
 ## [0.5.0] - 2026-09-03
 

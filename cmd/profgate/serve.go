@@ -95,6 +95,19 @@ type serveDeps struct {
 	idleTimeout   time.Duration                          // production: 0, so both listeners close an idle connection after idleTimeout
 	drainSlack    time.Duration                          // production: 0, so the API drain's bound adds drainSlack to the longest profile duration
 	authPoll      time.Duration                          // production: 0, so the users file and cookie key file are polled every 30 seconds
+	backoff       func() *backoff                        // production: nil, so each retry loop doubles from 1s to 30s on a timer
+}
+
+// retryBackoff returns the backoff one retry loop draws its waits from:
+// the factory a test supplied, and the production schedule otherwise.
+// Every loop calls this on the goroutine that runs it,
+// because the generator behind a backoff serves one goroutine at a time.
+func (d serveDeps) retryBackoff() *backoff {
+	if d.backoff != nil {
+		return d.backoff()
+	}
+
+	return newBackoff(nil, nil)
 }
 
 // serve runs the gateway until stop is closed or a fatal event happens, and returns the exit code.
@@ -368,7 +381,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 		go basic.Run(runCtx)
 	}
 	preflightCh := make(chan error, 1)
-	startPreflight := func() { go func() { preflightCh <- preflight(runCtx, rt, logger) }() }
+	startPreflight := func() { go func() { preflightCh <- preflight(runCtx, rt, logger, deps.retryBackoff()) }() }
 	// Under oidc the Kubernetes preflight waits for discovery: a gateway that
 	// cannot reach its issuer cannot authenticate anyone, and exiting is
 	// better than serving 503 to every request while looking healthy.
@@ -376,7 +389,9 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	var discoverCh chan error
 	if oidc != nil {
 		discoverCh = make(chan error, 1)
-		go func() { discoverCh <- discoverIssuer(runCtx, oidc, cfg.Auth.OIDC.DiscoveryTimeout, logger) }()
+		go func() {
+			discoverCh <- discoverIssuer(runCtx, oidc, cfg.Auth.OIDC.DiscoveryTimeout, logger, deps.retryBackoff())
+		}()
 	} else {
 		startPreflight()
 	}
@@ -392,7 +407,7 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	if cfg.PGO.Enabled {
 		natsCh = make(chan natsResult, 1)
 		go func() {
-			client, err := natsPreflight(runCtx, deps, cfg.NATS, owner.Instance, pgoRuntime, logger)
+			client, err := natsPreflight(runCtx, deps, cfg.NATS, owner.Instance, pgoRuntime, logger, deps.retryBackoff())
 			natsCh <- natsResult{client: client, err: err}
 		}()
 	}
@@ -572,10 +587,9 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	}
 }
 
-// preflight retries rt.Preflight with a doubling backoff until it passes, a tuple is forbidden, or ctx ends;
+// preflight retries rt.Preflight on retry's schedule until it passes, a tuple is forbidden, or ctx ends;
 // the returned error is nil, the ErrForbidden, or ctx.Err().
-func preflight(ctx context.Context, rt k8s.Runtime, logger *slog.Logger) error {
-	backoff := preflightBackoffFirst
+func preflight(ctx context.Context, rt k8s.Runtime, logger *slog.Logger, retry *backoff) error {
 	for {
 		err := rt.Preflight(ctx)
 		var fb k8s.ErrForbidden
@@ -587,13 +601,11 @@ func preflight(ctx context.Context, rt k8s.Runtime, logger *slog.Logger) error {
 		case ctx.Err() != nil:
 			return ctx.Err()
 		}
-		logger.Warn("preflight attempt", "error", err, "retry_in", backoff.String())
-		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
-			return ctx.Err()
+		d := retry.draw()
+		logger.Warn("preflight attempt", "error", err, "retry_in", d.String())
+		if waited := retry.wait(ctx, d); waited != nil {
+			return waited
 		}
-		backoff = min(backoff*2, preflightBackoffCap)
 	}
 }
 
@@ -603,10 +615,9 @@ func preflight(ctx context.Context, rt k8s.Runtime, logger *slog.Logger) error {
 // Discovery has a bound where the Kubernetes preflight has none because the
 // issuer is outside the cluster: waiting forever would hide an issuer that
 // is down from a rollout that would otherwise stop.
-func discoverIssuer(ctx context.Context, o *auth.OIDC, timeout time.Duration, logger *slog.Logger) error {
+func discoverIssuer(ctx context.Context, o *auth.OIDC, timeout time.Duration, logger *slog.Logger, retry *backoff) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	backoff := preflightBackoffFirst
 	for {
 		err := o.Discover(ctx)
 		if err == nil {
@@ -615,13 +626,11 @@ func discoverIssuer(ctx context.Context, o *auth.OIDC, timeout time.Duration, lo
 		if ctx.Err() != nil {
 			return fmt.Errorf("%w (giving up after %s)", err, timeout)
 		}
-		logger.Warn("issuer discovery attempt", "error", err, "retry_in", backoff.String())
-		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
+		d := retry.draw()
+		logger.Warn("issuer discovery attempt", "error", err, "retry_in", d.String())
+		if waited := retry.wait(ctx, d); waited != nil {
 			return fmt.Errorf("%w (giving up after %s)", err, timeout)
 		}
-		backoff = min(backoff*2, preflightBackoffCap)
 	}
 }
 
@@ -638,7 +647,7 @@ type natsResult struct {
 // because no amount of waiting turns it into a pass.
 func natsPreflight(
 	ctx context.Context, deps serveDeps, nats config.NATSConfig, instance string,
-	runtime *pgo.Runtime, logger *slog.Logger,
+	runtime *pgo.Runtime, logger *slog.Logger, retry *backoff,
 ) (natskv.Client, error) {
 	opts := natskv.Options{
 		URL:            nats.URL,
@@ -658,7 +667,6 @@ func natsPreflight(
 	// This process makes one, so the transport is down until the callback above reports otherwise,
 	// and a rule over the gauge fires through an outage that never reaches the callback at all.
 	deps.recorder.NATSConnected(false)
-	backoff := preflightBackoffFirst
 	for {
 		client, err := deps.natsPreflight(ctx, opts, instance, logger)
 		switch {
@@ -669,13 +677,11 @@ func natsPreflight(
 		case !errors.Is(err, natskv.ErrUnavailable):
 			return nil, err
 		}
-		logger.Warn("nats preflight attempt", "error", err, "retry_in", backoff.String())
-		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		d := retry.draw()
+		logger.Warn("nats preflight attempt", "error", err, "retry_in", d.String())
+		if waited := retry.wait(ctx, d); waited != nil {
+			return nil, waited
 		}
-		backoff = min(backoff*2, preflightBackoffCap)
 	}
 }
 
@@ -725,7 +731,7 @@ func startPGO(
 
 	clock := pgo.SystemClock{}
 	caches := pgo.NewCaches(logger)
-	go runCaches(ctx, caches, client, logger)
+	go func() { runCaches(ctx, caches, client, logger, deps.retryBackoff()) }()
 	// The series exists only when pgo.enabled,
 	// and this is the one path a PGO start reaches, from a channel one goroutine writes once,
 	// so the gauge is registered here and exactly once.
@@ -772,21 +778,18 @@ func startPGO(
 // runCaches keeps the four watched caches open until ctx ends.
 // Caches.Run neither retries nor reconnects,
 // and the replay barrier stays shut until its watches exist,
-// so a failure to open them has one answer: open them again, with the same backoff the preflights use.
-func runCaches(ctx context.Context, caches *pgo.Caches, client natskv.Client, logger *slog.Logger) {
-	backoff := preflightBackoffFirst
+// so a failure to open them has one answer: open them again, on the same schedule the preflights retry on.
+func runCaches(ctx context.Context, caches *pgo.Caches, client natskv.Client, logger *slog.Logger, retry *backoff) {
 	for {
 		err := caches.Run(ctx, client)
 		if ctx.Err() != nil {
 			return
 		}
-		logger.Warn("pgo watched caches stopped; reopening", "error", err, "retry_in", backoff.String())
-		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
+		d := retry.draw()
+		logger.Warn("pgo watched caches stopped; reopening", "error", err, "retry_in", d.String())
+		if waited := retry.wait(ctx, d); waited != nil {
 			return
 		}
-		backoff = min(backoff*2, preflightBackoffCap)
 	}
 }
 

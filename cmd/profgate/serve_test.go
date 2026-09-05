@@ -19,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	mrand "math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -45,6 +46,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/arloliu/profgate/internal/auth"
 	"github.com/arloliu/profgate/internal/config"
 	"github.com/arloliu/profgate/internal/k8s"
 	"github.com/arloliu/profgate/internal/metrics"
@@ -75,7 +77,8 @@ const (
 	pollInterval = 10 * time.Millisecond
 	// waitTimeout bounds every wait that does not involve the preflight backoff.
 	waitTimeout = 5 * time.Second
-	// backoffWaitTimeout bounds a wait across two preflight retries (1s then 2s of backoff).
+	// backoffWaitTimeout bounds a wait across two preflight retries,
+	// whose two waits are drawn from the upper half of their figures and total at most three seconds.
 	backoffWaitTimeout = 15 * time.Second
 )
 
@@ -996,6 +999,51 @@ func TestServe(t *testing.T) {
 		}
 	})
 
+	t.Run("the kubernetes preflight draws its waits from the backoff", func(t *testing.T) {
+		cs := fake.NewClientset()
+		var lists atomic.Int32
+		cs.PrependReactor("list", "services", func(k8stesting.Action) (bool, runtime.Object, error) {
+			if lists.Add(1) <= backoffDraws {
+				return true, nil, errors.New("api server hiccup")
+			}
+
+			return false, nil, nil
+		})
+		var out syncBuffer
+		logger := slog.New(slog.NewJSONHandler(&out, nil))
+		rt := k8s.NewRuntimeWithClientset(cs, k8s.Options{NamespaceFile: namespaceFile(t), Logger: logger})
+		waits := newWaitLog(0, nil)
+
+		if err := preflight(t.Context(), rt, logger, waits.factory()()); err != nil {
+			t.Fatalf("preflight over twenty failed lists: %v", err)
+		}
+		assertBackoffDraws(t, waits.recorded())
+	})
+
+	t.Run("issuer discovery draws its waits from the backoff", func(t *testing.T) {
+		is := newTestIssuer(t)
+		is.setDiscoveryStatus(http.StatusInternalServerError)
+		var out syncBuffer
+		logger := slog.New(slog.NewJSONHandler(&out, nil))
+		cfgPath := writeConfig(t, reserveAddr(t).Addr().String(), reserveAddr(t).Addr().String(),
+			defaultLimits(), gatewayOpts{authBlock: oidcBlock(t, is, false)})
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			t.Fatalf("load config: %v", err)
+		}
+		issuer, err := auth.NewOIDC(cfg, auth.OIDCOptions{Logger: logger, Recorder: &recorder{}})
+		if err != nil {
+			t.Fatalf("oidc authentication: %v", err)
+		}
+		// Discovery answers 500 until the loop has recorded its twentieth wait.
+		waits := newWaitLog(backoffDraws, func() { is.setDiscoveryStatus(http.StatusOK) })
+
+		if err := discoverIssuer(t.Context(), issuer, time.Hour, logger, waits.factory()()); err != nil {
+			t.Fatalf("issuer discovery over twenty failed attempts: %v", err)
+		}
+		assertBackoffDraws(t, waits.recorded())
+	})
+
 	t.Run("responses during preflight", func(t *testing.T) {
 		cs := fake.NewClientset()
 		release := make(chan struct{})
@@ -1524,6 +1572,79 @@ func (p *preflightStub) callCount() int {
 	return p.calls
 }
 
+// waitLog is the backoff seam of a retry loop:
+// it records every wait the loop was about to sleep and returns from the sleep at once,
+// so a row reads a schedule of minutes in no time.
+// after, when set, runs once the wait it names has been recorded,
+// which is how a row lets the loop's next attempt pass.
+type waitLog struct {
+	mu    sync.Mutex
+	waits []time.Duration
+	nth   int
+	after func()
+}
+
+// newWaitLog records every wait; after, when set, runs once the nth wait has been recorded.
+func newWaitLog(nth int, after func()) *waitLog {
+	return &waitLog{nth: nth, after: after}
+}
+
+// factory is what a row hands the loop under test:
+// one backoff per call, each with a generator of its own,
+// because a generator serves one goroutine at a time and the four loops run side by side.
+func (l *waitLog) factory() func() *backoff {
+	var seq atomic.Uint64
+
+	return func() *backoff {
+		n := seq.Add(1)
+
+		//nolint:gosec // G404: a test's reproducible draws, seeded from the order the loops built their backoff in
+		return newBackoff(mrand.New(mrand.NewPCG(n, n+1)), l.sleep)
+	}
+}
+
+func (l *waitLog) sleep(_ context.Context, d time.Duration) error {
+	l.mu.Lock()
+	l.waits = append(l.waits, d)
+	fire := l.after != nil && len(l.waits) == l.nth
+	l.mu.Unlock()
+	if fire {
+		l.after()
+	}
+
+	return nil
+}
+
+// recorded returns the waits slept so far, in order.
+func (l *waitLog) recorded() []time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return append([]time.Duration(nil), l.waits...)
+}
+
+// failingWatchKV is an empty bucket whose first watches fail,
+// standing in for the caches a replica cannot open because the store is unreachable.
+type failingWatchKV struct {
+	emptyKV
+	failures atomic.Int32
+}
+
+func newFailingWatchKV(failures int32) *failingWatchKV {
+	kv := &failingWatchKV{}
+	kv.failures.Store(failures)
+
+	return kv
+}
+
+func (k *failingWatchKV) Watch(ctx context.Context, prefix string) (<-chan natskv.Entry, error) {
+	if k.failures.Add(-1) >= 0 {
+		return nil, natskv.ErrUnavailable
+	}
+
+	return k.emptyKV.Watch(ctx, prefix)
+}
+
 // stubWorker stands in for the Collection worker
 // so the shutdown rows can see which context each of the two waits was given.
 // The real worker's per-Collection drain bound is proved where it lives, in internal/pgo;
@@ -1737,7 +1858,7 @@ func TestNATSCallbacksSplitTheirDuties(t *testing.T) {
 			return nats, nil
 		},
 	}
-	if _, err := natsPreflight(ctx, deps, config.NATSConfig{}, "instance", pgoRuntime, logger); err != nil {
+	if _, err := natsPreflight(ctx, deps, config.NATSConfig{}, "instance", pgoRuntime, logger, deps.retryBackoff()); err != nil {
 		t.Fatalf("nats preflight: %v", err)
 	}
 
@@ -1828,6 +1949,50 @@ func TestServePGO(t *testing.T) {
 		if attempts != 2 {
 			t.Fatalf("nats preflight attempt records = %d, want 2:\n%s", attempts, gw.stdout.String())
 		}
+	})
+
+	t.Run("the nats preflight draws its waits from the backoff", func(t *testing.T) {
+		down := preflightResult{err: fmt.Errorf("dial nats: %w", natskv.ErrUnavailable)}
+		results := make([]preflightResult, 0, backoffDraws+1)
+		for range backoffDraws {
+			results = append(results, down)
+		}
+		results = append(results, preflightResult{client: newFakeNATS(true)})
+		var out syncBuffer
+		logger := slog.New(slog.NewJSONHandler(&out, nil))
+		deps := serveDeps{recorder: &recorder{}, natsPreflight: newPreflightStub(results...).fn()}
+		waits := newWaitLog(0, nil)
+
+		client, err := natsPreflight(t.Context(), deps, config.NATSConfig{}, "instance",
+			pgo.NewRuntime(), logger, waits.factory()())
+		if err != nil {
+			t.Fatalf("nats preflight over twenty connection failures: %v", err)
+		}
+		if client == nil {
+			t.Fatal("nats preflight passed without a client")
+		}
+		assertBackoffDraws(t, waits.recorded())
+	})
+
+	t.Run("the watched-cache re-open draws its waits from the backoff", func(t *testing.T) {
+		nats := newFakeNATS(true)
+		nats.stores.Jobs = newFailingWatchKV(backoffDraws)
+		var out syncBuffer
+		logger := slog.New(slog.NewJSONHandler(&out, nil))
+		caches := pgo.NewCaches(logger)
+		waits := newWaitLog(0, nil)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			runCaches(ctx, caches, nats, logger, waits.factory()())
+		}()
+
+		waitFor(t, waitTimeout, "the watched caches to replay", func() bool { return caches.Synced(fakeGeneration) })
+		cancel()
+		<-stopped
+		assertBackoffDraws(t, waits.recorded())
 	})
 
 	t.Run("a contract violation ends startup naming the bucket and field", func(t *testing.T) {
@@ -2274,6 +2439,15 @@ func newTestIssuer(t *testing.T) *testIssuer {
 	t.Cleanup(is.srv.Close)
 
 	return is
+}
+
+// setDiscoveryStatus changes what discovery answers,
+// under the lock the handler reads that field through,
+// so a row may change it while the issuer is serving.
+func (is *testIssuer) setDiscoveryStatus(status int) {
+	is.mu.Lock()
+	defer is.mu.Unlock()
+	is.discoveryStatus = status
 }
 
 // rotate publishes a fresh key under kid in place of every earlier one.

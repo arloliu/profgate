@@ -808,7 +808,7 @@ replace their `backoff := preflightBackoffFirst`, `time.After`, and `min(backoff
 and log the drawn wait in `retry_in` as they log the schedule's today.
 The constants at `:35-38` stay and are what the type reads.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 `backoff_test.go` holds the schedule as a table over `k`; `serve_test.go` holds the four loops.
 The loop tests build a factory whose `sleep` appends the wait to a slice and returns nil at once,
@@ -832,7 +832,7 @@ The red state:
 go test -race -count=1 ./cmd/profgate/ -run 'TestBackoff|TestServe/the_kubernetes_preflight_draws|TestServePGO/the_nats_preflight_draws|TestServe/issuer_discovery_draws|TestServePGO/the_watched-cache_re-open_draws'
 ```
 
-- [ ] **Draw the waits and say so**
+- [x] **Draw the waits and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **The startup retries do not retry in step.**
@@ -840,7 +840,7 @@ The Kubernetes preflight, the NATS preflight, issuer discovery, and the watched-
 so every replica that lost a dependency at one moment retried it at the same moments afterwards.
 Each wait is now drawn from the upper half of its schedule.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check cmd/profgate/backoff.go cmd/profgate/serve.go CHANGELOG.md
