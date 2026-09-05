@@ -1,6 +1,9 @@
 # temporary artifacts
 /tmp/
 
+# Codegraph artifacts
+/.codegraph/
+
 # machine-local mise overrides
 /mise.local.toml
 /.mise.local.toml
