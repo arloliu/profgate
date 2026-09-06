@@ -104,8 +104,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and shows any other answer with its hint where every other error is shown;
   the control is disabled while the download is in flight, so a second press sends nothing.
   A response that declares no `Content-Encoding`, which is every response the pprof handler writes,
-  is saved as the gzip-framed body `curl` receives;
+  is saved as the body `curl` receives, byte for byte;
   a response an intermediary encoded is saved decoded, so its bytes are not the wire bytes.
+- **BREAKING: `profgate collections --output json` writes one document per page.**
+  The verb printed the first page's body alone, one JSON document,
+  so a consumer decoded stdout as one document and read the first hundred Collections at most.
+  It now walks every page and writes each page's body to stdout in order, unchanged,
+  which is one document for a Service with a hundred Collections or fewer and a stream of them past that;
+  a single-document decoder fails on the second document or stops after the first.
+  Read stdout as a stream: `jq -s` gathers the pages into one array, and a streaming decoder reads them one by one.
 - **BREAKING: a client that leaves during the confirmation read is `client_gone`, in the audit record and in `profgate_confirm_total`.**
   It was answered `503 discovery_unavailable` — to nobody — and counted under `result="unavailable"`,
   so a burst of impatient clients read as an API server that could not vouch for anything.

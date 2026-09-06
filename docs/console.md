@@ -96,7 +96,7 @@ The page never holds a credential of its own; it relies on whatever the browser 
 **Download** fetches the profile through the same request the gateway runs for `curl`
 and saves the bytes under the name the response carries;
 a response that declares no `Content-Encoding`, which is every response the pprof handler writes,
-is saved as the gzip-framed body `curl` receives,
+is saved as the body `curl` receives, byte for byte,
 and a response an intermediary encoded is saved decoded.
 An answer that is not a profile — `no_targets`, `service_not_found`, `realm_denied` — is shown in the panel with its hint,
 and the control is disabled while a download is in flight.
@@ -172,7 +172,7 @@ The gateway pins no browser to one replica and shares no asset store between the
 - **Store anything.**
   The page keeps no state beyond the namespace and Service in its own URL;
   it holds no database, no cache, and no file,
-  and a download holds the profile in memory until the save has begun, and nothing after.
+  and a download holds the profile in memory until the save has begun and drops its references to it then.
 - **Edit a Service's PGO policy.**
   It starts and cancels Collections, and it writes nothing else:
   the stored override stays a `curl` operation with an `If-Match` precondition

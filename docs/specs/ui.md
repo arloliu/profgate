@@ -524,7 +524,7 @@ clicks an `<a download>` naming that URL, and revokes the URL once the save has 
 the file's name is the `filename` of the response's `Content-Disposition`,
 which Go's pprof handler sets and the gateway passes through, and `profile` when the header carries none.
 `fetch` decodes only a `Content-Encoding` a response declares, and the pprof handler declares none,
-so an ordinary pprof response is saved as the gzip-framed body `curl` receives, unchanged.
+so an ordinary pprof response is saved as the body `curl` receives, byte for byte.
 A `Content-Encoding` that middleware or an intermediary adds is passed through by the gateway (gateway *Proxy behavior*)
 and removed by the browser before the body reaches the page,
 so an encoded response carries no promise that the saved bytes are the wire bytes.
