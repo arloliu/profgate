@@ -379,14 +379,14 @@ and the removal is a breaking change to the enum that a release note must carry.
   and the unlisted-selection read at `:189` stays where it is.
   The Collection assertions at `:231`, `:232`, and `:977` select a bare `details` or `details summary`,
   which the identity would become the first match for, so they are scoped to the Collections panel.
-- [ ] `docs/console.md:32` lists the page's parts, and `:76`, `:83`, and `:91` call the identity a panel;
+- [x] `docs/console.md:32` lists the page's parts, and `:76`, `:83`, and `:91` call the identity a panel;
   the guide follows the implementation.
 
 Spec: [`ui.md`](../specs/ui.md) *Controls* for the arrangement and the disclosure,
 *Signing in and out* for where **Sign out** sits,
 *Errors* and *Starting and cancelling a Collection* for the `realm_denied` answer that opens it,
 and *End to end* for the reads that move; none for the guide.
-Shipped: not built yet.
+Shipped: pull request #32.
 Why here: the grid is met on every load, and its empty column at every wide window;
 the change updates the layout, the identity disclosure's behavior, the browser scenarios' selectors, and the guide,
 and nothing else on this list depends on any of it, so it takes the last place.
