@@ -72,6 +72,26 @@ var queryParameters = map[string][]string{
 	"GET /auth/callback": {"code", "error", "state"},
 }
 
+// headerParameters is the reviewed set of header parameters each operation declares:
+// the conditional and idempotency headers its handler reads.
+// An operation the map does not name declares none, which the check holds it to,
+// so the map and the document have to change together and neither drifts alone.
+// Credentials are outside it:
+// internal/auth reads Authorization and the Sec-Fetch-* triple,
+// which OpenAPI describes as a security scheme, not a parameter,
+// and this document declares no scheme yet.
+// X-Request-Id is absent on purpose: ServeHTTP reads it before any route resolves,
+// its value decides nothing, and the document describes it once, on every response.
+var headerParameters = map[string][]string{
+	"PUT /v1/namespaces/{namespace}/services/{service}/pgo":          {"If-Match"},
+	"DELETE /v1/namespaces/{namespace}/services/{service}/pgo":       {"If-Match"},
+	"POST /v1/namespaces/{namespace}/services/{service}/collections": {idempotencyKeyHeader},
+	// The console's asset route answers 304 to a tag it served.
+	// compareConditional holds that relationship; this map holds the set.
+	"GET /ui/{file}":  {"If-None-Match"},
+	"HEAD /ui/{file}": {"If-None-Match"},
+}
+
 // readDocument is the file as it is shipped, and the parsed form of it.
 func readDocument(t *testing.T) ([]byte, map[string]any) {
 	t.Helper()
@@ -559,13 +579,19 @@ func eachOperation(doc map[string]any, fn func(pair string, op map[string]any)) 
 // TestOpenAPIDocumentParameters holds the document to the parameters a client would send:
 // every query parameter a handler accepts is described on that operation,
 // every path parameter the template names is described,
-// and an operation whose handler takes no query parameter describes none.
+// an operation whose handler takes no query parameter describes none,
+// and every header parameter an operation declares is in the reviewed set for that operation,
+// and an operation the set does not name declares none.
 func TestOpenAPIDocumentParameters(t *testing.T) {
 	_, doc := readDocument(t)
 	eachOperation(doc, func(pair string, op map[string]any) {
 		want := slices.Sorted(slices.Values(queryParameters[pair]))
 		if got := parametersOf(t, doc, op, "query"); !slices.Equal(got, want) {
 			t.Errorf("%s describes query parameters %v, want %v", pair, got, want)
+		}
+		want = slices.Sorted(slices.Values(headerParameters[pair]))
+		if got := parametersOf(t, doc, op, "header"); !slices.Equal(got, want) {
+			t.Errorf("%s describes header parameters %v, want %v", pair, got, want)
 		}
 		template := pair[strings.Index(pair, " ")+1:]
 		var captured []string
@@ -606,12 +632,9 @@ func TestOpenAPIDocumentWriteRoutesRequireJSON(t *testing.T) {
 	})
 }
 
-// TestOpenAPIDocumentHeaders reads the two headers a client acts on:
-// X-Request-Id names the request on every answer,
-// and Idempotency-Key is what a create is retried with.
+// TestOpenAPIDocumentHeaders reads the one header every answer carries:
+// X-Request-Id names the request on every response of every operation.
 func TestOpenAPIDocumentHeaders(t *testing.T) {
-	const create = "POST /v1/namespaces/{namespace}/services/{service}/collections"
-
 	_, doc := readDocument(t)
 	eachOperation(doc, func(pair string, op map[string]any) {
 		responses := object(op, "responses")
@@ -625,14 +648,6 @@ func TestOpenAPIDocumentHeaders(t *testing.T) {
 			if object(resolved, "headers", requestIDHeader) == nil {
 				t.Errorf("%s answers %s without describing %s", pair, status, requestIDHeader)
 			}
-		}
-		headers := parametersOf(t, doc, op, "header")
-		if pair == create {
-			if !slices.Contains(headers, idempotencyKeyHeader) {
-				t.Errorf("%s describes headers %v, which do not include %s", pair, headers, idempotencyKeyHeader)
-			}
-		} else if slices.Contains(headers, idempotencyKeyHeader) {
-			t.Errorf("%s describes %s, which only the create takes", pair, idempotencyKeyHeader)
 		}
 	})
 }

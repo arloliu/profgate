@@ -611,7 +611,7 @@ at `:2330-2337` and `:2290-2297`.
 and leaves arrays in the order they are written, so the file is written that way and the array's order is free.
 The two descriptions that name the header (`:2289`, `:2329`) stay.
 
-- [ ] **Write the map, and run it red**
+- [x] **Write the map, and run it red**
 
 The map and the walk first, the document untouched:
 
@@ -629,7 +629,7 @@ every other operation describes no header parameter, which the walk asserts for 
 What this run does not and cannot show is a handler reading an undescribed header:
 the walk compares the map against the document, and both are maintained by hand.
 
-- [ ] **Declare the header and say so**
+- [x] **Declare the header and say so**
 
 The component and the two references, then the same command, green,
 and `TestOpenAPIDocumentEncoding`, `TestOpenAPIDocumentReferences`, and `TestOpenAPIDocumentConditional` green with it:
@@ -642,7 +642,7 @@ so a client built from the document had no parameter to send where the gateway a
 The document now carries the header with its grammar, a quoted decimal revision within an unsigned 64-bit range,
 and the check holds every operation to exactly the header parameters it should declare.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/httpapi/openapi_test.go CHANGELOG.md
