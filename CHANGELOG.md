@@ -254,6 +254,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so an answer for a namespace the page has left is discarded instead of shown,
   which is what keeps a stale denial from opening the disclosure for a namespace nobody is looking at.
   The hint drops the word panel.
+- **The OpenAPI document declares `If-Match` on the policy `PUT` and `DELETE`.**
+  The two writes read the header and the document named it in prose alone,
+  so a client built from the document had no parameter to send where the gateway answers `428` without one.
+  The document now carries the header with its grammar, a quoted decimal revision within an unsigned 64-bit range,
+  and the check holds every operation to exactly the header parameters it should declare.
 - **The console explains every code its design lists, and its `realm_denied` hint is true.**
   Four codes the design lists were shown as bare words with no hint:
   `too_many_auth` and `auth_unavailable`, which every route can answer, and `version_conflict` and `version_missing`.

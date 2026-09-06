@@ -144,6 +144,16 @@
           "type": "string"
         }
       },
+      "IfMatch": {
+        "description": "the revision the write or the delete is made at, as the ETag of the last read carries it: a quoted decimal whose digits fit an unsigned 64-bit integer. Any other form, * included, and any value past that range, is 400 invalid_parameter. Over an existing override it is required, and a write without it is 428 precondition_required; one naming a revision the policy has moved past is 412 precondition_failed, and so is a PUT that carries it where no override exists.",
+        "in": "header",
+        "name": "If-Match",
+        "required": false,
+        "schema": {
+          "pattern": "^\"[0-9]+\"$",
+          "type": "string"
+        }
+      },
       "IfNoneMatch": {
         "description": "an entity tag the caller already holds, or *; a match is answered 304 with no body",
         "in": "header",
@@ -2293,6 +2303,9 @@
           },
           {
             "$ref": "#/components/parameters/Service"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
           }
         ],
         "responses": {
@@ -2333,6 +2346,9 @@
           },
           {
             "$ref": "#/components/parameters/Service"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
           }
         ],
         "requestBody": {
