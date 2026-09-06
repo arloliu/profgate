@@ -168,13 +168,20 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	assertNavigatedToLogin(t, s, consoleQueryPayload)
 	assertSelection(t, s.location(t), consoleQueryPayload)
 
-	// The identity panel names the issuer's user and the realm it mapped to,
+	// The identity disclosure's summary names the issuer's user and the realm it mapped to,
 	// and the hostile query and the hostile principal are both rendered as text.
-	panels := s.textOf(t, ".panels")
-	for _, want := range []string{consolePrincipalPayload, "developer", "oidc"} {
-		if !strings.Contains(panels, want) {
-			t.Fatalf("the identity panel does not name %q:\n%s", want, panels)
+	// The summary is read on its own rather than through the disclosure:
+	// a closed details carries its body in textContent,
+	// so a read of the whole element passes whether or not the summary names either value.
+	summary := s.textOf(t, "details.identity > summary")
+	for _, want := range []string{consolePrincipalPayload, "developer"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("the identity disclosure's summary does not name %q:\n%s", want, summary)
 		}
+	}
+	// The authentication mode is one of the seven facts the body holds and is not in the summary.
+	if identity := s.textOf(t, "details.identity"); !strings.Contains(identity, "oidc") {
+		t.Fatalf("the identity disclosure does not name the authentication mode oidc:\n%s", identity)
 	}
 	// The unlisted text is checked only once the namespace list has arrived.
 	// nsListed is false while that list is still empty exactly as it is when the selection is absent from a list that arrived,
@@ -190,7 +197,7 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		t.Fatalf("the page does not show the unlisted selection as text against a namespace list that arrived:\n%s",
 			listed)
 	}
-	assertRenderedAsText(t, s, "the load with the hostile query", consoleQueryPayload, consolePrincipalPayload)
+	assertRenderedAsText(t, s, "the load with the hostile query", consolePrincipalPayload, consoleQueryPayload)
 	s.assertClean(t, "the login round trip")
 
 	// The second load is the working one: a listed namespace and a listed Service.
@@ -198,6 +205,17 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		chromedp.Navigate(gatewayOrigin+uiPath+"?"+url.Values{"ns": {ns}, "svc": {testAppName}}.Encode()))
 	s.waitFor(t, "the Service list answers", `document.querySelector(".panels") !== null`)
 	s.waitFor(t, "the profile URL is built", `(document.querySelector("input.url") || {}).value !== ""`)
+
+	// The disclosure is closed on load: what a realm admits is read when something asks for it.
+	// The property is read and not the attribute, because open is the element's own state
+	// and the template never writes the attribute.
+	var openOnLoad bool
+	s.eval(t, "read the identity disclosure on load",
+		`(document.querySelector("details.identity") || {}).open === true`, &openOnLoad)
+	if openOnLoad {
+		t.Fatalf("the identity disclosure is open on load, want closed until something opens it:\n%s",
+			s.textOf(t, "details.identity > summary"))
+	}
 
 	// Choosing a profile fills the field with the URL Flow describes.
 	s.chooseOption(t, "Profile", "heap")
@@ -227,9 +245,12 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	// The Collections table lists the Service's Collections and a row's detail shows its record.
 	s.awaitRow(t, seeded, "the seeded Collection")
 	s.run(t, "open the seeded Collection", chromedp.Click(control(seeded), chromedp.BySearch))
+	// The Collection detail is selected inside the Collections panel:
+	// the identity disclosure is the document's first details, so a bare selector would read it instead.
 	s.waitFor(t, "the detail shows the seeded record",
-		fmt.Sprintf(`(document.querySelector("details summary") || {}).textContent === "Collection %s"`, seeded))
-	if detail := s.textOf(t, "details"); !strings.Contains(detail, "completed") {
+		fmt.Sprintf(`(document.querySelector(".collections details summary") || {}).textContent === "Collection %s"`,
+			seeded))
+	if detail := s.textOf(t, ".collections details"); !strings.Contains(detail, "completed") {
 		t.Fatalf("the detail of %s does not show its state:\n%s", seeded, detail)
 	}
 
@@ -340,6 +361,13 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	// so the answer excludes them as pod_terminating first and reports a selector matching no Pod once they are gone;
 	// either wording is the empty state.
 	// The GET is held at the browser while the control is read disabled and pressed again to no effect, as above.
+	// The disclosure is opened by hand first, so that the refresh below is a render it has to survive:
+	// the page sets open once per qualifying answer rather than binding it in the template,
+	// and a bound open would close again on the next render.
+	s.run(t, "open the identity disclosure",
+		chromedp.Click("details.identity > summary", chromedp.ByQuery))
+	s.waitFor(t, "the identity disclosure is open",
+		`(document.querySelector("details.identity") || {}).open === true`)
 	s.waitFor(t, "the targets Refresh control is idle", refreshEnabled("Profile"))
 	n = s.requestCount()
 	isTargetsGET := func(u string) bool { return strings.HasPrefix(u, targetsRoute) && strings.Contains(u, "explain=true") }
@@ -354,6 +382,13 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	s.waitFor(t, "the targets Refresh control is idle again", refreshEnabled("Profile"))
 	if got := s.requestCount(); got != n+1 || s.heldCount() != 0 {
 		t.Fatalf("Refresh on the targets list sent %d requests, want exactly the one targets GET\n%s", got-n, s.report())
+	}
+	// The refresh answered and the panel re-rendered, and the disclosure a person opened is still open.
+	var openAfterRender bool
+	s.eval(t, "read the identity disclosure after the refresh",
+		`(document.querySelector("details.identity") || {}).open === true`, &openAfterRender)
+	if !openAfterRender {
+		t.Fatalf("the identity disclosure closed on a render, want a person's opening to stand:\n%s", s.report())
 	}
 	var emptyNote string
 	s.eval(t, "read the Download control after the refresh", `(() => {
@@ -374,7 +409,7 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	assertLongSelectionDropped(t, newSession(t, b, sessionOptions{MapTo: local}))
 
 	// Every load of the scenario, once more at the end: the observers ran through all of them.
-	assertRenderedAsText(t, s, "the working load", consolePrincipalPayload)
+	assertRenderedAsText(t, s, "the working load", consolePrincipalPayload, "")
 	s.assertClean(t, "the console scenario")
 }
 
@@ -410,14 +445,19 @@ func scenarioConsoleBasic(t *testing.T, h *Harness) {
 		chromedp.Navigate(gatewayOrigin+uiPath+"?"+url.Values{"ns": {ns}, "svc": {testAppName}}.Encode()))
 	s.waitFor(t, "the page continues past the challenge", `document.querySelector(".panels") !== null`)
 
-	// The identity panel is the page continuing:
+	// The identity disclosure is the page continuing:
 	// the first fetch was answered 401 with the basic challenge, the browser raised it,
 	// and the test answered it over the protocol's own handling.
-	panels := s.textOf(t, ".panels")
-	for _, want := range []string{consoleBasicUser, "developer", "basic"} {
-		if !strings.Contains(panels, want) {
-			t.Fatalf("the identity panel does not name %q:\n%s", want, panels)
+	// The summary is read on its own for the reason the oidc scenario states.
+	summary := s.textOf(t, "details.identity > summary")
+	for _, want := range []string{consoleBasicUser, "developer"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("the identity disclosure's summary does not name %q:\n%s", want, summary)
 		}
+	}
+	// The authentication mode is one of the seven facts the body holds and is not in the summary.
+	if identity := s.textOf(t, "details.identity"); !strings.Contains(identity, "basic") {
+		t.Fatalf("the identity disclosure does not name the authentication mode basic:\n%s", identity)
 	}
 	if n := s.challengeCount(); n != 1 {
 		t.Fatalf("the browser was asked to answer %d authentication challenges, want exactly 1;"+
@@ -795,20 +835,36 @@ func assertStartRequest(t *testing.T, s *session, route string) {
 
 // assertRenderedAsText fails unless every payload reached the document as text:
 // no element either string names anywhere in the document,
-// the escaped form in the container's markup,
+// the escaped form in the markup of the container that renders it,
 // and the sentinel each payload would set still undefined.
-func assertRenderedAsText(t *testing.T, s *session, what string, payloads ...string) {
+// The principal and the selection are named apart because the page renders them in containers of its own:
+// the principal in the identity disclosure, the namespace and Service values in the Service panel.
+// A single read of the document would pass and stop proving which container each value reached.
+// An empty selection is a load carrying no hostile selection, and makes no Service-panel assertion.
+func assertRenderedAsText(t *testing.T, s *session, what, principal, selection string) {
 	t.Helper()
 	var images int
 	s.eval(t, "count the img elements", `document.querySelectorAll("img").length`, &images)
 	if images != 0 {
 		t.Fatalf("%s: the document holds %d img elements; a payload was parsed as markup", what, images)
 	}
-	var markup string
-	s.eval(t, "read the container's markup", `document.querySelector(".panels").innerHTML`, &markup)
-	for _, payload := range payloads {
-		if escaped := escapeMarkup(payload); !strings.Contains(markup, escaped) {
-			t.Fatalf("%s: the container's markup does not hold %q:\n%s", what, escaped, markup)
+	containers := []struct {
+		what     string
+		selector string
+		payload  string
+	}{
+		{"the identity disclosure", "details.identity", principal},
+		{"the Service panel", ".selection", selection},
+	}
+	for _, c := range containers {
+		if c.payload == "" {
+			continue
+		}
+		var markup string
+		s.eval(t, "read the markup of "+c.selector,
+			fmt.Sprintf(`(document.querySelector(%q) || { innerHTML: "" }).innerHTML`, c.selector), &markup)
+		if escaped := escapeMarkup(c.payload); !strings.Contains(markup, escaped) {
+			t.Fatalf("%s: the markup of %s does not hold %q:\n%s", what, c.what, escaped, markup)
 		}
 	}
 	for _, sentinel := range []string{consoleQuerySentinel, consolePrincipalSentinel} {
@@ -974,7 +1030,7 @@ func (s *session) awaitStartedDetail(t *testing.T, opened string) string {
 	const prefix = "Collection "
 	var started string
 	err := poll(s.ctx, settleDeadline, func(context.Context) (bool, error) {
-		named, ok := strings.CutPrefix(strings.TrimSpace(s.textOf(t, "details summary")), prefix)
+		named, ok := strings.CutPrefix(strings.TrimSpace(s.textOf(t, ".collections details summary")), prefix)
 		if !ok {
 			return false, nil
 		}

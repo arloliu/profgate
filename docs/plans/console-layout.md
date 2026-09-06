@@ -525,7 +525,7 @@ and what each of the two files gains.
   (`:1838`).
   One amendment row names *What is not proven* and *End to end*.
 
-- [ ] **Move the browser reads, add the two cases the markup decides, and run the console scenarios red**
+- [x] **Move the browser reads, add the two cases the markup decides, and run the console scenarios red**
 
 `test/e2e/scenarios_console_test.go`:
 
@@ -582,7 +582,7 @@ so scoping those three selectors could not have failed on its own.
 One run covers both scenarios.
 It needs a machine with a Chromium and the kind lane, so it runs once here and not in the validation block.
 
-- [ ] **Lay the page out**
+- [x] **Lay the page out**
 
 Apply the two file changes above, then run the same command again;
 both scenarios pass, the Collection detail assertions read the Collection's disclosure rather than the identity's,
@@ -600,7 +600,7 @@ opening it shows the same seven facts and the same sign-out link the panel held.
 An error from a refetch of the identity, and the control it carries, render outside the disclosure,
 so a closed one hides no way out of a failed identity fetch.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/ui/static/app.js test/e2e/scenarios_console_test.go docs/specs/ui.md CHANGELOG.md

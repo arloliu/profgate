@@ -1129,7 +1129,7 @@ It gains a generation of its own, read where the other two read theirs,
 so that leaving a namespace and returning to it does not make an obsolete answer look current;
 a counter, not a comparison of the namespace, is what tells those two apart.
 A download's answer is always current, because the control is disabled from the press until the fetch settles,
-so there is never a second one in flight (`:1021`, `:1025`, `:1383`).
+so there is never a second one in flight (`:1021`, `:1025`, `:1390`).
 A start's answer is the current attempt's when the model reports the step moved (`:794`).
 The code that opens the disclosure reads the status as well as the code:
 a `403` carrying an envelope whose `code` is `realm_denied`, for a request that is not the identity refetch itself.
@@ -1759,7 +1759,7 @@ and the disabling of the control — beyond what the browser scenario asserts of
 the two **Refresh** controls' wiring and the refetch of `/v1/whoami` a listing's `403` causes, the same way;
 the arrangement of *Controls*: the browser scenarios load the stylesheet,
 but none of them asserts panel placement, control wrapping,
-the identity disclosure's initial state, or its opening and closing;
+or the disclosure's opening on a denial;
 the line that says older Collections exist as `app.js` wires it —
 the state field it is held in, its clearing on a failed listing and on a change of namespace or Service,
 and its rendering under the table — of which the model function alone is proven;
@@ -1837,6 +1837,9 @@ so a runner that loses one, or drifts to a version outside the range, turns red 
   the callback's landing page returns the browser to `/ui/?ns=…&svc=…`,
   and the identity disclosure's summary names the issuer's user and the realm it mapped to —
   which is the `401`, the redirect, the `returned=1` marker, and the once-per-load rule, executed rather than read;
+- the disclosure is closed on the working load,
+  and one the scenario opened by clicking its summary is still open after a **Refresh** answer re-renders the panel,
+  each read from the element's `open` property and not from an attribute the template never writes;
 - choosing the namespace, the Service, and a profile fills the profile URL field with the URL *Flow* describes,
   and pressing **Download** saves a file that is the body the profile endpoint streams, byte for byte,
   gzip-framed as every `heap` profile is,
@@ -2146,3 +2149,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Errors*, *What is not proven* | the hints table gains `too_many_auth` and `auth_unavailable`, the two authentication codes every `/v1` route answers, and its `realm_denied` row names the identity panel, the word the page's own header uses; a `403 realm_denied` on a listing refetches `/v1/whoami`, a refetch no unit test proves |
 | *What is not proven*, *Required by this revision and not yet made* | the line that says older Collections exist is wired in `app.js` by a state field the listing fills, a failed listing and a change of selection clear, and the Collections panel renders under the table, none of which a unit test reaches; and the console guide accounts for **Download** and **Refresh** beside the two write controls, so nothing is owed elsewhere |
 | *Controls*, *Starting and cancelling a Collection*, *Signing in and out*, *Errors*, *Layout and embedding*, *What is not proven*, *End to end*, *Required by this revision and not yet made* | the page is one panel to a row, each panel laying its controls across the row, because columns of panels put a short panel beside a tall one and left a column of empty page; the identity is a `<details>` disclosure above the panels, closed on load, whose summary names the principal and the realm and which holds the seven facts and the sign-out link the panel held, disclosing nothing new; a `403` whose envelope names `realm_denied`, on a listing, a profile download, or the current start attempt, opens it and refetches `/v1/whoami`, each path first discarding an answer it has moved past, for which the Service listing gains the generation counter the other two listings already carry, so the hint that names the identity stays true, while a person's own opening and closing stand until the next such denial and an identity refetch's errors and sign-in controls render outside the collapsible body; the hint drops the word panel; the browser scenarios read the identity's text and markup at the disclosure, check the escaped query values in the Service panel, and scope the Collection disclosure selectors to the Collections panel; and the console guide is owed the same correction |
+| *What is not proven*, *End to end* | `console-oidc` asserts the identity disclosure closed on the working load and a disclosure the scenario opened still open after a **Refresh** answer re-renders the panel, so what stays unproven of the arrangement is panel placement, control wrapping, and the opening a denial causes |
