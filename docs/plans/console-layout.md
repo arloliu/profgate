@@ -1,6 +1,7 @@
 # One Console Panel to a Row, and the Identity a Disclosure
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #32 carries the four tasks and the port control repair the visual check asked for.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -1027,7 +1028,7 @@ That commit deletes this file and rewrites every link that cited it,
 which `check_links` enforces, and changes nothing else.
 `grep -rn console-layout --include='*.md' .` finds the links.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/plans/console-layout.md docs/plans/roadmap.md
