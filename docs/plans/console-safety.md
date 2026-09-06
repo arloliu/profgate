@@ -1295,7 +1295,7 @@ button.secondary {
 
 `renderCollections` (`internal/ui/static/app.js:1221`) opens `<article class="collections">`.
 
-- [ ] **Name the check**
+- [x] **Name the check**
 
 This task has no red test: no test measures layout or color, and none is added,
 because a test of a stylesheet rule would assert the rule's text and not what the page looks like.
@@ -1305,7 +1305,7 @@ the Collections table shows `id` through `cancel` without a horizontal scroll,
 and an armed row shows **Keep** in grey beside a red **Confirm cancel**;
 the pull request description reports both as seen.
 
-- [ ] **Style and say so**
+- [x] **Style and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **The Collections table takes the page's width, and Keep looks secondary.**
@@ -1313,7 +1313,7 @@ The table sat in one grid column beside empty page, so `state`, the timestamps, 
 and **Keep** wore the same primary blue as **Confirm start**, because the class-less Pico build has no rule for `.secondary`.
 The panel now spans the grid, and **Keep** takes Pico's secondary colors.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/ui/static/app.js CHANGELOG.md

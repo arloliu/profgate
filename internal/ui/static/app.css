@@ -17,6 +17,12 @@ main#app {
   margin: 0;
 }
 
+/* The Collections table has nine columns, so its panel takes a row of its own
+   below the three panels rather than one cell beside them. */
+.panels article.collections {
+  grid-column: 1 / -1;
+}
+
 .panels dl {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -79,6 +85,14 @@ button.armed {
   background: var(--pico-del-color, #c62828);
   border-color: var(--pico-del-color, #c62828);
   color: var(--pico-primary-inverse, #fff);
+}
+
+/* Pico's class-less build defines the secondary colors and no rule that applies them,
+   so Keep would otherwise wear the primary blue of the control it stands beside. */
+button.secondary {
+  background: var(--pico-secondary-background);
+  border-color: var(--pico-secondary-border);
+  color: var(--pico-secondary-inverse);
 }
 
 /* The Collection row's controls sit side by side in their cell rather than

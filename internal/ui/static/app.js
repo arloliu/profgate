@@ -1406,7 +1406,7 @@ class App extends Component {
   renderCollections() {
     const { svc, collections, collectionsNote, collectionsLoading, collection, startMessage } = this.state;
     return html`
-      <article>
+      <article class="collections">
         <header>
           <strong>Collections</strong>
           <button
