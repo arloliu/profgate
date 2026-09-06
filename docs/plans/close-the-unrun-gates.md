@@ -683,13 +683,13 @@ the grep is `check_clientgo_importers` (`scripts/check-repo.py:121-129`),
 the golden test is `TestClusterRoleTuples` (`deploy/deploy_test.go:76`),
 and the script's docstring says where the second one lives (`scripts/check-repo.py:24-25`).
 
-- [ ] **Name the check**
+- [x] **Name the check**
 
 Prose has no red test.
 `mise run check` holds the file's links; `semlf check` holds its lines;
 a reviewer reads the paragraph beside `check.yml` as task 1 left it.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check .agents/rules/900-design-and-review-loops.md

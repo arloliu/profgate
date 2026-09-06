@@ -29,10 +29,12 @@ mechanically.
 `mise run check` verifies it, together with the `Outcome:` rule below and
 every relative link in the repository's Markdown.
 Run it after editing a spec or a plan.
-No CI invokes it yet, so the check is currently as unforced as the field it
-guards — treat that as a gap to close, not a reason to skip it.
-The two mechanisms in [800](800-security-invariant.md) join the same task once
-Go code exists.
+`.github/workflows/check.yml` runs it on every pull request and every push to `main`,
+ahead of the linter and the unit tests,
+so a `Status:` or a link the check refuses never reaches `main` unnoticed;
+run it locally all the same, because the workflow reports only once the commit exists.
+The import greps of [800](800-security-invariant.md) run in the same script,
+and its golden ClusterRole test runs with `mise run test`.
 
 What each value licenses: [000](000-agent-contract.md#document-authority).
 
