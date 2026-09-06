@@ -251,6 +251,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and **Keep** wore the same primary blue as **Confirm start**,
   because the class-less Pico build has no rule for `.secondary`.
   The panel now spans the grid, and **Keep** takes Pico's secondary colors.
+  The cells' side padding is now reduced so the nine columns fit without a horizontal scroll at a 1600 px window,
+  and the list headers hold their Refresh control beside the title.
 - **Download is disabled, with the reason beside it, while a Service has no eligible Pod.**
   The link stayed live over an empty target list,
   and the `503 no_targets` it earned was a navigation the browser showed nothing for.

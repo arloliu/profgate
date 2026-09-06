@@ -17,6 +17,22 @@ main#app {
   margin: 0;
 }
 
+/* Pico's class-less header holds only the title, so it has no rule for the row a Refresh
+   control sits in beside it; without this the button drops below the title with no gap. */
+.panels article header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+/* Pico buttons are block-level and full-margin by default,
+   which is why a bare header button took the header's full height. */
+.panels article header button {
+  margin-bottom: 0;
+  padding-block: 0.25rem;
+  width: auto;
+}
+
 /* The Collections table has nine columns, so its panel takes a row of its own
    below the three panels rather than one cell beside them. */
 .panels article.collections {
@@ -66,6 +82,12 @@ input.url {
 
 .table {
   overflow-x: auto;
+}
+
+/* Nine columns at Pico's default cell padding overflow the 1450 px container at a 1600 px window. */
+.table th,
+.table td {
+  padding-inline: 0.75rem;
 }
 
 button.link {
