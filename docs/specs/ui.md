@@ -749,6 +749,44 @@ a record whose `id` does not is shown and not linked.
 The **Start collection** control above the table, the **Cancel** control on a row,
 and what each answer does to the page are in *Starting and cancelling a Collection*.
 
+**The arrangement.**
+The page is the identity disclosure and then panels, one panel to a row of the page, in the order they load:
+the Service panel, the Profile panel, and, when offered, the Collections panel.
+Each panel lays its own controls across its row rather than down it, every control keeping its own label:
+the Service panel's namespace and Service selects on one line;
+the Profile panel's profile, port, Pod, and version controls with its **Refresh** on one line,
+plus the seconds control a configured limit adds and the extra field the port control's menu can open,
+with the URL field, **Download**, and **Copy URL** on the lines under them;
+the Collections table on the row it already had.
+Each control on a line takes an equal share of it,
+and stops growing at a width past which a menu of Pod names reads no better;
+**Refresh** takes the width of its own label;
+and below the width a line needs, its controls wrap onto the next line in the same order,
+so nothing is hidden and nothing is reordered at any width.
+The empty state stands where the Pod and version controls were and takes the whole row,
+because it is a sentence and a table rather than a control.
+A panel of four controls in a row is shorter than the same four stacked,
+and a row the width of the page has no gap beside it.
+Columns of panels had one:
+at a wide window the Profile panel stood far taller than the identity and Service panels beside it,
+its profile and target controls stacked one to a line above the URL field and the download actions,
+and below those two the page was a column of nothing as wide as they were and as tall as the difference.
+
+**The identity.**
+The principal and the realm are what a glance is for, and neither is read on the way to a profile:
+the realm's permissions, the authentication details, and the way out of the session are read when something asks.
+So the identity is a `<details>` disclosure above the panels rather than a panel among them, closed on load,
+its summary naming the principal and the realm.
+Opening it shows the seven facts the panel held —
+principal, realm, namespaces, Services, profiles, the three `pgo` flags, and the authentication mode —
+as term and value pairs, with **Sign out**, or the note `basic` shows in its place, at its foot (*Signing in and out*).
+Nothing new is disclosed: each value in the summary is one of the seven.
+What a realm admits is worth a click; it is not worth a panel's worth of every load.
+An error a refetch of `/v1/whoami` produces, and the **Retry** or **Sign in again** control that error carries,
+render between the disclosure and the panels rather than in the collapsible body,
+so a closed disclosure hides no way out of a failed identity fetch.
+A `403 realm_denied` opens the disclosure under the rule *Errors* states; nothing else opens it.
+
 ### 4.3 Starting and cancelling a Collection
 
 Two controls change state, and nothing else on the page does.
@@ -912,7 +950,7 @@ one per control, so every arm is a test case rather than a branch a reader has t
 | `429 collection_in_progress` | the list is refetched, because the live Collection is in it; the control returns; the key is dropped |
 | `429 rate_limited`, `429 capacity_exhausted` | the control is disabled for the `Retry-After` delay and says so; the key is dropped |
 | `409 idempotency_mismatch` | the key now stands for a different effective policy — the page sends one empty body per attempt series, so this means the Service's stored override or the operator defaults moved between the two presses; the error is shown, the list is refetched because the first attempt's Collection is in it, and the key is dropped |
-| `403 realm_denied` | `/v1/whoami` is refetched, since it is what decides whether the control exists; the key is dropped |
+| `403 realm_denied` | `/v1/whoami` is refetched, since it is what decides whether the control exists, and, when the answer is the current attempt's, the identity disclosure opens (*Errors*); the key is dropped |
 | `501 pgo_disabled` | `/v1/limits` is refetched, since it is what decides whether the view exists; the key is dropped |
 | `503 pgo_unavailable` | the replica could not reach the store or had not finished replaying it, so the create may have committed; the error is shown, the control returns to its armed state, and the key is kept for the next press, which is the retry of the same attempt |
 | `503 collector_unavailable` | no collector is fresh and [`pgo.md`](pgo.md) *Collector availability* answers this code with no write, so nothing can have started; the error is shown as a durable one and the key is dropped |
@@ -924,7 +962,7 @@ one per control, so every arm is a test case rather than a branch a reader has t
 | `200` | the returned record replaces the row's; the list is refetched |
 | `409 collection_terminal` | the Collection ended on its own; the list is refetched and the button goes with the state |
 | `409 collection_initializing` | retried once, one second later; a second one shows the code and leaves the row as it is |
-| `404 collection_not_found` | the record left the store, or the realm no longer admits it, and [`pgo.md`](pgo.md) *Cancel* answers the same `404` either way on purpose; the list is refetched, and so is `/v1/whoami`, because that is the only way a realm that stopped admitting the record takes the controls with it |
+| `404 collection_not_found` | the record left the store, or the realm no longer admits it, and [`pgo.md`](pgo.md) *Cancel* answers the same `404` either way on purpose; the list is refetched, and so is `/v1/whoami`, because that is the only way a realm that stopped admitting the record takes the controls with it; the identity disclosure does not open, since this answer names no realm that refused (*Errors*) |
 | a rejected `fetch`, or any other status | shown as *Errors* shows every error; the row is left as it was |
 
 The first row reads a `2xx` and not a `202` on purpose.
@@ -1020,7 +1058,9 @@ The console requires the browser flow under `oidc`:
 without it every browser request is `401` and `/auth/login` is `404 route_unknown`,
 so a configuration that sets `ui.enabled` under `auth.mode: oidc` without an `auth.oidc.browser` block is rejected
 (*Configuration*).
-The logout link is `/auth/logout` and is shown exactly when `/v1/whoami` returned `auth.logout`;
+The logout link, **Sign out**, is `/auth/logout`.
+The identity disclosure holds it at its foot exactly when `/v1/whoami` returned `auth.logout`,
+and opening the disclosure is what reveals it (*Controls*);
 the gateway answers it with `302` to the issuer's end-session endpoint or to `/`,
 and `/` is `302` to `/ui/` while `ui.enabled` (*Routes*), so logout lands back on a signed-out console.
 
@@ -1034,7 +1074,8 @@ and the browsers named in [`auth.md`](auth.md) *Non-goals* implement it.
 A user who cancels the dialog leaves the `fetch` with a `401`,
 which the page shows as "sign in required" with a button that retries the request, prompting again.
 There is no logout under `basic`, and the page says so where the logout link would be:
-how long a browser keeps a Basic credential is the browser's decision —
+opening the identity disclosure reveals that note in **Sign out**'s place (*Controls*).
+How long a browser keeps a Basic credential is the browser's decision —
 some forget it when the last window closes, some sooner, some later —
 and neither the gateway nor the page can end it, so neither promises to.
 
@@ -1051,7 +1092,7 @@ plus a one-line hint for the codes a user can act on:
 | `not_ready` | the gateway is still syncing; the page retries every 2 seconds |
 | `too_many_auth` | the gateway is checking too many passwords at once; retry in a moment |
 | `auth_unavailable` | the gateway cannot decide who you are right now; retry |
-| `realm_denied` | your realm does not admit this; the identity panel shows what it does |
+| `realm_denied` | your realm does not admit this; the identity shows what it does |
 | `service_not_found` | the Service left the cache since the list was fetched; the page refreshes the Service list |
 | `no_targets` | no Pod is eligible for the selection; **Refresh** on the targets list updates the available Pods and the empty state |
 | `port_not_allowed` | `allowedSelections` does not admit the value; the port control shows what it does admit |
@@ -1070,7 +1111,41 @@ plus a one-line hint for the codes a user can act on:
 Every other code is shown as is.
 The page never rewrites a message the gateway generated, and never shows a message the gateway did not send.
 
-A `403 realm_denied` on a listing refetches `/v1/whoami`, so the panel that hint names shows the realm that refused.
+**When the identity disclosure opens.**
+The page opens the disclosure on each non-stale `403 realm_denied` it handles for a listing,
+for a profile download, or for the current start attempt,
+and starts the refetch of `/v1/whoami` at the same time.
+Non-stale is the predicate each of those three paths already applies before it records an answer at all:
+a listing's answer is the one its own generation counter still names,
+which is the `stale` predicate `loadTargets` and `loadCollections` pass with their `targetsSeq` and `collectionsSeq`
+(`internal/ui/static/app.js:324-328`, `:586`, `:596-598`, `:634`, `:641-643`);
+a download's answer is always current, because the control is disabled from the press until the fetch settles,
+so there is never a second one in flight (`:1021`, `:1025`, `:1383`);
+and a start's answer is the current attempt's when the model reports the step moved (`:794`).
+The opening does not wait for that refetch:
+what the hint names is on screen before the realm that refused it is read again.
+A person may open or close it afterwards, and that choice stands —
+rendering, the refetch answering, and every other response leave it as the person left it —
+until a later qualifying denial opens it again.
+An answer the page discards as stale opens nothing,
+and neither does a cancel's `404 collection_not_found`,
+which refetches the identity without opening the disclosure (*Starting and cancelling a Collection*).
+A refusal of the identity refetch itself refetches nothing further.
+Whatever that refetch answers — an error, or a `401` asking for **Retry** or **Sign in again** —
+renders outside the collapsible body (*Controls*), so a closed disclosure hides no recovery.
+
+`open` is the element's own state.
+The page sets it once per qualifying answer rather than binding it in the render template,
+because a native close changes the element's `open` without the template knowing,
+and a template that re-asserts the value it asserted last render need not reopen what a person closed.
+
+Six cases a test has to tell apart:
+the disclosure closed on load;
+a person's opening surviving a render;
+a qualifying denial opening it;
+a person's closing surviving both a late refetch answer and an unrelated render;
+a second identical denial opening it again;
+and a discarded stale answer, or a cancel's `404 collection_not_found`, leaving it as it stood.
 
 A failed `fetch` does not always carry the envelope.
 An Ingress can answer with its own HTML, a connection can drop mid-body, a proxy can strip the body,
@@ -1100,7 +1175,7 @@ internal/ui/static/
   targetmodel.js             the targets query, the retry rule, and the target summary, importing nothing either
   collectionmodel.js         the Collection controls: when they exist, what the start request carries,
                              and what each answer does; importing nothing either
-  app.css                    the console's own rules, a few dozen lines on top of Pico
+  app.css                    the console's own rules on top of Pico
   vendor/
     MANIFEST                 one line per file: name, version, license, source URL, SHA-256
     preact/
@@ -1670,6 +1745,9 @@ the `Content-Disposition` filename read out of the header's quoted or bare param
 the reading of every status but `200` as an error whatever its body,
 and the disabling of the control — beyond what the browser scenario asserts of it;
 the two **Refresh** controls' wiring and the refetch of `/v1/whoami` a listing's `403` causes, the same way;
+the arrangement of *Controls*: the browser scenarios load the stylesheet,
+but none of them asserts panel placement, control wrapping,
+the identity disclosure's initial state, or its opening and closing;
 the line that says older Collections exist as `app.js` wires it —
 the state field it is held in, its clearing on a failed listing and on a change of namespace or Service,
 and its rendering under the table — of which the model function alone is proven;
@@ -1745,7 +1823,7 @@ so a runner that loses one, or drifts to a version outside the range, turns red 
 - a load with no session navigates to `/auth/login` of its own accord,
   the issuer's login form completes,
   the callback's landing page returns the browser to `/ui/?ns=…&svc=…`,
-  and the identity panel names the issuer's user and the realm it mapped to —
+  and the identity disclosure's summary names the issuer's user and the realm it mapped to —
   which is the `401`, the redirect, the `returned=1` marker, and the once-per-load rule, executed rather than read;
 - choosing the namespace, the Service, and a profile fills the profile URL field with the URL *Flow* describes,
   and pressing **Download** saves a file that is the body the profile endpoint streams, byte for byte,
@@ -1801,7 +1879,7 @@ so a runner that loses one, or drifts to a version outside the range, turns red 
 The first `fetch` is answered `401` with `WWW-Authenticate: Basic`,
 the browser raises its authentication challenge,
 the test answers it with the lane's user and password over the protocol's own challenge handling,
-and the page continues to the identity panel and to a profile download without a second prompt.
+and the page continues to the identity disclosure and to a profile download without a second prompt.
 What that proves is the challenge being answered and the page continuing;
 whether Chromium drew a native dialog is not observed and is not claimed.
 It runs over the lane's TLS with the certificate error ignored at launch,
@@ -1823,9 +1901,25 @@ so the login reaches the console instead of ending at `401 no_realm` before anyt
 Setup fails if the issuer cannot be configured with that principal,
 rather than the scenario running and proving half of what it says it proves.
 The scenario asserts both:
-the unlisted `ns` and `svc` values and the identity panel's principal each appear as text,
+the unlisted `ns` and `svc` values and the identity disclosure's principal each appear as text,
 with the escaped form in the container's markup,
 no element either string names anywhere in the document, and no script run from either.
+
+**Where the scenarios read the identity.**
+Both scenarios in `test/e2e/scenarios_console_test.go` read the identity through the `.panels` container today:
+the principal, the realm, and the authentication mode from its text, and the escaped principal from its markup.
+The disclosure sits above `.panels` and not inside it, so those reads move to it.
+The text reads assert the same three values at the disclosure.
+The markup assertion checks the escaped principal at the disclosure,
+and the escaped namespace and Service values — the hostile query is carried as both — in the Service panel,
+which is where the page renders them and where they stay.
+The Collection scenarios' disclosure selectors are scoped to the Collections panel:
+the identity becomes the document's first `<details>`,
+so a bare `details` or `details summary` selector would read it rather than the Collection detail it names.
+The read that checks an unlisted selection stays where it is, in `.panels`.
+Neither identity read has to open the disclosure:
+the summary names the principal and the realm while closed,
+and a closed disclosure's body is in its `textContent` and its markup as much as an open one's.
 
 ---
 
@@ -1987,9 +2081,13 @@ Updated with the implementation: `docs/api.md` (the listing endpoints), `docs/co
 
 ### 14.1 Required by this revision and not yet made
 
-Nothing.
-Every edit this revision required elsewhere has been made,
-and this document is no longer ahead of the documents it names:
+One edit.
+The console guide, [`docs/console.md`](../console.md),
+calls the identity a panel where it says what the page shows and where the sign-out link sits;
+it is owed the disclosure and the one-panel-to-a-row arrangement of *Controls*,
+and the implementation that builds them writes that edit.
+Every other edit this document required elsewhere has been made,
+and this document is otherwise no longer ahead of the documents it names:
 the write controls' contract in [`pgo.md`](pgo.md) *Create a Collection* and *HTTP API*,
 the entity tags, the browser scenarios, and the rolling-update rows in [`gateway.md`](gateway.md),
 the browser scenarios beside the wire proofs in [`auth.md`](auth.md) *Testing*,
@@ -2035,3 +2133,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *End to end* | a second session opened with an `ns` of 1100 characters navigates to the login with `return=/ui/?returned=1` alone, the browser proof of the return-path bound *Flow* states |
 | *Errors*, *What is not proven* | the hints table gains `too_many_auth` and `auth_unavailable`, the two authentication codes every `/v1` route answers, and its `realm_denied` row names the identity panel, the word the page's own header uses; a `403 realm_denied` on a listing refetches `/v1/whoami`, a refetch no unit test proves |
 | *What is not proven*, *Required by this revision and not yet made* | the line that says older Collections exist is wired in `app.js` by a state field the listing fills, a failed listing and a change of selection clear, and the Collections panel renders under the table, none of which a unit test reaches; and the console guide accounts for **Download** and **Refresh** beside the two write controls, so nothing is owed elsewhere |
+| *Controls*, *Starting and cancelling a Collection*, *Signing in and out*, *Errors*, *Layout and embedding*, *What is not proven*, *End to end*, *Required by this revision and not yet made* | the page is one panel to a row, each panel laying its controls across the row, because columns of panels put a short panel beside a tall one and left a column of empty page; the identity is a `<details>` disclosure above the panels, closed on load, whose summary names the principal and the realm and which holds the seven facts and the sign-out link the panel held, disclosing nothing new; a non-stale `403 realm_denied` on a listing, a profile download, or the current start attempt opens it and refetches `/v1/whoami`, so the hint that names the identity stays true, while a person's own opening and closing stand until the next such denial and an identity refetch's errors and sign-in controls render outside the collapsible body; the hint drops the word panel; the browser scenarios read the identity's text and markup at the disclosure, check the escaped query values in the Service panel, and scope the Collection disclosure selectors to the Collections panel; and the console guide is owed the same correction |
