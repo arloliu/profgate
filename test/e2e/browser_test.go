@@ -439,6 +439,44 @@ func (s *session) sentTo(method, url string) []sentRequest {
 	return out
 }
 
+// requestCount is how many requests the browser has recorded so far.
+// A step records it before a press,
+// so awaitRequestSince can ask what that press sent rather than whether a URL was ever sent.
+func (s *session) requestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.requests)
+}
+
+// awaitRequestSince waits until a request recorded at index since or beyond satisfies match.
+// It returns the first that does.
+// A request is recorded when the browser is about to send it, and says nothing about its answer being applied;
+// a step that reads what the answer did waits for that separately.
+// The failure names what was pressed and prints the session report.
+func (s *session) awaitRequestSince(t *testing.T, since int, what string, match func(sentRequest) bool) sentRequest {
+	t.Helper()
+	var found sentRequest
+	err := poll(s.ctx, settleDeadline, func(context.Context) (bool, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for i := since; i < len(s.requests); i++ {
+			if match(s.requests[i]) {
+				found = s.requests[i]
+
+				return true, nil
+			}
+		}
+
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("%s sent no request that was waited for: %v\n%s", what, err, s.report())
+	}
+
+	return found
+}
+
 // challengeCount is how many HTTP authentication challenges the browser was asked to answer.
 func (s *session) challengeCount() int {
 	s.mu.Lock()

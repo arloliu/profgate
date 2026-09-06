@@ -250,6 +250,30 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 
 	// Cancel on that row, pressed twice the same way, with the wait past the window between the two.
 	s.run(t, "arm the cancel control", chromedp.Click(control("Cancel"), chromedp.BySearch))
+	// Refresh on the Collections table, pressed while that row's Cancel is armed,
+	// sends one GET of the list and nothing else, and leaves the armed row standing.
+	// The control is enabled again once the answer is applied, which is when what the answer left is read;
+	// the armed cancel disarms itself after ten seconds, and one GET of the list settles well inside that.
+	s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
+	n := s.requestCount()
+	s.run(t, "press Refresh on the Collections table", chromedp.Click(refreshButton("Collections"), chromedp.BySearch))
+	s.awaitRequestSince(t, n, "the Refresh of the Collections table", func(r sentRequest) bool {
+		return r.method == http.MethodGet && r.url == route
+	})
+	s.waitFor(t, "the Collections Refresh control is idle again", refreshEnabled("Collections"))
+	if got := s.requestCount(); got != n+1 {
+		t.Fatalf("Refresh on the Collections table sent %d requests, want exactly the one GET of the list\n%s",
+			got-n, s.report())
+	}
+	var armedStanding bool
+	s.eval(t, "read the cancel control", fmt.Sprintf(`((r) => Boolean(r) && `+
+		`[...r.cells[8].querySelectorAll("button")].map((b) => b.textContent.trim()).join(",") === "Confirm cancel,Keep")(`+
+		`[...document.querySelectorAll(".table table tbody tr")].find((r) => r.cells[0].textContent.trim() === %q))`, started),
+		&armedStanding)
+	if !armedStanding {
+		t.Fatalf("Refresh on the Collections table did not leave Confirm cancel and Keep standing on %s:\n%s",
+			started, s.textOf(t, ".panels"))
+	}
 	s.run(t, "wait past the window", chromedp.Sleep(confirmWindow))
 	s.run(t, "confirm the cancel", chromedp.Click(control("Confirm cancel"), chromedp.BySearch))
 	s.waitFor(t, "the row moves to cancelled",
@@ -284,7 +308,8 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	if _, err := h.Client.AppsV1().Deployments(ns).Patch(ctx, testAppName, types.MergePatchType, body, metav1.PatchOptions{}); err != nil {
 		t.Fatalf("scale %s to 0: %v", testAppName, err)
 	}
-	awaitTargetsEmpty(t, client, bearer, gatewayOrigin+"/v1/namespaces/"+ns+"/services/"+testAppName+"/targets")
+	targetsRoute := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/targets"
+	awaitTargetsEmpty(t, client, bearer, targetsRoute)
 	var podStillListed bool
 	s.eval(t, "read the Pod control", podListed, &podStillListed)
 	if !podStillListed {
@@ -296,6 +321,32 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		fmt.Sprintf(`(%s || { textContent: "" }).textContent.includes("no_targets")`, profilePanel))
 	if n := s.downloadsBegun(); n != before {
 		t.Fatalf("a download began on an answer that was not a profile: %d downloads, %d before", n, before)
+	}
+
+	// Refresh on the targets list sends one targets GET carrying explain=true and nothing else,
+	// and the answer, listing no Pod, disables Download with the empty state's wording beside it.
+	// The deleted Pods stay Terminating for the app's preStop sleep,
+	// so the answer excludes them as pod_terminating first and reports a selector matching no Pod once they are gone;
+	// either wording is the empty state.
+	s.waitFor(t, "the targets Refresh control is idle", refreshEnabled("Profile"))
+	n = s.requestCount()
+	s.run(t, "press Refresh on the targets list", chromedp.Click(refreshButton("Profile"), chromedp.BySearch))
+	s.awaitRequestSince(t, n, "the Refresh of the targets list", func(r sentRequest) bool {
+		return r.method == http.MethodGet && strings.HasPrefix(r.url, targetsRoute) && strings.Contains(r.url, "explain=true")
+	})
+	s.waitFor(t, "the targets Refresh control is idle again", refreshEnabled("Profile"))
+	if got := s.requestCount(); got != n+1 {
+		t.Fatalf("Refresh on the targets list sent %d requests, want exactly the one targets GET\n%s", got-n, s.report())
+	}
+	var emptyNote string
+	s.eval(t, "read the Download control after the refresh", `(() => {
+  const b = [...document.querySelectorAll(".actions button")].find((b) => b.textContent.trim() === "Download");
+  if (!b || !b.disabled) { return ""; }
+  return [...b.parentElement.querySelectorAll("small")].map((n) => n.textContent.trim()).find((t) => t !== "") || "";
+})()`, &emptyNote)
+	if !strings.Contains(emptyNote, "Pods being deleted") && !strings.Contains(emptyNote, noSelector) {
+		t.Fatalf("after the refresh Download is not disabled with the empty state's wording beside it; the line reads %q:\n%s",
+			emptyNote, s.textOf(t, ".panels"))
 	}
 
 	// Every load of the scenario, once more at the end: the observers ran through all of them.
@@ -750,6 +801,29 @@ func control(label string) string {
 	return fmt.Sprintf(`//button[normalize-space()=%s]`, xpathLiteral(label))
 }
 
+// refreshButton is the search expression for the Refresh button inside the article whose title reads panel,
+// Profile for the targets list and Collections for the table.
+// The title is the strong element of the article's header,
+// because the Collections header holds its Refresh beside the title.
+func refreshButton(panel string) string {
+	return fmt.Sprintf(`//article[header/strong[normalize-space()=%s]]//button[normalize-space()='Refresh']`,
+		xpathLiteral(panel))
+}
+
+// refreshControl is the expression that reads the Refresh button of the panel refreshButton names,
+// or null when it is absent.
+func refreshControl(panel string) string {
+	return fmt.Sprintf(`((a) => a ? [...a.querySelectorAll("button")].find((b) => b.textContent.trim() === "Refresh") || null : null)(`+
+		`[...document.querySelectorAll(".panels article")]`+
+		`.find((a) => (a.querySelector("header strong") || { textContent: "" }).textContent.trim() === %q))`, panel)
+}
+
+// refreshEnabled is the expression that is true while the panel's Refresh control stands and is enabled,
+// which is the page idle on that list: the control is disabled from the press until the answer is applied or dropped.
+func refreshEnabled(panel string) string {
+	return fmt.Sprintf(`((b) => Boolean(b) && !b.disabled)(%s)`, refreshControl(panel))
+}
+
 // xpathLiteral quotes a string for XPath, which has no escape and needs concat for a value holding both quotes.
 func xpathLiteral(s string) string {
 	if !strings.Contains(s, `'`) {
@@ -798,7 +872,7 @@ func (s *session) awaitRequest(t *testing.T, method, route string) {
 
 // awaitRow waits until the Collections table shows an identifier.
 // The page fetches the list once per selection and does not poll,
-// so a list that has not caught up is refetched by choosing the Service again,
+// so a list that has not caught up is refetched by pressing Refresh on the Collections table,
 // which is the control an operator would use.
 func (s *session) awaitRow(t *testing.T, id, what string) {
 	t.Helper()
@@ -814,7 +888,7 @@ func (s *session) awaitRow(t *testing.T, id, what string) {
 		return false, nil
 	})
 	if err != nil {
-		why := "the Service control never named a Service, so the list was never asked for again"
+		why := "the Collections Refresh control never became available, so the list was never asked for again"
 		if asked {
 			why = "the list was asked for again and never carried it"
 		}
@@ -850,24 +924,20 @@ func (s *session) awaitStartedDetail(t *testing.T, opened string) string {
 	return started
 }
 
-// refetchCollections asks the page for the Collections list again by choosing the same Service,
-// which is what the control does on every change.
-// It reports whether it asked at all:
-// a Service control that names nothing is a page that has not rendered its selection yet,
-// which is for the caller's poll to wait out rather than for this to decide,
+// refetchCollections asks the page for the Collections list again by pressing Refresh on the Collections table.
+// It reports whether it pressed at all:
+// a control that is absent is a page that has not rendered the table yet,
+// and one that is disabled is a fetch still in flight,
+// both for the caller's poll to wait out rather than for this to decide,
 // and a caller that never once asked failed for a different reason than one whose asking went unanswered.
 func (s *session) refetchCollections(t *testing.T) bool {
 	t.Helper()
-	var svc string
-	s.eval(t, "read the Service control",
-		`(() => { const l = [...document.querySelectorAll("label")].find((l) => l.querySelector("select") &&`+
-			` l.textContent.trim().startsWith("Service")); return l ? l.querySelector("select").value : ""; })()`, &svc)
-	if svc == "" {
-		return false
-	}
-	s.chooseOption(t, "Service", svc)
+	var pressed bool
+	s.eval(t, "press Refresh on the Collections table",
+		fmt.Sprintf(`((b) => { if (!b || b.disabled) { return false; } b.click(); return true; })(%s)`,
+			refreshControl("Collections")), &pressed)
 
-	return true
+	return pressed
 }
 
 // chooseOption picks a value in the select the label names,

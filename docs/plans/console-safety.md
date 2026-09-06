@@ -964,7 +964,7 @@ the start state, the armed cancel, the three write-control timers, and the other
 and `renderCollections` draws the same shape over `collectionsLoading` in its header beside the panel's title.
 The state gains `targetsLoading: false` and `collectionsLoading: false`.
 
-- [ ] **Write the browser steps, and run them red**
+- [x] **Write the browser steps, and run them red**
 
 `test/e2e/browser_test.go`:
 `session` gains `requestCount() int`, `len(s.requests)` under `mu`,
@@ -1028,11 +1028,11 @@ The independence of the two counters and the Pod and version reconciliation run 
 and are stated under *What is not proven* (`docs/specs/ui.md:1660`);
 the browser check of *Validation* exercises both by hand.
 
-- [ ] **Name what the scans hold**
+- [x] **Name what the scans hold**
 
 `TestScanNoInlineForms` and `TestScanNoMutableTopLevelState` stay green over the changed file.
 
-- [ ] **Add the two controls and say so**
+- [x] **Add the two controls and say so**
 
 `CHANGELOG.md`, `### Added`:
 **The targets list and the Collections table each have a Refresh control.**
@@ -1043,7 +1043,7 @@ is disabled while that fetch is in flight, leaves an armed **Start collection** 
 and a refresh of one list never discards the other's answer.
 Watching a Collection leave `pending` is a press, never a timer.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 go vet -tags e2e ./test/e2e/

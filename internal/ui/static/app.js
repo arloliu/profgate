@@ -282,9 +282,11 @@ class App extends Component {
     // keeps answering 401 ends in a message rather than a loop.
     this.navigatedToLogin = false;
     this.returnedFromLogin = q.returned;
-    // seq stamps each targets or Collections request so a stale answer is
-    // dropped when a later selection has already replaced it.
-    this.seq = 0;
+    // targetsSeq stamps each targets request and collectionsSeq each Collections request,
+    // so a stale answer is dropped when a later selection or a later refresh has already replaced it.
+    // The two lists count apart, because a refresh of one must never discard the other's answer.
+    this.targetsSeq = 0;
+    this.collectionsSeq = 0;
     // selection counts namespace and Service changes, and collectionsFor is
     // the selection the Collections list was last requested for, so the list
     // is fetched once whether limits or the Service list answers last.
@@ -314,7 +316,12 @@ class App extends Component {
       services: [],
       targets: [],
       targetSummary: null,
+      // targetsLoading and collectionsLoading are true from a list's fetch until its latest request has settled;
+      // each disables its Refresh control, so a second press sends nothing while the first is in flight.
+      // An answer a newer request has superseded clears neither, because the newer request is still in flight.
+      targetsLoading: false,
       collections: [],
+      collectionsLoading: false,
       collection: null,
       profile: "",
       seconds: "",
@@ -420,7 +427,11 @@ class App extends Component {
   // retryOnce, when given, is consulted once when the first attempt is not a 200:
   // it takes the status and the envelope code and returns a URL to fetch instead, or null.
   // The second answer is then handled exactly as a first one would be, and never consulted again.
-  async request(key, url, retry, retryOnce) {
+  // stale, when given, is asked once the answer has arrived;
+  // when it returns true the answer is dropped whole and request resolves to null,
+  // recording no error, scheduling no not_ready retry, and navigating nowhere,
+  // because the error under key belongs to the latest request and a superseded answer arriving late would overwrite it.
+  async request(key, url, retry, retryOnce, stale) {
     let res = await fetchJSON(url);
     if (retryOnce && res.status !== 200) {
       const code = typeof res.error === "object" && res.error !== null ? res.error.code : undefined;
@@ -428,6 +439,9 @@ class App extends Component {
       if (again) {
         res = await fetchJSON(again);
       }
+    }
+    if (stale && stale()) {
+      return null;
     }
     if (res.status === 200 && res.body !== null) {
       this.clearError(key);
@@ -515,9 +529,14 @@ class App extends Component {
 
   // loadTargets asks for the listing with explain=true and the port selection,
   // and repeats the one fetch without explain when a gateway refuses the parameter.
+  // It is the one fetch Refresh on the targets list repeats, and the not_ready retry is this function too,
+  // so each raises the generation and the latest answer is the one applied.
+  // A Pod or version choice survives the answer while the new summary still lists it and returns to any otherwise,
+  // so no URL is built for a Pod the page no longer lists.
   loadTargets = async () => {
     const { ns, svc } = this.state;
-    const seq = ++this.seq;
+    const seq = ++this.targetsSeq;
+    this.setState({ targetsLoading: true });
     const port = this.portChoice();
     const retryOnce = (status, code) =>
       retryWithoutExplain(status, code, true) ? targetsURL(ns, svc, targetsQuery(port, false)) : null;
@@ -526,16 +545,24 @@ class App extends Component {
       targetsURL(ns, svc, targetsQuery(port, true)),
       this.loadTargets,
       retryOnce,
+      () => seq !== this.targetsSeq,
     );
-    if (seq !== this.seq) {
+    if (seq !== this.targetsSeq) {
       return;
     }
     if (!body) {
-      this.setState({ targets: [], targetSummary: null, pod: "", version: "" });
+      this.setState({ targets: [], targetSummary: null, pod: "", version: "", targetsLoading: false });
       this.afterServiceError("targets");
       return;
     }
-    this.setState({ targets: asList(body.targets), targetSummary: targetSummary(body) });
+    const summary = targetSummary(body);
+    this.setState((s) => ({
+      targets: asList(body.targets),
+      targetSummary: summary,
+      targetsLoading: false,
+      pod: summary.pods.includes(s.pod) ? s.pod : "",
+      version: summary.versions.includes(s.version) ? s.version : "",
+    }));
   };
 
   // maybeLoadCollections fetches the Collections list once per selection,
@@ -549,22 +576,31 @@ class App extends Component {
     this.loadCollections();
   }
 
+  // loadCollections is the one fetch Refresh on the Collections table repeats,
+  // over a generation of its own, so a targets fetch never discards its answer.
   loadCollections = async () => {
     if (!this.collectionsOffered()) {
       return;
     }
     const { ns, svc } = this.state;
-    const seq = this.seq;
-    const body = await this.request("collections", collectionsURL(ns, svc), this.loadCollections);
-    if (seq !== this.seq) {
+    const seq = ++this.collectionsSeq;
+    this.setState({ collectionsLoading: true });
+    const body = await this.request(
+      "collections",
+      collectionsURL(ns, svc),
+      this.loadCollections,
+      undefined,
+      () => seq !== this.collectionsSeq,
+    );
+    if (seq !== this.collectionsSeq) {
       return;
     }
     if (!body) {
-      this.setState({ collections: [] });
+      this.setState({ collections: [], collectionsLoading: false });
       this.afterServiceError("collections");
       return;
     }
-    this.setState({ collections: asList(body.collections) });
+    this.setState({ collections: asList(body.collections), collectionsLoading: false });
   };
 
   loadCollection = async (id) => {
@@ -787,7 +823,8 @@ class App extends Component {
 
   onNamespace = (e) => {
     const ns = e.target.value;
-    this.seq++;
+    this.targetsSeq++;
+    this.collectionsSeq++;
     this.selection++;
     this.writeQuery(ns, "");
     this.setState(
@@ -797,7 +834,9 @@ class App extends Component {
         services: [],
         targets: [],
         targetSummary: null,
+        targetsLoading: false,
         collections: [],
+        collectionsLoading: false,
         collection: null,
         pod: "",
         version: "",
@@ -816,11 +855,22 @@ class App extends Component {
 
   onService = (e) => {
     const svc = e.target.value;
-    this.seq++;
+    this.targetsSeq++;
+    this.collectionsSeq++;
     this.selection++;
     this.writeQuery(this.state.ns, svc);
     this.setState(
-      { svc: svc, targets: [], targetSummary: null, collections: [], collection: null, pod: "", version: "" },
+      {
+        svc: svc,
+        targets: [],
+        targetSummary: null,
+        targetsLoading: false,
+        collections: [],
+        collectionsLoading: false,
+        collection: null,
+        pod: "",
+        version: "",
+      },
       () => {
         this.clearError("targets");
         this.clearError("collections");
@@ -861,6 +911,22 @@ class App extends Component {
     if (this.state.svc) {
       this.setState({ pod: "", version: "", targets: [], targetSummary: null }, this.loadTargets);
     }
+  };
+
+  // onRefreshTargets repeats the targets fetch and nothing else.
+  // It touches neither the start state, the armed cancel, nor the three write-control timers,
+  // and it leaves the Collections list alone.
+  onRefreshTargets = () => {
+    if (this.state.svc) {
+      this.loadTargets();
+    }
+  };
+
+  // onRefreshCollections repeats the Collections fetch and nothing else.
+  // It touches neither the start state, the armed cancel, nor the three write-control timers,
+  // and it leaves the targets list alone.
+  onRefreshCollections = () => {
+    this.loadCollections();
   };
 
   onPod = (e) => {
@@ -1149,8 +1215,21 @@ class App extends Component {
   }
 
   renderRequest() {
-    const { ns, svc, profile, seconds, pod, version, targets, targetSummary: summary, limits, whoami, copied, downloading } =
-      this.state;
+    const {
+      ns,
+      svc,
+      profile,
+      seconds,
+      pod,
+      version,
+      targets,
+      targetSummary: summary,
+      targetsLoading,
+      limits,
+      whoami,
+      copied,
+      downloading,
+    } = this.state;
     const profiles = this.offeredProfiles();
     const svcListed = this.selectionListed();
     const limit = this.secondsLimit(profile);
@@ -1219,6 +1298,16 @@ class App extends Component {
                       </select>
                     </label>
                   `}
+              <div class="actions">
+                <button
+                  type="button"
+                  class="secondary"
+                  disabled=${!svcListed || targetsLoading}
+                  onClick=${this.onRefreshTargets}
+                >
+                  Refresh
+                </button>
+              </div>
               ${this.panelError("targets")}
               ${svcListed && !empty && !this.state.errors.targets && !this.state.signIn.targets && targets.length === 0
                 ? html`<p><small>no target listed yet</small></p>`
@@ -1305,10 +1394,20 @@ class App extends Component {
   }
 
   renderCollections() {
-    const { svc, collections, collection, startMessage } = this.state;
+    const { svc, collections, collectionsLoading, collection, startMessage } = this.state;
     return html`
       <article>
-        <header><strong>Collections</strong></header>
+        <header>
+          <strong>Collections</strong>
+          <button
+            type="button"
+            class="secondary"
+            disabled=${!svc || collectionsLoading}
+            onClick=${this.onRefreshCollections}
+          >
+            Refresh
+          </button>
+        </header>
         ${this.panelError("collections")}
         ${this.renderStart()}
         ${startMessage ? html`<p><small>${startMessage}</small></p>` : null}

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The targets list and the Collections table each have a Refresh control.**
+  A Collection started from the page never left `pending` without a reload,
+  because nothing on the page fetched a list again.
+  Each control repeats the one fetch its list came from and nothing else,
+  is disabled while that fetch is in flight, leaves an armed **Start collection** or **Cancel** as it is,
+  and a refresh of one list never discards the other's answer.
+  Watching a Collection leave `pending` is a press, never a timer.
 - **`profgate_pgo_store_failures_total` counts a store operation that returned a failure.**
   A `completed` to `expired` update that fails for a reason other than a lost race, and a probe key listing that fails,
   each add one to the counter under `op`, `expire` or `probe_list`, and write one warn record.
