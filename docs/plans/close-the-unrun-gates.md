@@ -1,6 +1,7 @@
 # Every Gate the Repository Names Runs
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #33 closes every gate but the decoder's heap-delta guard, which stays open on the roadmap.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -342,6 +343,30 @@ The direction the earlier numbers point is that the detector does not move the d
 which is why the plan carries removing the skip rather than adding a second `go test` command:
 that alternative would write an exception into rule 300 for a claim no measurement supports.
 If the corrected measurement says otherwise, task 5 stops and says so rather than shipping the flag.
+It says otherwise.
+With both lifetimes held, the delta over `cpu-heap.pprof` runs past the bound of 4,135,248 in both builds:
+six isolated runs without the detector at 4,456,736, 4,472,792, 4,461,640, 4,467,200, 4,467,232, and 4,461,640 bytes,
+and six under it at 4,467,216, 4,472,904, 4,467,216, 4,467,216, 4,467,216, and 4,467,216 —
+Go 1.26.7 on linux/amd64 with `GOMAXPROCS` 32, and a difference between the builds under a sixth of one percent.
+Under the package's own suite the delta is lower and still over the bound:
+three runs under `-race` at 4,380,808, 4,351,896, and 4,339,088,
+and three without at 4,332,584, 4,404,416, and 4,317,096.
+What the held input is worth is the control:
+with `runtime.KeepAlive(plain)` absent, three runs without the detector read 3,932,416, 3,942,912, and 3,937,352
+and three under it read 3,937,352, 3,942,928, and 3,942,928,
+about 530 KB below the same body measured with the input alive.
+That is the lifetime the earlier numbers left uncontrolled, and it is what let them pass.
+The failure reproduces through `go test -overlay` with no edit to the tree at all:
+4,467,216 without the detector and 4,461,640 under it, against 4,135,248, red in both.
+So the guard fails once it measures what it claims to, and the skip is not what stands between it and running.
+The bound is what stands there, and moving `PGODecodeFactor` to reach it is not a test repair:
+it also sizes the gateway's own memory (`internal/config/config.go:552`),
+the decoded-structures share alone measures above the whole factor,
+and one fixture is not the evidence a moved constant needs.
+Nothing therefore reaches `internal/pgo` or `docs/specs/pgo.md` here.
+The deliverable is the roadmap:
+the bullet this would have closed is un-ticked with the reason,
+and a new item carries the input's lifetime, a bound the corrected measurement passes, and the constant.
 
 **`-race` on the end-to-end suite is finished when a full run passes under it, and a race it reports is fixed there.**
 Rule 300 says `-race` is always on (`.agents/rules/300-testing.md:16`);
@@ -1179,7 +1204,7 @@ the namespace and Pod helpers every scenario calls are `harness_pods_test.go`;
 and `harness_test.go` keeps the lifecycle `TestMain` owns."
 Every number written is one the implementer measured with the command the record names.
 
-- [ ] **Move, and name the check**
+- [x] **Move, and name the check**
 
 A move has no red test.
 What verifies it is the declaration inventory before and after, not a diff summary:
@@ -1200,7 +1225,7 @@ and the suite runs once in *Validation* with the flag task 6 set.
 go vet -tags e2e ./test/e2e/
 ```
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 go vet -tags e2e ./test/e2e/
@@ -1221,7 +1246,8 @@ git log --oneline -1 && git status --short
 Line 3 becomes `**Status:** Done` and line 4 `**Outcome:** pull request #<n> ...`,
 naming the pull request that carries the seven tasks above,
 and in the same commit the roadmap item's five open checkboxes (`docs/plans/roadmap.md:322-334`) are ticked,
-its first (`:320`) stays ticked and is now true,
+its first (`:320`) is un-ticked and rewritten, because nothing closed it and its stated reason does not hold,
+and a roadmap item of its own carries the input's lifetime, the bound, and the constant the measurement found,
 and its `Shipped:` line (`:337`) names that pull request,
 the shape the previous plan's closing commit gave it (`8d44a2c`).
 Every one of the seven tasks is done before this one runs;
@@ -1238,7 +1264,7 @@ the protocol [`finished-documents-leave-the-tree.md`](../decisions/finished-docu
 it deletes this file and rewrites every link that cited it, which `check_links` enforces, and changes nothing else.
 `grep -rn close-the-unrun-gates --include='*.md' .` finds the links.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/plans/close-the-unrun-gates.md docs/plans/roadmap.md
@@ -1297,14 +1323,15 @@ on every Markdown file and every Go file with doc comments a task edits;
 - **The flagged run's length is unknown until measured.**
   `-timeout 40m` is the bound today; task 6 raises it in the same commit if a run passes 30 minutes,
   and the CI lanes take the same flag through `mise.toml`.
-- **The heap-delta guard is measured on one machine, and it bounds retained heap rather than peak decoding memory.**
-  Task 5 measures on linux/amd64 under the pinned Go, in an isolated process and under the package's suite;
+- **The heap-delta guard bounds retained heap rather than peak decoding memory, it does not hold, and the skip stays.**
+  The measurement ran on linux/amd64 under the pinned Go, in an isolated process and under the package's suite;
   the workflows run the same architecture and toolchain, and no other is covered.
-  If a run elsewhere fails the bound under `-race`, the failure carries the delta and the bound,
-  and what it leaves open is whether the decoder regressed or the machine differs, which is a person's call.
-  Raising `PGODecodeFactor` is not a test repair:
+  With both lifetimes held the delta clears the bound of 4,135,248 by about eight percent in both builds,
+  so the skip does not come out here and nothing reaches `internal/pgo` or `docs/specs/pgo.md`;
+  the roadmap carries the input's lifetime, the bound, and the constant instead.
+  Raising `PGODecodeFactor` to reach the measured delta is not a test repair:
   it also sizes the gateway's own memory (`internal/config/config.go:552`),
-  so moving it changes that contract and belongs in its own change.
+  so moving it changes that contract and belongs in its own change, decided over more than one fixture.
 - **The route-count rule pins wording, and its pattern table can go stale.**
   A reworded occurrence turns the check red until its row is updated; that is the design, and the failure names the row.
   The pattern table is the one list the check keeps rather than reads,
@@ -1449,5 +1476,5 @@ on every Markdown file and every Go file with doc comments a task edits;
   the exact wording of the two amendment blocks, the rule 900 paragraph, the three corrected route-count sentences,
   and the decision record's *Consequences* and *Revisit* lines;
   the import lists of the four new harness files;
-  the heap delta this plan does not carry a number for, and the wall time of the flagged run;
+  the heap delta, whose measurement *Decisions* now carries, and the wall time of the flagged run;
   and the wording of every commit body.
