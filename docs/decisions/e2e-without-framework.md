@@ -25,7 +25,7 @@ and on response headers, which YAML assertions express poorly.
 
 ## Consequences
 
-- The harness is project code, `test/e2e/harness_test.go`, and is maintained here.
+- The harness is project code, the `test/e2e/harness_*_test.go` files, and is maintained here.
 - Scenarios are plain Go: any assertion the standard library can express is available.
 - Cluster lifecycle, lane selection, and image loading are owned by `TestMain`.
 - Revisit only if the harness grows past what a reader can hold in one sitting
@@ -34,7 +34,9 @@ and on response headers, which YAML assertions express poorly.
 ## Revisit
 
 The size trigger has fired.
-`test/e2e/harness_test.go` is 1672 lines carrying 6 types and 59 top-level functions and methods
+`test/e2e/harness_test.go` was 1672 lines carrying 6 types and 59 top-level functions and methods
+when the trigger was recorded,
+and is 575 lines after the split below, with 1195 more across the four files beside it
 (`wc -l`, `grep -c '^type '`, `grep -c '^func '`),
 where this record's *Consequences* said "roughly a few hundred lines";
 that line is corrected above.
@@ -55,16 +57,17 @@ which one lane per test process does not expose.
 
 The decision stands, on a reason neither of those was.
 The framework supplies cluster lifecycle and a step vocabulary.
-Lifecycle is roughly 330 of the harness's 1672 lines —
+Lifecycle is roughly 575 of the harness's 1770 lines —
 `TestMain`, lane selection, cluster creation, image building and loading, the connection, and the shell helpers —
 and 40 of those are `dropOCIIndex`,
 which rewrites an image archive for a registry that will not serve an OCI index,
 a thing no framework offers.
-The 5223 lines of scenarios assert HTTP bodies and headers, which the step vocabulary does not shorten.
+The 6447 lines of scenarios assert HTTP bodies and headers, which the step vocabulary does not shorten.
 Importing it would add a module and rewrite working lifecycle code without touching what made the harness large.
 
-What made it large is subject matter that is not cluster lifecycle.
-NATS identity, users, server deployment, and store provisioning are roughly 425 lines of the file;
-gateway configuration rendering, Secret application, and port forwarding are most of the rest.
-Splitting `harness_test.go` along those subjects is what the size trigger calls for,
-and it is not done here.
+What made it large is subject matter that is not cluster lifecycle, and it is split by subject:
+NATS identity, users, server deployment, and store provisioning are `harness_nats_test.go`;
+gateway configuration rendering and Secret application are `harness_config_test.go`;
+port forwarding is `harness_forward_test.go`;
+the namespace and Pod helpers every scenario calls are `harness_pods_test.go`;
+and `harness_test.go` keeps the lifecycle `TestMain` owns.
