@@ -1115,13 +1115,25 @@ The page never rewrites a message the gateway generated, and never shows a messa
 The page opens the disclosure on each non-stale `403 realm_denied` it handles for a listing,
 for a profile download, or for the current start attempt,
 and starts the refetch of `/v1/whoami` at the same time.
-Non-stale is the predicate each of those three paths already applies before it records an answer at all:
-a listing's answer is the one its own generation counter still names,
-which is the `stale` predicate `loadTargets` and `loadCollections` pass with their `targetsSeq` and `collectionsSeq`
-(`internal/ui/static/app.js:324-328`, `:586`, `:596-598`, `:634`, `:641-643`);
-a download's answer is always current, because the control is disabled from the press until the fetch settles,
-so there is never a second one in flight (`:1021`, `:1025`, `:1383`);
-and a start's answer is the current attempt's when the model reports the step moved (`:794`).
+Non-stale is one predicate per path, applied before the answer is recorded at all —
+before the error, before the opening, and before the refetch.
+A listing's answer is non-stale when its own generation counter still names it:
+the targets and Collections listings carry one already,
+the `stale` predicate `loadTargets` and `loadCollections` pass with their `targetsSeq` and `collectionsSeq`
+(`internal/ui/static/app.js:324-328`, `:586`, `:596-598`, `:634`, `:641-643`).
+The Service listing carries none:
+`loadServices` passes no `stale` predicate (`:565`)
+and compares the namespace it asked for only after the answer has been recorded (`:566`),
+so a denial for a namespace the page has left is recorded as if it were current.
+It gains a generation of its own, read where the other two read theirs,
+so that leaving a namespace and returning to it does not make an obsolete answer look current;
+a counter, not a comparison of the namespace, is what tells those two apart.
+A download's answer is always current, because the control is disabled from the press until the fetch settles,
+so there is never a second one in flight (`:1021`, `:1025`, `:1383`).
+A start's answer is the current attempt's when the model reports the step moved (`:794`).
+The code that opens the disclosure reads the status as well as the code:
+a `403` carrying an envelope whose `code` is `realm_denied`, for a request that is not the identity refetch itself.
+`settle` decides on the code alone today (`:525`), which is not the same test.
 The opening does not wait for that refetch:
 what the hint names is on screen before the realm that refused it is read again.
 A person may open or close it afterwards, and that choice stands —
@@ -2133,4 +2145,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *End to end* | a second session opened with an `ns` of 1100 characters navigates to the login with `return=/ui/?returned=1` alone, the browser proof of the return-path bound *Flow* states |
 | *Errors*, *What is not proven* | the hints table gains `too_many_auth` and `auth_unavailable`, the two authentication codes every `/v1` route answers, and its `realm_denied` row names the identity panel, the word the page's own header uses; a `403 realm_denied` on a listing refetches `/v1/whoami`, a refetch no unit test proves |
 | *What is not proven*, *Required by this revision and not yet made* | the line that says older Collections exist is wired in `app.js` by a state field the listing fills, a failed listing and a change of selection clear, and the Collections panel renders under the table, none of which a unit test reaches; and the console guide accounts for **Download** and **Refresh** beside the two write controls, so nothing is owed elsewhere |
-| *Controls*, *Starting and cancelling a Collection*, *Signing in and out*, *Errors*, *Layout and embedding*, *What is not proven*, *End to end*, *Required by this revision and not yet made* | the page is one panel to a row, each panel laying its controls across the row, because columns of panels put a short panel beside a tall one and left a column of empty page; the identity is a `<details>` disclosure above the panels, closed on load, whose summary names the principal and the realm and which holds the seven facts and the sign-out link the panel held, disclosing nothing new; a non-stale `403 realm_denied` on a listing, a profile download, or the current start attempt opens it and refetches `/v1/whoami`, so the hint that names the identity stays true, while a person's own opening and closing stand until the next such denial and an identity refetch's errors and sign-in controls render outside the collapsible body; the hint drops the word panel; the browser scenarios read the identity's text and markup at the disclosure, check the escaped query values in the Service panel, and scope the Collection disclosure selectors to the Collections panel; and the console guide is owed the same correction |
+| *Controls*, *Starting and cancelling a Collection*, *Signing in and out*, *Errors*, *Layout and embedding*, *What is not proven*, *End to end*, *Required by this revision and not yet made* | the page is one panel to a row, each panel laying its controls across the row, because columns of panels put a short panel beside a tall one and left a column of empty page; the identity is a `<details>` disclosure above the panels, closed on load, whose summary names the principal and the realm and which holds the seven facts and the sign-out link the panel held, disclosing nothing new; a `403` whose envelope names `realm_denied`, on a listing, a profile download, or the current start attempt, opens it and refetches `/v1/whoami`, each path first discarding an answer it has moved past, for which the Service listing gains the generation counter the other two listings already carry, so the hint that names the identity stays true, while a person's own opening and closing stand until the next such denial and an identity refetch's errors and sign-in controls render outside the collapsible body; the hint drops the word panel; the browser scenarios read the identity's text and markup at the disclosure, check the escaped query values in the Service panel, and scope the Collection disclosure selectors to the Collections panel; and the console guide is owed the same correction |
