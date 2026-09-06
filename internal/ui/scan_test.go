@@ -169,10 +169,11 @@ func TestScanPageUsesTargetModel(t *testing.T) {
 var collectionModelImportRe = regexp.MustCompile(`import\s*\{([^}]*)\}\s*from\s*["']\./collectionmodel\.js["']`)
 
 // TestScanPageUsesCollectionModel holds the page to the Collection-control model:
-// app.js imports the ten functions it calls from ./collectionmodel.js and calls each at least once,
+// app.js imports the eleven functions it calls from ./collectionmodel.js and calls each at least once,
 // so a page that decides whether a control exists, what a request carries, what an answer does,
-// what the armed state holds, whether a second press counts, or how a round is counted by hand turns the suite red.
-// The eleventh export, retryAfterSeconds, is not named here:
+// what the armed state holds, whether a second press counts, how a round is counted,
+// or whether older Collections exist by hand turns the suite red.
+// The twelfth export, retryAfterSeconds, is not named here:
 // startOutcome is what reads Retry-After, and the page hands it the header rather than the delay.
 func TestScanPageUsesCollectionModel(t *testing.T) {
 	src := readSource(t, "app.js")
@@ -191,6 +192,7 @@ func TestScanPageUsesCollectionModel(t *testing.T) {
 		"startNext",
 		"confirmAccepted",
 		"progressText",
+		"olderCollectionsNote",
 	}
 	for _, fn := range fns {
 		if !regexp.MustCompile(`\b` + fn + `\b`).MatchString(m[1]) {

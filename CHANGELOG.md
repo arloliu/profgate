@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Collections table says when older Collections exist, and names the verb that lists them.**
+  The table showed the newest hundred and dropped the token that said more existed.
+  When the listing carries `nextCursor`, one line under the table now says older Collections exist beyond the page
+  and names `profgate collections <ns>/<svc>`;
+  the console adds no paging control.
 - **`profgate collections` lists every Collection a Service retains, not the first hundred.**
   The verb sent one request and printed the first page, dropping the token that continued the listing.
   It now follows `nextCursor` through every page and prints one table once the walk completes;

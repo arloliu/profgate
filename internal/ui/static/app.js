@@ -34,6 +34,7 @@ import {
   startNext,
   confirmAccepted,
   progressText,
+  olderCollectionsNote,
 } from "./collectionmodel.js";
 
 const html = htm.bind(h);
@@ -321,6 +322,9 @@ class App extends Component {
       // An answer a newer request has superseded clears neither, because the newer request is still in flight.
       targetsLoading: false,
       collections: [],
+      // collectionsNote says older Collections exist beyond the page it drew;
+      // it is stored and cleared with the rows, so a table and the line under it are always one answer.
+      collectionsNote: "",
       collectionsLoading: false,
       collection: null,
       profile: "",
@@ -596,11 +600,15 @@ class App extends Component {
       return;
     }
     if (!body) {
-      this.setState({ collections: [], collectionsLoading: false });
+      this.setState({ collections: [], collectionsNote: "", collectionsLoading: false });
       this.afterServiceError("collections");
       return;
     }
-    this.setState({ collections: asList(body.collections), collectionsLoading: false });
+    this.setState({
+      collections: asList(body.collections),
+      collectionsNote: olderCollectionsNote(body, ns, svc),
+      collectionsLoading: false,
+    });
   };
 
   loadCollection = async (id) => {
@@ -836,6 +844,7 @@ class App extends Component {
         targetSummary: null,
         targetsLoading: false,
         collections: [],
+        collectionsNote: "",
         collectionsLoading: false,
         collection: null,
         pod: "",
@@ -866,6 +875,7 @@ class App extends Component {
         targetSummary: null,
         targetsLoading: false,
         collections: [],
+        collectionsNote: "",
         collectionsLoading: false,
         collection: null,
         pod: "",
@@ -1394,7 +1404,7 @@ class App extends Component {
   }
 
   renderCollections() {
-    const { svc, collections, collectionsLoading, collection, startMessage } = this.state;
+    const { svc, collections, collectionsNote, collectionsLoading, collection, startMessage } = this.state;
     return html`
       <article>
         <header>
@@ -1459,6 +1469,7 @@ class App extends Component {
                   </tbody>
                 </table>
               </div>
+              ${collectionsNote ? html`<p><small>${collectionsNote}</small></p>` : null}
               ${collections.length ? null : html`<p><small>no Collection listed</small></p>`}
             `
           : html`<p><small>choose a Service to list its Collections</small></p>`}

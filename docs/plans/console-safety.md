@@ -1213,7 +1213,7 @@ so a Refresh that fails after a page carried a token leaves an empty table with 
 `renderCollections` renders `<p><small>${collectionsNote}</small></p>` under `.table` when it is non-empty;
 the import gains the name.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 `internal/ui/collectionmodel_test.go`:
 `collectionModelFunctions` gains `"olderCollectionsNote"` last;
@@ -1240,7 +1240,7 @@ The wrong implementation is today's `loadCollections`, which keeps `body.collect
 so a Service with a hundred and one Collections shows a hundred and says nothing.
 The clearing on failure runs in no test and is stated under *What is not proven* with the rest of the wiring (`docs/specs/ui.md:1660`).
 
-- [ ] **Render the line and say so**
+- [x] **Render the line and say so**
 
 `CHANGELOG.md`, `### Added`:
 **The Collections table says when older Collections exist, and names the verb that lists them.**
@@ -1249,7 +1249,7 @@ When the listing carries `nextCursor`, one line under the table now says older C
 and names `profgate collections <ns>/<svc>`;
 the console adds no paging control.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/ui/static/collectionmodel.js internal/ui/static/app.js CHANGELOG.md

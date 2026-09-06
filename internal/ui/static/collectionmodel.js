@@ -392,4 +392,15 @@ function progressText(progress) {
   return `round ${count(p.round) + 1} of ${rounds}, samples ok ${count(p.samplesOK)}, failed ${count(p.samplesFailed)}`;
 }
 
-export { startOffered, cancelOffered, uuidFromBytes, startRequest, cancelRequest, startOutcome, cancelOutcome, retryAfterSeconds, startNext, confirmAccepted, progressText };
+// olderCollectionsNote is the line under the Collections table when the listing carries a nextCursor:
+// older Collections exist beyond the page, and the command line lists them all.
+// The token is never shown, because the page offers no paging control and sends it nowhere.
+function olderCollectionsNote(body, namespace, service) {
+  const b = body || {};
+  if (text(b.nextCursor) === "") {
+    return "";
+  }
+  return `Older Collections exist beyond this page; profgate collections ${text(namespace)}/${text(service)} lists them all`;
+}
+
+export { startOffered, cancelOffered, uuidFromBytes, startRequest, cancelRequest, startOutcome, cancelOutcome, retryAfterSeconds, startNext, confirmAccepted, progressText, olderCollectionsNote };

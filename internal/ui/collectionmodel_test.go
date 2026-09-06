@@ -26,6 +26,7 @@ var collectionModelFunctions = []string{
 	"startNext",
 	"confirmAccepted",
 	"progressText",
+	"olderCollectionsNote",
 }
 
 // abandonMessage is what the page says when an attempt no answer ever classified is dropped.
@@ -580,6 +581,49 @@ func TestCollectionModelProgressText(t *testing.T) {
 			}
 			if !got.Unchanged {
 				t.Errorf("progressText(%v) changed the record it was handed", tc.progress)
+			}
+		})
+	}
+}
+
+// olderCollectionsLine is the line the table shows under the rows for payment/payment-api,
+// whatever token the listing carried.
+const olderCollectionsLine = "Older Collections exist beyond this page; " +
+	"profgate collections payment/payment-api lists them all"
+
+// TestCollectionModelOlderCollectionsNote proves the page says when the listing it drew holds only the first page,
+// and names the command line that walks the rest.
+// The token itself never reaches the line: the page offers no paging control and sends the token nowhere,
+// so two listings that differ only in their token read the same.
+func TestCollectionModelOlderCollectionsNote(t *testing.T) {
+	const token = "MWFiYw"
+	cases := []struct {
+		name string
+		body any
+		want string
+	}{
+		{"a non-empty nextCursor yields the line",
+			map[string]any{"collections": []any{}, "nextCursor": token}, olderCollectionsLine},
+		{"another token yields the same text",
+			map[string]any{"collections": []any{}, "nextCursor": "Mnh5eg"}, olderCollectionsLine},
+		{"no nextCursor yields none", map[string]any{"collections": []any{}}, ""},
+		{"an empty nextCursor yields none",
+			map[string]any{"collections": []any{}, "nextCursor": ""}, ""},
+		{"the token is never in the line",
+			map[string]any{"collections": []any{}, "nextCursor": token}, olderCollectionsLine},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := loadCollectionModel(t)
+			got := callModel(t, vm, "olderCollectionsNote", tc.body, "payment", "payment-api")
+			if !sameJSON(t, got.Result, tc.want) {
+				t.Errorf("olderCollectionsNote(%v) = %s, want %q", tc.body, got.Result, tc.want)
+			}
+			if strings.Contains(string(got.Result), token) {
+				t.Errorf("olderCollectionsNote(%v) = %s, which shows the token", tc.body, got.Result)
+			}
+			if !got.Unchanged {
+				t.Errorf("olderCollectionsNote(%v) changed the body it was handed", tc.body)
 			}
 		})
 	}
