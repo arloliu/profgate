@@ -317,24 +317,30 @@ Why here: the console is the surface a person clicks by reflex, and today a refl
 
 ### 8. Close the gates that do not run
 
-- [x] `TestRoundsDecodeHeapDelta` skips under `-race` (`internal/pgo/rounds_test.go:818-821`),
-  and every test command in `mise.toml:33` and every workflow passes `-race`; the decoder memory guard has never run.
-- [ ] `.github/workflows/check.yml:1-13` runs `check`, lint, and unit tests on `push` only;
+- [ ] `TestRoundsDecodeHeapDelta` skips under `-race` (`internal/pgo/rounds_test.go:849-851`),
+  and every test command in `mise.toml:34` and every workflow passes `-race`, so the guard has never run.
+  Its stated reason does not hold: measured on the pinned toolchain, the delta moves by under 0.15% between builds.
+  What blocks the removal is the guard itself.
+  It reads `runtime.MemStats` around a collection while keeping only `parsed` alive (`:869`),
+  so the decompressed input is collected out of the delta and the guard reads about 530 KB low.
+  With the input held live the delta is 4.32–4.47 MB against a bound of 4,135,248, and the test fails in both builds.
+  The lifetime and the bound are the item below; the skip comes out with them.
+- [x] `.github/workflows/check.yml:1-13` runs `check`, lint, and unit tests on `push` only;
   a pull request from a fork fires `pull_request` alone and gets the `current` e2e lane and prose.
   `docs/specs/gateway.md:2098-2103` describes the split; the revision runs the unit gates on `pull_request` too.
-- [ ] `If-Match` is required by `PUT` and `DELETE` on the policy route (`internal/httpapi/pgo_policy.go:112,203`)
+- [x] `If-Match` is required by `PUT` and `DELETE` on the policy route (`internal/httpapi/pgo_policy.go:112,203`)
   and declared nowhere in `internal/httpapi/openapi.json` but its prose;
   `TestOpenAPIDocumentParameters` walks `query` and `path` only.
   Declare the header and extend the test to `header`.
-- [ ] `.agents/rules/900-design-and-review-loops.md:32` says no CI invokes `mise run check`;
+- [x] `.agents/rules/900-design-and-review-loops.md:32` says no CI invokes `mise run check`;
   `check.yml` has since `2026-08-23`.
-- [ ] `docs/api.md:121,1002` states route counts in prose that nothing pins;
+- [x] `docs/api.md:121,1002` states route counts in prose that nothing pins;
   a `check-repo.py` rule pins them to `routes.go`.
-- [ ] `docs/decisions/e2e-without-framework.md` records that its size trigger fired;
+- [x] `docs/decisions/e2e-without-framework.md` records that its size trigger fired;
   `test/e2e/harness_test.go` is 1,676 lines and unsplit.
 
 Spec: [`gateway.md`](../specs/gateway.md) *Continuous integration* for the pull-request gates; none for the rest.
-Shipped: not built yet.
+Shipped: pull request #33.
 Why here: a gate that does not run is a claim the repository makes and does not keep.
 
 ### 9. Say in the spec what is not built
@@ -389,7 +395,30 @@ and *End to end* for the reads that move; none for the guide.
 Shipped: pull request #32.
 Why here: the grid is met on every load, and its empty column at every wide window;
 the change updates the layout, the identity disclosure's behavior, the browser scenarios' selectors, and the guide,
-and nothing else on this list depends on any of it, so it takes the last place.
+and nothing else on this list depends on any of it.
+
+### 11. Size the decoder against what it actually retains
+
+- [ ] `TestRoundsDecodeHeapDelta` keeps only `parsed` alive across its measurement (`internal/pgo/rounds_test.go:869`),
+  so the decompressed input is collected between the two `runtime.ReadMemStats` reads and subtracted from the delta.
+  `runtime.KeepAlive(plain)` joins it,
+  and the comment says the guard bounds retained heap rather than peak decoding memory.
+- [ ] With both lifetimes held, a decoded `cpu-heap.pprof` retains 8.35–8.65 times its decompressed length,
+  where `config.PGODecodeFactor` is `8` (`internal/config/config.go:529`),
+  and the test's bound is that factor times the input.
+  The guard needs a bound the corrected measurement passes, on more than one fixture.
+- [ ] `PGODecodeFactor` describes itself as "two buffers of input plus about six times that in decoded structures"
+  (`internal/config/config.go:527-528`) and `PGOMemoryBytes` spends it per in-flight sample (`:551-554`),
+  so the same constant sizes the container.
+  The decoded-structures share alone measures above the whole factor,
+  which says the sizing rule under-allocates the per-sample working set.
+  Whether the constant moves, and what a moved constant does to `PGOMemoryBytes` and the chart's memory request,
+  is decided from measurements over several fixtures rather than from this one.
+
+Spec: [`pgo.md`](../specs/pgo.md) *Unit* for what the guard bounds, and its memory sizing for the constant.
+Shipped: not built yet.
+Why here: a test that measures the wrong thing passes for the wrong reason,
+and the constant it reads is also the gateway's own memory budget.
 
 ## Not on This List
 
