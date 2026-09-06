@@ -85,21 +85,61 @@ details.identity > footer {
   flex: 0 0 auto;
 }
 
-/* The port control is a fieldset because its menu can open a second field,
-   and a fieldset's legend does not sit where a label's text does;
-   these rules put its caption on the line the labels beside it use. */
+/* A fieldset whose menu has opened a field holds two controls on the line, and
+   three when both wildcards are configured, so it takes a share for each. */
+.panels .fields > fieldset:has(> label) {
+  flex-grow: 2;
+  flex-basis: 14.75rem;
+  max-width: 30.75rem;
+}
+
+.panels .fields > fieldset:has(> label + label) {
+  flex-grow: 3;
+  flex-basis: 22.5rem;
+  max-width: 46.5rem;
+}
+
+/* The port control is a fieldset because its menu can open a field for each
+   wildcard the configuration admits, and a fieldset's legend does not sit where
+   a label's text does. These rules put the caption on the line the labels
+   beside it use, and the menu and the fields it opens side by side on that
+   line. Every column is implicit, so each of them takes an equal, shrinking
+   share of the fieldset however many there are. */
 .fields fieldset {
   border: 0;
   padding: 0;
   margin-bottom: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  column-gap: 0.75rem;
+  align-items: end;
 }
 
+/* A floated legend is no longer the fieldset's rendered legend, which is what
+   lets it take the cell above the menu instead of a band above them all. */
 .fields legend {
+  float: left;
+  grid-row: 1;
+  grid-column: 1;
   padding: 0;
   font-size: inherit;
   font-weight: inherit;
   color: inherit;
   margin-bottom: calc(var(--pico-spacing, 1rem) * 0.25);
+}
+
+.fields fieldset > select {
+  grid-row: 2;
+  grid-column: 1;
+}
+
+/* A field the menu opened carries its own label, so it spans the caption's row
+   and the menu's and reads as one control beside it. */
+.fields fieldset > label {
+  grid-row: 1 / span 2;
+  margin-bottom: 0;
+  min-width: 0;
 }
 
 /* Refresh repeats the targets fetch the two controls beside it are drawn from,
