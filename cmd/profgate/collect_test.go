@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -228,6 +229,32 @@ func replay() (*http.Response, error) {
 	resp := jsonResponse(http.StatusOK, `{"id":"`+replayID+`","state":"running"}`)
 	resp.Header.Set("Location", "/v1/collections/"+replayID)
 	return resp, nil
+}
+
+// pagedTransport answers each request with the page its cursor query value names,
+// and records every request it saw.
+// A cursor with no page fails the test: the walk asked for a page the gateway never offered.
+type pagedTransport struct {
+	pages    map[string]pollAnswer
+	requests []*http.Request
+	t        *testing.T
+}
+
+func (pt *pagedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	pt.requests = append(pt.requests, r)
+	cursor := r.URL.Query().Get("cursor")
+	a, ok := pt.pages[cursor]
+	if !ok {
+		pt.t.Errorf("no page for cursor %q", cursor)
+		return nil, errors.New("no such page")
+	}
+	return jsonResponse(a.status, a.body), nil
+}
+
+// paged is a pagedTransport over the pages given as cursor and answer pairs.
+func paged(t *testing.T, pages map[string]pollAnswer) *pagedTransport {
+	t.Helper()
+	return &pagedTransport{pages: pages, t: t}
 }
 
 func TestCollectRetriesAnUnknownResult(t *testing.T) {
@@ -559,6 +586,131 @@ func TestCollectionsJSON(t *testing.T) {
 	}
 	if te.stdout.String() != collectionsBody {
 		t.Fatalf("stdout = %q, want the body byte for byte", te.stdout.String())
+	}
+}
+
+// collectionsPageOne is collectionsBody with a token continuing the listing.
+const collectionsPageOne = `{"namespace":"payments","service":"checkout","collections":[{"id":"3g7hk2m9p4qr8s1tvw5x","origin":"api","state":"completed","attempt":1,"resolvedVersion":"1.42.0","createdAt":"2026-08-26T09:00:00Z","finishedAt":"2026-08-26T09:04:12Z","expiresAt":"2026-08-26T11:04:12Z"},{"id":"7h2k9m4p6r8t0v1w3x5y","origin":"schedule","state":"running","attempt":1,"createdAt":"2026-08-26T10:00:00Z"}],"nextCursor":"c1"}` + "\n"
+
+// collectionsPageTwo is the last page: one record and no token.
+const collectionsPageTwo = `{"namespace":"payments","service":"checkout","collections":[{"id":"9k3m5p7r2t4v6w8x0y1z","origin":"api","state":"expired","attempt":1,"createdAt":"2026-08-26T08:00:00Z"}]}` + "\n"
+
+// The envelopes a second page can fail with.
+const (
+	pgoUnavailableBody  = `{"error":"the store is unavailable","code":"pgo_unavailable"}`
+	unauthenticatedBody = `{"error":"the session has expired","code":"unauthenticated"}`
+)
+
+// The tables the walk prints: page one alone, and both pages in the order they arrived.
+const (
+	onePageTable = "ID\tSTATE\tORIGIN\tCREATED\n" +
+		"3g7hk2m9p4qr8s1tvw5x\tcompleted\tapi\t2026-08-26T09:00:00Z\n" +
+		"7h2k9m4p6r8t0v1w3x5y\trunning\tschedule\t2026-08-26T10:00:00Z\n"
+	twoPageTable = onePageTable + "9k3m5p7r2t4v6w8x0y1z\texpired\tapi\t2026-08-26T08:00:00Z\n"
+)
+
+func TestCollectionsWalksEveryPage(t *testing.T) {
+	tests := []struct {
+		name       string
+		pages      map[string]pollAnswer
+		args       []string
+		wantCode   int
+		wantQuery  []string
+		wantStdout string
+		wantStderr string
+		notStdout  []string
+	}{
+		{
+			name:       "one page sends one request",
+			pages:      map[string]pollAnswer{"": {status: http.StatusOK, body: collectionsBody}},
+			wantQuery:  []string{""},
+			wantStdout: onePageTable,
+		},
+		{
+			name: "two pages send two requests and one table",
+			pages: map[string]pollAnswer{
+				"":   {status: http.StatusOK, body: collectionsPageOne},
+				"c1": {status: http.StatusOK, body: collectionsPageTwo},
+			},
+			wantQuery:  []string{"", "cursor=c1"},
+			wantStdout: twoPageTable,
+		},
+		{
+			name: "a second page that fails prints the envelope and no row",
+			pages: map[string]pollAnswer{
+				"":   {status: http.StatusOK, body: collectionsPageOne},
+				"c1": {status: http.StatusServiceUnavailable, body: pgoUnavailableBody},
+			},
+			wantCode:   1,
+			wantQuery:  []string{"", "cursor=c1"},
+			wantStderr: "pgo_unavailable: the store is unavailable",
+			notStdout:  []string{"3g7hk2m9p4qr8s1tvw5x", "7h2k9m4p6r8t0v1w3x5y"},
+		},
+		{
+			name: "a second page answered 401 exits 3",
+			pages: map[string]pollAnswer{
+				"":   {status: http.StatusOK, body: collectionsPageOne},
+				"c1": {status: http.StatusUnauthorized, body: unauthenticatedBody},
+			},
+			wantCode:   3,
+			wantQuery:  []string{"", "cursor=c1"},
+			wantStderr: "unauthenticated: the session has expired",
+			notStdout:  []string{"3g7hk2m9p4qr8s1tvw5x", "7h2k9m4p6r8t0v1w3x5y"},
+		},
+		{
+			name: "two pages under json write two documents",
+			pages: map[string]pollAnswer{
+				"":   {status: http.StatusOK, body: collectionsPageOne},
+				"c1": {status: http.StatusOK, body: collectionsPageTwo},
+			},
+			args:       []string{"--output", "json"},
+			wantQuery:  []string{"", "cursor=c1"},
+			wantStdout: collectionsPageOne + collectionsPageTwo,
+		},
+		{
+			name: "a failing page under json writes its envelope alone",
+			pages: map[string]pollAnswer{
+				"":   {status: http.StatusOK, body: collectionsPageOne},
+				"c1": {status: http.StatusServiceUnavailable, body: pgoUnavailableBody},
+			},
+			args:       []string{"--output", "json"},
+			wantCode:   1,
+			wantQuery:  []string{"", "cursor=c1"},
+			wantStdout: pgoUnavailableBody,
+			wantStderr: "pgo_unavailable: the store is unavailable",
+			notStdout:  []string{"3g7hk2m9p4qr8s1tvw5x", "7h2k9m4p6r8t0v1w3x5y"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEnv(t)
+			pt := paged(t, tc.pages)
+			te.env.transport = pt
+			args := append([]string{"collections", "payments/checkout"}, tc.args...)
+			args = append(args, "--server", "https://g.example")
+			code := dispatch(context.Background(), te.env, clientVerbs(), args)
+			if code != tc.wantCode {
+				t.Fatalf("code = %d, want %d (stderr=%q)", code, tc.wantCode, te.stderr.String())
+			}
+			var got []string
+			for _, r := range pt.requests {
+				got = append(got, r.URL.RawQuery)
+			}
+			if !slices.Equal(got, tc.wantQuery) {
+				t.Fatalf("queries = %q, want %q", got, tc.wantQuery)
+			}
+			if te.stdout.String() != tc.wantStdout {
+				t.Fatalf("stdout = %q, want %q", te.stdout.String(), tc.wantStdout)
+			}
+			if tc.wantStderr != "" && !strings.Contains(te.stderr.String(), tc.wantStderr) {
+				t.Fatalf("stderr = %q, want the envelope %q", te.stderr.String(), tc.wantStderr)
+			}
+			for _, id := range tc.notStdout {
+				if strings.Contains(te.stdout.String(), id) {
+					t.Fatalf("stdout = %q, want no row of a page that arrived before the failure", te.stdout.String())
+				}
+			}
+		})
 	}
 }
 

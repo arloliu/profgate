@@ -1124,7 +1124,7 @@ which is the general rule of every verb:
 `3` for a `401`, envelope or not, and `1` for every other refusal,
 and is what *Collections* (`docs/specs/cli.md:961-963`) and *Testing* (`:1341-1343`) say a page that fails mid-walk exits with.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 `cmd/profgate/collect_test.go` gains `pagedTransport`, beside `retryTransport` (`:195-213`):
 a map from the `cursor` query value to a `func() (*http.Response, error)`, recording every request.
@@ -1156,7 +1156,7 @@ the two failing-page cases report exit 0 and a two-row table, because today the 
 the json cases report one document.
 The wrong implementation is the one-`GET` verb that ships today.
 
-- [ ] **Walk the pages and say so**
+- [x] **Walk the pages and say so**
 
 `CHANGELOG.md`, `### Added`:
 **`profgate collections` lists every Collection a Service retains, not the first hundred.**
@@ -1165,7 +1165,7 @@ It now follows `nextCursor` through every page and prints one table once the wal
 a page that fails mid-walk prints its envelope and no row, and exits as any refusal does,
 and under `--output json` each page's body is written in order, or the failing page's envelope alone.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check cmd/profgate/collect.go internal/client/wire.go CHANGELOG.md

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`profgate collections` lists every Collection a Service retains, not the first hundred.**
+  The verb sent one request and printed the first page, dropping the token that continued the listing.
+  It now follows `nextCursor` through every page and prints one table once the walk completes;
+  a page that fails mid-walk prints its envelope and no row, and exits as any refusal does,
+  and under `--output json` each page's body is written in order, or the failing page's envelope alone.
 - **The targets list and the Collections table each have a Refresh control.**
   A Collection started from the page never left `pending` without a reload,
   because nothing on the page fetched a list again.

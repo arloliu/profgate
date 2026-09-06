@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -267,34 +268,73 @@ func (env *cmdEnv) wait(ctx context.Context, gw *client.Client, s client.Setting
 	}
 }
 
-// collectionsVerb is GET .../collections:
-// the Service's records, newest first, with no filter and no cursor because the gateway's listing accepts none.
+// collectionsVerb is GET .../collections, walked through every page:
+// one GET per page, each after the first carrying the previous answer's nextCursor as cursor,
+// until an answer carries none.
+// The table is printed once the walk completes, so a page that fails leaves no partial table that reads as complete;
+// under --output json each page's body is written after the walk, in order, unchanged.
 // The plural takes a Service; an identifier in its place fails the address grammar before any request.
 func collectionsVerb() verb {
 	return verb{
 		name: "collections", leaves: []leaf{{grammar: "collections <ns>/<svc>", positionals: 1}},
 		run: func(ctx context.Context, env *cmdEnv, in *invocation) int {
-			return env.read(ctx, in, reading{
-				build: func(s client.Settings, in *invocation) (client.Request, error) {
-					ns, svc, err := address(in.positionals[0], s.Namespace)
-					if err != nil {
-						return client.Request{}, err
+			gw, s, err := env.gateway(ctx, in.globals)
+			if err != nil {
+				return fail(env, "", err)
+			}
+			ns, svc, err := address(in.positionals[0], s.Namespace)
+			if err != nil {
+				return fail(env, s.Output, err)
+			}
+			pages, rows, err := walkCollections(ctx, gw, servicePath(ns, svc)+"/collections")
+			if err != nil {
+				return fail(env, s.Output, err)
+			}
+			if s.Output == "json" {
+				for _, body := range pages {
+					if _, err := env.stdout.Write(body); err != nil {
+						return fail(env, s.Output, err)
 					}
-					return client.Request{Method: http.MethodGet, Path: servicePath(ns, svc) + "/collections"}, nil
-				},
-				render: func(env *cmdEnv, body []byte) error {
-					r, err := client.Decode[client.CollectionsResponse](body)
-					if err != nil {
-						return err
-					}
-					rows := make([][]string, 0, len(r.Collections))
-					for _, c := range r.Collections {
-						rows = append(rows, []string{c.ID, c.State, c.Origin, c.CreatedAt})
-					}
-					return writeTable(env.stdout, env.terminal, []string{"ID", "STATE", "ORIGIN", "CREATED"}, rows)
-				},
-			})
+				}
+				return exitOK
+			}
+			if err := writeTable(env.stdout, env.terminal, []string{"ID", "STATE", "ORIGIN", "CREATED"}, rows); err != nil {
+				return fail(env, s.Output, err)
+			}
+			return exitOK
 		},
+	}
+}
+
+// walkCollections reads the listing from its first page to its last,
+// carrying each answer's nextCursor into the next request and stopping at the answer that carries none.
+// It returns every page's body and the table rows of all of them, in the order the pages arrived.
+// A page that fails returns its error with nothing kept,
+// so the caller prints that page's envelope and no row of the pages before it.
+func walkCollections(ctx context.Context, gw *client.Client, path string) ([][]byte, [][]string, error) {
+	var pages [][]byte
+	var rows [][]string
+	for next := ""; ; {
+		var q url.Values
+		if next != "" {
+			q = url.Values{"cursor": {next}}
+		}
+		body, _, err := gw.JSON(ctx, client.Request{Method: http.MethodGet, Path: path, Query: q})
+		if err != nil {
+			return nil, nil, err
+		}
+		r, err := client.Decode[client.CollectionsResponse](body)
+		if err != nil {
+			return nil, nil, err
+		}
+		pages = append(pages, body)
+		for _, c := range r.Collections {
+			rows = append(rows, []string{c.ID, c.State, c.Origin, c.CreatedAt})
+		}
+		if r.NextCursor == "" {
+			return pages, rows, nil
+		}
+		next = r.NextCursor
 	}
 }
 

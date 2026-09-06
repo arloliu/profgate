@@ -86,6 +86,8 @@ type Target struct {
 // CollectionsResponse is GET .../collections: the Service's records, newest first.
 type CollectionsResponse struct {
 	Collections []CollectionSummary `json:"collections"`
+	// NextCursor is the token that continues the listing, and is empty on the last page.
+	NextCursor string `json:"nextCursor"`
 }
 
 // CollectionSummary is one listing entry; createdAt is kept as the string
