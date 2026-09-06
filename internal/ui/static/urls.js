@@ -97,11 +97,18 @@ export function limitsURL() {
   return build("/v1", ["limits"]);
 }
 
-// loginURL starts the browser flow and asks it to return to the page's own
-// path and query, with the returned marker added so the page can tell a fresh
-// return from a plain load.
+// returnPathBound is the longest return path the browser flow accepts, in bytes of the encoded value.
+const returnPathBound = 1024;
+
+// loginURL starts the browser flow and asks it to return to the page's own path and query,
+// with the returned marker added so the page can tell a fresh return from a plain load.
+// The encoded path and query are ASCII, so their length is their byte count;
+// a selection that would cross the bound is left out, and the return carries the marker alone.
 export function loginURL(ns, svc) {
-  const page = build("/ui/", [], { ns: ns, svc: svc, returned: "1" });
+  let page = build("/ui/", [], { ns: ns, svc: svc, returned: "1" });
+  if (page.pathname.length + page.search.length > returnPathBound) {
+    page = build("/ui/", [], { returned: "1" });
+  }
   return build("/auth/login", [], { return: `${page.pathname}${page.search}` });
 }
 

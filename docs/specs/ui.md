@@ -1768,6 +1768,9 @@ so a runner that loses one, or drifts to a version outside the range, turns red 
   pressing **Download** on the first Service then shows `no_targets` with its hint and saves nothing,
   and **Refresh** on the targets list sends one targets `GET` carrying `explain=true`,
   disables the control, and shows the empty state's wording beside it;
+- a second session with no cookie, opened with an `ns` of 1100 characters,
+  navigates to `/auth/login` with `return=/ui/?returned=1` alone,
+  because the encoded selection would cross the 1024-byte bound and the page leaves it out (*Flow*);
 - a load whose `ns` and `svc` carry `<img src=x onerror=…>` shows both through the "is not listed" message as text:
   the document holds no `img` element, the container's markup holds the escaped form,
   and the browser logged no script error.
@@ -2022,3 +2025,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Core decisions*, *Non-goals*, *Collections*, *Targets, with reasons*, *Flow*, *Controls*, *Starting and cancelling a Collection*, *Rendering response values*, *Errors*, *Response headers and CSP*, *Failure scenarios*, *Unit*, *What is not proven*, *End to end*, *Required by this revision and not yet made* | **Download** is a `fetch` followed by a save through an object URL rather than a navigation, so an error envelope from the profile endpoint is shown with its hint, at the cost of holding the body whole before the save; it is disabled, with the empty state's wording beside it, while the targets response lists no Pod; one **Refresh** control on the targets list and on the Collections table repeats the fetch its list came from, refetches nothing else, and leaves an armed control as it is, with automatic polling a stated non-goal; the Collections table shows the first page and says that older Collections exist when the response carries `nextCursor`, naming the CLI verb and adding no paging control, and [`cli.md`](cli.md) *Collections* has that verb walk every page the listing offers; the console guide's account of these controls is the one edit owed |
 | *Starting and cancelling a Collection*, *Unit*, *End to end* | a second press inside half a second of the arm is refused and leaves the control armed, so a double-click arms and sends nothing; the model measures the press against the arm time it carries, a retained control has no window, and the browser scenario dispatches two clicks fifty milliseconds apart |
 | *End to end* | the downloaded file's name is `heap`, the profile the scenario chose, because Go's pprof handler names every profile but the CPU one after itself; the scenario observes the download as a `Fetch` request followed by a download from a `blob:` URL |
+| *End to end* | a second session opened with an `ns` of 1100 characters navigates to the login with `return=/ui/?returned=1` alone, the browser proof of the return-path bound *Flow* states |

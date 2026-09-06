@@ -349,6 +349,13 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 			emptyNote, s.textOf(t, ".panels"))
 	}
 
+	// A selection the browser flow would refuse is never sent as the return path.
+	// A second session with no cookie opens the console on an ns of 1100 characters,
+	// the page answers its 401 by navigating to /auth/login of its own accord,
+	// and the return it carries is the marker alone, because the encoded selection would cross the 1024-byte bound.
+	// The login is not completed; the request the page sent is the whole proof.
+	assertLongSelectionDropped(t, newSession(t, b, sessionOptions{MapTo: local}))
+
 	// Every load of the scenario, once more at the end: the observers ran through all of them.
 	assertRenderedAsText(t, s, "the working load", consolePrincipalPayload)
 	s.assertClean(t, "the console scenario")
@@ -670,6 +677,29 @@ func assertNavigatedToLogin(t *testing.T, s *session, selection string) {
 		return
 	}
 	t.Fatalf("the page never navigated to /auth/login of its own accord\n%s", s.report())
+}
+
+// assertLongSelectionDropped opens the console in s, a session with no cookie,
+// on an ns of 1100 characters and no svc,
+// and fails unless the login the page navigated to carries `/ui/?returned=1` as its return and nothing more.
+// The encoded selection would cross the 1024-byte bound the browser flow applies to the value as received,
+// so the page leaves it out rather than sending a return the flow would refuse.
+func assertLongSelectionDropped(t *testing.T, s *session) {
+	t.Helper()
+	long := url.Values{"ns": {strings.Repeat("a", 1100)}}
+	s.run(t, "open the console on a selection longer than the return path bound",
+		chromedp.Navigate(gatewayOrigin+uiPath+"?"+long.Encode()))
+	r := s.awaitRequestSince(t, 0, "the second session's login", func(r sentRequest) bool {
+		return r.method == http.MethodGet && strings.HasPrefix(r.url, gatewayOrigin+"/auth/login?")
+	})
+	u, err := url.Parse(r.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := u.Query().Get("return"); got != uiPath+"?returned=1" {
+		t.Fatalf("the page navigated to the login with return %q for a selection past the bound, want %q alone",
+			got, uiPath+"?returned=1")
+	}
 }
 
 // assertSelection fails unless the browser is on the console carrying the selection,

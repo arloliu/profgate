@@ -1357,7 +1357,7 @@ export function loginURL(ns, svc) {
 
 `TestScanURLsBuilds` (`internal/ui/scan_test.go:100-110`) stays green: the module still concatenates no literal.
 
-- [ ] **Write the browser step, and run it red**
+- [x] **Write the browser step, and run it red**
 
 No unit test can load `urls.js` (*Decisions*).
 `test/e2e/scenarios_console_test.go`, in `scenarioConsoleOIDC`, last before the final `assertClean`:
@@ -1381,7 +1381,7 @@ go test -tags e2e -race -count=1 -timeout 40m -run 'TestScenarios/console-oidc$'
 The step fails on a `return` carrying the 1100 characters,
 because today `loginURL` builds the path from the selection whatever its length.
 
-- [ ] **Bound the path and say so**
+- [x] **Bound the path and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **The console never sends a login return path longer than the browser flow accepts.**
@@ -1390,7 +1390,7 @@ and the browser flow bounds the value at 1024 bytes.
 A selection that would cross the bound is now left out and the return carries the marker alone,
 so the login completes and lands on a console with no selection rather than on a refusal.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 go vet -tags e2e ./test/e2e/

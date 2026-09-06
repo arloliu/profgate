@@ -222,6 +222,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The console never sends a login return path longer than the browser flow accepts.**
+  The page built its return path from the selection whatever its length,
+  and the browser flow bounds the value at 1024 bytes.
+  A selection that would cross the bound is now left out and the return carries the marker alone,
+  so the login completes and lands on a console with no selection rather than on a refusal.
 - **The Collections table takes the page's width, and Keep looks secondary.**
   The table sat in one grid column beside empty page,
   so `state`, the timestamps, and **Cancel** were off-screen at 1600 px,
