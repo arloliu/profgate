@@ -979,7 +979,7 @@ Its first five lines say one edit is owed and name the guide (`:2096-2100`), and
 The console guide's account of the page joins the list of documents this one is no longer ahead of (`:2101-2110`).
 One amendment row names the section.
 
-- [ ] **Name the check**
+- [x] **Name the check**
 
 This task has no red test: prose has none,
 and a check that the old sentences were false is a reading of the page against them,
@@ -988,7 +988,7 @@ What verifies it is `mise run check` for the spec's `Status:` and its links,
 `mise run prose` for the wording,
 and a reviewer reading each changed sentence beside the part of the page it describes.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/console.md docs/specs/ui.md

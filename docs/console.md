@@ -29,12 +29,18 @@ then visit `http://localhost:8080/ui/`.
 
 ## What it shows
 
-The page has four parts, in the order they load: Identity, Profile, Collections (when offered),
-and, on the way, a namespace and a Service picker.
+The page is the identity disclosure and then panels, one panel to a row,
+in the order they load — Service, Profile, and Collections when offered —
+each panel laying its controls across its row and wrapping them onto the next line at a narrow window.
 
-- **Identity.** Who you are, your realm's namespaces, Services, and profiles exactly as configured
-  (the wildcard `*` shown as written), the three PGO flags, and the authentication mode.
-  A sign-out link appears when one would do something (see [Signing in and out](#signing-in-and-out)).
+- **Identity.** A disclosure above the panels, closed on load,
+  whose summary names who you are and your realm.
+  Opening it shows your realm's namespaces, Services, and profiles exactly as configured
+  (the wildcard `*` shown as written), the three PGO flags, and the authentication mode,
+  with a sign-out link at its foot when one would do something
+  (see [Signing in and out](#signing-in-and-out)).
+  A `403 realm_denied` opens it, so the realm that refused is on screen with the message,
+  and an error from the identity fetch that denial starts shows above the panels rather than inside the disclosure.
 - **Namespace and Service.** Two `<select>` controls, populated from what your realm admits;
   picking one fetches the next.
   A namespace or Service named in the page's URL that is not in the fetched list —
@@ -73,14 +79,14 @@ The page never holds a credential of its own; it relies on whatever the browser 
 
 - **`auth.mode: disabled`.**
   No sign-in exists.
-  The Identity panel shows `anonymous` and the realm named by `auth.anonymousRealm`.
+  The identity shows `anonymous` and the realm named by `auth.anonymousRealm`.
 - **`auth.mode: basic`.**
   The page loads, and its first request gets a `401` that carries `WWW-Authenticate: Basic`;
   the browser's own dialog prompts for a name and password
   and the browser remembers them for the rest of the session.
   Cancelling the dialog shows "sign in required" with a **Retry** button that prompts again.
   There is no sign-out: how long a browser keeps a Basic credential is the browser's decision,
-  and the Identity panel says so in place of a sign-out link.
+  and the identity says so in place of a sign-out link, at the foot of the disclosure.
 - **`auth.mode: oidc`.**
   The page checks who you are first;
   a `401` sends the browser to the issuer's own login page,
@@ -88,7 +94,7 @@ The page never holds a credential of its own; it relies on whatever the browser 
   or to the console with no selection when including it would push the encoded return path past that bound.
   If the page is still `401` after that return,
   it shows "sign in required" with a **Sign in again** button rather than sending you back to the issuer on its own.
-  A **Sign out** link appears in the Identity panel whenever the browser flow is configured,
+  A **Sign out** link appears at the foot of the identity disclosure whenever the browser flow is configured,
   and signing out lands back on a signed-out console.
 
 ## Downloading a profile and copying its URL
