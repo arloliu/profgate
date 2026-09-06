@@ -2124,19 +2124,15 @@ Updated with the implementation: `docs/api.md` (the listing endpoints), `docs/co
 
 ### 14.1 Required by this revision and not yet made
 
-One edit.
-The console guide, [`docs/console.md`](../console.md),
-calls the identity a panel where it says what the page shows and where the sign-out link sits;
-it is owed the disclosure and the one-panel-to-a-row arrangement of *Controls*,
-and the implementation that builds them writes that edit.
-Every other edit this document required elsewhere has been made,
-and this document is otherwise no longer ahead of the documents it names:
+Nothing.
+Every edit this document required elsewhere has been made,
+and this document is no longer ahead of the documents it names:
 the write controls' contract in [`pgo.md`](pgo.md) *Create a Collection* and *HTTP API*,
 the entity tags, the browser scenarios, and the rolling-update rows in [`gateway.md`](gateway.md),
 the browser scenarios beside the wire proofs in [`auth.md`](auth.md) *Testing*,
 the media type on both write routes in [`docs/api.md`](../api.md),
 the Chromium the workflow installs before the suite runs,
-the console guide's own account of the four controls and of a rollout,
+the console guide's own account of the page, of the four controls, and of a rollout,
 and the end-to-end rule in
 [`.agents/rules/500-validation-and-workflow.md`](../../.agents/rules/500-validation-and-workflow.md).
 
@@ -2179,3 +2175,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Controls*, *Starting and cancelling a Collection*, *Signing in and out*, *Errors*, *Layout and embedding*, *What is not proven*, *End to end*, *Required by this revision and not yet made* | the page is one panel to a row, each panel laying its controls across the row, because columns of panels put a short panel beside a tall one and left a column of empty page; the identity is a `<details>` disclosure above the panels, closed on load, whose summary names the principal and the realm and which holds the seven facts and the sign-out link the panel held, disclosing nothing new; a `403` whose envelope names `realm_denied`, on a listing, a profile download, or the current start attempt, opens it and refetches `/v1/whoami`, each path first discarding an answer it has moved past, for which the Service listing gains the generation counter the other two listings already carry, so the hint that names the identity stays true, while a person's own opening and closing stand until the next such denial and an identity refetch's errors and sign-in controls render outside the collapsible body; the hint drops the word panel; the browser scenarios read the identity's text and markup at the disclosure, check the escaped query values in the Service panel, and scope the Collection disclosure selectors to the Collections panel; and the console guide is owed the same correction |
 | *What is not proven*, *End to end* | `console-oidc` asserts the identity disclosure closed on the working load and a disclosure the scenario opened still open after a **Refresh** answer re-renders the panel, so what stays unproven of the arrangement is panel placement, control wrapping, and the opening a denial causes |
 | *Unit*, *End to end*, *What is not proven* | a source scan holds `app.js` to two calls of the disclosure's opening, neither of them in the function that runs an outcome's refetches, and counts call sites rather than proving behavior; `console-oidc` drives the four cases an answer the page classifies decides, writing each answer into a request it paused, which proves the refetch of `/v1/whoami` a listing's `403` causes and leaves panel placement and control wrapping as the whole of what the arrangement does not prove; and that the disclosure's `open` is never bound in the template is a rule this design carries and no test holds, a bound but unchanged value being indistinguishable from an unbound one |
+| *Required by this revision and not yet made* | the console guide describes the identity as a disclosure above the panels and the page as one panel to a row, and nothing is owed elsewhere |
