@@ -316,9 +316,12 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		t.Fatalf("the page's Pod control emptied without a fetch of its own:\n%s", s.report())
 	}
 	before := s.downloadsBegun()
+	// The panel is read for the hint and not for the code alone:
+	// a bare no_targets is a word the person who pressed Download cannot act on.
+	const noTargetsHint = "Refresh on the targets list updates the available Pods and the empty state"
 	s.run(t, "press Download with no eligible Pod", chromedp.Click(control("Download"), chromedp.BySearch))
-	s.waitFor(t, "the Profile panel shows no_targets",
-		fmt.Sprintf(`(%s || { textContent: "" }).textContent.includes("no_targets")`, profilePanel))
+	s.waitFor(t, "the Profile panel explains no_targets",
+		fmt.Sprintf(`(%s || { textContent: "" }).textContent.includes(%q)`, profilePanel, noTargetsHint))
 	if n := s.downloadsBegun(); n != before {
 		t.Fatalf("a download began on an answer that was not a profile: %d downloads, %d before", n, before)
 	}

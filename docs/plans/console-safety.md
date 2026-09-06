@@ -1430,7 +1430,7 @@ so the identity panel the hint names is refreshed by the answer that says the re
 the shape `afterServiceError` gives `service_not_found` (`:721-726`).
 `reloadWhoami` (`:554-560`) is already the refetch that replaces the realm without running `boot`.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 `internal/ui/scan_test.go` gains `TestScanHintsNameEveryCode`:
 `hintCodes` is the list of the twenty codes, written out, the sixteen rows' eighteen plus `too_many_auth` and `auth_unavailable`;
@@ -1454,7 +1454,7 @@ go test -race -count=1 ./internal/ui/ -run 'TestScanHintsNameEveryCode'
 It reports the four codes with no key: `version_conflict`, `version_missing`, `too_many_auth`, `auth_unavailable`.
 The wrong implementation is a page that shows `too_many_auth` as a bare code to a person who can act on it by waiting.
 
-- [ ] **Tighten the browser's `no_targets` assertion**
+- [x] **Tighten the browser's `no_targets` assertion**
 
 `test/e2e/scenarios_console_test.go`: the `waitFor` of task 2's third step,
 which waits for the Profile panel to hold `no_targets`,
@@ -1464,7 +1464,7 @@ against today's hint the panel holds "no Ready Pod declares the selected port",
 so the tightened wait is red until this task lands,
 and it runs with the suite in *Validation*.
 
-- [ ] **Add the rows and say so**
+- [x] **Add the rows and say so**
 
 `docs/specs/ui.md` *Errors*, in the table (`:1046-1063`):
 a `too_many_auth` row and an `auth_unavailable` row with the two hints above,
@@ -1480,7 +1480,7 @@ the `no_targets` and `port_not_allowed` hints described a rule older than the on
 and the `realm_denied` hint named an identity panel that a listing's `403` never refreshed.
 All four codes now carry a one-line hint, the two texts match the gateway's rule, and a `403 realm_denied` on any listing refetches `/v1/whoami`.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 go vet -tags e2e ./test/e2e/

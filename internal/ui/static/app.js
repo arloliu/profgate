@@ -57,10 +57,13 @@ const armDelay = 10000;
 // code is shown as is.
 const hints = {
   not_ready: "the gateway is still syncing; the page retries every 2 seconds",
+  too_many_auth: "the gateway is checking too many passwords at once; retry in a moment",
+  auth_unavailable: "the gateway cannot decide who you are right now; retry",
   realm_denied: "your realm does not admit this; the identity panel shows what it does",
   service_not_found: "the Service left the cache since the list was fetched; the page refreshes the Service list",
-  no_targets: "no Ready Pod declares the selected port",
-  port_not_allowed: "the value is outside the allowlist shown in the port control",
+  no_targets:
+    "no Pod is eligible for the selection; Refresh on the targets list updates the available Pods and the empty state",
+  port_not_allowed: "allowedSelections does not admit the value; the port control shows what it does admit",
   seconds_exceeds_limit: "the limit the duration input was bounded by",
   discovery_unavailable: "the gateway could not read its cache or confirm the Pod; retry",
   pgo_disabled: "PGO collection is off on this gateway; the Collections view goes once the limits have been refetched",
@@ -73,6 +76,8 @@ const hints = {
   collection_terminal: "the Collection ended before the cancel arrived; the list shows its final state",
   collection_initializing: "the Collection is still being created; the cancel is retried once",
   limit_exceeded: "the Collection's policy exceeds a configured ceiling; the message names the fields",
+  version_conflict: "the Service's Pods carry more than one version, or none",
+  version_missing: "the Service's Pods carry more than one version, or none",
 };
 
 // fetchJSON runs one same-origin request and resolves to
@@ -459,6 +464,9 @@ class App extends Component {
   // the 401 rule of Signing in and out, the not_ready retry, and the error under key.
   // It returns the error it recorded, or null when the 401 rule took the answer,
   // so a caller can act on the code without reading state a setState has not applied yet.
+  // A realm_denied refetches the identity its hint names,
+  // because the realm the panel shows is the one that no longer admits the request;
+  // a refusal of the whoami fetch itself asks for no second one.
   settle(key, res, retry) {
     if (res.status === 401) {
       const mode = this.state.whoami.auth.mode;
@@ -481,6 +489,9 @@ class App extends Component {
       errors: { ...s.errors, [key]: { error: res.error, retry: retry } },
       signIn: { ...s.signIn, [key]: undefined },
     }));
+    if (isEnvelope(res.error) && res.error.code === "realm_denied" && key !== "whoami") {
+      this.reloadWhoami();
+    }
     return res.error;
   }
 

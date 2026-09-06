@@ -1048,7 +1048,9 @@ plus a one-line hint for the codes a user can act on:
 | `code` | Hint |
 |---|---|
 | `not_ready` | the gateway is still syncing; the page retries every 2 seconds |
-| `realm_denied` | your realm does not admit this; the whoami panel shows what it does |
+| `too_many_auth` | the gateway is checking too many passwords at once; retry in a moment |
+| `auth_unavailable` | the gateway cannot decide who you are right now; retry |
+| `realm_denied` | your realm does not admit this; the identity panel shows what it does |
 | `service_not_found` | the Service left the cache since the list was fetched; the page refreshes the Service list |
 | `no_targets` | no Pod is eligible for the selection; **Refresh** on the targets list updates the available Pods and the empty state |
 | `port_not_allowed` | `allowedSelections` does not admit the value; the port control shows what it does admit |
@@ -1066,6 +1068,8 @@ plus a one-line hint for the codes a user can act on:
 
 Every other code is shown as is.
 The page never rewrites a message the gateway generated, and never shows a message the gateway did not send.
+
+A `403 realm_denied` on a listing refetches `/v1/whoami`, so the panel that hint names shows the realm that refused.
 
 A failed `fetch` does not always carry the envelope.
 An Ingress can answer with its own HTML, a connection can drop mid-body, a proxy can strip the body,
@@ -1662,7 +1666,7 @@ the port control and the target summary as `app.js` wires them,
 each proven apart from the widget and apart from the network;
 the download as `app.js` performs it — the fetch, the `Blob`, the object URL, the `Content-Disposition` filename,
 and the disabling of the control — beyond what the browser scenario asserts of it;
-the two **Refresh** controls' wiring, the same way;
+the two **Refresh** controls' wiring and the refetch of `/v1/whoami` a listing's `403` causes, the same way;
 and the Collections artifact link, `GET /v1/collections/{id}/profile`, which stays a navigation:
 a `410 artifact_gone` or a `404 collection_not_found` on it shows the page nothing,
 which this document states rather than repairs,
@@ -2026,3 +2030,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Starting and cancelling a Collection*, *Unit*, *End to end* | a second press inside half a second of the arm is refused and leaves the control armed, so a double-click arms and sends nothing; the model measures the press against the arm time it carries, a retained control has no window, and the browser scenario dispatches two clicks fifty milliseconds apart |
 | *End to end* | the downloaded file's name is `heap`, the profile the scenario chose, because Go's pprof handler names every profile but the CPU one after itself; the scenario observes the download as a `Fetch` request followed by a download from a `blob:` URL |
 | *End to end* | a second session opened with an `ns` of 1100 characters navigates to the login with `return=/ui/?returned=1` alone, the browser proof of the return-path bound *Flow* states |
+| *Errors*, *What is not proven* | the hints table gains `too_many_auth` and `auth_unavailable`, the two authentication codes every `/v1` route answers, and its `realm_denied` row names the identity panel, the word the page's own header uses; a `403 realm_denied` on a listing refetches `/v1/whoami`, a refetch no unit test proves |

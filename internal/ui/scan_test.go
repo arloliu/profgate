@@ -204,6 +204,79 @@ func TestScanPageUsesCollectionModel(t *testing.T) {
 	}
 }
 
+// hintCodes is the vocabulary of the hints table of Errors:
+// the eighteen codes its sixteen rows name,
+// plus too_many_auth and auth_unavailable, which every /v1 route answers.
+// The list is held here rather than read out of the design's Markdown,
+// the way targetmodel_test.go holds the exclusion reasons,
+// so a failure names a code and never a parse of a table.
+var hintCodes = []string{
+	"not_ready",
+	"realm_denied",
+	"service_not_found",
+	"no_targets",
+	"port_not_allowed",
+	"seconds_exceeds_limit",
+	"discovery_unavailable",
+	"pgo_disabled",
+	"pgo_unavailable",
+	"collector_unavailable",
+	"collection_in_progress",
+	"rate_limited",
+	"capacity_exhausted",
+	"collection_terminal",
+	"collection_initializing",
+	"limit_exceeded",
+	"version_conflict",
+	"version_missing",
+	"too_many_auth",
+	"auth_unavailable",
+}
+
+// hintsObjectRe matches app.js's hints object and captures everything between its braces.
+var hintsObjectRe = regexp.MustCompile(`(?s)const hints = \{(.*?)\n\};`)
+
+// hintKeyRe matches one key of that object: the identifier an indented line opens with, before its colon.
+var hintKeyRe = regexp.MustCompile(`(?m)^\s+([A-Za-z_][A-Za-z0-9_]*):`)
+
+// TestScanHintsNameEveryCode holds the page's hints and the codes of the table to the same set.
+// A code with no key is shown to a person as a bare word they cannot act on,
+// and a key with no code is a hint for something the design does not say the gateway answers,
+// so each is a failure that names the name.
+func TestScanHintsNameEveryCode(t *testing.T) {
+	if len(hintCodes) != 20 {
+		t.Fatalf("the vocabulary written out here holds %d codes, want twenty", len(hintCodes))
+	}
+	m := hintsObjectRe.FindStringSubmatch(readSource(t, "app.js"))
+	if m == nil {
+		t.Fatalf("app.js: declares no hints object the scan recognises")
+	}
+	got := map[string]bool{}
+	for _, key := range hintKeyRe.FindAllStringSubmatch(m[1], -1) {
+		got[key[1]] = true
+	}
+	if len(got) == 0 {
+		t.Fatalf("app.js: the hints object holds no key the scan recognises")
+	}
+	want := map[string]bool{}
+	for _, code := range hintCodes {
+		want[code] = true
+		if !got[code] {
+			t.Errorf("app.js: the hints object has no key for the code %q", code)
+		}
+	}
+	keys := make([]string, 0, len(got))
+	for key := range got {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if !want[key] {
+			t.Errorf("app.js: the hints object holds the key %q, which no code of the table names", key)
+		}
+	}
+}
+
 func TestScanNoInlineForms(t *testing.T) {
 	for _, name := range consoleSources() {
 		t.Run(name, func(t *testing.T) {

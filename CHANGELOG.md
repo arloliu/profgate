@@ -222,6 +222,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The console explains every code its design lists, and its `realm_denied` hint is true.**
+  Four codes the design lists were shown as bare words with no hint:
+  `too_many_auth` and `auth_unavailable`, which every route can answer, and `version_conflict` and `version_missing`.
+  The `no_targets` and `port_not_allowed` hints described a rule older than the one the gateway applies,
+  and the `realm_denied` hint named an identity panel that a listing's `403` never refreshed.
+  All four codes now carry a one-line hint, the two texts match the gateway's rule,
+  and a `403 realm_denied` on any listing refetches `/v1/whoami`.
 - **The console never sends a login return path longer than the browser flow accepts.**
   The page built its return path from the selection whatever its length,
   and the browser flow bounds the value at 1024 bytes.
