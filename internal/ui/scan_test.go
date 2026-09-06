@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"errors"
+	"fmt"
 	"io/fs"
 	"regexp"
 	"sort"
@@ -244,13 +246,75 @@ var hintCodes = []string{
 // hintsObjectRe matches app.js's hints object and captures everything between its braces.
 var hintsObjectRe = regexp.MustCompile(`(?s)const hints = \{(.*?)\n\};`)
 
-// hintKeyRe matches one key of that object: the identifier an indented line opens with, before its colon.
-var hintKeyRe = regexp.MustCompile(`(?m)^\s+([A-Za-z_][A-Za-z0-9_]*):`)
+// hintKeyLineRe matches one property line of that object: two spaces, an identifier key, and its colon.
+var hintKeyLineRe = regexp.MustCompile(`^  ([A-Za-z_][A-Za-z0-9_]*):`)
+
+// hintKeys reads the keys of the hints object's body:
+// one property per line indented two spaces, its value continued on lines indented further.
+// It refuses a body it cannot read as that shape rather than skipping the line —
+// a quoted key, a spread, a computed key, a comment, or a backtick anywhere,
+// because a template string can hold the line the object's closing brace is recognised by.
+// A scan that skipped what it did not read would report a quoted key as missing
+// and pass a key the vocabulary never named.
+func hintKeys(body string) ([]string, error) {
+	if strings.Contains(body, "`") {
+		return nil, errors.New("holds a backtick, which the scan does not read")
+	}
+	var keys []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "    ") {
+			continue
+		}
+		m := hintKeyLineRe.FindStringSubmatch(line)
+		if m == nil {
+			return nil, fmt.Errorf("holds a line the scan cannot read as an identifier key: %q", line)
+		}
+		keys = append(keys, m[1])
+	}
+
+	return keys, nil
+}
+
+// TestScanHintKeysRefuseWhatTheyCannotRead proves hintKeys fails on a property it does not read.
+// Passing the object without that property is what the failure replaces.
+func TestScanHintKeysRefuseWhatTheyCannotRead(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"identifier keys", "\n  a: \"x\",\n  b:\n    \"y\",", []string{"a", "b"}},
+		{"quoted key", "\n  a: \"x\",\n  \"b\": \"y\",", nil},
+		{"spread", "\n  ...more,", nil},
+		{"computed key", "\n  [code]: \"x\",", nil},
+		{"comment", "\n  // a note\n  a: \"x\",", nil},
+		{"template value", "\n  a: `x\n};\n`,", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := hintKeys(tc.body)
+			if tc.want == nil {
+				if err == nil {
+					t.Fatalf("hintKeys read %v out of a body it does not understand, want an error", got)
+				}
+
+				return
+			}
+			if err != nil {
+				t.Fatalf("hintKeys: %v", err)
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("hintKeys = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 // TestScanHintsNameEveryCode holds the page's hints and the codes of the table to the same set.
 // A code with no key is shown to a person as a bare word they cannot act on,
 // and a key with no code is a hint for something the design does not say the gateway answers,
 // so each is a failure that names the name.
+// A property the scan cannot read is a failure too, never a key silently left out of the set.
 func TestScanHintsNameEveryCode(t *testing.T) {
 	if len(hintCodes) != 20 {
 		t.Fatalf("the vocabulary written out here holds %d codes, want twenty", len(hintCodes))
@@ -259,9 +323,13 @@ func TestScanHintsNameEveryCode(t *testing.T) {
 	if m == nil {
 		t.Fatalf("app.js: declares no hints object the scan recognises")
 	}
+	keys, err := hintKeys(m[1])
+	if err != nil {
+		t.Fatalf("app.js: the hints object %v", err)
+	}
 	got := map[string]bool{}
-	for _, key := range hintKeyRe.FindAllStringSubmatch(m[1], -1) {
-		got[key[1]] = true
+	for _, key := range keys {
+		got[key] = true
 	}
 	if len(got) == 0 {
 		t.Fatalf("app.js: the hints object holds no key the scan recognises")
@@ -272,10 +340,6 @@ func TestScanHintsNameEveryCode(t *testing.T) {
 		if !got[code] {
 			t.Errorf("app.js: the hints object has no key for the code %q", code)
 		}
-	}
-	keys := make([]string, 0, len(got))
-	for key := range got {
-		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {

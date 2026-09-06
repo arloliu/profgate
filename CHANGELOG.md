@@ -250,7 +250,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The control is now disabled while the targets response lists no Pod,
   and the counted reasons, the selector sentence, or "no target listed" stand beside it;
   a targets response that lists a Pod enables it again.
-- **A double-click on Start collection or Cancel no longer creates or cancels a Collection.**
+- **A double-click on Start collection or Cancel no longer creates or cancels a Collection when its second click lands inside half a second.**
   The first click armed the control and the second, a few tens of milliseconds later, confirmed it,
   so one gesture sent the request the two presses exist to guard.
   A press inside half a second of the arm is now ignored and the control stays armed;

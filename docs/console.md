@@ -136,7 +136,8 @@ when your realm's `pgo.collect` flag is true as well;
 a realm that may read and not collect sees the table alone.
 Each control takes two presses: the first arms it and offers **Keep**,
 the second — **Confirm start** or **Confirm cancel** — sends the request;
-a second press inside half a second of the first is ignored, so a double-click sends nothing.
+a second press inside half a second of the first is ignored,
+so a double-click whose second click lands inside that window sends nothing.
 An armed control that is neither confirmed nor kept disarms itself after ten seconds.
 **Keep** disarms a control that has sent nothing;
 after a start whose answer never arrived, **Keep** abandons the attempt and says a Collection may already exist.

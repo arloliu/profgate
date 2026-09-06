@@ -86,8 +86,8 @@ const hints = {
 // its method, its headers, and its body, which is null for a request that carries none.
 // Without one the request is a GET, which is what every listing fetch is.
 // asBlob, when true, reads a 200 as a Blob into blob and leaves body null,
-// which is what a download wants; every other answer is read exactly as it is without it,
-// so the envelope rule is one code path.
+// which is what a download wants; every other status is an error under the envelope rule below,
+// a JSON body or not, because a download has nothing to do with a 201 or a 204 and no Blob to save from one.
 // body is the decoded JSON when the Content-Type says JSON, and bodyText is the body as it arrived;
 // rejected says fetch itself never produced a response;
 // code and message are the error envelope's two fields when the body is one, and empty strings otherwise.
@@ -134,7 +134,7 @@ async function fetchJSON(url, req, asBlob) {
         out.body = null;
       }
     }
-    if (res.ok && out.body !== null) {
+    if (asBlob !== true && res.ok && out.body !== null) {
       return out;
     }
     if (isEnvelope(out.body)) {
@@ -193,11 +193,44 @@ function isEnvelope(body) {
 }
 
 // filenameOf is the filename parameter of a Content-Disposition header, quoted or bare,
-// and "profile" when the header is absent or names none.
+// and "profile" when the header is absent, names none, or names one that is empty.
+// The header is split at the semicolons that stand outside quoted strings,
+// and a quoted pair inside one is the character it escapes,
+// so filename="a\"b" is a"b and a filename= inside another parameter's quotes is not the parameter.
+// filename* is a different parameter and is not read.
 function filenameOf(header) {
-  const m = /(?:^|;)\s*filename\s*=\s*(?:"([^"]*)"|([^;]*))/i.exec(header || "");
-  const name = m ? (m[1] !== undefined ? m[1] : m[2]).trim() : "";
-  return name === "" ? "profile" : name;
+  const params = [];
+  let cur = "";
+  let quoted = false;
+  const s = header || "";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quoted) {
+      if (ch === "\\" && i + 1 < s.length) {
+        cur += s[++i];
+      } else if (ch === '"') {
+        quoted = false;
+      } else {
+        cur += ch;
+      }
+    } else if (ch === '"') {
+      quoted = true;
+    } else if (ch === ";") {
+      params.push(cur);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  params.push(cur);
+  for (const p of params) {
+    const eq = p.indexOf("=");
+    if (eq >= 0 && p.slice(0, eq).trim().toLowerCase() === "filename") {
+      const name = p.slice(eq + 1).trim();
+      return name === "" ? "profile" : name;
+    }
+  }
+  return "profile";
 }
 
 // saveBlob hands blob to the browser's download manager under name:
@@ -969,6 +1002,15 @@ class App extends Component {
     );
   };
 
+  // downloadAllowed is whether a press on Download sends a request:
+  // a URL is built, the targets answer lists a Pod, and no download is in flight.
+  // It is the one rule the control's disabled state, its press, and every retry of it read,
+  // so a Retry on an earlier error, or a scheduled not_ready retry,
+  // sends nothing after a Refresh whose answer disabled the control.
+  downloadAllowed() {
+    return Boolean(this.currentProfileURL()) && downloadNote(this.state.targetSummary) === "" && !this.state.downloading;
+  }
+
   // onDownload fetches the profile and saves a 200 through an object URL;
   // any other answer is shown in the Profile panel under the rule every listing follows,
   // and a service_not_found refetches the Service list as the two loaders do.
@@ -976,10 +1018,10 @@ class App extends Component {
   // The refetch reads the value settle returned and not the recorded error,
   // because a setState is applied later than the line after it.
   onDownload = async () => {
-    const url = this.currentProfileURL();
-    if (!url || this.state.downloading) {
+    if (!this.downloadAllowed()) {
       return;
     }
+    const url = this.currentProfileURL();
     this.setState({ downloading: true });
     const res = await fetchJSON(url.href, undefined, true);
     if (res.blob !== null) {
@@ -1338,7 +1380,7 @@ class App extends Component {
                 <input type="text" class="url" readOnly value=${url ? url.href : ""} />
               </label>
               <div class="actions">
-                <button type="button" disabled=${!url || note !== "" || downloading} onClick=${this.onDownload}>
+                <button type="button" disabled=${!this.downloadAllowed()} onClick=${this.onDownload}>
                   ${downloading ? "Downloading" : "Download"}
                 </button>
                 ${note ? html`<small>${note}</small>` : null}

@@ -782,7 +782,8 @@ and reading an unknown value as one that cannot be cancelled costs a missing but
 Both controls confirm in place.
 The first press turns the button into **Confirm start** or **Confirm cancel** beside a **Keep** button that undoes it;
 only the second press sends a request.
-A second press inside half a second of the first is refused, so a double-click arms and sends nothing;
+A second press inside half a second of the first is refused,
+so a double-click whose second click lands inside that window arms and sends nothing;
 the control stays armed, and a person who pressed twice on purpose presses **Confirm** once more.
 The armed state clears itself after ten seconds and on any change of namespace or Service,
 so a page left open holds no loaded button;
@@ -1664,7 +1665,9 @@ a rolling update, which would need two builds in one cluster
 and which this design leaves out of scope rather than proves (*Layout and embedding*);
 the port control and the target summary as `app.js` wires them,
 each proven apart from the widget and apart from the network;
-the download as `app.js` performs it — the fetch, the `Blob`, the object URL, the `Content-Disposition` filename,
+the download as `app.js` performs it — the fetch, the `Blob`, the object URL,
+the `Content-Disposition` filename read out of the header's quoted or bare parameters,
+the reading of every status but `200` as an error whatever its body,
 and the disabling of the control — beyond what the browser scenario asserts of it;
 the two **Refresh** controls' wiring and the refetch of `/v1/whoami` a listing's `403` causes, the same way;
 the line that says older Collections exist as `app.js` wires it —
@@ -2026,7 +2029,7 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Starting and cancelling a Collection*, *Required by this revision and not yet made* | a replay is answered `200` with `{id, state}` and a `Location` rather than the stored record, because `pgo.collect` and `pgo.read` are independent flags and the record belongs to the second; a mismatch is decided on the effective policy snapshot, so identical JSON can produce `409 idempotency_mismatch` after the stored override or the operator defaults moved; the key resolves from an authoritative read for the record's whole life; and the rows naming the contract this page relies on have left the pending table, which now holds the browser scenarios and the stable asset paths alone |
 | *Errors*, *Required by this revision and not yet made* | the `pgo_disabled` hint says the Collections view goes once the limits have been refetched, naming no route: *Rendering response values* forbids `app.js` a string literal beginning with `/v1` and a scan enforces it, so the narrower rule decides what the hint can say; every edit this revision required elsewhere has been made and the pending table is empty |
 | *Core decisions*, *Non-goals*, *Collections*, *Targets, with reasons*, *Flow*, *Controls*, *Starting and cancelling a Collection*, *Rendering response values*, *Errors*, *Response headers and CSP*, *Failure scenarios*, *Unit*, *What is not proven*, *End to end*, *Required by this revision and not yet made* | **Download** is a `fetch` followed by a save through an object URL rather than a navigation, so an error envelope from the profile endpoint is shown with its hint, at the cost of holding the body whole before the save; it is disabled, with the empty state's wording beside it, while the targets response lists no Pod; one **Refresh** control on the targets list and on the Collections table repeats the fetch its list came from, refetches nothing else, and leaves an armed control as it is, with automatic polling a stated non-goal; the Collections table shows the first page and says that older Collections exist when the response carries `nextCursor`, naming the CLI verb and adding no paging control, and [`cli.md`](cli.md) *Collections* has that verb walk every page the listing offers; the console guide's account of these controls is the one edit owed |
-| *Starting and cancelling a Collection*, *Unit*, *End to end* | a second press inside half a second of the arm is refused and leaves the control armed, so a double-click arms and sends nothing; the model measures the press against the arm time it carries, a retained control has no window, and the browser scenario dispatches two clicks fifty milliseconds apart |
+| *Starting and cancelling a Collection*, *Unit*, *End to end* | a second press inside half a second of the arm is refused and leaves the control armed, so a double-click whose second click lands inside that window arms and sends nothing; the model measures the press against the arm time it carries, a retained control has no window, and the browser scenario dispatches two clicks fifty milliseconds apart |
 | *End to end* | the downloaded file's name is `heap`, the profile the scenario chose, because Go's pprof handler names every profile but the CPU one after itself; the scenario observes the download as a `Fetch` request followed by a download from a `blob:` URL |
 | *End to end* | a second session opened with an `ns` of 1100 characters navigates to the login with `return=/ui/?returned=1` alone, the browser proof of the return-path bound *Flow* states |
 | *Errors*, *What is not proven* | the hints table gains `too_many_auth` and `auth_unavailable`, the two authentication codes every `/v1` route answers, and its `realm_denied` row names the identity panel, the word the page's own header uses; a `403 realm_denied` on a listing refetches `/v1/whoami`, a refetch no unit test proves |

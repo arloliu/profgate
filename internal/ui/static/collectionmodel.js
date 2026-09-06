@@ -24,8 +24,9 @@ const retryAfterDefault = 5;
 const initializingRetryMs = 1000;
 
 // confirmDelayMs is how long after arming a control refuses the press that would send its request.
-// A double-click delivers its second click inside this interval on every platform,
-// so the gesture that arms a control cannot also confirm it.
+// A double-click at the interval most platforms default to delivers its second click inside it,
+// so that gesture arms a control and does not confirm it;
+// a platform configured to accept a slower double-click is not covered, and its second click confirms.
 const confirmDelayMs = 500;
 
 // jsonMediaType is what both write routes require, with or without a body.
