@@ -324,7 +324,7 @@ Why here: the console is the surface a person clicks by reflex, and today a refl
   It reads `runtime.MemStats` around a collection while keeping only `parsed` alive (`:869`),
   so the decompressed input is collected out of the delta and the guard reads about 530 KB low.
   With the input held live the delta is 4.32–4.47 MB against a bound of 4,135,248, and the test fails in both builds.
-  The lifetime and the bound are the item below; the skip comes out with them.
+  The lifetime and the bound are an item of their own; the skip comes out with them.
 - [x] `.github/workflows/check.yml:1-13` runs `check`, lint, and unit tests on `push` only;
   a pull request from a fork fires `pull_request` alone and gets the `current` e2e lane and prose.
   `docs/specs/gateway.md:2098-2103` describes the split; the revision runs the unit gates on `pull_request` too.
