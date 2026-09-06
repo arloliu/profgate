@@ -1515,9 +1515,9 @@ class App extends Component {
                           <td>${text(c.state)}</td>
                           <td>${text(c.attempt)}</td>
                           <td>${text(c.resolvedVersion)}</td>
-                          <td>${text(c.createdAt)}</td>
-                          <td>${text(c.finishedAt)}</td>
-                          <td>${text(c.expiresAt)}</td>
+                          <td class="time">${text(c.createdAt)}</td>
+                          <td class="time">${text(c.finishedAt)}</td>
+                          <td class="time">${text(c.expiresAt)}</td>
                           <td class="row-actions">${this.renderCancel(c)}</td>
                         </tr>
                       `,

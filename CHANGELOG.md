@@ -252,6 +252,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   because the class-less Pico build has no rule for `.secondary`.
   The panel now spans the grid, and **Keep** takes Pico's secondary colors.
   The cells' side padding is now reduced so the nine columns fit without a horizontal scroll at a 1600 px window,
+  the three timestamps wrap inside their cells instead of holding the table past the panel,
   and the list headers hold their Refresh control beside the title.
 - **Download is disabled, with the reason beside it, while a Service has no eligible Pod.**
   The link stayed live over an empty target list,

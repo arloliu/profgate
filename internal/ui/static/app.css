@@ -90,6 +90,11 @@ input.url {
   padding-inline: 0.75rem;
 }
 
+/* A 30-character RFC 3339 timestamp has no break opportunity and would otherwise hold the table past the container. */
+.table td.time {
+  overflow-wrap: anywhere;
+}
+
 button.link {
   background: none;
   border: none;
