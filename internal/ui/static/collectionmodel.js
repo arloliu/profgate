@@ -23,6 +23,11 @@ const retryAfterDefault = 5;
 // initializingRetryMs is how long after a 409 collection_initializing the one retry goes.
 const initializingRetryMs = 1000;
 
+// confirmDelayMs is how long after arming a control refuses the press that would send its request.
+// A double-click delivers its second click inside this interval on every platform,
+// so the gesture that arms a control cannot also confirm it.
+const confirmDelayMs = 500;
+
 // jsonMediaType is what both write routes require, with or without a body.
 const jsonMediaType = "application/json";
 
@@ -253,10 +258,15 @@ function cancelOutcome(answer, tryNumber) {
   return result;
 }
 
+// confirmAccepted reports whether a press at now, on a control armed at armedAt, sends the request.
+function confirmAccepted(armedAt, now) {
+  return count(now) - count(armedAt) >= confirmDelayMs;
+}
+
 // nextState builds the start control's state.
-// A phase that holds no attempt holds neither key nor route,
+// A phase that holds no attempt holds neither key, route, nor arm time,
 // so nothing downstream reads a route as something still pending.
-function nextState(phase, key, route, token, until) {
+function nextState(phase, key, route, token, until, armedAt) {
   const holds = attemptPhases.indexOf(phase) >= 0;
   return {
     phase: phase,
@@ -264,6 +274,7 @@ function nextState(phase, key, route, token, until) {
     route: holds ? nullable(route) : null,
     token: token,
     until: until,
+    armedAt: holds ? count(armedAt) : 0,
   };
 }
 
@@ -273,19 +284,23 @@ function nextStep(state, message) {
 }
 
 // startNext is the start control's armed state, and where the attempt's identity lives.
-// state is {phase, key, route, token, until},
+// state is {phase, key, route, token, until, armedAt},
 // with phase one of idle, armed, inflight, retained, and cooling.
 // token is the attempt's own number, raised on every arm;
 // app.js sends it with the request and hands it back on the outcome.
 // An answer to an attempt the page has left is discarded here,
 // never selecting a record of a Service nobody is looking at.
 // until is when a cooling phase ends, on the millisecond clock the timer event reports.
+// armedAt is when the attempt was armed, on the same clock:
+// a submit inside confirmDelayMs of it leaves an armed control armed,
+// so the second click of a double-click sends nothing,
+// while a retained control has no window, because its arm is minutes old and the press is the retry.
 // event is {kind, ...} with kind one of arm, submit, outcome, timer, keep, and selection:
-// arm carries {key, route}, outcome carries {token, keep, disableSeconds, now},
+// arm carries {key, route, now}, submit carries {now}, outcome carries {token, keep, disableSeconds, now},
 // and timer carries {now}.
 // The function is total: a pair with no rule of its own leaves the state alone and says nothing.
 // An arm always leaves a cooling control cooling, because this module holds no clock
-// and an arm carries no time to compare with until.
+// and an arm's time is compared only with a later submit, never with until.
 function startNext(state, event) {
   const s = state || {};
   const e = event || {};
@@ -293,15 +308,15 @@ function startNext(state, event) {
   const kind = text(e.kind);
   const token = count(s.token);
   const until = count(s.until);
-  const unchanged = nextStep(nextState(phase, s.key, s.route, token, until), null);
-  const idle = nextStep(nextState("idle", null, null, token, 0), null);
+  const unchanged = nextStep(nextState(phase, s.key, s.route, token, until, s.armedAt), null);
+  const idle = nextStep(nextState("idle", null, null, token, 0, 0), null);
   // An inflight or retained control has sent a POST that commits before it answers,
   // so abandoning it silently is the loss the key exists to prevent.
-  const abandoned = nextStep(nextState("idle", null, null, token, 0), abandonMessage);
+  const abandoned = nextStep(nextState("idle", null, null, token, 0, 0), abandonMessage);
 
   if (phase === "idle") {
     if (kind === "arm") {
-      return nextStep(nextState("armed", e.key, e.route, token + 1, 0), null);
+      return nextStep(nextState("armed", e.key, e.route, token + 1, 0, e.now), null);
     }
     if (kind === "selection") {
       return idle;
@@ -310,7 +325,10 @@ function startNext(state, event) {
   }
   if (phase === "armed") {
     if (kind === "submit") {
-      return nextStep(nextState("inflight", s.key, s.route, token, 0), null);
+      if (!confirmAccepted(s.armedAt, e.now)) {
+        return unchanged;
+      }
+      return nextStep(nextState("inflight", s.key, s.route, token, 0, s.armedAt), null);
     }
     // The ten-second timer disarms a control that was never submitted;
     // Keep before the first request has nothing to warn about, since nothing was sent.
@@ -325,11 +343,11 @@ function startNext(state, event) {
         return unchanged;
       }
       if (e.keep === true) {
-        return nextStep(nextState("retained", s.key, s.route, token, 0), null);
+        return nextStep(nextState("retained", s.key, s.route, token, 0, s.armedAt), null);
       }
       const seconds = count(e.disableSeconds);
       if (seconds > 0) {
-        return nextStep(nextState("cooling", null, null, token, count(e.now) + seconds * 1000), null);
+        return nextStep(nextState("cooling", null, null, token, count(e.now) + seconds * 1000, 0), null);
       }
       return idle;
     }
@@ -340,7 +358,7 @@ function startNext(state, event) {
   }
   if (phase === "retained") {
     if (kind === "submit") {
-      return nextStep(nextState("inflight", s.key, s.route, token, 0), null);
+      return nextStep(nextState("inflight", s.key, s.route, token, 0, s.armedAt), null);
     }
     if (kind === "keep" || kind === "selection") {
       return abandoned;
@@ -374,4 +392,4 @@ function progressText(progress) {
   return `round ${count(p.round) + 1} of ${rounds}, samples ok ${count(p.samplesOK)}, failed ${count(p.samplesFailed)}`;
 }
 
-export { startOffered, cancelOffered, uuidFromBytes, startRequest, cancelRequest, startOutcome, cancelOutcome, retryAfterSeconds, startNext, progressText };
+export { startOffered, cancelOffered, uuidFromBytes, startRequest, cancelRequest, startOutcome, cancelOutcome, retryAfterSeconds, startNext, confirmAccepted, progressText };

@@ -196,6 +196,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A double-click on Start collection or Cancel no longer creates or cancels a Collection.**
+  The first click armed the control and the second, a few tens of milliseconds later, confirmed it,
+  so one gesture sent the request the two presses exist to guard.
+  A press inside half a second of the arm is now ignored and the control stays armed;
+  a person who presses twice deliberately sees **Confirm start** standing and presses it again.
 - **The collector's drain follows a lease renewed under it, and waits for every owner it holds.**
   The drain read each owner's cutoff once,
   so a renewal already in flight when the drain began extended a lease the drain did not wait for,

@@ -546,7 +546,7 @@ and, when the pressed row is the armed one, returns before `clearTimeout(this.ca
 the import from `./collectionmodel.js` (`:26-36`) gains the name.
 The comments at `:620-622` and `:670-671` say the second press counts only past the window.
 
-- [ ] **Write the model test, and run the window case first**
+- [x] **Write the model test, and run the window case first**
 
 `internal/ui/collectionmodel_test.go`, in two steps, because `loadModel` (`internal/ui/portmodel_test.go:47-59`)
 fails a test at load when a listed function is absent,
@@ -586,7 +586,7 @@ The shape test reports an export statement missing `confirmAccepted`;
 the new table fails at load, because the function does not exist;
 the scan reports an import that does not name it.
 
-- [ ] **Write the browser step**
+- [x] **Write the browser step**
 
 `test/e2e/scenarios_console_test.go`, in `scenarioConsoleOIDC`:
 `confirmWindow` is a constant of 600 milliseconds with a comment naming the page's half second;
@@ -606,7 +606,7 @@ against a page with no window the second click confirms, **Confirm start** is go
 The model test above is this task's red;
 the suite is not run against the unchanged page for a defect the model test already shows.
 
-- [ ] **Refuse the press and say so**
+- [x] **Refuse the press and say so**
 
 `docs/specs/ui.md` *Unit*, in the armed-state paragraph of the Collection-control bullet (`:1523-1532`):
 "a `submit` inside half a second of the arm leaves an armed control armed and says nothing,
@@ -625,7 +625,7 @@ so one gesture sent the request the two presses exist to guard.
 A press inside half a second of the arm is now ignored and the control stays armed;
 a person who presses twice deliberately sees **Confirm start** standing and presses it again.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 go vet -tags e2e ./test/e2e/

@@ -24,6 +24,7 @@ var collectionModelFunctions = []string{
 	"cancelOutcome",
 	"retryAfterSeconds",
 	"startNext",
+	"confirmAccepted",
 	"progressText",
 }
 
@@ -586,11 +587,12 @@ func TestCollectionModelProgressText(t *testing.T) {
 
 // startState is the start control's state as the page keeps it.
 type startState struct {
-	Phase string  `json:"phase"`
-	Key   *string `json:"key"`
-	Route *string `json:"route"`
-	Token int     `json:"token"`
-	Until int     `json:"until"`
+	Phase   string  `json:"phase"`
+	Key     *string `json:"key"`
+	Route   *string `json:"route"`
+	Token   int     `json:"token"`
+	Until   int     `json:"until"`
+	ArmedAt int     `json:"armedAt"`
 }
 
 // startStep is what startNext returns.
@@ -630,7 +632,7 @@ func idleState() startState {
 }
 
 func armedState(phase string) startState {
-	return startState{Phase: phase, Key: str("k1"), Route: str(startRoute), Token: 3}
+	return startState{Phase: phase, Key: str("k1"), Route: str(startRoute), Token: 3, ArmedAt: 1000}
 }
 
 func coolingState() startState {
@@ -642,8 +644,9 @@ func TestCollectionModelStartNext(t *testing.T) {
 		name  string
 		event map[string]any
 	}{
-		{"arm", map[string]any{"kind": "arm", "key": "k2", "route": cancelRoute}},
-		{"submit", map[string]any{"kind": "submit"}},
+		{"arm", map[string]any{"kind": "arm", "key": "k2", "route": cancelRoute, "now": 700}},
+		{"submit", map[string]any{"kind": "submit", "now": 1600}},
+		{"submit inside the window", map[string]any{"kind": "submit", "now": 1200}},
 		{"outcome kept", map[string]any{"kind": "outcome", "token": 3, "keep": true, "disableSeconds": 0, "now": 1000}},
 		{"outcome dropped", map[string]any{"kind": "outcome", "token": 3, "keep": false, "disableSeconds": 0, "now": 1000}},
 		{"outcome cooling", map[string]any{"kind": "outcome", "token": 3, "keep": false, "disableSeconds": 7, "now": 1000}},
@@ -666,13 +669,14 @@ func TestCollectionModelStartNext(t *testing.T) {
 		{"cooling", coolingState()},
 	}
 	// Every pair not named here leaves the state as it was and says nothing.
-	armedFresh := startState{Phase: "armed", Key: str("k2"), Route: str(cancelRoute), Token: 4}
+	armedFresh := startState{Phase: "armed", Key: str("k2"), Route: str(cancelRoute), Token: 4, ArmedAt: 700}
 	inflight := armedState("inflight")
 	idle := idleState()
 	named := map[string]startStep{
 		"idle/arm":                                  {State: armedFresh},
 		"idle/selection":                            {State: idle},
 		"armed/submit":                              {State: inflight},
+		"armed/submit inside the window":            {State: armedState("armed")},
 		"armed/timer before the wait ends":          {State: idle},
 		"armed/timer at the moment the wait ends":   {State: idle},
 		"armed/timer past the wait":                 {State: idle},
@@ -683,6 +687,7 @@ func TestCollectionModelStartNext(t *testing.T) {
 		"inflight/outcome cooling":                  {State: startState{Phase: "cooling", Token: 3, Until: 8000}},
 		"inflight/selection":                        {State: idle, Message: str(abandonMessage)},
 		"retained/submit":                           {State: inflight},
+		"retained/submit inside the window":         {State: inflight},
 		"retained/keep":                             {State: idle, Message: str(abandonMessage)},
 		"retained/selection":                        {State: idle, Message: str(abandonMessage)},
 		"cooling/timer at the moment the wait ends": {State: idle},
@@ -703,6 +708,34 @@ func TestCollectionModelStartNext(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestCollectionModelConfirmAccepted holds the window a second press is measured against:
+// half a second from the arm, so the second click of a double-click sends nothing,
+// and an absent arm time reads as zero.
+func TestCollectionModelConfirmAccepted(t *testing.T) {
+	cases := []struct {
+		name    string
+		armedAt any
+		now     int
+		want    bool
+	}{
+		{"the same instant", 1000, 1000, false},
+		{"one millisecond inside the window", 1000, 1499, false},
+		{"at the window", 1000, 1500, true},
+		{"long past the window", 1000, 9000, true},
+		{"no arm time, inside the window", nil, 200, false},
+		{"no arm time, at the window", nil, 500, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := loadCollectionModel(t)
+			got := decode(t, callModel(t, vm, "confirmAccepted", tc.armedAt, tc.now).Result)
+			if got != tc.want {
+				t.Errorf("confirmAccepted(%v, %d) = %v, want %v", tc.armedAt, tc.now, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -728,7 +761,7 @@ func TestCollectionModelKeySurvivesLostAnswers(t *testing.T) {
 		{"500", answer(500, "internal", "internal error")},
 	}
 	for _, u := range unclassified {
-		state = step(t, vm, state, map[string]any{"kind": "submit"}).State
+		state = step(t, vm, state, map[string]any{"kind": "submit", "now": 5000}).State
 		if state.Phase != "inflight" {
 			t.Fatalf("%s: submit produced phase %q, want inflight", u.name, state.Phase)
 		}
@@ -747,7 +780,7 @@ func TestCollectionModelKeySurvivesLostAnswers(t *testing.T) {
 			t.Fatalf("%s: produced %+v, want a retained control still holding k1", u.name, state)
 		}
 	}
-	state = step(t, vm, state, map[string]any{"kind": "submit"}).State
+	state = step(t, vm, state, map[string]any{"kind": "submit", "now": 5000}).State
 	classified := runStartOutcome(t, vm, answer(503, "collector_unavailable", "no collector is fresh"))
 	if classified.Keep {
 		t.Errorf("503 collector_unavailable kept the key; no write can have happened")

@@ -32,6 +32,7 @@ import {
   startOutcome,
   cancelOutcome,
   startNext,
+  confirmAccepted,
   progressText,
 } from "./collectionmodel.js";
 
@@ -269,6 +270,9 @@ class App extends Component {
     this.startTimer = 0;
     this.cancelTimer = 0;
     this.cancelRetryTimer = 0;
+    // cancelArmedAt is when the armed cancel row was armed, on the millisecond clock,
+    // which is what a second press on that row is measured against.
+    this.cancelArmedAt = 0;
     this.state = {
       phase: "booting",
       bootError: null,
@@ -294,7 +298,7 @@ class App extends Component {
       copied: false,
       // start is the start control's whole state, as startNext keeps it,
       // and startMessage is what that model last asked the page to say.
-      start: { phase: "idle", key: null, route: null, token: 0, until: 0 },
+      start: { phase: "idle", key: null, route: null, token: 0, until: 0, armedAt: 0 },
       startMessage: null,
       // cancelArmed is the identifier of the row whose cancel is armed,
       // and the empty string when none is: there is one place to press.
@@ -620,14 +624,16 @@ class App extends Component {
   // onStart is the start control's only press.
   // Which of arming and submitting it is comes from the phase startNext holds,
   // so a press while the control is cooling or a request is in flight sends nothing.
+  // Both events carry the clock, because the model counts a second press only past half a second from the arm:
+  // the second click of a double-click leaves the control armed, and the page sends nothing for it.
   onStart = () => {
     const { ns, svc } = this.state;
     if (this.state.start.phase === "idle") {
-      this.startEvent({ kind: "arm", key: newKey(), route: collectionsURL(ns, svc).href });
+      this.startEvent({ kind: "arm", key: newKey(), route: collectionsURL(ns, svc).href, now: Date.now() });
 
       return;
     }
-    const step = this.startEvent({ kind: "submit" });
+    const step = this.startEvent({ kind: "submit", now: Date.now() });
     if (step.state.phase === "inflight" && step.moved) {
       this.sendStart(step.state);
     }
@@ -669,9 +675,16 @@ class App extends Component {
 
   // onCancel is a row's cancel press: the first arms that row, the second sends.
   // Arming a second row disarms the first, so one row is armed at a time.
+  // The second press counts only past half a second from the arm;
+  // one inside that window leaves the row armed and its ten-second disarm running,
+  // so the second click of a double-click sends nothing.
   onCancel = (id) => {
+    if (this.state.cancelArmed === id && !confirmAccepted(this.cancelArmedAt, Date.now())) {
+      return;
+    }
     clearTimeout(this.cancelTimer);
     if (this.state.cancelArmed !== id) {
+      this.cancelArmedAt = Date.now();
       this.setState({ cancelArmed: id });
       this.cancelTimer = this.later(() => this.setState({ cancelArmed: "" }), armDelay);
 

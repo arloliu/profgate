@@ -782,6 +782,8 @@ and reading an unknown value as one that cannot be cancelled costs a missing but
 Both controls confirm in place.
 The first press turns the button into **Confirm start** or **Confirm cancel** beside a **Keep** button that undoes it;
 only the second press sends a request.
+A second press inside half a second of the first is refused, so a double-click arms and sends nothing;
+the control stays armed, and a person who pressed twice on purpose presses **Confirm** once more.
 The armed state clears itself after ten seconds and on any change of namespace or Service,
 so a page left open holds no loaded button;
 a **Refresh** of either list clears nothing (*Controls*).
@@ -1520,6 +1522,9 @@ a value arriving through the raw block would bypass the structured value the cha
   or any other `5xx` besides `503 collector_unavailable`,
   and different after any response that classified the attempt, `503 collector_unavailable` included.
   The armed state:
+  a `submit` inside half a second of the arm leaves an armed control armed and says nothing,
+  one at or past it moves to `inflight`,
+  and a retained control has no window;
   the ten-second timer disarms an armed control that was never submitted;
   it does not fire while a request is in flight;
   it does not fire after an outcome the page could not classify,
@@ -1737,6 +1742,7 @@ so a runner that loses one, or drifts to a version outside the range, turns red 
   under the name `profile` the response's `Content-Disposition` carries, read from the browser's download events;
   that those bytes parse as a profile is proven by the profiles scenario and not repeated here;
 - the Collections table lists the Service's Collections and a row's detail shows its record;
+  two clicks fifty milliseconds apart on **Start collection** leave **Confirm start** standing and send no `POST`;
   **Start collection**, pressed twice through its inline confirmation,
   sends exactly one `POST` carrying `Content-Type: application/json` and one `Idempotency-Key` —
   both read from the browser's own network events, which is the only place they can be observed as the page sent them —
@@ -2011,3 +2017,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Starting and cancelling a Collection*, *Required by this revision and not yet made* | a replay is answered `200` with `{id, state}` and a `Location` rather than the stored record, because `pgo.collect` and `pgo.read` are independent flags and the record belongs to the second; a mismatch is decided on the effective policy snapshot, so identical JSON can produce `409 idempotency_mismatch` after the stored override or the operator defaults moved; the key resolves from an authoritative read for the record's whole life; and the rows naming the contract this page relies on have left the pending table, which now holds the browser scenarios and the stable asset paths alone |
 | *Errors*, *Required by this revision and not yet made* | the `pgo_disabled` hint says the Collections view goes once the limits have been refetched, naming no route: *Rendering response values* forbids `app.js` a string literal beginning with `/v1` and a scan enforces it, so the narrower rule decides what the hint can say; every edit this revision required elsewhere has been made and the pending table is empty |
 | *Core decisions*, *Non-goals*, *Collections*, *Targets, with reasons*, *Flow*, *Controls*, *Starting and cancelling a Collection*, *Rendering response values*, *Errors*, *Response headers and CSP*, *Failure scenarios*, *Unit*, *What is not proven*, *End to end*, *Required by this revision and not yet made* | **Download** is a `fetch` followed by a save through an object URL rather than a navigation, so an error envelope from the profile endpoint is shown with its hint, at the cost of holding the body whole before the save; it is disabled, with the empty state's wording beside it, while the targets response lists no Pod; one **Refresh** control on the targets list and on the Collections table repeats the fetch its list came from, refetches nothing else, and leaves an armed control as it is, with automatic polling a stated non-goal; the Collections table shows the first page and says that older Collections exist when the response carries `nextCursor`, naming the CLI verb and adding no paging control, and [`cli.md`](cli.md) *Collections* has that verb walk every page the listing offers; the console guide's account of these controls is the one edit owed |
+| *Starting and cancelling a Collection*, *Unit*, *End to end* | a second press inside half a second of the arm is refused and leaves the control armed, so a double-click arms and sends nothing; the model measures the press against the arm time it carries, a retained control has no window, and the browser scenario dispatches two clicks fifty milliseconds apart |

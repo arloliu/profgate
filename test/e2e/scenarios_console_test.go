@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chromedp/chromedp"
 )
@@ -47,6 +48,12 @@ const (
 
 	// consoleBasicUser is the user the browser answers the HTTP authentication challenge with.
 	consoleBasicUser = "alice"
+
+	// confirmWindow is a wait past the page's half second,
+	// inside which a second press on an armed control is refused rather than sent.
+	// Two presses the test makes in two runs can land inside that half second on a fast machine,
+	// so every deliberate confirm waits this long first.
+	confirmWindow = 600 * time.Millisecond
 
 	// consoleSamplingDuration is what the Service policy raises sampling to before the browser starts a Collection.
 	// The gateway's own default is two seconds, which can finish before a browser has pressed Cancel twice,
@@ -204,10 +211,12 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		t.Fatalf("the detail of %s does not show its state:\n%s", seeded, detail)
 	}
 
-	// Start collection, pressed twice through its inline confirmation.
-	s.run(t, "arm the start control", chromedp.Click(control("Start collection"), chromedp.BySearch))
-	s.run(t, "confirm the start", chromedp.Click(control("Confirm start"), chromedp.BySearch))
+	// Start collection, pressed twice through its inline confirmation:
+	// first as a double-click, which arms the control and sends nothing,
+	// then once more past the window, which sends the one POST.
 	route := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/collections"
+	pressTwiceInsideTheWindow(t, s, route)
+	s.run(t, "confirm the start", chromedp.Click(control("Confirm start"), chromedp.BySearch))
 	s.awaitRequest(t, http.MethodPost, route)
 	// The page selects the Collection the start created, which is what names it in the detail,
 	// so the detail is where the answer being applied is read,
@@ -217,8 +226,9 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	t.Logf("the browser started collection %s", started)
 	s.awaitRow(t, started, "the Collection the browser started")
 
-	// Cancel on that row, pressed twice the same way.
+	// Cancel on that row, pressed twice the same way, with the wait past the window between the two.
 	s.run(t, "arm the cancel control", chromedp.Click(control("Cancel"), chromedp.BySearch))
+	s.run(t, "wait past the window", chromedp.Sleep(confirmWindow))
 	s.run(t, "confirm the cancel", chromedp.Click(control("Confirm cancel"), chromedp.BySearch))
 	s.waitFor(t, "the row moves to cancelled",
 		fmt.Sprintf(`%s === "cancelled"`, rowCell(started, 2)))
@@ -486,6 +496,48 @@ func assertSelection(t *testing.T, rawURL, selection string) {
 	if u.Path != uiPath || q.Get("ns") != selection || q.Get("svc") != selection || q.Get("returned") != "" {
 		t.Fatalf("after the login the browser is at %s, want %s carrying the selection and no marker", rawURL, uiPath)
 	}
+}
+
+// pressTwiceInsideTheWindow presses **Start collection** and, fifty milliseconds later,
+// the **Confirm start** that first press rendered, and holds the page to having sent nothing for the pair.
+// Both clicks come from one evaluation in the page, timed by the page's own clock,
+// so nothing between two chromedp runs can widen the gap past the half second the page refuses a second press in;
+// the step fails when the pair took 400 milliseconds or more, so the two clicks are inside the window by construction.
+// chromedp's DoubleClick is one press with a click count of two, which the page receives as one click,
+// while a physical double-click is two clicks inside the platform's interval, which is what this dispatches.
+// After the pair the control is still armed, with **Confirm start** and **Keep** standing,
+// and the caller presses **Confirm start** once more after waiting past the window.
+func pressTwiceInsideTheWindow(t *testing.T, s *session, route string) {
+	t.Helper()
+	var elapsed float64
+	s.eval(t, "press Start collection twice inside the window", `(async () => {
+  const press = (label) => {
+    const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
+    if (!b) { throw new Error("no button is labelled " + label); }
+    b.click();
+  };
+  const began = performance.now();
+  press("Start collection");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  press("Confirm start");
+  return performance.now() - began;
+})()`, &elapsed)
+	if elapsed >= 400 {
+		t.Fatalf("the two presses were %.0f ms apart, want under 400 so both land inside the page's window", elapsed)
+	}
+	var standing []string
+	s.eval(t, "read the start control",
+		`[...document.querySelectorAll("button")].map((b) => b.textContent.trim()).filter((l) => l === "Confirm start" || l === "Keep")`,
+		&standing)
+	if len(standing) != 2 {
+		t.Fatalf("after two presses inside the window the page shows %v, want Confirm start and Keep still standing\n%s",
+			standing, s.report())
+	}
+	if sent := s.sentTo(http.MethodPost, route); len(sent) != 0 {
+		t.Fatalf("two presses inside the window sent %d POSTs to %s, want none; a double-click must not start a Collection\n%s",
+			len(sent), route, s.report())
+	}
+	s.run(t, "wait past the window", chromedp.Sleep(confirmWindow))
 }
 
 // assertStartRequest holds the start POST to what the page sent:
