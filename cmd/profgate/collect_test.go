@@ -234,14 +234,22 @@ func replay() (*http.Response, error) {
 // pagedTransport answers each request with the page its cursor query value names,
 // and records every request it saw.
 // A cursor with no page fails the test: the walk asked for a page the gateway never offered.
+// limit, when it is not zero, is how many requests the walk may send before the test fails.
+// It ends a walk that would otherwise run forever,
+// so a case about a walk that does not end reports instead of hanging.
 type pagedTransport struct {
 	pages    map[string]pollAnswer
 	requests []*http.Request
+	limit    int
 	t        *testing.T
 }
 
 func (pt *pagedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	pt.requests = append(pt.requests, r)
+	if pt.limit > 0 && len(pt.requests) > pt.limit {
+		pt.t.Errorf("request %d past the limit of %d: the walk did not end", len(pt.requests), pt.limit)
+		return nil, errors.New("too many requests")
+	}
 	cursor := r.URL.Query().Get("cursor")
 	a, ok := pt.pages[cursor]
 	if !ok {
@@ -595,6 +603,13 @@ const collectionsPageOne = `{"namespace":"payments","service":"checkout","collec
 // collectionsPageTwo is the last page: one record and no token.
 const collectionsPageTwo = `{"namespace":"payments","service":"checkout","collections":[{"id":"9k3m5p7r2t4v6w8x0y1z","origin":"api","state":"expired","attempt":1,"createdAt":"2026-08-26T08:00:00Z"}]}` + "\n"
 
+// cursorC1Page and cursorC2Page carry a token and no record,
+// so a walk that follows them asks for a cursor it has already requested.
+const (
+	cursorC1Page = `{"namespace":"payments","service":"checkout","collections":[],"nextCursor":"c1"}` + "\n"
+	cursorC2Page = `{"namespace":"payments","service":"checkout","collections":[],"nextCursor":"c2"}` + "\n"
+)
+
 // The envelopes a second page can fail with.
 const (
 	pgoUnavailableBody  = `{"error":"the store is unavailable","code":"pgo_unavailable"}`
@@ -614,6 +629,7 @@ func TestCollectionsWalksEveryPage(t *testing.T) {
 		name       string
 		pages      map[string]pollAnswer
 		args       []string
+		limit      int
 		wantCode   int
 		wantQuery  []string
 		wantStdout string
@@ -621,6 +637,8 @@ func TestCollectionsWalksEveryPage(t *testing.T) {
 		notStdout  []string
 	}{
 		{
+			// A listing that fits one page behaves as it did before the walk existed;
+			// this case holds that behaviour rather than proving the walk.
 			name:       "one page sends one request",
 			pages:      map[string]pollAnswer{"": {status: http.StatusOK, body: collectionsBody}},
 			wantQuery:  []string{""},
@@ -680,11 +698,37 @@ func TestCollectionsWalksEveryPage(t *testing.T) {
 			wantStderr: "pgo_unavailable: the store is unavailable",
 			notStdout:  []string{"3g7hk2m9p4qr8s1tvw5x", "7h2k9m4p6r8t0v1w3x5y"},
 		},
+		{
+			name: "a cursor offered twice in a row ends the walk",
+			pages: map[string]pollAnswer{
+				"":   {status: http.StatusOK, body: collectionsPageOne},
+				"c1": {status: http.StatusOK, body: cursorC1Page},
+			},
+			limit:      4,
+			wantCode:   1,
+			wantQuery:  []string{"", "cursor=c1"},
+			wantStderr: `repeats the cursor "c1"`,
+			notStdout:  []string{"3g7hk2m9p4qr8s1tvw5x", "7h2k9m4p6r8t0v1w3x5y"},
+		},
+		{
+			name: "a cycle of cursors ends the walk",
+			pages: map[string]pollAnswer{
+				"":   {status: http.StatusOK, body: collectionsPageOne},
+				"c1": {status: http.StatusOK, body: cursorC2Page},
+				"c2": {status: http.StatusOK, body: cursorC1Page},
+			},
+			limit:      6,
+			wantCode:   1,
+			wantQuery:  []string{"", "cursor=c1", "cursor=c2"},
+			wantStderr: `repeats the cursor "c1"`,
+			notStdout:  []string{"3g7hk2m9p4qr8s1tvw5x", "7h2k9m4p6r8t0v1w3x5y"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			te := newTestEnv(t)
 			pt := paged(t, tc.pages)
+			pt.limit = tc.limit
 			te.env.transport = pt
 			args := append([]string{"collections", "payments/checkout"}, tc.args...)
 			args = append(args, "--server", "https://g.example")

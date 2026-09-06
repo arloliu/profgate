@@ -311,9 +311,12 @@ func collectionsVerb() verb {
 // It returns every page's body and the table rows of all of them, in the order the pages arrived.
 // A page that fails returns its error with nothing kept,
 // so the caller prints that page's envelope and no row of the pages before it.
+// A cursor the walk has already requested fails the same way before it is requested again,
+// so a listing that repeats or cycles its cursors ends instead of requesting and buffering pages without bound.
 func walkCollections(ctx context.Context, gw *client.Client, path string) ([][]byte, [][]string, error) {
 	var pages [][]byte
 	var rows [][]string
+	requested := map[string]bool{}
 	for next := ""; ; {
 		var q url.Values
 		if next != "" {
@@ -334,6 +337,10 @@ func walkCollections(ctx context.Context, gw *client.Client, path string) ([][]b
 		if r.NextCursor == "" {
 			return pages, rows, nil
 		}
+		if requested[r.NextCursor] {
+			return nil, nil, fmt.Errorf("the collections listing repeats the cursor %q, so the walk would not end", r.NextCursor)
+		}
+		requested[r.NextCursor] = true
 		next = r.NextCursor
 	}
 }
