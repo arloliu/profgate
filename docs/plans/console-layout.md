@@ -994,7 +994,7 @@ and a reviewer reading each changed sentence beside the part of the page it desc
 semlf check docs/console.md docs/specs/ui.md
 mise exec golangci-lint@2.12.2 -- golangci-lint run ./... && mise run test && mise run check && mise run prose
 git add docs/console.md docs/specs/ui.md
-git commit -F <file holding: "docs(console): describe the page's new shape" and a body naming the four places the guide called the identity a panel and saying the page is now one panel to a row>
+git commit -F <file holding: "docs(console): describe the page's new shape" and a body naming the places the guide called the identity a panel and saying the page is now one panel to a row>
 git log --oneline -1 && git status --short
 ```
 
@@ -1099,7 +1099,7 @@ which is below the `48rem` the identity list flips at:
   the **Port number** field sits on the line beside the port menu rather than under it,
   and the fieldset's **Port** caption sits where the labels beside it do;
   again with a name wildcard and its **Port name** field;
-  and again with `pprof.maxSeconds` configured, whose seconds control is a fourth field on the same line;
+  and again with both wildcards, whose two fields divide the fieldset with the menu;
 - a long value on the row:
   a Pod name near the 63-character bound and a port name at its own bound leave every control at its own share,
   and push nothing off the row;
