@@ -81,7 +81,7 @@ Fifteen routes live under `/v1`; the nine that name a Service or a Collection in
 Six more routes under `/v1` name neither:
 [Listing endpoints](#listing-endpoints) below covers four of them,
 [Discovering how to log in](#discovering-how-to-log-in) covers `GET /v1/auth`,
-the one `/v1` route that requires no credential,
+one of the two `/v1` routes that require no credential,
 and `GET /v1/openapi.json` serves the document described just below.
 
 That document is an OpenAPI 3.1 description of every route the API listener serves,
@@ -841,7 +841,7 @@ profgate --context prod profile payments/checkout cpu --seconds 30 --open
 GET /v1/auth
 ```
 
-The one `/v1` route that requires no credential:
+One of the two `/v1` routes that require no credential:
 it is what a client reads before it holds one, so requiring one would make it answer only callers who no longer need it.
 It runs the route, method, readiness, and parameter steps of [How a request is processed](#how-a-request-is-processed)
 and none of the others: `GET` only, `503 not_ready` before the gateway is ready,
