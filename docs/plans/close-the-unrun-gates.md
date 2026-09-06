@@ -503,7 +503,7 @@ and an *Updated with the implementation* table with one row —
 The revision itself is already in the tree (`8bee224`, `:2230`, `:2235-2238`);
 the block is what that commit did not add.
 
-- [ ] **Name the check**
+- [x] **Name the check**
 
 No test reads a workflow file.
 What verifies this task is the workflow run on the pull request this plan opens, not the name in its checks list:
@@ -519,7 +519,7 @@ What is recorded, once the pull request exists:
 The fork case is reasoned in *Decisions* and not run:
 its event eligibility follows from the workflow file, and an observed fork run waits for a first fork contribution.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/specs/gateway.md

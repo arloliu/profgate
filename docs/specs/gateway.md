@@ -2937,3 +2937,19 @@ Updated with the implementation:
 | `internal/k8s` | `klog.SetSlogLogger` before the client is built; a client gone during `Confirm` returned as a cancellation, not `ErrDiscoveryUnavailable` |
 | `internal/metrics` | `client_gone` as a `result` of `profgate_confirm_total` |
 | `cmd/profgate` | `IdleTimeout` and `ErrorLog` at `error` on both servers; the drain context every API request derives from, cancelled with the `drain_expired` cause when the bound ends; the fatal startup paths still take `drainEndpoints`, and the delay is spent only once `/readyz` has answered 200 |
+
+Running the unit gates on every pull request amends the following text.
+The first table lists the edits made in the same change as this block;
+the second lists the workflow that carries the behavior.
+
+Amended now:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *Continuous integration* | the unit gates run on every pull request and every push to `main`, on one job with no event gate; why a same-repo pull request runs it once |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `.github/workflows/check.yml` | `pull_request` and `push` to `main` as the events; the `check` job loses its event gate; the `prose` job keeps its own, because it diffs against `github.base_ref`, which a push does not carry |
