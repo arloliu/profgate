@@ -1508,7 +1508,7 @@ Closes the roadmap bullet *The page has no heading and no pointer to the CLI ver
 `<p><small>From a terminal: <code>profgate profile ${ns}/${svc} ${profile}</code></small></p>`;
 the three values are text children.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 `internal/ui/ui_test.go`: the wanted strings of `TestShellInlineForms` (`:611`) gain `<h1>`.
 `internal/ui/scan_test.go` gains `TestScanPageNamesTheVerb`, asserting `app.js` contains the literal `profgate profile`.
@@ -1521,7 +1521,7 @@ go test -race -count=1 ./internal/ui/ -run 'TestShellInlineForms|TestScanPageNam
 
 The shell test reports the missing `<h1>`; the scan reports the missing literal.
 
-- [ ] **Add both and say so**
+- [x] **Add both and say so**
 
 `TestShellNamesItsAssets` (`internal/ui/ui_test.go:341-359`) stays green: the heading names no asset.
 `TestAssetTags` and `TestConditional` keep passing over the changed bytes, because they read whatever the tree holds.
@@ -1532,7 +1532,7 @@ The page opened on its first panel with nothing naming what it was,
 and nothing pointed a reader at `profgate profile`, which fetches the same profile from a terminal.
 The shell carries a heading, and the Profile panel names the verb with the selection filled in once a URL is built.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/ui/static/app.js CHANGELOG.md

@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is disabled while that fetch is in flight, leaves an armed **Start collection** or **Cancel** as it is,
   and a refresh of one list never discards the other's answer.
   Watching a Collection leave `pending` is a press, never a timer.
+- **The console has a heading and names the command that does the same job.**
+  The page opened on its first panel with nothing naming what it was,
+  and nothing pointed a reader at `profgate profile`, which fetches the same profile from a terminal.
+  The shell carries a heading, and the Profile panel names the verb with the selection filled in once a URL is built.
 - **`profgate_pgo_store_failures_total` counts a store operation that returned a failure.**
   A `completed` to `expired` update that fails for a reason other than a lost race, and a probe key listing that fails,
   each add one to the counter under `op`, `expire` or `probe_list`, and write one warn record.

@@ -608,7 +608,7 @@ func TestShellInlineForms(t *testing.T) {
 	if n := len(moduleRe.FindAllString(shell, -1)); n != 1 {
 		t.Errorf("module scripts = %d, want 1", n)
 	}
-	for _, want := range []string{"<!doctype html>", `<html lang="en">`, "<meta charset", `<meta name="viewport"`, "<title>", `<main id="app"></main>`} {
+	for _, want := range []string{"<!doctype html>", `<html lang="en">`, "<meta charset", `<meta name="viewport"`, "<title>", "<h1>", `<main id="app"></main>`} {
 		if !strings.Contains(shell, want) {
 			t.Errorf("shell lacks %q", want)
 		}

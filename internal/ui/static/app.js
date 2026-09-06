@@ -1347,6 +1347,9 @@ class App extends Component {
               </div>
               ${this.panelError("download")}
               <p><small>${copyNote}</small></p>
+              ${url
+                ? html`<p><small>From a terminal: <code>profgate profile ${ns}/${svc} ${profile}</code></small></p>`
+                : null}
               ${!ns || !svc ? html`<p><small>choose a namespace and a Service to build the URL</small></p>` : null}
               ${ns && svc && !svcListed ? html`<p><small>the selection is not listed, so no URL is built</small></p>` : null}
             `

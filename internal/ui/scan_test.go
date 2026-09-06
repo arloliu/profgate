@@ -97,6 +97,14 @@ func TestScanNoBlockingDialogs(t *testing.T) {
 	}
 }
 
+// TestScanPageNamesTheVerb holds app.js to naming the CLI verb that fetches the same profile.
+// A page that never says "profgate profile" points a reader at nothing when the browser is not the point.
+func TestScanPageNamesTheVerb(t *testing.T) {
+	if src := readSource(t, "app.js"); !strings.Contains(src, "profgate profile") {
+		t.Errorf("app.js: does not name %q", "profgate profile")
+	}
+}
+
 func TestScanURLsBuilds(t *testing.T) {
 	src := readSource(t, "urls.js")
 	for _, want := range []string{"encodeURIComponent", "URLSearchParams"} {
