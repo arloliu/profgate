@@ -888,7 +888,7 @@ The wording is the implementer's, provided the pinned fragment survives it
 and no rewrite puts "one of the <word> `/v1` routes (" anywhere, which is a different row's pattern.
 The check is what confirms all three: it is red on them before and green after, with nothing else changed.
 
-- [ ] **Write the rule, and show it red**
+- [x] **Write the rule, and show it red**
 
 ```bash
 mise run check
@@ -927,7 +927,7 @@ Before the commit, every mutation is restored and `git status --short` shows onl
 The wrong implementation is prose that keeps saying fifteen after a sixteenth `/v1` route lands,
 which is what `docs/api.md:121` and `:1002` do today by luck.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 python3 -m py_compile scripts/check-repo.py

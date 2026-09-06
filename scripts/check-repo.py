@@ -19,6 +19,7 @@
 - The removed discovery.pprof.allowedPorts and allowedPortNames keys, their Go
   fields, and their environment variables appear in no code or manifest;
   internal/config refuses them by name and keeps the fixtures that prove it.
+- Every route count check_route_counts pins in the guides and the project map equals the count routes.go declares.
 
 Checks whose subject does not exist yet stay silent rather than failing.
 The golden ClusterRole test (.agents/rules/800-security-invariant.md) lives in
@@ -267,6 +268,147 @@ def check_pkce_override_name(root):
     return bad
 
 
+ROUTE_TABLE_PATH = "internal/httpapi/routes.go"
+ROUTE_DISPATCH_PATH = "internal/httpapi/server.go"
+ROUTE_ENTRY_RE = re.compile(r'^\t\{"(/[^"]*)", (kind\w+)')
+# The span of the request algorithm that answers before anything reads a credential:
+# it opens where the readiness check stands and closes where the PGO steps begin.
+# The kinds it names are read from there, never kept here.
+ROUTE_OPEN_OPEN = "\tif !s.ready() {"
+ROUTE_OPEN_CLOSE = "\tif rt.kind.isPGO() {"
+ROUTE_OPEN_KIND_RE = re.compile(r"rt\.kind == (kind\w+)")
+NUMBER_WORDS = dict(enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve "
+    "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split()))
+
+# One row per place the guides state a route count:
+# the file, the sentence with {n} where the number word stands, the name of the count,
+# and how many places in that file are expected to match.
+# Every match is checked and the number of matches is asserted,
+# so neither a reworded copy beside a matching one nor a sentence that disappears can leave a count unpinned.
+ROUTE_COUNT_SENTENCES = (
+    ("docs/api.md", "{n} routes live under `/v1`", "v1", 1),
+    ("docs/api.md", "the {n} that name a Service or a Collection in the path", "named", 1),
+    ("docs/api.md", "{n} more routes under `/v1` name neither", "unnamed", 1),
+    # The opening parenthesis is part of both places this matches,
+    # and keeps the pattern off the credential sentences two rows down.
+    ("docs/api.md", "one of the {n} `/v1` routes (", "v1", 2),
+    ("docs/api.md", "The {n} PGO routes", "pgo", 1),
+    ("docs/api.md", "Two of the {n} take query parameters", "pgo", 1),
+    ("docs/api.md", "{n} `/v1` routes that require no credential", "open", 2),
+    ("docs/api.md", "The {n} routes exist only when the browser block is configured", "auth", 1),
+    ("docs/api.md", "under `/auth/`, not one of the {n} routes", "auth", 1),
+    ("docs/configuration.md", "the {n} `/auth/` routes", "auth", 1),
+    ("docs/deployment.md", "The {n} `/auth/` routes", "auth", 1),
+    (".agents/rules/100-project-map.md", "{n} `/v1` routes with no authentication step", "open", 1),
+    # The comment over the span open_kinds reads, so the code's own count moves with it.
+    ("internal/httpapi/server.go", "The {n} /v1 routes with no authentication step", "open", 1),
+    (".agents/rules/100-project-map.md", "{n} routes present only when `ui.enabled`", "console", 1),
+)
+
+
+def open_kinds(root):
+    """The kinds the request algorithm answers before the credential step.
+
+    Read from internal/httpapi/server.go rather than kept here,
+    so a route that joins them moves the count instead of slipping past it.
+    A span that does not resolve, or resolves to nothing, is an error and never an empty set.
+    """
+    text = (root / ROUTE_DISPATCH_PATH).read_text()
+    if text.count(ROUTE_OPEN_OPEN) != 1:
+        return None
+    start = text.index(ROUTE_OPEN_OPEN)
+    end = text.find(ROUTE_OPEN_CLOSE, start)
+    if end < 0:
+        return None
+
+    return set(ROUTE_OPEN_KIND_RE.findall(text[start:end])) or None
+
+
+def route_counts(root, open_kinds):
+    """Count routeTable's entries, and name the ones no group claims.
+
+    Every group is a property of the entry:
+    the template for the path groups, the kind for the routes that answer before the credential step.
+    """
+    entries = []
+    inside = False
+    for line in (root / ROUTE_TABLE_PATH).read_text().splitlines():
+        if line.startswith("var routeTable = "):
+            inside = True
+        elif inside and line == "}":
+            break
+        elif inside:
+            match = ROUTE_ENTRY_RE.match(line)
+            if match:
+                entries.append((match.group(1), match.group(2)))
+    v1 = [t for t, _ in entries if t.startswith("/v1/")]
+    named = [t for t in v1 if "{service}" in t or "{id}" in t]
+    auth = [t for t, _ in entries if t.startswith("/auth/")]
+    console = [t for t, _ in entries if t == "/" or t.startswith("/ui/")]
+    counts = {
+        "v1": len(v1),
+        "named": len(named),
+        "unnamed": len(v1) - len(named),
+        "pgo": len([t for t in v1 if "/pgo" in t or "/collections" in t]),
+        "auth": len(auth),
+        "console": len(console),
+        "open": len([t for t, kind in entries if t.startswith("/v1/") and kind in open_kinds]),
+    }
+    unclassified = [t for t, _ in entries if t not in v1 and t not in auth and t not in console]
+    kinds = {kind for _, kind in entries}
+    unrouted = sorted(k for k in open_kinds if k not in kinds)
+
+    return counts, unclassified, unrouted
+
+
+def sentence_pattern(sentence):
+    """The sentence as a pattern whose one free part is its number word.
+
+    Every run of spaces matches a line break,
+    because the prose here uses semantic line breaks and a sentence wraps at a clause boundary.
+    """
+    parts = [re.sub(r"(?:\\?\s)+", r"\\s+", re.escape(part)) for part in sentence.split("{n}")]
+
+    return re.compile(r"([A-Za-z]+)".join(parts))
+
+
+def check_route_counts(root):
+    """Hold every route count the guides state to the route table.
+
+    Each count is read from internal/httpapi/routes.go,
+    and the credential-free one from the dispatch in internal/httpapi/server.go,
+    so a route added to either turns the prose red rather than the check stale.
+    The sentence table is the one list this check keeps rather than reads,
+    and it fails loudly instead of going quiet.
+    """
+    kinds = open_kinds(root)
+    if kinds is None:
+        return [f"{ROUTE_DISPATCH_PATH}: the span answering before the credential step did not resolve; the open route count is unchecked"]
+    counts, unclassified, unrouted = route_counts(root, kinds)
+    if not counts["v1"]:
+        return [f"{ROUTE_TABLE_PATH}: no routeTable entry found; the route counts are unchecked"]
+    bad = [f"{ROUTE_TABLE_PATH}: {t} is in no counted group; extend route_counts" for t in unclassified]
+    bad += [f"{ROUTE_DISPATCH_PATH}: {k} answers before the credential step and names no route in {ROUTE_TABLE_PATH}" for k in unrouted]
+    for name, value in sorted(counts.items()):
+        if value not in NUMBER_WORDS:
+            bad.append(f"{ROUTE_TABLE_PATH}: the {name} count is {value}, which this check has no word for; extend NUMBER_WORDS")
+    if bad:
+        return bad
+    for path, sentence, name, occurrences in ROUTE_COUNT_SENTENCES:
+        text = (root / path).read_text()
+        hits = list(sentence_pattern(sentence).finditer(text))
+        if len(hits) != occurrences:
+            bad.append(f"{path}: {len(hits)} places match {sentence!r}, want {occurrences}; pin the reworded sentence in check_route_counts")
+            continue
+        for hit in hits:
+            if hit.group(1).lower() != NUMBER_WORDS[counts[name]]:
+                number = text.count("\n", 0, hit.start()) + 1
+                bad.append(f"{path}:{number}: says {hit.group(1)!r} where {ROUTE_TABLE_PATH} declares {counts[name]} ({name})")
+
+    return bad
+
+
 def check_hooks(root):
     """Fail when a repository git hook is missing or not executable.
 
@@ -298,6 +440,7 @@ def main():
     errors.extend(check_client_imports(root))
     errors.extend(check_removed_port_keys(root))
     errors.extend(check_pkce_override_name(root))
+    errors.extend(check_route_counts(root))
     errors.extend(check_hooks(root))
     if errors:
         for error in errors:

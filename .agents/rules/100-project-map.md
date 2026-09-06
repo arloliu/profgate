@@ -136,7 +136,7 @@ and three routes present only when `ui.enabled`:
 ```
 
 The accepted command-line design ([`docs/specs/cli.md`](../../docs/specs/cli.md)) adds one route,
-the only `/v1` route with no authentication step:
+one of the two `/v1` routes with no authentication step:
 
 ```
 /v1/auth
