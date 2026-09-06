@@ -967,8 +967,11 @@ git log --oneline -1 && git status --short
 
 ## 5. The heap-delta guard runs under `-race`
 
-Closes the roadmap bullet beginning *`TestRoundsDecodeHeapDelta` skips under `-race`* (`docs/plans/roadmap.md:320-321`),
-which is ticked and not done.
+Takes up the roadmap bullet beginning *`TestRoundsDecodeHeapDelta` skips under `-race`* (`docs/plans/roadmap.md:320-327`),
+which was ticked and not done.
+It does not close it:
+the measurement below says the guard fails once it holds what it claims to measure,
+so the bullet is un-ticked with the reason and a roadmap item of its own carries the repair.
 
 **Files:**
 - Modify: `internal/pgo/rounds_test.go`, `docs/specs/pgo.md`
@@ -1250,8 +1253,9 @@ its first (`:320`) is un-ticked and rewritten, because nothing closed it and its
 and a roadmap item of its own carries the input's lifetime, the bound, and the constant the measurement found,
 and its `Shipped:` line (`:337`) names that pull request,
 the shape the previous plan's closing commit gave it (`8d44a2c`).
-Every one of the seven tasks is done before this one runs;
-the plan does not reach `Done` with the end-to-end flag off or the harness unsplit,
+Every one of the seven tasks has run before this one, and six of them landed code;
+the heap-delta guard's landed none, which is why its bullet is the one left open.
+The plan does not reach `Done` with the end-to-end flag off or the harness unsplit,
 because the flag's task is finished only by a passing flagged run
 and the split is what its roadmap bullet's tick claims.
 The pull request is named rather than a commit because the merge rebases this branch onto `main`
