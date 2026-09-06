@@ -349,6 +349,40 @@ func TestScanHintsNameEveryCode(t *testing.T) {
 	}
 }
 
+// openIdentityCallRe matches one call of the method that opens the identity disclosure.
+var openIdentityCallRe = regexp.MustCompile(`this\.openIdentity\(\)`)
+
+// refetchBodyRe matches the body of the method that runs an outcome's refetches,
+// anchored on its own opening line and on a closing brace at the method's indentation,
+// the shape hintsObjectRe reads the hints object by.
+var refetchBodyRe = regexp.MustCompile(`(?s)\n  refetch\(what\) \{(.*?)\n  \}`)
+
+// TestScanIdentityOpensWhereTheAnswerIsClassified holds app.js to two calls of the disclosure's opening,
+// neither of them inside the method that runs an outcome's refetches.
+// That method serves a start's 403 realm_denied, which opens the disclosure,
+// and a cancel's 404 collection_not_found, which does not,
+// so a call placed there would open the disclosure on a cancel that names no realm that refused.
+// The count catches a third call site, which is a path the design did not name.
+// It proves nothing about what the opening does, whether its element reference is ever attached,
+// or where inside a function each call sits; the console browser scenario is what proves that.
+// A body the scan cannot cut is a failure and never a pass:
+// a scan that matched nothing would pass a page that never opened the disclosure at all.
+func TestScanIdentityOpensWhereTheAnswerIsClassified(t *testing.T) {
+	src := readSource(t, "app.js")
+	if got := len(openIdentityCallRe.FindAllString(src, -1)); got != 2 {
+		t.Errorf("app.js: calls the identity disclosure's opening %d times, want twice:"+
+			" once where a listing's and a download's answer is classified, and once on a start's answer", got)
+	}
+	m := refetchBodyRe.FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("app.js: declares no refetch method the scan recognises")
+	}
+	if got := len(openIdentityCallRe.FindAllString(m[1], -1)); got != 0 {
+		t.Errorf("app.js: refetch calls the identity disclosure's opening %d times, want none:"+
+			" it also runs the refetch a cancel's 404 collection_not_found asks for", got)
+	}
+}
+
 func TestScanNoInlineForms(t *testing.T) {
 	for _, name := range consoleSources() {
 		t.Run(name, func(t *testing.T) {

@@ -3,7 +3,7 @@
 // Every response-derived value reaches the template as ${value} in child or attribute position,
 // so it is set as text or as a DOM property and never parsed as markup.
 // Every URL comes from urls.js; this module spells no path.
-import { h, Component, render } from "./vendor/preact/preact.module.js";
+import { h, Component, render, createRef } from "./vendor/preact/preact.module.js";
 import htm from "./vendor/htm/htm.module.js";
 import {
   namespacesURL,
@@ -59,7 +59,7 @@ const hints = {
   not_ready: "the gateway is still syncing; the page retries every 2 seconds",
   too_many_auth: "the gateway is checking too many passwords at once; retry in a moment",
   auth_unavailable: "the gateway cannot decide who you are right now; retry",
-  realm_denied: "your realm does not admit this; the identity panel shows what it does",
+  realm_denied: "your realm does not admit this; the identity shows what it does",
   service_not_found: "the Service left the cache since the list was fetched; the page refreshes the Service list",
   no_targets:
     "no Pod is eligible for the selection; Refresh on the targets list updates the available Pods and the empty state",
@@ -321,11 +321,19 @@ class App extends Component {
     // keeps answering 401 ends in a message rather than a loop.
     this.navigatedToLogin = false;
     this.returnedFromLogin = q.returned;
-    // targetsSeq stamps each targets request and collectionsSeq each Collections request,
+    // targetsSeq stamps each targets request,
+    // collectionsSeq each Collections request,
+    // and servicesSeq each Service listing,
     // so a stale answer is dropped when a later selection or a later refresh has already replaced it.
-    // The two lists count apart, because a refresh of one must never discard the other's answer.
+    // The three lists count apart, because a refresh of one must never discard another's answer.
     this.targetsSeq = 0;
     this.collectionsSeq = 0;
+    this.servicesSeq = 0;
+    // identity is the disclosure the realm_denied hint names.
+    // Its open is the element's own state, set once per qualifying answer rather than bound in the template,
+    // because a native close changes open without the template knowing,
+    // and a template that re-asserted the value it asserted last render would not reopen what a person closed.
+    this.identity = createRef();
     // selection counts namespace and Service changes, and collectionsFor is
     // the selection the Collections list was last requested for, so the list
     // is fetched once whether limits or the Service list answers last.
@@ -498,8 +506,11 @@ class App extends Component {
   // It returns the error it recorded, or null when the 401 rule took the answer,
   // so a caller can act on the code without reading state a setState has not applied yet.
   // A realm_denied refetches the identity its hint names,
-  // because the realm the panel shows is the one that no longer admits the request;
+  // because the realm the identity shows is the one that no longer admits the request;
   // a refusal of the whoami fetch itself asks for no second one.
+  // A 403 carrying that code opens the disclosure too, before the refetch is sent,
+  // so what the hint names is on screen before the realm that refused it is read again.
+  // The status is read beside the code: an answer of another status carrying it refetches and opens nothing.
   settle(key, res, retry) {
     if (res.status === 401) {
       const mode = this.state.whoami.auth.mode;
@@ -523,6 +534,9 @@ class App extends Component {
       signIn: { ...s.signIn, [key]: undefined },
     }));
     if (isEnvelope(res.error) && res.error.code === "realm_denied" && key !== "whoami") {
+      if (res.status === 403) {
+        this.openIdentity();
+      }
       this.reloadWhoami();
     }
     return res.error;
@@ -560,10 +574,17 @@ class App extends Component {
     });
   };
 
+  // loadServices is the Service listing, over a generation of its own,
+  // so an answer for a namespace the page has left is dropped before it is recorded.
+  // A counter and not a comparison of the namespace:
+  // choosing one namespace, leaving for another, and returning to the first
+  // leaves the selection where a namespace that was never left leaves it.
   loadServices = async () => {
     const ns = this.state.ns;
-    const body = await this.request("services", servicesURL(ns), this.loadServices);
-    if (!body || this.state.ns !== ns) {
+    const seq = ++this.servicesSeq;
+    const stale = () => seq !== this.servicesSeq;
+    const body = await this.request("services", servicesURL(ns), this.loadServices, undefined, stale);
+    if (!body || stale()) {
       return;
     }
     const services = asList(body.services);
@@ -693,7 +714,22 @@ class App extends Component {
     this.setState({ whoami: body });
   };
 
+  // openIdentity opens the disclosure the realm_denied hint names.
+  // The open is set on the element and never bound in the template,
+  // because a native close changes it without the template knowing.
+  // An answer classified before the identity is on the page has no element to open:
+  // render answers booting, navigating, signInRequired, and error above it.
+  openIdentity() {
+    const node = this.identity.current;
+    if (node) {
+      node.open = true;
+    }
+  }
+
   // refetch runs the fetches an outcome asked for, under the names the model uses.
+  // It is not where the disclosure opens:
+  // it serves a start's 403 realm_denied, which opens it,
+  // and a cancel's 404 collection_not_found, which names no realm that refused and opens nothing.
   refetch(what) {
     if (what === "collections") {
       this.loadCollections();
@@ -794,6 +830,11 @@ class App extends Component {
     if (!step.moved) {
       return;
     }
+    // The answer is the current attempt's, because the step moved,
+    // so a 403 naming a realm that refused opens the disclosure, before the refetch loop below.
+    if (answer.status === 403 && answer.code === "realm_denied") {
+      this.openIdentity();
+    }
     for (const what of out.refetch) {
       this.refetch(what);
     }
@@ -875,6 +916,9 @@ class App extends Component {
 
   onNamespace = (e) => {
     const ns = e.target.value;
+    // The Service listing counts here and not in onService:
+    // a Service change leaves the namespace, and the listing, exactly where they were.
+    this.servicesSeq++;
     this.targetsSeq++;
     this.collectionsSeq++;
     this.selection++;
@@ -1168,7 +1212,7 @@ class App extends Component {
     const realm = w.realm;
     const mode = w.auth.mode;
     return html`
-      <details class="identity">
+      <details class="identity" ref=${this.identity}>
         <summary>
           <strong>Identity</strong>
           <span class="who">${text(w.principal)} in ${text(realm.name)}</span>

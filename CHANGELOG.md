@@ -243,6 +243,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `403 realm_denied` opens the identity disclosure its hint names.**
+  The hint told a caller the identity showed what their realm admits
+  while the disclosure that holds it stayed closed.
+  A denial of a listing, of a profile download, or of the current start attempt now opens it,
+  at the same moment the page refetches `/v1/whoami` rather than after the answer arrives.
+  A person's own opening and closing stand until the next such denial;
+  a cancel's `404 collection_not_found` leaves the disclosure as it stood.
+  The Service list now counts its requests the way the targets and Collections lists do,
+  so an answer for a namespace the page has left is discarded instead of shown,
+  which is what keeps a stale denial from opening the disclosure for a namespace nobody is looking at.
+  The hint drops the word panel.
 - **The console explains every code its design lists, and its `realm_denied` hint is true.**
   Four codes the design lists were shown as bare words with no hint:
   `too_many_auth` and `auth_unavailable`, which every route can answer, and `version_conflict` and `version_missing`.

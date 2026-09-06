@@ -682,7 +682,7 @@ and that the scan holds the count to two while the browser holds the behavior.
   The hint scan reads keys and not wording (`internal/ui/scan_test.go:247`, `:259-276`),
   so the key set is unchanged.
 
-- [ ] **Write the scan and the four browser cases, and run what can fail red**
+- [x] **Write the scan and the four browser cases, and run what can fail red**
 
 `internal/ui/scan_test.go`, beside the hints scan:
 
@@ -882,7 +882,7 @@ What is red, and what is not:
   because nothing opens the disclosure at all yet.
   They are written now so the change is made with them watching, and they must stay green across it.
 
-- [ ] **Open it, and say so**
+- [x] **Open it, and say so**
 
 Apply the `app.js` changes above, and run:
 
@@ -930,7 +930,7 @@ so an answer for a namespace the page has left is discarded instead of shown,
 which is what keeps a stale denial from opening the disclosure for a namespace nobody is looking at.
 The hint drops the word panel.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/ui/static/app.js docs/specs/ui.md CHANGELOG.md
