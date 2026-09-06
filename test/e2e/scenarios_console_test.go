@@ -252,16 +252,24 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	s.run(t, "arm the cancel control", chromedp.Click(control("Cancel"), chromedp.BySearch))
 	// Refresh on the Collections table, pressed while that row's Cancel is armed,
 	// sends one GET of the list and nothing else, and leaves the armed row standing.
+	// The GET is held at the browser while the control is read disabled and pressed again to no effect,
+	// so the in-flight state is observed rather than inferred from a control that was enabled before and after.
 	// The control is enabled again once the answer is applied, which is when what the answer left is read;
 	// the armed cancel disarms itself after ten seconds, and one GET of the list settles well inside that.
 	s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
 	n := s.requestCount()
-	s.run(t, "press Refresh on the Collections table", chromedp.Click(refreshButton("Collections"), chromedp.BySearch))
+	release := s.holdRequest(t, "the Refresh of the Collections table", route,
+		func(u string) bool { return u == route },
+		func() {
+			s.run(t, "press Refresh on the Collections table", chromedp.Click(refreshButton("Collections"), chromedp.BySearch))
+		})
 	s.awaitRequestSince(t, n, "the Refresh of the Collections table", func(r sentRequest) bool {
 		return r.method == http.MethodGet && r.url == route
 	})
+	pressRefreshWhileHeld(t, s, "Collections")
+	release()
 	s.waitFor(t, "the Collections Refresh control is idle again", refreshEnabled("Collections"))
-	if got := s.requestCount(); got != n+1 {
+	if got := s.requestCount(); got != n+1 || s.heldCount() != 0 {
 		t.Fatalf("Refresh on the Collections table sent %d requests, want exactly the one GET of the list\n%s",
 			got-n, s.report())
 	}
@@ -331,14 +339,20 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	// The deleted Pods stay Terminating for the app's preStop sleep,
 	// so the answer excludes them as pod_terminating first and reports a selector matching no Pod once they are gone;
 	// either wording is the empty state.
+	// The GET is held at the browser while the control is read disabled and pressed again to no effect, as above.
 	s.waitFor(t, "the targets Refresh control is idle", refreshEnabled("Profile"))
 	n = s.requestCount()
-	s.run(t, "press Refresh on the targets list", chromedp.Click(refreshButton("Profile"), chromedp.BySearch))
-	s.awaitRequestSince(t, n, "the Refresh of the targets list", func(r sentRequest) bool {
-		return r.method == http.MethodGet && strings.HasPrefix(r.url, targetsRoute) && strings.Contains(r.url, "explain=true")
+	isTargetsGET := func(u string) bool { return strings.HasPrefix(u, targetsRoute) && strings.Contains(u, "explain=true") }
+	release = s.holdRequest(t, "the Refresh of the targets list", targetsRoute+"*", isTargetsGET, func() {
+		s.run(t, "press Refresh on the targets list", chromedp.Click(refreshButton("Profile"), chromedp.BySearch))
 	})
+	s.awaitRequestSince(t, n, "the Refresh of the targets list", func(r sentRequest) bool {
+		return r.method == http.MethodGet && isTargetsGET(r.url)
+	})
+	pressRefreshWhileHeld(t, s, "Profile")
+	release()
 	s.waitFor(t, "the targets Refresh control is idle again", refreshEnabled("Profile"))
-	if got := s.requestCount(); got != n+1 {
+	if got := s.requestCount(); got != n+1 || s.heldCount() != 0 {
 		t.Fatalf("Refresh on the targets list sent %d requests, want exactly the one targets GET\n%s", got-n, s.report())
 	}
 	var emptyNote string
@@ -855,6 +869,27 @@ func refreshControl(panel string) string {
 // which is the page idle on that list: the control is disabled from the press until the answer is applied or dropped.
 func refreshEnabled(panel string) string {
 	return fmt.Sprintf(`((b) => Boolean(b) && !b.disabled)(%s)`, refreshControl(panel))
+}
+
+// refreshDisabled is the expression that is true while the panel's Refresh control stands disabled,
+// which is the page waiting on that list's request.
+func refreshDisabled(panel string) string {
+	return fmt.Sprintf(`((b) => Boolean(b) && b.disabled)(%s)`, refreshControl(panel))
+}
+
+// pressRefreshWhileHeld reads the panel's Refresh control disabled while its request is held at the browser,
+// and clicks it once more through the element's own click, which a disabled button turns into nothing.
+// Whether that second click sent a request is read by the caller once the held request is released,
+// because a request the page sends is recorded by an event that arrives after the click has returned.
+func pressRefreshWhileHeld(t *testing.T, s *session, panel string) {
+	t.Helper()
+	s.waitFor(t, "the "+panel+" Refresh control is disabled while its request is held", refreshDisabled(panel))
+	var stood bool
+	s.eval(t, "press the disabled "+panel+" Refresh control",
+		fmt.Sprintf(`((b) => { if (!b) { return false; } b.click(); return true; })(%s)`, refreshControl(panel)), &stood)
+	if !stood {
+		t.Fatalf("the %s Refresh control went away while its request was held:\n%s", panel, s.textOf(t, ".panels"))
+	}
 }
 
 // xpathLiteral quotes a string for XPath, which has no escape and needs concat for a value holding both quotes.

@@ -209,6 +209,14 @@ type session struct {
 	failures   map[network.RequestID]string
 	challenges int
 	finished   chan string
+
+	// intercepting says the Fetch domain is on for the whole session, which answering a challenge needs,
+	// so a step that holds a request neither enables it a second time nor disables it afterwards.
+	intercepting bool
+	// hold, while set, selects the paused requests a step wants held rather than continued,
+	// and held is where their identifiers land until the step continues them.
+	hold func(url string) bool
+	held chan fetch.RequestID
 }
 
 // sessionOptions is what varies between the two console sessions.
@@ -246,7 +254,8 @@ func newSession(t *testing.T, b browser, o sessionOptions) *session {
 	t.Cleanup(cancel)
 
 	s := &session{ctx: ctx, download: filepath.Join(dir, "downloads"),
-		failures: map[network.RequestID]string{}, finished: make(chan string, 16)}
+		failures: map[network.RequestID]string{}, finished: make(chan string, 16),
+		intercepting: o.User != "", held: make(chan fetch.RequestID, 16)}
 	if err := os.MkdirAll(s.download, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +278,7 @@ func newSession(t *testing.T, b browser, o sessionOptions) *session {
 		cdpbrowser.SetDownloadBehavior(cdpbrowser.SetDownloadBehaviorBehaviorAllow).
 			WithDownloadPath(s.download).WithEventsEnabled(true),
 	}
-	if o.User != "" {
+	if s.intercepting {
 		actions = append(actions, fetch.Enable().WithHandleAuthRequests(true))
 	}
 	s.run(t, "enable the protocol domains", actions...)
@@ -337,8 +346,59 @@ func (s *session) observe(ev any, o sessionOptions) {
 			_ = fetch.ContinueWithAuth(e.RequestID, answer).Do(s.executor())
 		}()
 	case *fetch.EventRequestPaused:
+		s.mu.Lock()
+		hold := s.hold
+		s.mu.Unlock()
+		if hold != nil && hold(e.Request.URL) {
+			select {
+			case s.held <- e.RequestID:
+				return
+			default:
+			}
+		}
 		go func() { _ = fetch.ContinueRequest(e.RequestID).Do(s.executor()) }()
 	}
+}
+
+// holdRequest runs press and returns once the browser has paused a request to a URL match accepts,
+// so a step can read the page while that request stands sent and unanswered.
+// The request is paused before it leaves the browser: the gateway sees nothing until the returned release continues it.
+// pattern is the Fetch domain's URL pattern the step intercepts, enabled for the step
+// and disabled again by release on a session that did not have the domain on already;
+// a session answering a challenge keeps its interception as it is.
+// A step that never calls release leaves the page waiting for an answer that never comes.
+func (s *session) holdRequest(t *testing.T, what, pattern string, match func(url string) bool, press func()) (release func()) {
+	t.Helper()
+	if !s.intercepting {
+		s.run(t, "intercept "+what, fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: pattern}}))
+	}
+	s.mu.Lock()
+	s.hold = match
+	s.mu.Unlock()
+	press()
+	var id fetch.RequestID
+	select {
+	case id = <-s.held:
+	case <-time.After(settleDeadline):
+		t.Fatalf("%s: no request was paused within %v\n%s", what, settleDeadline, s.report())
+	case <-s.ctx.Done():
+		t.Fatalf("%s: the browser went away: %v", what, s.ctx.Err())
+	}
+
+	return func() {
+		s.mu.Lock()
+		s.hold = nil
+		s.mu.Unlock()
+		s.run(t, "release "+what, fetch.ContinueRequest(id))
+		if !s.intercepting {
+			s.run(t, "stop intercepting "+what, fetch.Disable())
+		}
+	}
+}
+
+// heldCount is how many paused requests a hold has caught that nothing has continued.
+func (s *session) heldCount() int {
+	return len(s.held)
 }
 
 // executor is the protocol executor for the session's own target.
