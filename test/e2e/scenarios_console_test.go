@@ -64,6 +64,13 @@ const (
 	// and a cancel on a terminal Collection is refused: that is a green-looking scenario proving the wrong thing.
 	// It sits just under the ceiling the lane's configuration puts on a sampling duration.
 	consoleSamplingDuration = "55s"
+
+	// consoleCancelInterval and consoleCancelBudget bound the wait for a Collection the browser can cancel.
+	// A Collection created while the Service's Pods are still being sampled ends at once with no samples,
+	// so the case that needs a cancellable one starts again after this long, for at most this long in all,
+	// which is longer than the sampling above the Pods are busy with.
+	consoleCancelInterval = 10 * time.Second
+	consoleCancelBudget   = 90 * time.Second
 )
 
 // scenarioConsoleOIDC drives the console in a browser against a gateway in oidc mode with PGO on.
@@ -329,6 +336,205 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	// the URL field cannot say that, because the URL is built from the selection alone.
 	s.chooseOption(t, "Service", testAppName)
 	s.waitFor(t, "the Pod control lists a Pod", podListed)
+
+	// The identity disclosure's opening rule, on the four cases an answer the page classifies decides.
+	// Each answer is written into a request the test paused, so the realm the gateway serves never changes.
+	// They run here because every press below needs a Service the page can build a live request for,
+	// and the scale-down that follows leaves the Service with no eligible Pod.
+	targetsRoute := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/targets"
+	isTargetsGET := func(u string) bool { return strings.HasPrefix(u, targetsRoute) && strings.Contains(u, "explain=true") }
+	profileRoute := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/profiles/heap"
+	servicesRoute := gatewayOrigin + "/v1/namespaces/" + ns + "/services"
+	whoamiRoute := gatewayOrigin + "/v1/whoami"
+	denied := writtenResponse{status: http.StatusForbidden, code: "realm_denied",
+		message: "the realm does not admit this request"}
+	isWhoamiGET := func(r sentRequest) bool { return r.method == http.MethodGet && r.url == whoamiRoute }
+	// closeIdentity puts the disclosure back to closed, which is where a person's click leaves it,
+	// so that the next denial's opening is a change and not a state the case found.
+	closeIdentity := func(what string) {
+		s.run(t, "close the identity disclosure before "+what,
+			chromedp.Click("details.identity > summary", chromedp.ByQuery))
+		s.waitFor(t, "the identity disclosure is closed before "+what,
+			`(document.querySelector("details.identity") || {}).open === false`)
+	}
+	// denyTargets presses Refresh on the targets list and answers that one request 403 realm_denied.
+	// It returns once the page has sent the /v1/whoami refetch that answer asks for,
+	// which is the page having classified the answer: the opening runs before the refetch is sent.
+	denyTargets := func(what string) {
+		s.waitFor(t, "the targets Refresh control is idle before "+what, refreshEnabled("Profile"))
+		at := s.requestCount()
+		answer := s.answerRequest(t, what, targetsRoute+"*", isTargetsGET, func() {
+			s.run(t, "press Refresh on the targets list", chromedp.Click(refreshButton("Profile"), chromedp.BySearch))
+		}, denied)
+		answer()
+		s.awaitRequestSince(t, at, "the identity refetch "+what+" asks for", isWhoamiGET)
+	}
+
+	// A qualifying denial opens the disclosure, on each of the three paths that classify one:
+	// a listing, a profile download, and the current start attempt.
+	assertIdentityOpen(t, s, "the load, before any denial", false)
+	denyTargets("the targets listing refused")
+	assertIdentityOpen(t, s, "a targets listing answered 403 realm_denied", true)
+	// The panel that holds the listing shows the refusal as the code, the message, and the hint,
+	// which is the sentence that sends a reader to the identity.
+	profile := s.textOf(t, ".request")
+	for _, want := range []string{"realm_denied", denied.message,
+		"your realm does not admit this; the identity shows what it does"} {
+		if !strings.Contains(profile, want) {
+			t.Fatalf("the Profile panel does not show %q on a refused targets listing:\n%s", want, profile)
+		}
+	}
+
+	closeIdentity("the refused download")
+	at := s.requestCount()
+	answerDownload := s.answerRequest(t, "the profile download refused", profileRoute+"*",
+		func(u string) bool { return strings.HasPrefix(u, profileRoute) },
+		func() { s.run(t, "press Download", chromedp.Click(control("Download"), chromedp.BySearch)) }, denied)
+	answerDownload()
+	s.awaitRequestSince(t, at, "the identity refetch the refused download asks for", isWhoamiGET)
+	assertIdentityOpen(t, s, "a profile download answered 403 realm_denied", true)
+
+	closeIdentity("the refused start")
+	s.run(t, "arm the start control", chromedp.Click(control("Start collection"), chromedp.BySearch))
+	s.run(t, "wait past the window", chromedp.Sleep(confirmWindow))
+	at = s.requestCount()
+	answerStart := s.answerRequest(t, "the start refused", route, func(u string) bool { return u == route },
+		func() { s.run(t, "confirm the start", chromedp.Click(control("Confirm start"), chromedp.BySearch)) }, denied)
+	answerStart()
+	s.awaitRequestSince(t, at, "the identity refetch the refused start asks for", isWhoamiGET)
+	assertIdentityOpen(t, s, "a start answered 403 realm_denied", true)
+
+	// A second identical denial opens it again: the opening is once per qualifying answer
+	// and not once per page.
+	closeIdentity("the second refused targets listing")
+	denyTargets("the targets listing refused a second time")
+	assertIdentityOpen(t, s, "a second identical denial", true)
+
+	// A person's closing stands: a late answer to the identity refetch and an unrelated render leave it closed.
+	// The targets denial is written only once the handler that catches the refetch is live,
+	// because a refetch that reached the gateway would answer before anything could catch it.
+	closeIdentity("the denial whose refetch is held")
+	s.waitFor(t, "the targets Refresh control is idle", refreshEnabled("Profile"))
+	releaseTargets := s.answerRequest(t, "the targets listing refused with its refetch held",
+		targetsRoute+"*", isTargetsGET, func() {
+			s.run(t, "press Refresh on the targets list", chromedp.Click(refreshButton("Profile"), chromedp.BySearch))
+		}, denied)
+	releaseWhoami := s.answerRequest(t, "the identity refetch that failed", whoamiRoute,
+		func(u string) bool { return u == whoamiRoute }, releaseTargets,
+		writtenResponse{status: http.StatusServiceUnavailable, code: "discovery_unavailable",
+			message: "the gateway could not read its cache"})
+	assertIdentityOpen(t, s, "the denial whose refetch is held", true)
+	closeIdentity("the answer to the held refetch")
+	releaseWhoami()
+	s.waitFor(t, "the failed identity refetch offers its recovery", identityRecovery)
+	assertIdentityOpen(t, s, "the identity refetch answering an error", false)
+	s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
+	s.run(t, "press Refresh on the Collections table",
+		chromedp.Click(refreshButton("Collections"), chromedp.BySearch))
+	s.waitFor(t, "the Collections Refresh control is idle again", refreshEnabled("Collections"))
+	assertIdentityOpen(t, s, "a render the disclosure took no part in", false)
+	// The recovery is read where a closed disclosure cannot hide it:
+	// outside the disclosure and outside the panels, which is where the page renders it.
+	// Pressing it is what clears the error the case wrote, so the page is left as the case found it.
+	var retried bool
+	s.eval(t, "press Retry on the failed identity refetch", pressIdentityRetry, &retried)
+	if !retried {
+		t.Fatalf("the failed identity refetch offers no Retry control outside the disclosure:\n%s", s.report())
+	}
+	s.waitFor(t, "the identity refetch succeeds and takes its error with it",
+		"!("+identityRecovery+")")
+
+	// A stale Service listing's denial is discarded before it is recorded, so it opens nothing.
+	// The namespace is chosen, left for the placeholder, and chosen again,
+	// so the page is back on the namespace the parked request asked for
+	// and no comparison of the namespace can tell that answer from a current one.
+	answerServices := s.answerRequest(t, "the Service listing for a namespace the page leaves",
+		servicesRoute, func(u string) bool { return u == servicesRoute },
+		func() { s.chooseOption(t, "Namespace", ns) }, denied)
+	s.chooseOption(t, "Namespace", "")
+	s.chooseOption(t, "Namespace", ns)
+	// The second Service listing reaches the gateway and answers, which the Service menu offering the Service says.
+	// It is awaited before the parked answer is written,
+	// because a success landing after the denial would clear the error under the key
+	// and leave the case green against a page that recorded it.
+	s.waitFor(t, "the Service list answers for the namespace chosen again", serviceOffered(testAppName))
+	answerServices()
+	s.chooseOption(t, "Service", testAppName)
+	s.waitFor(t, "the Pod control lists a Pod again", podListed)
+	assertIdentityOpen(t, s, "a Service listing answered for a namespace the page had left", false)
+	if selection := s.textOf(t, ".selection"); strings.Contains(selection, "realm_denied") {
+		t.Fatalf("the Service panel shows a denial the page asked for before it left the namespace:\n%s", selection)
+	}
+
+	// A cancel's 404 collection_not_found refetches the identity and opens nothing:
+	// it names no realm that refused.
+	// The Collection is the case's own, because the one the scenario started earlier is terminal
+	// and a terminal record offers no Cancel.
+	// A Collection created while the Service's Pods are still being sampled ends at once,
+	// reason no_samples, and a record that has ended offers no cancel control,
+	// so the case starts one and starts another until a row carries that control.
+	// The Pods stay busy for the sampling the scenario's policy override raised the Service to,
+	// counted from the Collection the scenario started and cancelled above.
+	var cancelled, ended string
+	previous := started
+	for waited := time.Duration(0); ; waited += consoleCancelInterval {
+		s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
+		s.run(t, "arm the start control", chromedp.Click(control("Start collection"), chromedp.BySearch))
+		s.run(t, "wait past the window", chromedp.Sleep(confirmWindow))
+		at = s.requestCount()
+		s.run(t, "confirm the start", chromedp.Click(control("Confirm start"), chromedp.BySearch))
+		s.awaitRequestSince(t, at, "the start of the Collection the cancel case ends", func(r sentRequest) bool {
+			return r.method == http.MethodPost && r.url == route
+		})
+		cancelled = s.awaitStartedDetail(t, previous)
+		previous = cancelled
+		s.awaitRow(t, cancelled, "the Collection the cancel case started")
+		// The list does not poll, so it is asked for again until the row carries its control or the record ends.
+		var offered bool
+		_ = poll(s.ctx, settleDeadline, func(context.Context) (bool, error) {
+			s.eval(t, "read the cancel control of the Collection the cancel case started",
+				fmt.Sprintf(`%s === "Cancel"`, rowCell(cancelled, 8)), &offered)
+			s.eval(t, "read the state of that Collection",
+				fmt.Sprintf(`String(%s)`, rowCell(cancelled, 2)), &ended)
+			if offered || terminal(ended) {
+				return true, nil
+			}
+			s.refetchCollections(t)
+
+			return false, nil
+		})
+		if offered {
+			break
+		}
+		if waited >= consoleCancelBudget {
+			t.Fatalf("no Collection the browser started offered Cancel within %v; the last one ended %s\n%s",
+				consoleCancelBudget, ended, s.report())
+		}
+		s.run(t, "wait for the sampling in flight to end", chromedp.Sleep(consoleCancelInterval))
+	}
+	cancelRoute := gatewayOrigin + "/v1/collections/" + cancelled + "/cancel"
+	// Only the cancel route is paused: the Collections refetch that outcome causes answers normally,
+	// and a 403 on that refetch would open the disclosure correctly and make the case say the opposite.
+	s.run(t, "arm the cancel control", chromedp.Click(control("Cancel"), chromedp.BySearch))
+	s.run(t, "wait past the window", chromedp.Sleep(confirmWindow))
+	at = s.requestCount()
+	answerCancel := s.answerRequest(t, "the cancel of a record the store no longer holds", cancelRoute,
+		func(u string) bool { return u == cancelRoute },
+		func() { s.run(t, "confirm the cancel", chromedp.Click(control("Confirm cancel"), chromedp.BySearch)) },
+		writtenResponse{status: http.StatusNotFound, code: "collection_not_found", message: "no such Collection"})
+	answerCancel()
+	s.awaitRequestSince(t, at, "the identity refetch a cancel's 404 asks for", isWhoamiGET)
+	assertIdentityOpen(t, s, "a cancel answered 404 collection_not_found", false)
+
+	// The Collection the case started is ended, so the scenario leaves none running.
+	s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
+	s.waitFor(t, "the row offers Cancel again", fmt.Sprintf(`%s === "Cancel"`, rowCell(cancelled, 8)))
+	s.run(t, "arm the cancel control", chromedp.Click(control("Cancel"), chromedp.BySearch))
+	s.run(t, "wait past the window", chromedp.Sleep(confirmWindow))
+	s.run(t, "confirm the cancel", chromedp.Click(control("Confirm cancel"), chromedp.BySearch))
+	s.waitFor(t, "the Collection the cancel case started moves to cancelled",
+		fmt.Sprintf(`%s === "cancelled"`, rowCell(cancelled, 2)))
+
 	// The app is scaled to zero as the scenario's last step against it, because it does not come back.
 	// The test awaits the empty targets answer through a request of its own under the same credential,
 	// and the page's own list is left as it is:
@@ -337,7 +543,6 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	if _, err := h.Client.AppsV1().Deployments(ns).Patch(ctx, testAppName, types.MergePatchType, body, metav1.PatchOptions{}); err != nil {
 		t.Fatalf("scale %s to 0: %v", testAppName, err)
 	}
-	targetsRoute := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/targets"
 	awaitTargetsEmpty(t, client, bearer, targetsRoute)
 	var podStillListed bool
 	s.eval(t, "read the Pod control", podListed, &podStillListed)
@@ -370,7 +575,6 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		`(document.querySelector("details.identity") || {}).open === true`)
 	s.waitFor(t, "the targets Refresh control is idle", refreshEnabled("Profile"))
 	n = s.requestCount()
-	isTargetsGET := func(u string) bool { return strings.HasPrefix(u, targetsRoute) && strings.Contains(u, "explain=true") }
 	release = s.holdRequest(t, "the Refresh of the targets list", targetsRoute+"*", isTargetsGET, func() {
 		s.run(t, "press Refresh on the targets list", chromedp.Click(refreshButton("Profile"), chromedp.BySearch))
 	})
@@ -894,6 +1098,54 @@ func signInThroughDex(t *testing.T, s *session, user, password string) {
 	)
 	s.waitFor(t, "the landing page returns the browser to the console",
 		`location.pathname === "`+uiPath+`"`)
+}
+
+// assertIdentityOpen reads the identity disclosure's own state, once the answer that decides it has landed.
+// The property is read and not the attribute, because open is the element's state
+// and the template never writes the attribute.
+func assertIdentityOpen(t *testing.T, s *session, after string, want bool) {
+	t.Helper()
+	var open bool
+	s.eval(t, "read the identity disclosure after "+after,
+		`(document.querySelector("details.identity") || {}).open === true`, &open)
+	if open != want {
+		t.Fatalf("the identity disclosure is %s after %s, want %s:\n%s",
+			openState(open), after, openState(want), s.report())
+	}
+}
+
+// openState names a disclosure's state the way a reader of the failure would.
+func openState(open bool) string {
+	if open {
+		return "open"
+	}
+
+	return "closed"
+}
+
+// identityErrorBox is the expression that finds the error a failed refetch of the identity produced,
+// or null: the box that names the code the test wrote, outside the disclosure and outside the panels.
+const identityErrorBox = `[...document.querySelectorAll("div.error")]` +
+	`.filter((e) => !e.closest("details.identity") && !e.closest(".panels"))` +
+	`.find((e) => e.textContent.includes("discovery_unavailable")) || null`
+
+// identityRecovery is true while that error stands and carries the Retry control it offers,
+// which is the way out a closed disclosure must not hide.
+const identityRecovery = `((e) => Boolean(e) && ` +
+	`[...e.querySelectorAll("button")].some((b) => b.textContent.trim() === "Retry"))(` + identityErrorBox + `)`
+
+// pressIdentityRetry presses that Retry control and reports whether it pressed.
+const pressIdentityRetry = `((e) => { const b = e && [...e.querySelectorAll("button")]` +
+	`.find((b) => b.textContent.trim() === "Retry"); if (!b) { return false; } b.click(); return true; })(` +
+	identityErrorBox + `)`
+
+// serviceOffered is the expression that is true while the Service menu offers the Service named,
+// which is a Service listing's answer having been applied.
+func serviceOffered(svc string) string {
+	return fmt.Sprintf(`(() => {
+  const l = [...document.querySelectorAll("label")].find((l) => l.querySelector("select") && l.textContent.trim().startsWith("Service"));
+  return Boolean(l) && [...l.querySelector("select").options].some((o) => o.value === %q);
+})()`, svc)
 }
 
 // control is the search expression for the button with the exact label given.

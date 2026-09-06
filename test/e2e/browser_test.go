@@ -4,6 +4,8 @@ package e2e
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -213,10 +215,26 @@ type session struct {
 	// intercepting says the Fetch domain is on for the whole session, which answering a challenge needs,
 	// so a step that holds a request neither enables it a second time nor disables it afterwards.
 	intercepting bool
-	// hold, while set, selects the paused requests a step wants held rather than continued,
-	// and held is where their identifiers land until the step continues them.
-	hold func(url string) bool
-	held chan fetch.RequestID
+	// handlers is the ordered list of paused-request handlers the live steps have registered.
+	// A paused request goes to the first entry whose match accepts it and that has not taken one already,
+	// and every request no entry accepts is continued, which is what every request gets when the list is empty.
+	// First match wins, so two entries on disjoint patterns never contend
+	// and two on overlapping patterns resolve by registration order.
+	handlers []*pausedHandler
+}
+
+// pausedHandler is one step's claim on one paused request.
+// pattern is the Fetch domain's URL pattern the entry needs paused,
+// match selects the request among the ones that pattern reaches,
+// and held carries the identifier of the one request the entry takes.
+// An entry takes exactly one request: once it has parked one the walk continues past it,
+// so a second request on the same route reaches the gateway.
+type pausedHandler struct {
+	pattern string
+	match   func(url string) bool
+	held    chan fetch.RequestID
+	// taken says the entry has caught its request; it is read and written under the session's mutex.
+	taken bool
 }
 
 // sessionOptions is what varies between the two console sessions.
@@ -255,7 +273,7 @@ func newSession(t *testing.T, b browser, o sessionOptions) *session {
 
 	s := &session{ctx: ctx, download: filepath.Join(dir, "downloads"),
 		failures: map[network.RequestID]string{}, finished: make(chan string, 16),
-		intercepting: o.User != "", held: make(chan fetch.RequestID, 16)}
+		intercepting: o.User != ""}
 	if err := os.MkdirAll(s.download, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -347,55 +365,123 @@ func (s *session) observe(ev any, o sessionOptions) {
 		}()
 	case *fetch.EventRequestPaused:
 		s.mu.Lock()
-		hold := s.hold
-		s.mu.Unlock()
-		if hold != nil && hold(e.Request.URL) {
-			select {
-			case s.held <- e.RequestID:
-				return
-			default:
+		var taken *pausedHandler
+		for _, h := range s.handlers {
+			if !h.taken && h.match(e.Request.URL) {
+				h.taken = true
+				taken = h
+
+				break
 			}
+		}
+		s.mu.Unlock()
+		if taken != nil {
+			taken.held <- e.RequestID
+
+			return
 		}
 		go func() { _ = fetch.ContinueRequest(e.RequestID).Do(s.executor()) }()
 	}
 }
 
-// holdRequest runs press and returns once the browser has paused a request to a URL match accepts,
-// so a step can read the page while that request stands sent and unanswered.
-// The request is paused before it leaves the browser: the gateway sees nothing until the returned release continues it.
-// pattern is the Fetch domain's URL pattern the step intercepts, enabled for the step
-// and disabled again by release on a session that did not have the domain on already;
-// a session answering a challenge keeps its interception as it is.
-// release runs its body at most once, and is also registered as a t.Cleanup right after the paused request arrives,
-// so an assertion that fails before the caller's own release call still continues the request.
-func (s *session) holdRequest(t *testing.T, what, pattern string, match func(url string) bool, press func()) (release func()) {
+// register adds a paused-request handler and pauses the routes every live handler needs.
+// The Fetch domain replaces its patterns on each enable rather than adding to them,
+// so the whole set is sent every time.
+// A session that intercepts for the whole run, which answering an authentication challenge needs,
+// pauses every request already and is left exactly as it is.
+func (s *session) register(t *testing.T, what string, h *pausedHandler) {
 	t.Helper()
-	if !s.intercepting {
-		s.run(t, "intercept "+what, fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: pattern}}))
-	}
 	s.mu.Lock()
-	s.hold = match
+	s.handlers = append(s.handlers, h)
+	patterns := s.patternsLocked()
 	s.mu.Unlock()
-	press()
-	var id fetch.RequestID
+	s.pause(t, "intercept "+what, patterns)
+}
+
+// deregister drops a paused-request handler and pauses what the handlers still live need,
+// disabling the domain when nothing is left.
+func (s *session) deregister(t *testing.T, what string, h *pausedHandler) {
+	t.Helper()
+	s.mu.Lock()
+	kept := s.handlers[:0]
+	for _, live := range s.handlers {
+		if live != h {
+			kept = append(kept, live)
+		}
+	}
+	s.handlers = kept
+	patterns := s.patternsLocked()
+	s.mu.Unlock()
+	s.pause(t, "stop intercepting "+what, patterns)
+}
+
+// patternsLocked is the URL patterns the live handlers need, in registration order.
+// The caller holds the session's mutex.
+func (s *session) patternsLocked() []string {
+	var out []string
+	for _, h := range s.handlers {
+		out = append(out, h.pattern)
+	}
+
+	return out
+}
+
+// pause enables the Fetch domain over patterns, or disables it when there are none.
+// A session that intercepts for the whole run keeps the interception newSession gave it:
+// that enable carries the flag the authentication challenge needs and no pattern at all,
+// and narrowing it to one step's route would break the challenge in the middle of a scenario.
+func (s *session) pause(t *testing.T, what string, patterns []string) {
+	t.Helper()
+	if s.intercepting {
+		return
+	}
+	if len(patterns) == 0 {
+		s.run(t, what, fetch.Disable())
+
+		return
+	}
+	ps := make([]*fetch.RequestPattern, 0, len(patterns))
+	for _, p := range patterns {
+		ps = append(ps, &fetch.RequestPattern{URLPattern: p})
+	}
+	s.run(t, what, fetch.Enable().WithPatterns(ps))
+}
+
+// await returns once the browser has paused a request the handler accepts,
+// and fails the step with what it was waiting for when none arrives.
+func (s *session) await(t *testing.T, what string, h *pausedHandler) fetch.RequestID {
+	t.Helper()
 	select {
-	case id = <-s.held:
+	case id := <-h.held:
+		return id
 	case <-time.After(settleDeadline):
 		t.Fatalf("%s: no request was paused within %v\n%s", what, settleDeadline, s.report())
 	case <-s.ctx.Done():
 		t.Fatalf("%s: the browser went away: %v", what, s.ctx.Err())
 	}
 
+	return ""
+}
+
+// holdRequest runs press and returns once the browser has paused a request to a URL match accepts,
+// so a step can read the page while that request stands sent and unanswered.
+// The request is paused before it leaves the browser: the gateway sees nothing until the returned release continues it.
+// pattern is the Fetch domain's URL pattern the step intercepts, enabled for the step
+// and dropped again by release; a session answering a challenge keeps its interception as it is.
+// release runs its body at most once, and is also registered as a t.Cleanup right after the paused request arrives,
+// so an assertion that fails before the caller's own release call still continues the request.
+func (s *session) holdRequest(t *testing.T, what, pattern string, match func(url string) bool, press func()) (release func()) {
+	t.Helper()
+	h := &pausedHandler{pattern: pattern, match: match, held: make(chan fetch.RequestID, 1)}
+	s.register(t, what, h)
+	press()
+	id := s.await(t, what, h)
+
 	var once sync.Once
 	release = func() {
 		once.Do(func() {
-			s.mu.Lock()
-			s.hold = nil
-			s.mu.Unlock()
 			s.run(t, "release "+what, fetch.ContinueRequest(id))
-			if !s.intercepting {
-				s.run(t, "stop intercepting "+what, fetch.Disable())
-			}
+			s.deregister(t, what, h)
 		})
 	}
 	t.Cleanup(release)
@@ -403,9 +489,64 @@ func (s *session) holdRequest(t *testing.T, what, pattern string, match func(url
 	return release
 }
 
-// heldCount is how many paused requests a hold has caught that nothing has continued.
+// writtenResponse is the answer a step writes into a request it paused:
+// a status and the envelope Errors reads, whose error is the message and whose code is the hint's key.
+// The page reads a body as an envelope only when the response says application/json
+// and the body decodes to an object with string error and code fields,
+// so an answer without that header would show HTTP <status> <statusText> and nothing from the body.
+type writtenResponse struct {
+	status  int
+	code    string
+	message string
+}
+
+// answerRequest is holdRequest with an answer of the step's own where that one continues.
+// It registers a handler, runs press, returns once the browser has paused a request match accepts,
+// and hands back a release that writes the response and drops the handler.
+// The release writes the answer rather than the handler writing it the moment the request pauses,
+// because a step that wants the answer to land after the page has moved on needs that order,
+// and a step that wants it at once calls the release at once.
+// release runs its body at most once and is registered as a t.Cleanup of its own,
+// so a failing assertion still answers the request the step parked.
+func (s *session) answerRequest(t *testing.T, what, pattern string, match func(url string) bool,
+	press func(), answer writtenResponse,
+) (release func()) {
+	t.Helper()
+	h := &pausedHandler{pattern: pattern, match: match, held: make(chan fetch.RequestID, 1)}
+	s.register(t, what, h)
+	press()
+	id := s.await(t, what, h)
+	body, err := json.Marshal(map[string]string{"error": answer.message, "code": answer.code})
+	if err != nil {
+		t.Fatalf("%s: encode the answer: %v", what, err)
+	}
+
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			s.run(t, "answer "+what, fetch.FulfillRequest(id, int64(answer.status)).
+				WithResponseHeaders([]*fetch.HeaderEntry{{Name: "Content-Type", Value: "application/json"}}).
+				WithBody(base64.StdEncoding.EncodeToString(body)))
+			s.deregister(t, what, h)
+		})
+	}
+	t.Cleanup(release)
+
+	return release
+}
+
+// heldCount is how many live handlers are holding a paused request nothing has answered or continued.
 func (s *session) heldCount() int {
-	return len(s.held)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, h := range s.handlers {
+		if h.taken {
+			n++
+		}
+	}
+
+	return n
 }
 
 // executor is the protocol executor for the session's own target.

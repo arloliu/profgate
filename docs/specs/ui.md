@@ -1120,20 +1120,20 @@ before the error, before the opening, and before the refetch.
 A listing's answer is non-stale when its own generation counter still names it:
 the targets and Collections listings carry one already,
 the `stale` predicate `loadTargets` and `loadCollections` pass with their `targetsSeq` and `collectionsSeq`
-(`internal/ui/static/app.js:324-328`, `:586`, `:596-598`, `:634`, `:641-643`).
-The Service listing carries none:
-`loadServices` passes no `stale` predicate (`:565`)
-and compares the namespace it asked for only after the answer has been recorded (`:566`),
-so a denial for a namespace the page has left is recorded as if it were current.
-It gains a generation of its own, read where the other two read theirs,
+(`internal/ui/static/app.js:324-331`, `:607`, `:617-619`, `:655`, `:662-664`).
+The Service listing had none:
+`loadServices` passed no `stale` predicate
+and compared the namespace it asked for only after the answer had been recorded,
+so a denial for a namespace the page had left was recorded as if it were current.
+It carries a generation of its own (`:584-587`), read where the other two read theirs,
 so that leaving a namespace and returning to it does not make an obsolete answer look current;
 a counter, not a comparison of the namespace, is what tells those two apart.
 A download's answer is always current, because the control is disabled from the press until the fetch settles,
-so there is never a second one in flight (`:1021`, `:1025`, `:1390`).
-A start's answer is the current attempt's when the model reports the step moved (`:794`).
+so there is never a second one in flight (`:1065`, `:1069`, `:1434`).
+A start's answer is the current attempt's when the model reports the step moved (`:830`).
 The code that opens the disclosure reads the status as well as the code:
 a `403` carrying an envelope whose `code` is `realm_denied`, for a request that is not the identity refetch itself.
-`settle` decides on the code alone today (`:525`), which is not the same test.
+`settle`'s refetch decides on the code alone (`:536`), which is not the same test.
 The opening does not wait for that refetch:
 what the hint names is on screen before the realm that refused it is read again.
 A person may open or close it afterwards, and that choice stands —
@@ -1530,6 +1530,16 @@ a value arriving through the raw block would bypass the structured value the cha
   (gateway *Eligibility*) as a literal,
   the ten names written out in the Go test rather than derived from the page,
   so a reason added to the gateway without wording on the console turns the suite red.
+- `app.js` holds exactly two calls of the identity disclosure's opening,
+  and the body of the function that runs an outcome's refetches holds none,
+  because that function serves a start's `403 realm_denied`, which opens the disclosure,
+  and a cancel's `404 collection_not_found`, which does not (*Errors*).
+  The scan counts call sites and proves no behavior:
+  not what the opening does, not whether the element reference it reads is ever attached,
+  and not where inside a function each call sits.
+  The six cases of the rule are the browser scenario's (*End to end*).
+  It fails rather than passes on a body it cannot cut,
+  because a scan that matched nothing would pass a page that never opened the disclosure at all.
 
 `internal/ui`, against the port-control model:
 
@@ -1756,10 +1766,14 @@ the download as `app.js` performs it — the fetch, the `Blob`, the object URL,
 the `Content-Disposition` filename read out of the header's quoted or bare parameters,
 the reading of every status but `200` as an error whatever its body,
 and the disabling of the control — beyond what the browser scenario asserts of it;
-the two **Refresh** controls' wiring and the refetch of `/v1/whoami` a listing's `403` causes, the same way;
+the two **Refresh** controls' wiring, the same way;
 the arrangement of *Controls*: the browser scenarios load the stylesheet,
-but none of them asserts panel placement, control wrapping,
-or the disclosure's opening on a denial;
+but none of them asserts panel placement or control wrapping;
+that the disclosure's `open` is never bound in the render template,
+which is a rule this design carries rather than a claim any test holds:
+a binding the template repeats is compared against the value of the last render and never written back,
+so a bound but unchanged `open` behaves exactly as an unbound one does
+and no test can tell the two apart;
 the line that says older Collections exist as `app.js` wires it —
 the state field it is held in, its clearing on a failed listing and on a change of namespace or Service,
 and its rendering under the table — of which the model function alone is proven;
@@ -1840,6 +1854,20 @@ so a runner that loses one, or drifts to a version outside the range, turns red 
 - the disclosure is closed on the working load,
   and one the scenario opened by clicking its summary is still open after a **Refresh** answer re-renders the panel,
   each read from the element's `open` property and not from an attribute the template never writes;
+- a `403 realm_denied` opens the disclosure on each of the three paths that classify one:
+  a targets listing refreshed, a profile download pressed, and the current start attempt.
+  Each answer is written into a request the test paused rather than produced by narrowing a realm,
+  and each opening is read once the page has sent the `/v1/whoami` refetch that answer asks for,
+  which is that refetch proven as well.
+  A second identical denial opens the disclosure again after the scenario has closed it.
+  A closing stands through a late error answered to the held refetch and through an unrelated render,
+  and that error, with the **Retry** control it carries,
+  stands outside the disclosure and outside the panels,
+  so a closed disclosure hides no way out of a failed identity fetch.
+  A Service listing answered `403 realm_denied` is discarded before it is recorded
+  when the page has left the namespace it asked for and returned to it,
+  so it opens nothing and leaves the Service panel showing no denial;
+  a cancel answered `404 collection_not_found` leaves the disclosure as it stood too;
 - choosing the namespace, the Service, and a profile fills the profile URL field with the URL *Flow* describes,
   and pressing **Download** saves a file that is the body the profile endpoint streams, byte for byte,
   gzip-framed as every `heap` profile is,
@@ -2150,3 +2178,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *What is not proven*, *Required by this revision and not yet made* | the line that says older Collections exist is wired in `app.js` by a state field the listing fills, a failed listing and a change of selection clear, and the Collections panel renders under the table, none of which a unit test reaches; and the console guide accounts for **Download** and **Refresh** beside the two write controls, so nothing is owed elsewhere |
 | *Controls*, *Starting and cancelling a Collection*, *Signing in and out*, *Errors*, *Layout and embedding*, *What is not proven*, *End to end*, *Required by this revision and not yet made* | the page is one panel to a row, each panel laying its controls across the row, because columns of panels put a short panel beside a tall one and left a column of empty page; the identity is a `<details>` disclosure above the panels, closed on load, whose summary names the principal and the realm and which holds the seven facts and the sign-out link the panel held, disclosing nothing new; a `403` whose envelope names `realm_denied`, on a listing, a profile download, or the current start attempt, opens it and refetches `/v1/whoami`, each path first discarding an answer it has moved past, for which the Service listing gains the generation counter the other two listings already carry, so the hint that names the identity stays true, while a person's own opening and closing stand until the next such denial and an identity refetch's errors and sign-in controls render outside the collapsible body; the hint drops the word panel; the browser scenarios read the identity's text and markup at the disclosure, check the escaped query values in the Service panel, and scope the Collection disclosure selectors to the Collections panel; and the console guide is owed the same correction |
 | *What is not proven*, *End to end* | `console-oidc` asserts the identity disclosure closed on the working load and a disclosure the scenario opened still open after a **Refresh** answer re-renders the panel, so what stays unproven of the arrangement is panel placement, control wrapping, and the opening a denial causes |
+| *Unit*, *End to end*, *What is not proven* | a source scan holds `app.js` to two calls of the disclosure's opening, neither of them in the function that runs an outcome's refetches, and counts call sites rather than proving behavior; `console-oidc` drives the four cases an answer the page classifies decides, writing each answer into a request it paused, which proves the refetch of `/v1/whoami` a listing's `403` causes and leaves panel placement and control wrapping as the whole of what the arrangement does not prove; and that the disclosure's `open` is never bound in the template is a rule this design carries and no test holds, a bound but unchanged value being indistinguishable from an unbound one |
