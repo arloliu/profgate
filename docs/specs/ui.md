@@ -1667,6 +1667,9 @@ each proven apart from the widget and apart from the network;
 the download as `app.js` performs it — the fetch, the `Blob`, the object URL, the `Content-Disposition` filename,
 and the disabling of the control — beyond what the browser scenario asserts of it;
 the two **Refresh** controls' wiring and the refetch of `/v1/whoami` a listing's `403` causes, the same way;
+the line that says older Collections exist as `app.js` wires it —
+the state field it is held in, its clearing on a failed listing and on a change of namespace or Service,
+and its rendering under the table — of which the model function alone is proven;
 and the Collections artifact link, `GET /v1/collections/{id}/profile`, which stays a navigation:
 a `410 artifact_gone` or a `404 collection_not_found` on it shows the page nothing,
 which this document states rather than repairs,
@@ -1980,21 +1983,17 @@ Updated with the implementation: `docs/api.md` (the listing endpoints), `docs/co
 
 ### 14.1 Required by this revision and not yet made
 
-One edit, in the table below.
-Every other edit this document requires elsewhere has been made,
-and in those this document is not ahead of the documents it names:
+Nothing.
+Every edit this revision required elsewhere has been made,
+and this document is no longer ahead of the documents it names:
 the write controls' contract in [`pgo.md`](pgo.md) *Create a Collection* and *HTTP API*,
 the entity tags, the browser scenarios, and the rolling-update rows in [`gateway.md`](gateway.md),
 the browser scenarios beside the wire proofs in [`auth.md`](auth.md) *Testing*,
 the media type on both write routes in [`docs/api.md`](../api.md),
 the Chromium the workflow installs before the suite runs,
-the console guide's own account of the two controls and of a rollout,
+the console guide's own account of the four controls and of a rollout,
 and the end-to-end rule in
 [`.agents/rules/500-validation-and-workflow.md`](../../.agents/rules/500-validation-and-workflow.md).
-
-| File | Section | Change |
-|---|---|---|
-| `docs/console.md` | *Downloading a profile and copying its URL* | **Download** is a `fetch` followed by a save rather than an ordinary link, and an error from the profile endpoint is shown with its hint; the control is disabled, with the empty state's wording beside it, while the targets response lists no Pod; the targets list and the Collections table have a **Refresh** control; and the Collections table shows one page, with a line naming `profgate collections` when older Collections exist |
 
 ---
 
@@ -2031,3 +2030,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *End to end* | the downloaded file's name is `heap`, the profile the scenario chose, because Go's pprof handler names every profile but the CPU one after itself; the scenario observes the download as a `Fetch` request followed by a download from a `blob:` URL |
 | *End to end* | a second session opened with an `ns` of 1100 characters navigates to the login with `return=/ui/?returned=1` alone, the browser proof of the return-path bound *Flow* states |
 | *Errors*, *What is not proven* | the hints table gains `too_many_auth` and `auth_unavailable`, the two authentication codes every `/v1` route answers, and its `realm_denied` row names the identity panel, the word the page's own header uses; a `403 realm_denied` on a listing refetches `/v1/whoami`, a refetch no unit test proves |
+| *What is not proven*, *Required by this revision and not yet made* | the line that says older Collections exist is wired in `app.js` by a state field the listing fills, a failed listing and a change of selection clear, and the Collections panel renders under the table, none of which a unit test reaches; and the console guide describes **Download**, the disabled control and its line, the two **Refresh** controls, and the first page and its line, so nothing is owed elsewhere |
