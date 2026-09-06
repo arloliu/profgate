@@ -347,10 +347,49 @@ Why here: a gate that does not run is a claim the repository makes and does not 
   the dead code and its enum entry are removed with a changelog line.
 - [ ] `docs/pgo.md:147` says the listing pages and `:263` says it offers no pagination; it pages.
 
-Spec: [`pgo.md`](../specs/pgo.md), and [`ui.md`](../specs/ui.md) where it answers `collector_unavailable` (`docs/specs/ui.md:783-794`).
+Spec: [`pgo.md`](../specs/pgo.md), and [`ui.md`](../specs/ui.md) where it answers `collector_unavailable` (`docs/specs/ui.md:956,1103`).
 Shipped: not built yet.
-Why last: nothing here changes behavior,
+Why here: nothing here changes behavior,
 and the removal is a breaking change to the enum that a release note must carry.
+
+### 10. Lay the console out one panel to a row, and fold the identity into a disclosure
+
+- [x] `.panels` is a grid of `repeat(auto-fit, minmax(20rem, 1fr))` columns with every panel aligned to its top
+  (`internal/ui/static/app.css:9-14`),
+  and the Profile panel stacks its profile and target controls above the URL field and the download actions
+  (`internal/ui/static/app.js:1322-1373`, `:1378-1389`)
+  where the identity and Service panels hold seven facts and two selects (`app.js:1172-1192`, `:1211-1226`);
+  at a wide window the three stand side by side, the Profile panel far taller than the two beside it,
+  and the page below those two is a column of nothing as wide as they are and as tall as the difference.
+  The revision gives each panel a row of the page and lays its controls across it.
+- [x] The identity is an `<article>` in the grid (`app.js:1141-1142,1170-1200`),
+  seven facts and a sign-out link, none of them read on the way to a profile.
+  The revision makes it a `<details>` above the panels, closed on load,
+  its summary naming the principal and the realm, and disclosing nothing the panel did not.
+- [x] The `realm_denied` hint names "the identity panel" (`app.js:62`),
+  and a `403 realm_denied` refetches `/v1/whoami` (`app.js:525-527`, `collectionmodel.js:211-212`)
+  into whatever holds the identity;
+  a closed disclosure would make the hint untrue,
+  so a listing's, a download's, or the current start's own denial opens it, and the hint drops the word panel.
+- [x] `test/e2e/scenarios_console_test.go:173,416` read the identity through `.panels` —
+  its principal, its realm, and its authentication mode —
+  and `:808` reads the escaped principal and the escaped query values out of its markup.
+  The disclosure sits outside `.panels`, so the text reads and the escaped principal move to it,
+  the escaped namespace and Service values are asserted in the Service panel,
+  and the unlisted-selection read at `:189` stays where it is.
+  The Collection assertions at `:231`, `:232`, and `:977` select a bare `details` or `details summary`,
+  which the identity would become the first match for, so they are scoped to the Collections panel.
+- [ ] `docs/console.md:32` lists the page's parts, and `:76`, `:83`, and `:91` call the identity a panel;
+  the guide follows the implementation.
+
+Spec: [`ui.md`](../specs/ui.md) *Controls* for the arrangement and the disclosure,
+*Signing in and out* for where **Sign out** sits,
+*Errors* and *Starting and cancelling a Collection* for the `realm_denied` answer that opens it,
+and *End to end* for the reads that move; none for the guide.
+Shipped: not built yet.
+Why here: the grid is met on every load, and its empty column at every wide window;
+the change updates the layout, the identity disclosure's behavior, the browser scenarios' selectors, and the guide,
+and nothing else on this list depends on any of it, so it takes the last place.
 
 ## Not on This List
 
