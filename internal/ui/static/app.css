@@ -6,23 +6,159 @@ main#app {
   padding-block: 1rem;
 }
 
-.panels {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
-  align-items: start;
-}
-
+/* Pico's article padding is written for prose; these panels hold controls,
+   and the grid rather than the article carries the space between them. */
 .panels article {
+  padding: 0.75rem 1rem;
   margin: 0;
 }
 
+/* Who the caller is and what their realm admits is read once and then not again,
+   so it opens on a click rather than holding a panel's worth of the page.
+   The summary carries the two facts a glance is for, the principal and the realm,
+   and the seven the panel held are one click away. */
+details.identity {
+  border: var(--pico-border-width, 1px) solid var(--pico-muted-border-color, #cfd5e2);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  background: var(--pico-card-background-color, #fff);
+  padding: 0.4rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+details.identity > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  cursor: pointer;
+  margin: 0;
+}
+
+/* Pico draws the disclosure chevron itself and hides the browser's marker.
+   A summary laid out as a flex row makes that chevron a flex item, and the
+   line reads with the caption at one end and the chevron at the other. */
+details.identity > summary::after {
+  margin-inline-start: auto;
+}
+
+details.identity > dl {
+  margin-top: 0.6rem;
+}
+
+details.identity > footer {
+  padding: 0.4rem 0.75rem;
+  margin: 0.6rem -0.75rem -0.4rem;
+}
+
+/* One panel per row, each laying its controls across rather than down.
+   Columns of panels put a short panel beside a tall one, which is a column of
+   empty page as wide as the short one and as tall as the difference;
+   a row the width of the page has no such gap, and a panel of four controls
+   in a row is shorter than the same four stacked in a column. */
+.panels {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Pico gives every block control a full line and a bottom margin of its own,
+   which is a column of one control per row in a panel wide enough for four.
+   The request's inputs are laid out across instead, and each keeps its own label. */
+.fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: flex-end;
+}
+
+/* Each control takes an equal share of the line and gives way at a narrow width;
+   Refresh takes the width of its own label and never a share. */
+.panels .fields > * {
+  flex: 1 1 7rem;
+  /* A menu of Pod names is no more readable at half the page's width than at
+     a sixth of it, so a control takes a share of the line and stops growing. */
+  max-width: 15rem;
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.panels .fields > .actions {
+  flex: 0 0 auto;
+}
+
+/* The port control is a fieldset because its menu can open a second field,
+   and a fieldset's legend does not sit where a label's text does;
+   these rules put its caption on the line the labels beside it use. */
+.fields fieldset {
+  border: 0;
+  padding: 0;
+  margin-bottom: 0;
+}
+
+.fields legend {
+  padding: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  margin-bottom: calc(var(--pico-spacing, 1rem) * 0.25);
+}
+
+/* Refresh repeats the targets fetch the two controls beside it are drawn from,
+   so it stands in the row with them rather than under it. */
+.fields button {
+  width: auto;
+  margin-bottom: 0;
+  padding-block: calc(var(--pico-form-element-spacing-vertical, 0.75rem) * 0.85);
+  white-space: nowrap;
+}
+
+.panels .fields select,
+.panels .fields input {
+  margin-bottom: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+/* The empty state stands where the Pod and version controls were,
+   and it is a sentence and a table rather than a control, so it takes the whole row. */
+.fields .empty {
+  flex: 1 1 100%;
+  /* The cap above is for a control; this is a sentence and a table. */
+  max-width: none;
+}
+
+.fields .empty p {
+  margin-bottom: 0.25rem;
+}
+
+/* The lines that explain rather than control read as one block under the buttons. */
+.request .notes p {
+  margin-bottom: 0.25rem;
+}
+
+.request .notes {
+  margin-top: 0.5rem;
+}
+
+/* A label whose control follows it on the next line does not need a line of gap as well. */
+.panels label {
+  margin-bottom: 0.5rem;
+}
+
+.panels article > label:last-of-type {
+  margin-bottom: 0.25rem;
+}
+
 /* Pico's class-less header holds only the title, so it has no rule for the row a Refresh
-   control sits in beside it; without this the button drops below the title with no gap. */
+   control sits in beside it; without this the button drops below the title with no gap.
+   The band reaches the panel's edges, which the panel's own tighter padding would otherwise inset. */
 .panels article header {
   display: flex;
   align-items: center;
   gap: 1rem;
+  padding: 0.5rem 1rem;
+  margin-inline: -1rem;
+  margin-top: -0.75rem;
+  margin-bottom: 0.75rem;
 }
 
 /* Pico buttons are block-level and full-margin by default,
@@ -33,8 +169,8 @@ main#app {
   width: auto;
 }
 
-/* The Collections table has nine columns, so its panel takes a row of its own
-   below the three panels rather than one cell beside them. */
+/* Every panel takes a row, and the Collections table spans whatever columns
+   a narrower window leaves, so its nine columns are never cut to a cell. */
 .panels article.collections {
   grid-column: 1 / -1;
 }
@@ -46,13 +182,45 @@ main#app {
   margin-bottom: 0.5rem;
 }
 
-.panels dt {
+/* Seven one-line facts in one column of pairs is seven rows of a body wide
+   enough for two pairs on a line. A fixed number of pairs per row keeps each
+   term above the same edge as the term a row down, which a wrapping flex row
+   loses; two rather than three leaves the value columns wide enough that the
+   longest of them, the profile list, stays on its own line.
+   The Collection detail's own list keeps the single column above:
+   its terms are one word each and its values are read down. */
+details.identity dl {
+  display: grid;
+  grid-template-columns: repeat(2, max-content minmax(min-content, max-content));
+  gap: 0.3rem 0.75rem;
+  justify-content: start;
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+
+@media (max-width: 48rem) {
+  details.identity dl {
+    grid-template-columns: max-content minmax(min-content, max-content);
+  }
+}
+
+.panels dt,
+details.identity dt {
   font-weight: bold;
 }
 
 .panels dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+/* The identity's values break at their spaces and not inside a word:
+   a realm's name and a list of profile names read worse cut mid-word,
+   and the Collection detail's timestamps, which have no space to break at,
+   keep the rule above. */
+details.identity dd {
+  margin: 0;
+  overflow-wrap: break-word;
 }
 
 input.url {

@@ -1138,8 +1138,9 @@ class App extends Component {
       return html`<article><${ErrorBox} error=${this.state.bootError} onRetry=${this.boot} /></article>`;
     }
     return html`
+      ${this.renderIdentity()}
+      ${this.panelError("whoami")}
       <div class="panels">
-        ${this.renderIdentity()}
         ${this.renderSelection()}
         ${this.renderRequest()}
         ${this.collectionsOffered() ? this.renderCollections() : null}
@@ -1167,8 +1168,11 @@ class App extends Component {
     const realm = w.realm;
     const mode = w.auth.mode;
     return html`
-      <article>
-        <header><strong>Identity</strong></header>
+      <details class="identity">
+        <summary>
+          <strong>Identity</strong>
+          <span class="who">${text(w.principal)} in ${text(realm.name)}</span>
+        </summary>
         <dl>
           <dt>Principal</dt>
           <dd>${text(w.principal)}</dd>
@@ -1190,14 +1194,13 @@ class App extends Component {
           <dt>Authentication</dt>
           <dd>${text(mode)}</dd>
         </dl>
-        ${this.panelError("whoami")}
         <footer>
           ${w.auth.logout ? html`<a href=${logoutURL().href}>Sign out</a>` : null}
           ${mode === "basic"
             ? html`<small>A Basic credential is the browser's to keep; there is no sign-out here.</small>`
             : null}
         </footer>
-      </article>
+      </details>
     `;
   }
 
@@ -1206,24 +1209,26 @@ class App extends Component {
     const nsListed = !ns || namespaces.includes(ns);
     const svcListed = !svc || services.includes(svc);
     return html`
-      <article>
+      <article class="selection">
         <header><strong>Service</strong></header>
-        <label>
-          Namespace
-          <select value=${nsListed ? ns : ""} onChange=${this.onNamespace}>
-            <option value="">${namespaces.length ? "choose a namespace" : "no namespace listed"}</option>
-            ${namespaces.map((n) => html`<option key=${n} value=${n}>${n}</option>`)}
-          </select>
-        </label>
+        <div class="fields">
+          <label>
+            Namespace
+            <select value=${nsListed ? ns : ""} onChange=${this.onNamespace}>
+              <option value="">${namespaces.length ? "choose a namespace" : "no namespace listed"}</option>
+              ${namespaces.map((n) => html`<option key=${n} value=${n}>${n}</option>`)}
+            </select>
+          </label>
+          <label>
+            Service
+            <select value=${svcListed ? svc : ""} onChange=${this.onService} disabled=${!ns || !nsListed}>
+              <option value="">${services.length ? "choose a Service" : "no Service listed"}</option>
+              ${services.map((s) => html`<option key=${s} value=${s}>${s}</option>`)}
+            </select>
+          </label>
+        </div>
         ${nsListed ? null : html`<p><small>${ns} is not listed</small></p>`}
         ${this.panelError("namespaces")}
-        <label>
-          Service
-          <select value=${svcListed ? svc : ""} onChange=${this.onService} disabled=${!ns || !nsListed}>
-            <option value="">${services.length ? "choose a Service" : "no Service listed"}</option>
-            ${services.map((s) => html`<option key=${s} value=${s}>${s}</option>`)}
-          </select>
-        </label>
         ${svcListed ? null : html`<p><small>${svc} is not listed</small></p>`}
         ${this.panelError("services")}
       </article>
@@ -1314,11 +1319,12 @@ class App extends Component {
           ? "Add user:password@ to the URL or use curl -u; the copied URL carries no credential."
           : "Under oidc the URL needs a bearer token that go tool pprof cannot send.";
     return html`
-      <article>
+      <article class="request">
         <header><strong>Profile</strong></header>
         ${this.panelError("limits")}
         ${limits
           ? html`
+              <div class="fields">
               <label>
                 Profile
                 <select value=${profile} onChange=${this.onProfile}>
@@ -1344,7 +1350,7 @@ class App extends Component {
                 : null}
               ${this.renderPortControl()}
               ${empty
-                ? this.renderEmptyTargets(empty)
+                ? html`<div class="empty">${this.renderEmptyTargets(empty)}</div>`
                 : html`
                     <label>
                       Pod
@@ -1361,15 +1367,16 @@ class App extends Component {
                       </select>
                     </label>
                   `}
-              <div class="actions">
-                <button
-                  type="button"
-                  class="secondary"
-                  disabled=${!svcListed || targetsLoading}
-                  onClick=${this.onRefreshTargets}
-                >
-                  Refresh
-                </button>
+                <div class="actions">
+                  <button
+                    type="button"
+                    class="secondary"
+                    disabled=${!svcListed || targetsLoading}
+                    onClick=${this.onRefreshTargets}
+                  >
+                    Refresh
+                  </button>
+                </div>
               </div>
               ${this.panelError("targets")}
               ${svcListed && !empty && !this.state.errors.targets && !this.state.signIn.targets && targets.length === 0
@@ -1388,12 +1395,14 @@ class App extends Component {
                 ${copied ? html`<small>copied</small>` : null}
               </div>
               ${this.panelError("download")}
-              <p><small>${copyNote}</small></p>
-              ${url
-                ? html`<p><small>From a terminal: <code>profgate profile ${ns}/${svc} ${profile}</code></small></p>`
-                : null}
-              ${!ns || !svc ? html`<p><small>choose a namespace and a Service to build the URL</small></p>` : null}
-              ${ns && svc && !svcListed ? html`<p><small>the selection is not listed, so no URL is built</small></p>` : null}
+              <div class="notes">
+                <p><small>${copyNote}</small></p>
+                ${url
+                  ? html`<p><small>From a terminal: <code>profgate profile ${ns}/${svc} ${profile}</code></small></p>`
+                  : null}
+                ${!ns || !svc ? html`<p><small>choose a namespace and a Service to build the URL</small></p>` : null}
+                ${ns && svc && !svcListed ? html`<p><small>the selection is not listed, so no URL is built</small></p>` : null}
+              </div>
             `
           : null}
       </article>

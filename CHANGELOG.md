@@ -97,6 +97,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The console lays one panel to a row and folds the identity into a disclosure.**
+  The three panels stood in a grid of auto-fitting columns,
+  so a wide window put the tall Profile panel beside two short ones and left a column of empty page below them,
+  while each panel drew its controls one to a line down a column wide enough for four.
+  Each panel now takes a row of the page and lays its controls across it, every control keeping its own label,
+  wrapping onto the next line in the same order below the width a line needs.
+  The identity is a disclosure above the panels, closed on load, its summary naming the principal and the realm;
+  opening it shows the same seven facts and the same sign-out link the panel held.
+  An error from a refetch of the identity, and the control it carries, render outside the disclosure,
+  so a closed one hides no way out of a failed identity fetch.
 - **Download fetches the profile and saves it, rather than navigating to it.**
   A navigation showed nothing when the profile endpoint answered an error,
   so `no_targets`, `service_not_found`, and `realm_denied` were invisible from the console.
