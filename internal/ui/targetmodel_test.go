@@ -3,17 +3,18 @@ package ui
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/dop251/goja"
 )
 
-// targetModelName is the module holding the targets fetch's three pure functions.
+// targetModelName is the module holding the targets fetch's four pure functions.
 const targetModelName = "targetmodel.js"
 
 // targetModelFunctions is what the module exports, in the order of its export statement.
-var targetModelFunctions = []string{"targetsQuery", "retryWithoutExplain", "targetSummary"}
+var targetModelFunctions = []string{"targetsQuery", "retryWithoutExplain", "targetSummary", "downloadNote"}
 
 // exclusionReasons is the gateway's exclusion vocabulary in report order,
 // written out here rather than read from the gateway package,
@@ -45,7 +46,7 @@ var reasonWording = map[string]string{
 	"pod_name_mismatch":         "Pods with another name",
 }
 
-// loadTargetModel evaluates the target model with its three functions reachable as globals.
+// loadTargetModel evaluates the target model with its four functions reachable as globals.
 func loadTargetModel(tb testing.TB) *goja.Runtime {
 	tb.Helper()
 
@@ -322,6 +323,83 @@ func TestTargetModelSummaryEmpty(t *testing.T) {
 				if !reflect.DeepEqual(got.Empty.Rows, tc.want.Rows) {
 					t.Errorf("empty.rows = %+v, want %+v", got.Empty.Rows, tc.want.Rows)
 				}
+			}
+		})
+	}
+}
+
+// TestTargetModelDownloadNote drives targetSummary and then downloadNote on its result in one interpreter:
+// the line beside a disabled Download is empty while a Pod is listed,
+// the counted reasons on one line in the gateway's order otherwise,
+// the selector sentence for a selectorMatched of 0, and the plain wording for a body with no excluded row.
+func TestTargetModelDownloadNote(t *testing.T) {
+	vocabulary := make([]map[string]any, 0, len(exclusionReasons))
+	inOrder := make([]string, 0, len(exclusionReasons))
+	for i, reason := range exclusionReasons {
+		vocabulary = append(vocabulary, excluded(reason, i+1))
+		inOrder = append(inOrder, strconv.Itoa(i+1)+" "+reasonWording[reason])
+	}
+	shuffled := make([]map[string]any, 0, len(exclusionReasons))
+	reversed := make([]string, 0, len(exclusionReasons))
+	for i := len(exclusionReasons) - 1; i >= 0; i-- {
+		shuffled = append(shuffled, vocabulary[i])
+		reversed = append(reversed, inOrder[i])
+	}
+
+	cases := []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"a summary with targets yields no line",
+			map[string]any{
+				"targets": []map[string]any{
+					target("api-2", "v2"),
+					target("api-0", "v1"),
+					target("api-1", ""),
+					target("api-3", "v2"),
+				},
+				"selectorMatched": 6,
+				"excluded":        []map[string]any{excluded("pod_not_ready", 2)},
+			},
+			""},
+		{"the ten reasons in order",
+			map[string]any{"targets": []any{}, "selectorMatched": 55, "excluded": vocabulary},
+			strings.Join(inOrder, "; ")},
+		{"the ten reasons shuffled keep their order",
+			map[string]any{"targets": []any{}, "selectorMatched": 55, "excluded": shuffled},
+			strings.Join(reversed, "; ")},
+		{"an unrecognized reason is its own words",
+			map[string]any{"targets": []any{}, "selectorMatched": 4,
+				"excluded": []map[string]any{excluded("pod_not_ready", 1), excluded("pod_on_fire", 3)}},
+			"1 Pods whose Ready condition is not True; 3 pod_on_fire"},
+		{"selectorMatched of 0",
+			map[string]any{"targets": []any{}, "selectorMatched": 0},
+			"the Service's selector matches no Pod"},
+		{"no excluded field",
+			map[string]any{"targets": []any{}},
+			"no target listed"},
+		{"excluded of []",
+			map[string]any{"targets": []any{}, "selectorMatched": 2, "excluded": []any{}},
+			"no target listed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := loadTargetModel(t)
+			summarized := callModel(t, vm, "targetSummary", tc.body)
+			if !summarized.Unchanged {
+				t.Errorf("targetSummary mutated its argument")
+			}
+			got := callModel(t, vm, "downloadNote", decode(t, summarized.Result))
+			if !got.Unchanged {
+				t.Errorf("downloadNote mutated the summary")
+			}
+			var note string
+			if err := json.Unmarshal(got.Result, &note); err != nil {
+				t.Fatalf("decode %s: %v", got.Result, err)
+			}
+			if note != tc.want {
+				t.Errorf("downloadNote = %q, want %q", note, tc.want)
 			}
 		})
 	}

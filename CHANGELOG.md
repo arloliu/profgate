@@ -76,6 +76,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Download fetches the profile and saves it, rather than navigating to it.**
+  A navigation showed nothing when the profile endpoint answered an error,
+  so `no_targets`, `service_not_found`, and `realm_denied` were invisible from the console.
+  The page now fetches the profile, saves a `200` under the name its `Content-Disposition` carries,
+  and shows any other answer with its hint where every other error is shown;
+  the control is disabled while the download is in flight, so a second press sends nothing.
+  A response that declares no `Content-Encoding`, which is every response the pprof handler writes,
+  is saved as the gzip-framed body `curl` receives;
+  a response an intermediary encoded is saved decoded, so its bytes are not the wire bytes.
 - **BREAKING: a client that leaves during the confirmation read is `client_gone`, in the audit record and in `profgate_confirm_total`.**
   It was answered `503 discovery_unavailable` — to nobody — and counted under `result="unavailable"`,
   so a burst of impatient clients read as an API server that could not vouch for anything.
@@ -196,6 +205,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Download is disabled, with the reason beside it, while a Service has no eligible Pod.**
+  The link stayed live over an empty target list,
+  and the `503 no_targets` it earned was a navigation the browser showed nothing for.
+  The control is now disabled while the targets response lists no Pod,
+  and the counted reasons, the selector sentence, or "no target listed" stand beside it;
+  a targets response that lists a Pod enables it again.
 - **A double-click on Start collection or Cancel no longer creates or cancels a Collection.**
   The first click armed the control and the second, a few tens of milliseconds later, confirmed it,
   so one gesture sent the request the two presses exist to guard.

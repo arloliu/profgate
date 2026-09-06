@@ -155,6 +155,18 @@ type sentRequest struct {
 	method string
 	url    string
 	header map[string][]string
+	// resourceType is what the browser was fetching the request for:
+	// Document for a navigation, Fetch for a call the page made,
+	// which is how a download is told apart from a navigation to the same URL.
+	resourceType network.ResourceType
+}
+
+// downloadBegan is one download as the browser announced it, before any byte landed:
+// the URL it downloads from and the name it suggests, which the disk may not use.
+type downloadBegan struct {
+	guid      string
+	url       string
+	suggested string
 }
 
 // headerValues returns every value the request carried under name, matched case-insensitively,
@@ -193,6 +205,7 @@ type session struct {
 	violations []string
 	exceptions []string
 	requests   []sentRequest
+	began      []downloadBegan
 	failures   map[network.RequestID]string
 	challenges int
 	finished   chan string
@@ -287,7 +300,7 @@ func (s *session) observe(ev any, o sessionOptions) {
 		}
 		s.mu.Lock()
 		s.requests = append(s.requests,
-			sentRequest{id: e.RequestID, method: e.Request.Method, url: e.Request.URL, header: header})
+			sentRequest{id: e.RequestID, method: e.Request.Method, url: e.Request.URL, header: header, resourceType: e.Type})
 		s.mu.Unlock()
 	case *network.EventLoadingFailed:
 		// A fetch that never reaches a response reports here and nowhere else:
@@ -302,6 +315,10 @@ func (s *session) observe(ev any, o sessionOptions) {
 		}
 		s.mu.Lock()
 		s.failures[e.RequestID] = reason
+		s.mu.Unlock()
+	case *cdpbrowser.EventDownloadWillBegin:
+		s.mu.Lock()
+		s.began = append(s.began, downloadBegan{guid: e.GUID, url: e.URL, suggested: e.SuggestedFilename})
 		s.mu.Unlock()
 	case *cdpbrowser.EventDownloadProgress:
 		if e.State == cdpbrowser.DownloadProgressStateCompleted {
@@ -430,17 +447,44 @@ func (s *session) challengeCount() int {
 	return s.challenges
 }
 
-// awaitDownload waits for a download to complete and returns the bytes that landed.
+// downloadsBegun is how many downloads the browser has announced so far.
+func (s *session) downloadsBegun() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.began)
+}
+
+// awaitDownload waits for a download to complete and returns how the browser announced it and the bytes that landed.
 // The wait is on the completion event rather than on the click returning,
 // because a click starts a download and says nothing about it finishing.
-func (s *session) awaitDownload(t *testing.T, what string) []byte {
+// The completion names the download by its identifier, which selects the announcement;
+// a completion for a download the browser never announced is a harness fault.
+// The bytes are read from the directory under whatever name the browser wrote,
+// because the suggested name is documented as one the disk may differ from.
+func (s *session) awaitDownload(t *testing.T, what string) (downloadBegan, []byte) {
 	t.Helper()
+	var guid string
 	select {
-	case <-s.finished:
+	case guid = <-s.finished:
 	case <-time.After(downloadDeadline):
 		t.Fatalf("%s: no download completed within %v\n%s", what, downloadDeadline, s.report())
 	case <-s.ctx.Done():
 		t.Fatalf("%s: the browser went away: %v", what, s.ctx.Err())
+	}
+	var began downloadBegan
+	found := false
+	s.mu.Lock()
+	for _, b := range s.began {
+		if b.guid == guid {
+			began, found = b, true
+
+			break
+		}
+	}
+	s.mu.Unlock()
+	if !found {
+		t.Fatalf("%s: download %s completed but the browser never announced it\n%s", what, guid, s.report())
 	}
 	entries, err := os.ReadDir(s.download)
 	if err != nil {
@@ -458,11 +502,11 @@ func (s *session) awaitDownload(t *testing.T, what string) []byte {
 			t.Fatal(err)
 		}
 
-		return b
+		return began, b
 	}
 	t.Fatalf("%s: the download completed but %s holds no file", what, s.download)
 
-	return nil
+	return began, nil
 }
 
 // assertGzipFramed fails unless b is the gzip framing the profile endpoint streams.

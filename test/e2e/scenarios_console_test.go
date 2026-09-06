@@ -18,7 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const (
@@ -69,6 +73,10 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	b := requireBrowser(t, h)
 	ns := h.Namespace(t)
 	deployTestApp(t, h, ns)
+	// The second Service is created before the page loads the Service list it keeps,
+	// because the page fetches that list on a namespace change and on a service_not_found and on nothing else,
+	// and every fixture between here and that load is time for the informer to deliver it.
+	nobodyService(t, h, ns)
 	ctx := t.Context()
 
 	password := rand.Text()
@@ -197,9 +205,23 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	s.waitFor(t, "the profile URL follows the profile chosen",
 		fmt.Sprintf(`(document.querySelector("input.url") || {}).value === %q`, wantURL))
 
-	// Download saves the body the profile endpoint streams.
+	// Download fetches the profile and saves the body the profile endpoint streams.
+	// The request is a Fetch and not a Document, and the file comes from an object URL,
+	// which is what tells a fetch followed by a save apart from a navigation to the same URL.
 	s.run(t, "press Download", chromedp.Click(control("Download"), chromedp.BySearch))
-	assertGzipFramed(t, "the file the browser saved", s.awaitDownload(t, "the profile download"))
+	began, body := s.awaitDownload(t, "the profile download")
+	assertGzipFramed(t, "the file the browser saved", body)
+	if began.suggested != "heap" {
+		t.Fatalf("the browser suggested the name %q for the download, want heap, the profile chosen,"+
+			" which the pprof handler names in Content-Disposition", began.suggested)
+	}
+	if !strings.HasPrefix(began.url, "blob:") {
+		t.Fatalf("the download's URL is %q, want a blob: URL; the page navigated instead of fetching", began.url)
+	}
+	if sent := s.sentTo(http.MethodGet, wantURL); len(sent) == 0 || sent[len(sent)-1].resourceType != network.ResourceTypeFetch {
+		t.Fatalf("the page sent %d requests to %s and the last was a %q, want a %q; the download was a navigation\n%s",
+			len(sent), wantURL, lastResourceType(sent), network.ResourceTypeFetch, s.report())
+	}
 	s.assertClean(t, "the profile download")
 
 	// The Collections table lists the Service's Collections and a row's detail shows its record.
@@ -234,6 +256,47 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		fmt.Sprintf(`%s === "cancelled"`, rowCell(started, 2)))
 	s.waitFor(t, "the cancel control goes with the state",
 		fmt.Sprintf(`%s === ""`, rowCell(started, 8)))
+
+	// A Service whose selector matches no Pod disables Download, with the selector sentence beside it.
+	const noSelector = "the Service's selector matches no Pod"
+	s.chooseOption(t, "Service", nobodyServiceName)
+	s.waitFor(t, "the Profile panel says the selector matches no Pod",
+		fmt.Sprintf(`(%s || { textContent: "" }).textContent.includes(%q)`, profilePanel, noSelector))
+	var disabledWithNote bool
+	s.eval(t, "read the Download control", fmt.Sprintf(`(() => {
+  const b = [...document.querySelectorAll(".actions button")].find((b) => b.textContent.trim() === "Download");
+  return Boolean(b) && b.disabled && [...b.parentElement.querySelectorAll("small")].some((n) => n.textContent.includes(%q));
+})()`, noSelector), &disabledWithNote)
+	if !disabledWithNote {
+		t.Fatalf("Download is not a disabled button with %q beside it while the Service matches no Pod:\n%s",
+			noSelector, s.textOf(t, ".panels"))
+	}
+
+	// Back on the test app, the page's Pod menu lists a Pod, which says the targets fetch has landed;
+	// the URL field cannot say that, because the URL is built from the selection alone.
+	s.chooseOption(t, "Service", testAppName)
+	s.waitFor(t, "the Pod control lists a Pod", podListed)
+	// The app is scaled to zero as the scenario's last step against it, because it does not come back.
+	// The test awaits the empty targets answer through a request of its own under the same credential,
+	// and the page's own list is left as it is:
+	// a Pod the page still lists is confirmed against the API server on the download and refused no_targets.
+	body = fmt.Appendf(nil, `{"spec":{"replicas":%d}}`, 0)
+	if _, err := h.Client.AppsV1().Deployments(ns).Patch(ctx, testAppName, types.MergePatchType, body, metav1.PatchOptions{}); err != nil {
+		t.Fatalf("scale %s to 0: %v", testAppName, err)
+	}
+	awaitTargetsEmpty(t, client, bearer, gatewayOrigin+"/v1/namespaces/"+ns+"/services/"+testAppName+"/targets")
+	var podStillListed bool
+	s.eval(t, "read the Pod control", podListed, &podStillListed)
+	if !podStillListed {
+		t.Fatalf("the page's Pod control emptied without a fetch of its own:\n%s", s.report())
+	}
+	before := s.downloadsBegun()
+	s.run(t, "press Download with no eligible Pod", chromedp.Click(control("Download"), chromedp.BySearch))
+	s.waitFor(t, "the Profile panel shows no_targets",
+		fmt.Sprintf(`(%s || { textContent: "" }).textContent.includes("no_targets")`, profilePanel))
+	if n := s.downloadsBegun(); n != before {
+		t.Fatalf("a download began on an answer that was not a profile: %d downloads, %d before", n, before)
+	}
 
 	// Every load of the scenario, once more at the end: the observers ran through all of them.
 	assertRenderedAsText(t, s, "the working load", consolePrincipalPayload)
@@ -293,7 +356,11 @@ func scenarioConsoleBasic(t *testing.T, h *Harness) {
 	s.waitFor(t, "the profile URL follows the profile chosen",
 		fmt.Sprintf(`(document.querySelector("input.url") || {}).value === %q`, wantURL))
 	s.run(t, "press Download", chromedp.Click(control("Download"), chromedp.BySearch))
-	assertGzipFramed(t, "the file the browser saved", s.awaitDownload(t, "the profile download"))
+	began, body := s.awaitDownload(t, "the profile download")
+	assertGzipFramed(t, "the file the browser saved", body)
+	if began.suggested != "heap" {
+		t.Fatalf("the browser suggested the name %q for the download, want heap, the profile chosen", began.suggested)
+	}
 	if n := s.challengeCount(); n != 1 {
 		t.Fatalf("the download raised another challenge: %d in all, want 1", n)
 	}
@@ -325,6 +392,76 @@ func consoleAuthBlock(issuer, principal string) string {
       cookieKeyFile: %s/%s
 `, issuer, dexClientID, consoleUsernameClaim, authMountPath, issuerCAKey, principal,
 		dexClientID, callbackURL, authMountPath, cookieKeyKey)
+}
+
+// nobodyServiceName is the Service whose selector matches no Pod.
+const nobodyServiceName = "nobody"
+
+// nobodyService creates a Service in ns whose selector names a label no Pod carries.
+// The catalog lists a Service with a selector whatever it matches,
+// and the eligibility read answers a selectorMatched of 0 for it,
+// which is the one targets answer that disables Download with the selector sentence beside it.
+// It is created through the clientset the way the harness creates its ConfigMaps and Secrets,
+// because a manifest would be a second fixture for one selector.
+func nobodyService(t *testing.T, h *Harness, ns string) {
+	t.Helper()
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: nobodyServiceName},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{testAppLabel: nobodyServiceName},
+			Ports:    []corev1.ServicePort{{Name: "pprof", Port: 6060, Protocol: corev1.ProtocolTCP}},
+		},
+	}
+	if _, err := h.Client.CoreV1().Services(ns).Create(t.Context(), svc, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create the Service %s/%s: %v", ns, nobodyServiceName, err)
+	}
+}
+
+// awaitTargetsEmpty polls the targets route until the gateway answers 200 listing no target.
+// The request is the test's own, under the scenario's credential and against the gateway it deployed,
+// so the page's list is left as it is.
+func awaitTargetsEmpty(t *testing.T, c *http.Client, header http.Header, rawURL string) {
+	t.Helper()
+	var last response
+	err := poll(t.Context(), settleDeadline, func(ctx context.Context) (bool, error) {
+		resp, err := try(ctx, c, http.MethodGet, rawURL, header, nil)
+		if err != nil {
+			return false, nil //nolint:nilerr // the forward settles; the poll bounds the wait
+		}
+		last = resp
+		if resp.Status != http.StatusOK {
+			return false, nil
+		}
+		var targets targetsResponse
+		if err := json.Unmarshal(resp.Body, &targets); err != nil {
+			return false, fmt.Errorf("decode the targets answer: %w: %s", err, resp.Body)
+		}
+
+		return len(targets.Targets) == 0, nil
+	})
+	if err != nil {
+		t.Fatalf("the gateway never answered %s with no target: %v (last %d: %s)", rawURL, err, last.Status, last.Body)
+	}
+}
+
+// profilePanel is the expression that reads the Profile panel's article.
+const profilePanel = `[...document.querySelectorAll(".panels article")]` +
+	`.find((a) => (a.querySelector("header") || { textContent: "" }).textContent.trim() === "Profile")`
+
+// podListed is the expression that is true while the Pod control offers a Pod beyond the placeholder,
+// which is the one option an empty menu has.
+const podListed = `(() => {
+  const l = [...document.querySelectorAll("label")].find((l) => l.querySelector("select") && l.textContent.trim().startsWith("Pod"));
+  return Boolean(l) && l.querySelector("select").options.length > 1;
+})()`
+
+// lastResourceType names what the browser was fetching the last of the requests for, or nothing for none.
+func lastResourceType(sent []sentRequest) network.ResourceType {
+	if len(sent) == 0 {
+		return ""
+	}
+
+	return sent[len(sent)-1].resourceType
 }
 
 // pgoPath is the Service's policy route, which is also the route a gateway answers 503 on
@@ -605,12 +742,12 @@ func signInThroughDex(t *testing.T, s *session, user, password string) {
 		`location.pathname === "`+uiPath+`"`)
 }
 
-// control is the search expression for the control with the exact label given.
-// Both element names are matched because the page draws Download as a link with a button role
-// and every other control as a button, and a caller presses a control rather than an element.
+// control is the search expression for the button with the exact label given.
+// Every control the page draws is a button, Download included;
+// the anchor the download is saved through is created for the click and never stands in the document.
 // The labels sit inside a template that puts newlines around them, so the text is normalized.
 func control(label string) string {
-	return fmt.Sprintf(`//*[self::button or self::a][normalize-space()=%s]`, xpathLiteral(label))
+	return fmt.Sprintf(`//button[normalize-space()=%s]`, xpathLiteral(label))
 }
 
 // xpathLiteral quotes a string for XPath, which has no escape and needs concat for a value holding both quotes.

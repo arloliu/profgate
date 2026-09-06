@@ -146,15 +146,15 @@ func TestScanPageUsesPortModel(t *testing.T) {
 var targetModelImportRe = regexp.MustCompile(`import\s*\{([^}]*)\}\s*from\s*["']\./targetmodel\.js["']`)
 
 // TestScanPageUsesTargetModel holds the page to the targets model:
-// app.js imports the three functions from ./targetmodel.js and calls each at least once,
-// so a page that builds the query, the retry rule, or the summary by hand turns the suite red.
+// app.js imports the four functions from ./targetmodel.js and calls each at least once,
+// so a page that builds the query, the retry rule, the summary, or the download's line by hand turns the suite red.
 func TestScanPageUsesTargetModel(t *testing.T) {
 	src := readSource(t, "app.js")
 	m := targetModelImportRe.FindStringSubmatch(src)
 	if m == nil {
 		t.Fatalf("app.js: no import from ./targetmodel.js")
 	}
-	for _, fn := range []string{"targetsQuery", "retryWithoutExplain", "targetSummary"} {
+	for _, fn := range []string{"targetsQuery", "retryWithoutExplain", "targetSummary", "downloadNote"} {
 		if !regexp.MustCompile(`\b` + fn + `\b`).MatchString(m[1]) {
 			t.Errorf("app.js: the import from ./targetmodel.js does not name %s: %q", fn, m[1])
 		}

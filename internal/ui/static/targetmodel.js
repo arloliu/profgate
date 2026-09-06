@@ -1,6 +1,7 @@
 // The targets fetch's rules, kept apart from the page so a test can run them:
 // the query it sends, whether a refused fetch is repeated without explain,
-// and the summary that becomes the Pod menu, the version menu, and the empty state.
+// the summary that becomes the Pod menu, the version menu, and the empty state,
+// and the line beside a disabled Download over that summary.
 // This module imports nothing and declares plain functions;
 // a Go test evaluates it in an ECMAScript interpreter with the trailing export cut off.
 
@@ -92,4 +93,23 @@ function targetSummary(body) {
   return { pods: pods, versions: versions, empty: { kind: "reasons", rows: rows } };
 }
 
-export { targetsQuery, retryWithoutExplain, targetSummary };
+// downloadNote is the line beside a disabled Download, over the summary targetSummary built:
+// empty for a summary with targets, which is the enabled control;
+// each excluded row's count and wording in the rows' order for the reasons kind;
+// the selector sentence for noSelector; and the plain wording otherwise.
+function downloadNote(summary) {
+  const s = summary || {};
+  const empty = s.empty;
+  if (!empty) {
+    return "";
+  }
+  if (empty.kind === "reasons") {
+    return (empty.rows || []).map((r) => `${r.count} ${r.text}`).join("; ");
+  }
+  if (empty.kind === "noSelector") {
+    return "the Service's selector matches no Pod";
+  }
+  return "no target listed";
+}
+
+export { targetsQuery, retryWithoutExplain, targetSummary, downloadNote };

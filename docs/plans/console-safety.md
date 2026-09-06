@@ -756,7 +756,7 @@ sets `href` and `download`, appends it to `document.body`, clicks it, removes it
 Both are module-level functions beside `isEnvelope`, and neither spells a path.
 `clearWriteControls` is untouched: a download is a read.
 
-- [ ] **Write the model test**
+- [x] **Write the model test**
 
 `internal/ui/targetmodel_test.go`:
 `targetModelFunctions` gains `"downloadNote"` and the comment at `:12` counts four;
@@ -782,7 +782,7 @@ the new test fails at load, because there is no fourth function;
 the scan reports an import that does not name it.
 The wrong implementation is a page that keeps the control live over an empty listing and lets the gateway answer `503 no_targets` to nobody.
 
-- [ ] **Write the browser steps, and run them red**
+- [x] **Write the browser steps, and run them red**
 
 `test/e2e/browser_test.go`:
 `sentRequest` (`:151-158`) gains `resourceType network.ResourceType`, set by `observe` from `e.Type` of `EventRequestWillBeSent`
@@ -875,7 +875,7 @@ step 2 a **Download** that is an enabled anchor,
 step 3 a Profile panel that never holds `no_targets`, because a navigation shows the page nothing —
 and the run after the change is what proves both green.
 
-- [ ] **Name what the scans hold**
+- [x] **Name what the scans hold**
 
 No unit test runs `app.js`.
 `TestScanNoHTMLInterfaces`, `TestScanPathsLiveInURLs`, `TestScanNoInlineForms`, and `TestScanNoMutableTopLevelState`
@@ -883,7 +883,7 @@ No unit test runs `app.js`.
 and a `saveBlob` that reached for `innerHTML` or a literal `/v1` path would turn them red.
 *What is not proven* already states the rest (`docs/specs/ui.md:1658-1659`).
 
-- [ ] **Disable, fetch, save, and say so**
+- [x] **Disable, fetch, save, and say so**
 
 `CHANGELOG.md`, `### Fixed`:
 **Download is disabled, with the reason beside it, while a Service has no eligible Pod.**
@@ -903,7 +903,7 @@ A response that declares no `Content-Encoding`, which is every response the ppro
 is saved as the gzip-framed body `curl` receives;
 a response an intermediary encoded is saved decoded, so its bytes are not the wire bytes.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 go vet -tags e2e ./test/e2e/

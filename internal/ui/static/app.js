@@ -22,7 +22,7 @@ import {
   pageURL,
 } from "./urls.js";
 import { deriveControl, applyInput } from "./portmodel.js";
-import { targetsQuery, retryWithoutExplain, targetSummary } from "./targetmodel.js";
+import { targetsQuery, retryWithoutExplain, targetSummary, downloadNote } from "./targetmodel.js";
 import {
   startOffered,
   cancelOffered,
@@ -75,10 +75,13 @@ const hints = {
 };
 
 // fetchJSON runs one same-origin request and resolves to
-// {status, headers, body, bodyText, rejected, code, message, error}.
+// {status, headers, body, blob, bodyText, rejected, code, message, error}.
 // req, when given, is the request description a write control built:
 // its method, its headers, and its body, which is null for a request that carries none.
 // Without one the request is a GET, which is what every listing fetch is.
+// asBlob, when true, reads a 200 as a Blob into blob and leaves body null,
+// which is what a download wants; every other answer is read exactly as it is without it,
+// so the envelope rule is one code path.
 // body is the decoded JSON when the Content-Type says JSON, and bodyText is the body as it arrived;
 // rejected says fetch itself never produced a response;
 // code and message are the error envelope's two fields when the body is one, and empty strings otherwise.
@@ -87,11 +90,12 @@ const hints = {
 // The parts stay beside it because collectionmodel.js branches on the status and the code,
 // and a composed string cannot be branched on.
 // It decides nothing about 401: the caller does, because what a 401 means depends on the mode.
-async function fetchJSON(url, req) {
+async function fetchJSON(url, req, asBlob) {
   const out = {
     status: 0,
     headers: new Headers(),
     body: null,
+    blob: null,
     bodyText: "",
     rejected: false,
     code: "",
@@ -111,6 +115,10 @@ async function fetchJSON(url, req) {
     out.status = res.status;
     out.statusText = res.statusText;
     out.headers = res.headers;
+    if (asBlob === true && res.status === 200) {
+      out.blob = await res.blob();
+      return out;
+    }
     out.bodyText = await res.text();
     const ctype = res.headers.get("content-type") || "";
     if (ctype.startsWith("application/json")) {
@@ -176,6 +184,28 @@ function isEnvelope(body) {
     typeof body.error === "string" &&
     typeof body.code === "string"
   );
+}
+
+// filenameOf is the filename parameter of a Content-Disposition header, quoted or bare,
+// and "profile" when the header is absent or names none.
+function filenameOf(header) {
+  const m = /(?:^|;)\s*filename\s*=\s*(?:"([^"]*)"|([^;]*))/i.exec(header || "");
+  const name = m ? (m[1] !== undefined ? m[1] : m[2]).trim() : "";
+  return name === "" ? "profile" : name;
+}
+
+// saveBlob hands blob to the browser's download manager under name:
+// an object URL, an anchor with the download attribute clicked once, and the URL revoked when the click has returned.
+// The anchor is created here and never stands in the template, because the control that can be disabled is a button.
+function saveBlob(blob, name) {
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(href);
 }
 
 // listAllows mirrors the gateway's realm filter: the wildcard or the name.
@@ -296,6 +326,9 @@ class App extends Component {
       errors: {},
       signIn: {},
       copied: false,
+      // downloading is true from the press on Download until the body has been read whole and the save has begun,
+      // or the fetch has settled on anything else.
+      downloading: false,
       // start is the start control's whole state, as startNext keeps it,
       // and startMessage is what that model last asked the page to say.
       start: { phase: "idle", key: null, route: null, token: 0, until: 0, armedAt: 0 },
@@ -400,6 +433,15 @@ class App extends Component {
       this.clearError(key);
       return res.body;
     }
+    this.settle(key, res, retry);
+    return null;
+  }
+
+  // settle records what a request that did not answer 200 leaves behind:
+  // the 401 rule of Signing in and out, the not_ready retry, and the error under key.
+  // It returns the error it recorded, or null when the 401 rule took the answer,
+  // so a caller can act on the code without reading state a setState has not applied yet.
+  settle(key, res, retry) {
     if (res.status === 401) {
       const mode = this.state.whoami.auth.mode;
       if (mode === "oidc" && this.mayNavigateToLogin()) {
@@ -421,7 +463,7 @@ class App extends Component {
       errors: { ...s.errors, [key]: { error: res.error, retry: retry } },
       signIn: { ...s.signIn, [key]: undefined },
     }));
-    return null;
+    return res.error;
   }
 
   clearError(key) {
@@ -840,6 +882,31 @@ class App extends Component {
     );
   };
 
+  // onDownload fetches the profile and saves a 200 through an object URL;
+  // any other answer is shown in the Profile panel under the rule every listing follows,
+  // and a service_not_found refetches the Service list as the two loaders do.
+  // The control is disabled from the press until the body has been read whole and the save has begun.
+  // The refetch reads the value settle returned and not the recorded error,
+  // because a setState is applied later than the line after it.
+  onDownload = async () => {
+    const url = this.currentProfileURL();
+    if (!url || this.state.downloading) {
+      return;
+    }
+    this.setState({ downloading: true });
+    const res = await fetchJSON(url.href, undefined, true);
+    if (res.blob !== null) {
+      this.clearError("download");
+      saveBlob(res.blob, filenameOf(res.headers.get("content-disposition")));
+    } else {
+      const err = this.settle("download", res, this.onDownload);
+      if (isEnvelope(err) && err.code === "service_not_found") {
+        this.loadServices();
+      }
+    }
+    this.setState({ downloading: false });
+  };
+
   onSelectCollection = (id) => {
     if (!isCollectionID(id)) {
       this.setState({ collection: null });
@@ -1082,7 +1149,8 @@ class App extends Component {
   }
 
   renderRequest() {
-    const { ns, svc, profile, seconds, pod, version, targets, targetSummary: summary, limits, whoami, copied } = this.state;
+    const { ns, svc, profile, seconds, pod, version, targets, targetSummary: summary, limits, whoami, copied, downloading } =
+      this.state;
     const profiles = this.offeredProfiles();
     const svcListed = this.selectionListed();
     const limit = this.secondsLimit(profile);
@@ -1091,6 +1159,10 @@ class App extends Component {
     const pods = summary ? summary.pods : [];
     const versions = summary ? summary.versions : [];
     const empty = summary ? summary.empty : null;
+    // note is the line beside Download while the targets response lists no Pod; the control is disabled with it.
+    // While no response has arrived for the selection, and after one that failed, the summary is null and the note empty,
+    // because a request the page cannot foresee failing is one the user may send and read the answer to.
+    const note = downloadNote(summary);
     const canCopy = Boolean(navigator.clipboard && typeof navigator.clipboard.writeText === "function");
     const mode = whoami.auth.mode;
     const copyNote =
@@ -1156,10 +1228,14 @@ class App extends Component {
                 <input type="text" class="url" readOnly value=${url ? url.href : ""} />
               </label>
               <div class="actions">
-                ${url ? html`<a href=${url.href} download role="button">Download</a>` : null}
+                <button type="button" disabled=${!url || note !== "" || downloading} onClick=${this.onDownload}>
+                  ${downloading ? "Downloading" : "Download"}
+                </button>
+                ${note ? html`<small>${note}</small>` : null}
                 ${url && canCopy ? html`<button type="button" onClick=${this.onCopy}>Copy URL</button>` : null}
                 ${copied ? html`<small>copied</small>` : null}
               </div>
+              ${this.panelError("download")}
               <p><small>${copyNote}</small></p>
               ${!ns || !svc ? html`<p><small>choose a namespace and a Service to build the URL</small></p>` : null}
               ${ns && svc && !svcListed ? html`<p><small>the selection is not listed, so no URL is built</small></p>` : null}
