@@ -1748,7 +1748,8 @@ so a runner that loses one, or drifts to a version outside the range, turns red 
   and the identity panel names the issuer's user and the realm it mapped to —
   which is the `401`, the redirect, the `returned=1` marker, and the once-per-load rule, executed rather than read;
 - choosing the namespace, the Service, and a profile fills the profile URL field with the URL *Flow* describes,
-  and pressing **Download** saves a file that is the gzip-framed body the profile endpoint streams,
+  and pressing **Download** saves a file that is the body the profile endpoint streams, byte for byte,
+  gzip-framed as every `heap` profile is,
   under the name `heap`, the profile the scenario chose, which Go's pprof handler names in `Content-Disposition`,
   read from the browser's download events;
   the download is observed as a `Fetch` request to the profile route followed by a download from a `blob:` URL,

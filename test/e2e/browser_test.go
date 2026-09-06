@@ -366,7 +366,8 @@ func (s *session) observe(ev any, o sessionOptions) {
 // pattern is the Fetch domain's URL pattern the step intercepts, enabled for the step
 // and disabled again by release on a session that did not have the domain on already;
 // a session answering a challenge keeps its interception as it is.
-// A step that never calls release leaves the page waiting for an answer that never comes.
+// release runs its body at most once, and is also registered as a t.Cleanup right after the paused request arrives,
+// so an assertion that fails before the caller's own release call still continues the request.
 func (s *session) holdRequest(t *testing.T, what, pattern string, match func(url string) bool, press func()) (release func()) {
 	t.Helper()
 	if !s.intercepting {
@@ -385,15 +386,21 @@ func (s *session) holdRequest(t *testing.T, what, pattern string, match func(url
 		t.Fatalf("%s: the browser went away: %v", what, s.ctx.Err())
 	}
 
-	return func() {
-		s.mu.Lock()
-		s.hold = nil
-		s.mu.Unlock()
-		s.run(t, "release "+what, fetch.ContinueRequest(id))
-		if !s.intercepting {
-			s.run(t, "stop intercepting "+what, fetch.Disable())
-		}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			s.mu.Lock()
+			s.hold = nil
+			s.mu.Unlock()
+			s.run(t, "release "+what, fetch.ContinueRequest(id))
+			if !s.intercepting {
+				s.run(t, "stop intercepting "+what, fetch.Disable())
+			}
+		})
 	}
+	t.Cleanup(release)
+
+	return release
 }
 
 // heldCount is how many paused requests a hold has caught that nothing has continued.
