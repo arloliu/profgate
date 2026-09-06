@@ -1,6 +1,7 @@
 # The Console Is Safe to Click and Honest About What It Shows
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #30 carries the eleven tasks, the review fixes, and the stylesheet repairs the browser check asked for.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -1633,7 +1634,7 @@ the protocol [`finished-documents-leave-the-tree.md`](../decisions/finished-docu
 it deletes this file and rewrites every link that cited it, which `check_links` enforces, and changes nothing else.
 `grep -rn console-safety --include='*.md' .` finds the links.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/plans/console-safety.md docs/plans/roadmap.md

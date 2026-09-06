@@ -279,7 +279,7 @@ Why here: the first two bullets are reproduced; the rest are the same package an
 
 ### 7. Make the console safe to click and honest about what it shows
 
-- [ ] A mouse double-click on **Start collection** arms and confirms in one gesture and creates a Collection
+- [x] A mouse double-click on **Start collection** arms and confirms in one gesture and creates a Collection
   (`internal/ui/static/app.js:622-633,1203-1212`); **Cancel** has the same shape.
   `docs/specs/ui.md:661-663` requires two presses; the code catches up — the confirm control is not placed
   where the first press landed,
@@ -287,7 +287,7 @@ Why here: the first two bullets are reproduced; the rest are the same package an
 - [x] **Download** with no target does nothing visible; the gateway answers `503 no_targets` and the page shows nothing
   (`app.js:901-912,1145`).
   Disable the control when the target summary is empty, and show the envelope when a download fails.
-- [ ] The Collections table sits in one grid column beside 900 px of empty page (`app.css:9-14`, `app.js:930-937`);
+- [x] The Collections table sits in one grid column beside 900 px of empty page (`app.css:9-14`, `app.js:930-937`);
   `state`, the timestamps, and **Cancel** are off-screen at 1600 px.
 - [x] Nothing refreshes: a Collection started from the page never leaves `pending` without a reload (`app.js:471-503`),
   and the list shows one page of at most 100 with `nextCursor` dropped (`app.js:505-521`).
@@ -295,14 +295,14 @@ Why here: the first two bullets are reproduced; the rest are the same package an
   The revision adds a **Refresh** control on the two lists —
   the one control this roadmap adds, because a Collection started from the page cannot otherwise be watched from it —
   and has the list say that older Collections exist and which CLI verb lists them, rather than adding a paging control.
-- [ ] **Keep** and **Confirm start** render in the same primary blue:
+- [x] **Keep** and **Confirm start** render in the same primary blue:
   the vendored classless Pico has no `.secondary` rule (`app.css:78-82`).
-- [ ] `loginURL` omits the 1024-byte return-path bound
+- [x] `loginURL` omits the 1024-byte return-path bound
   that `docs/specs/ui.md:482` requires (`internal/ui/static/urls.js:103-106`).
-- [ ] The `hints` table lacks `too_many_auth` and `auth_unavailable` (`app.js:55-73`),
+- [x] The `hints` table lacks `too_many_auth` and `auth_unavailable` (`app.js:55-73`),
   and the `realm_denied` hint promises an identity panel that a listing `403` never refreshes (`app.js:385-420`).
-- [ ] The page has no heading and no pointer to the CLI verb that does the same job.
-- [ ] `docs/console.md:104` says **Copy URL** is absent on an HTTP page,
+- [x] The page has no heading and no pointer to the CLI verb that does the same job.
+- [x] `docs/console.md:104` says **Copy URL** is absent on an HTTP page,
   and the port-forward recipe at `:23-30` is a secure context where it appears;
   `:123` says **Keep** restores the control, which holds only before the first request;
   `:141` describes the `v0.4.0` to `v0.5.0` asset move without naming it.
@@ -312,12 +312,12 @@ Spec: [`ui.md`](../specs/ui.md) *Flow* and *Controls* for the download error and
 *Collections* and *Controls* for the paging notice,
 and [`cli.md`](../specs/cli.md) *Collections* for the verb's walk through every page;
 none for the rest.
-Shipped: not built yet.
+Shipped: pull request #30.
 Why here: the console is the surface a person clicks by reflex, and today a reflex creates a Collection.
 
 ### 8. Close the gates that do not run
 
-- [ ] `TestRoundsDecodeHeapDelta` skips under `-race` (`internal/pgo/rounds_test.go:818-821`),
+- [x] `TestRoundsDecodeHeapDelta` skips under `-race` (`internal/pgo/rounds_test.go:818-821`),
   and every test command in `mise.toml:33` and every workflow passes `-race`; the decoder memory guard has never run.
 - [ ] `.github/workflows/check.yml:1-13` runs `check`, lint, and unit tests on `push` only;
   a pull request from a fork fires `pull_request` alone and gets the `current` e2e lane and prose.
