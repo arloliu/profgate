@@ -284,12 +284,12 @@ Why here: the first two bullets are reproduced; the rest are the same package an
   `docs/specs/ui.md:661-663` requires two presses; the code catches up — the confirm control is not placed
   where the first press landed,
   or ignores a press within a short window of arming.
-- [ ] **Download** with no target does nothing visible; the gateway answers `503 no_targets` and the page shows nothing
+- [x] **Download** with no target does nothing visible; the gateway answers `503 no_targets` and the page shows nothing
   (`app.js:901-912,1145`).
   Disable the control when the target summary is empty, and show the envelope when a download fails.
 - [ ] The Collections table sits in one grid column beside 900 px of empty page (`app.css:9-14`, `app.js:930-937`);
   `state`, the timestamps, and **Cancel** are off-screen at 1600 px.
-- [ ] Nothing refreshes: a Collection started from the page never leaves `pending` without a reload (`app.js:471-503`),
+- [x] Nothing refreshes: a Collection started from the page never leaves `pending` without a reload (`app.js:471-503`),
   and the list shows one page of at most 100 with `nextCursor` dropped (`app.js:505-521`).
   `docs/specs/ui.md` says nothing about either.
   The revision adds a **Refresh** control on the two lists —
@@ -307,7 +307,10 @@ Why here: the first two bullets are reproduced; the rest are the same package an
   `:123` says **Keep** restores the control, which holds only before the first request;
   `:141` describes the `v0.4.0` to `v0.5.0` asset move without naming it.
 
-Spec: [`ui.md`](../specs/ui.md) for the refresh control, the disabled download, the download error, and the paging notice;
+Spec: [`ui.md`](../specs/ui.md) *Flow* and *Controls* for the download error and the disabled download;
+*Controls* and *Non-goals* for the refresh control;
+*Collections* and *Controls* for the paging notice,
+and [`cli.md`](../specs/cli.md) *Collections* for the verb's walk through every page;
 none for the rest.
 Shipped: not built yet.
 Why here: the console is the surface a person clicks by reflex, and today a reflex creates a Collection.

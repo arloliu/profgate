@@ -53,6 +53,7 @@ through the same request algorithm, and the browser saves them as a file.
    and is answered to every request the configured `auth.mode` admits —
    anonymous requests included, because `disabled` admits them.
    They exist so the console can offer choices instead of a blank text field.
+   The **Refresh** control of *Controls* reissues a fetch the page already makes and adds nothing to this list.
    They read informer caches and configuration, never the API server,
    and they add no Kubernetes capability.
 3. **Nothing outside the caller's realm is disclosed, existence included.**
@@ -91,6 +92,17 @@ through the same request algorithm, and the browser saves them as a file.
   Scheduled CPU collection is PGO collection ([`pgo.md`](pgo.md)),
   and the console neither writes a schedule nor edits one:
   it starts a single Collection on demand and cancels one (*Starting and cancelling a Collection*).
+- Automatic refresh or polling of any list.
+  A list that has arrived is not refetched on a timer.
+  The targets list and the Collections table have a **Refresh** control (*Controls*);
+  a change of selection, the refetch an answer causes (*Errors*),
+  and the retry of a `not_ready` answer every two seconds remain.
+  Every listing request writes an audit record —
+  gateway *Logging* for the targets fetch, [`pgo.md`](pgo.md) *Logging* for the Collections list —
+  and counts under its endpoint,
+  so a page that polled would turn every open tab into a stream of requests and records nobody asked for,
+  paid whether or not anyone is looking.
+  Watching one Collection to its end is `collect --wait` in [`cli.md`](cli.md) *Collections*.
 - Editing a Service's PGO policy.
   `PUT` and `DELETE` on the policy route carry a revision in `If-Match` and answer
   `412 precondition_failed` and `428 precondition_required` ([`pgo.md`](pgo.md) *Policy*),
@@ -386,6 +398,11 @@ The Collections view is shown when `/v1/limits` reports `pgo.enabled` and `/v1/w
 The console lists Collections through the existing `GET /v1/namespaces/{namespace}/services/{service}/collections`
 and reads one through `GET /v1/collections/{id}`, both defined in [`pgo.md`](pgo.md) *HTTP API*,
 and downloads a finished artifact by navigating to `GET /v1/collections/{id}/profile`.
+The list request carries no parameter,
+so the answer is the first page that document's *List Collections* defines:
+the newest records, at most 100 of them, and `nextCursor` beside them while older records remain.
+The page reads `nextCursor` only to say that older Collections exist (*Controls*);
+it never sends the token back, because the page offers no paging control.
 It sends two more requests, both `POST` and both to routes that already exist:
 `POST .../collections` starts a Collection and `POST /v1/collections/{id}/cancel` ends one,
 each offered only when `/v1/whoami` reports `realm.pgo.collect`
@@ -416,6 +433,10 @@ and sending them back would narrow the choices it offers.
 Beyond `targets` the page reads `selectorMatched`, the Pods the Service selects before eligibility,
 and `excluded`, the reasons with a non-zero count in the gateway's vocabulary order.
 The response carries no other field the page reads.
+An empty `targets` is the one shape that disables **Download**:
+the profile endpoint runs the same eligibility over the same cache for the same port selection
+and answers `503 no_targets` when it finds none,
+and *Controls* says how the control shows that before it is pressed.
 
 `reason` is a closed set the gateway writes from its own vocabulary (gateway *Eligibility*),
 never a value a caller sent, and `count` is a number,
@@ -455,14 +476,17 @@ which costs one request and keeps the rule from needing a second clause.
   |-- GET /v1/namespaces/{ns}/services ----------------> service <select>
   |         (svc chosen)
   |-- GET .../services/{svc}/targets?explain=true[&port=|&portName=] --> pod <select>, versions, empty state
-  |-- GET .../collections   (only when pgo.enabled and realm.pgo.read)     --> collections table
+  |         (Refresh on the targets list repeats this fetch)
+  |-- GET .../collections   (only when pgo.enabled and realm.pgo.read)     --> collections table, first page
+  |         (Refresh on the Collections table repeats this fetch)
   |
   |-- profile <select> from limits.profiles filtered by realm.profiles
   |-- seconds <input>, 1..limit, shown for cpu and trace only
   |-- pod <select>, version <select>, port <select> and/or <input>
   v
   URL = /v1/namespaces/{ns}/services/{svc}/profiles/{profile}?[seconds=&pod=&version=&port=|portName=]
-  [Download]  = <a href=URL download>         a navigation; the browser saves the file
+  [Download]  = fetch(URL), then save          a 200 is saved through an object URL; any other answer is shown
+                disabled while targets is []  the reasons stand beside it
   [Copy URL]  = absolute URL on the clipboard  for `go tool pprof <url>`; the URL is also shown as text
 
   [Start collection] = POST .../collections            two presses; Content-Type: application/json, Idempotency-Key
@@ -489,14 +513,50 @@ it holds no credential and no state, and the page drops it from the address bar 
 A reload, a bookmark, and a return from login land on the same selection,
 apart from the one return whose selection was too long to send.
 
-The download is an ordinary navigation to the profile endpoint.
-It carries the session cookie with `Sec-Fetch-Site: same-origin` under `oidc`,
+**Download** is a `fetch` of the profile endpoint followed by a save, not a navigation.
+The request carries the session cookie with `Sec-Fetch-Site: same-origin` under `oidc`,
 the browser's remembered credential under `basic`, and nothing under `disabled`,
-and it runs the full interactive request algorithm, admission and confirmation included.
-The response's `Content-Disposition`, which Go's pprof handler sets and the gateway passes through,
-is what makes the browser save rather than display it.
-The page cannot read `X-Pprof-Target-*` on a navigation,
-so a user who wants to know which Pod served a profile picks the Pod explicitly from the targets list.
+and it runs the full interactive request algorithm, admission and confirmation included,
+exactly as a navigation would.
+A `200` is saved:
+the page reads the body as a `Blob`, mints an object URL for it with `URL.createObjectURL`,
+clicks an `<a download>` naming that URL, and revokes the URL once the save has started;
+the file's name is the `filename` of the response's `Content-Disposition`,
+which Go's pprof handler sets and the gateway passes through, and `profile` when the header carries none.
+`fetch` decodes only a `Content-Encoding` a response declares, and the pprof handler declares none,
+so an ordinary pprof response is saved as the gzip-framed body `curl` receives, unchanged.
+A `Content-Encoding` that middleware or an intermediary adds is passed through by the gateway (gateway *Proxy behavior*)
+and removed by the browser before the body reaches the page,
+so an encoded response carries no promise that the saved bytes are the wire bytes.
+Any other status is read by the rule of *Errors* —
+the envelope when the body is one, `HTTP <status> <statusText>` otherwise —
+and shown in the Profile panel with the hint for its code,
+so `no_targets`, `service_not_found`, or `realm_denied` becomes a message rather than a download that never began.
+A navigation cannot do that:
+a browser handed a JSON error where it expected a file shows the page nothing,
+which left every error the profile endpoint answers invisible here.
+A `401` follows *Signing in and out* as every `fetch` does, and the press is repeated after the sign-in.
+
+The cost is memory:
+a navigation streamed the body to disk, and the fetch holds it whole before the save,
+so a `trace` at the configured limit is the download that pays most.
+The two alternatives cost more.
+A probe before a navigation — a `HEAD`, or a ranged `GET` — either earns `405` from a `GET`-only route
+or runs the whole algorithm, admission slot and profile included, to learn what the one request would have learned;
+and a navigation kept, with the control disabled for the one failure the page can foresee, stays silent on every other:
+`service_not_found` and `realm_denied` among them.
+The control is disabled and says it is downloading from the press
+until the body has been read whole and the save has begun,
+so a second press sends nothing;
+a `200` whose headers have arrived is not yet a file,
+because the gateway aborts a committed response whose stream fails (gateway *Proxy behavior*).
+A rejected `fetch` and a body read that fails are one failure:
+the page shows "request failed" as *Errors* says, saves nothing, and clears the downloading state,
+and the control then follows the duration input and the targets response as it does before any press (*Controls*).
+The page reads the status, `Content-Type`, and `Content-Disposition` of the answer and nothing else.
+`X-Pprof-Target-*` is readable on a fetch and is not shown:
+naming the Pod that served a profile is a feature, and the console is a page and not a product surface (*Overview*),
+so a user who wants to know which Pod served a profile still picks the Pod explicitly from the targets list.
 
 The copied URL is the profile URL made absolute with the page's own origin, and carries no credential.
 Under `disabled` it works as is;
@@ -528,7 +588,7 @@ so the behavior is a contract and not an implementation guess:
 `seconds` is always sent explicitly for `cpu` and `trace`,
 so the request never depends on an upstream default that could exceed the configured limit;
 the input's `min` is `1` and its `max` is the profile's limit,
-and a value outside that range disables the download link and names the bound next to the input.
+and a value outside that range disables **Download** and names the bound next to the input.
 
 The port control follows `allowedSelections` (gateway *Port resolution*).
 Its rules are two pure functions in `portmodel.js` —
@@ -596,16 +656,35 @@ the way an unrecognized Collection `origin` is (*Collections*);
 a rolling update is again the only way it arrives.
 
 The rows above, and the query the page sends to get them,
-are three pure functions in `targetmodel.js`, built and tested the way `portmodel.js` is:
+are four pure functions in `targetmodel.js`, built and tested the way `portmodel.js` is:
 one turns the port control's state into the targets query, `explain=true` included;
 one decides whether a failed targets fetch is repeated without `explain`;
-and one turns a targets response into the Pod menu, the version menu, and the empty state's ordered rows.
-None of the three touches the DOM or the network, and a test executes all three (*Unit*).
+one turns a targets response into the Pod menu, the version menu, and the empty state's ordered rows;
+and one turns that summary into the line beside a disabled **Download** (below).
+None of the four touches the DOM or the network, and a test executes all four (*Unit*).
 The mapping is short, and every branch of it is a decision a reader does not see going wrong:
 a row dropped because its reason is unrecognized rather than shown as text,
 rows re-sorted out of the gateway's vocabulary order,
 a `selectorMatched` of `0` rendered as a list of nothing,
 or a query that quietly stopped asking for `explain`.
+
+**The disabled download.**
+**Download** is disabled, not hidden,
+while the targets response for the current selection and port selection lists no target:
+`targets` is `[]`, whatever `selectorMatched` and `excluded` hold (*Targets, with reasons*).
+Beside it the page says why, in the words the empty state already uses:
+each `excluded` row as its count and the wording of the table above, in the gateway's order, on one line;
+the selector sentence for a `selectorMatched` of `0`;
+and "no target listed" for a body with no `excluded` field.
+A disabled control with its reason beside it is the honest shape:
+the request it would send is one the gateway answers `503 no_targets`,
+and a hidden control leaves the reader looking for it.
+The control is enabled again by a targets response that lists a Pod,
+which a change of port selection or a **Refresh** fetches,
+and it is enabled while no response has arrived for the selection and after one that failed,
+because a request the page cannot foresee failing is one the user may send and read the answer to (*Flow*).
+The line beside the control is the fourth function of `targetmodel.js`, over the summary the third builds,
+and a test executes it (*Unit*).
 
 A bookmarked `ns` or `svc` that is not in the fetched list — the realm changed, the Service went away,
 the label was typed by hand — leaves the control with no selection and shows
@@ -623,6 +702,48 @@ The download link, `GET /v1/collections/{id}/profile`, is rendered only from the
 and only when its `state` is `completed` and its `artifact` is not `null`;
 the list entry carries no `artifact` field, so a row alone never offers a download.
 Every other state shows no link, and `reason` beside `failed` and `cancelled`.
+The table is the first page the listing answers, at most 100 rows (*Collections*).
+When the response carries `nextCursor`,
+one line under the table says that older Collections exist beyond the page
+and names `profgate collections <ns>/<svc>`,
+the verb [`cli.md`](cli.md) *Collections* gives the listing,
+with the namespace and the Service filled in as text;
+the line is absent when the response carries no `nextCursor`,
+an empty string reading as absent, since the gateway omits the field rather than sending it empty.
+That verb walks every page the listing offers, so the line names a verb that lists what it says exists.
+There is no paging control:
+the console offers what an operator opens a page to see, the newest Collections of a Service,
+and a walk through a week of records is a terminal's job.
+Whether the line exists, and its text, is a pure function in `collectionmodel.js` (*Unit*).
+
+**Refresh.**
+One control, **Refresh**, sits on the targets list and on the Collections table,
+and is the one control on the page that neither chooses a value nor changes state.
+Each press repeats the one fetch its list came from, with nothing else in it:
+on the targets list the fetch of *Targets, with reasons*, `explain=true` and the port selection included,
+with the same one retry without `explain` a replica older than that design earns;
+on the Collections table the list fetch of *Collections*, with no parameter.
+It refetches neither `/v1/limits` nor the Service list —
+what the answer then does is what that fetch's answer always does,
+the Service list refetched on `service_not_found` included (*Errors*) —
+and it reissues a request the page already sends, so it adds no endpoint (*Core decisions*).
+The control is disabled while its fetch is in flight, so a second press sends nothing,
+and the two controls are independent:
+a refresh of one list does not refetch, clear, or discard the answer of the other.
+A refresh of the targets list keeps the Pod and version choices while the answer still lists them
+and returns each to `any` otherwise, so no URL is built for a Pod the page no longer lists.
+A refresh disturbs no write control:
+an armed **Start collection** or **Cancel** stays armed, its ten-second timer neither reset nor stopped,
+a retained attempt keeps its route and its key,
+and a row whose refreshed `state` no longer offers **Cancel** loses the button with the state,
+as it does after any refetch (*Starting and cancelling a Collection*).
+A Collection started from the page reaches the table through the one refetch its `2xx` already causes
+(*Starting and cancelling a Collection*) and through **Refresh** afterwards;
+the page inserts no row itself,
+because the create answers `{id, state}` and a row needs the fields only the listing carries,
+and because the listing reads the replica's watched cache, which may not hold the record yet
+([`pgo.md`](pgo.md) *List Collections*).
+Watching a Collection leave `pending` is therefore a press of **Refresh**, and never a timer (*Non-goals*).
 An `id` is placed in a path only after it matches the identifier grammar of [`pgo.md`](pgo.md) *Identifier*;
 a record whose `id` does not is shown and not linked.
 The **Start collection** control above the table, the **Cancel** control on a row,
@@ -662,7 +783,8 @@ Both controls confirm in place.
 The first press turns the button into **Confirm start** or **Confirm cancel** beside a **Keep** button that undoes it;
 only the second press sends a request.
 The armed state clears itself after ten seconds and on any change of namespace or Service,
-so a page left open holds no loaded button.
+so a page left open holds no loaded button;
+a **Refresh** of either list clears nothing (*Controls*).
 That timer runs only before the first request.
 Submission cancels it, and nothing restarts it while a request is in flight
 or after one whose outcome the page could not classify:
@@ -847,6 +969,9 @@ These rules are normative, and the source-scan unit test (*Unit*) enforces the o
    The page never places a response string into a `href` or a `fetch` argument by string concatenation;
    the scan fails on a template literal or a `+` expression whose left operand is a string starting with `/v1`,
    `/ui`, or `/auth` outside the one URL-building module, `urls.js`.
+   The one URL not built there is the object URL a download is saved through:
+   `URL.createObjectURL` mints it from the body the page fetched, it holds no response string,
+   and the page revokes it once the save has started (*Flow*).
 4. **Every link stays on the page's origin.**
    The page has no link to another origin;
    `href` values are built by rule 3, and `Referrer-Policy: no-referrer` covers any link it gains.
@@ -923,7 +1048,7 @@ plus a one-line hint for the codes a user can act on:
 | `not_ready` | the gateway is still syncing; the page retries every 2 seconds |
 | `realm_denied` | your realm does not admit this; the whoami panel shows what it does |
 | `service_not_found` | the Service left the cache since the list was fetched; the page refreshes the Service list |
-| `no_targets` | no Ready Pod declares the selected port |
+| `no_targets` | no Pod is eligible for the selection; **Refresh** on the targets list updates the available Pods and the empty state |
 | `port_not_allowed` | `allowedSelections` does not admit the value; the port control shows what it does admit |
 | `seconds_exceeds_limit` | the limit the duration input was bounded by |
 | `discovery_unavailable` | the gateway could not read its cache or confirm the Pod; retry |
@@ -946,7 +1071,9 @@ and a gateway of another version can answer a shape this page does not know.
 The page reads the body as the envelope only when the response's `Content-Type` is `application/json`
 and the body decodes to an object with string `error` and `code` fields;
 otherwise it shows `HTTP <status> <statusText>` and nothing from the body.
-A rejected `fetch` — no response at all — shows "request failed" with a retry button.
+A **Download** that did not answer `200` is read by the same rule (*Flow*).
+A rejected `fetch` — no response at all — shows "request failed" with a retry button,
+and a **Download** whose body read fails after a `200` shows the same words (*Flow*).
 In every case what reaches the DOM is text under the rules of *Rendering response values*;
 a response body is never shown as HTML.
 
@@ -1107,9 +1234,14 @@ and each listed source is the narrowest the finished page needs:
   Leaving `'self'` out means a stray `<img src="/v1/...">` cannot issue an authenticated `GET`,
   which the session cookie and `Sec-Fetch-Site: same-origin` would otherwise let through.
 - `form-action 'none'`.
-  The page submits no form: the download is an `<a>`, the retry is a button with a listener.
+  The page submits no form:
+  the download is an `<a>` whose `href` is an object URL the page minted, the retry is a button with a listener.
   A stray `<form action=...>` can therefore submit nowhere.
 - `connect-src 'self'` is what `fetch` needs and the only network the page has.
+- No `blob:` source, because none is fetched.
+  `connect-src 'self'` covers the fetch of a profile,
+  and the save that follows is a download the browser performs from an object URL the page holds,
+  which no fetch directive governs (*Flow*).
 
 **No inline anything.**
 The shell has no inline `<script>`, no `<style>` element, no `style=` attribute, and no `on*=` attribute;
@@ -1205,9 +1337,11 @@ A `304` falls in the `3xx` the `ok` code already covers, so a revalidation count
 | Rolling update in progress, both builds carrying the asset | the asset answers `200` from either replica; a load whose shell and modules came from different builds runs unless two of those files changed incompatibly in that release, and one that does not run recovers on a reload once the rollout has converged, which `no-cache` makes fetch the current bytes |
 | Rolling update of a release that adds or drops an asset | the build without the file answers `404 route_unknown` for it; the load recovers on a reload once the rollout has converged (*Layout and embedding*) |
 | Rolling update from hashed prefixes to stable paths | neither build serves what the other's shell names, so a load reaching the other build fails until the rollout has converged; a reload after it recovers, and this is the one release with that property |
-| Service deleted between listing and download | `404 service_not_found` from the profile endpoint; the page refreshes the Service list |
-| Service with no eligible target | the Pod and version controls are replaced by the counted reasons of *Controls*, in the order the gateway sent them |
-| Service whose selector matches no Pod | the same empty state says the selector matches no Pod, from `selectorMatched` of `0`, and lists no reason |
+| Service deleted between listing and download | `404 service_not_found` from the profile endpoint; the page shows the envelope with its hint and refreshes the Service list |
+| Service with no eligible target | the Pod and version controls are replaced by the counted reasons of *Controls*, in the order the gateway sent them; **Download** is disabled with the same reasons beside it |
+| Service whose selector matches no Pod | the same empty state says the selector matches no Pod, from `selectorMatched` of `0`, and lists no reason; **Download** is disabled with that sentence beside it |
+| Download pressed after the Service's last eligible Pod left since the targets fetch | `503 no_targets` from the profile endpoint; the page shows the code and its hint and saves nothing; **Refresh** on the targets list then shows the reasons and disables the control |
+| Service with more than 100 retained Collections | the table shows the newest 100 and one line says older Collections exist, naming the CLI verb; no paging control |
 | Targets fetch refused `400 invalid_parameter` by a replica older than this design | retried once without `explain`, keeping the port selection; the plain body renders with no reasons and no error, and a second failure is an ordinary error |
 | Namespace in the realm holds no Service | absent from the namespace list; its Service list is `200` with `[]`; `/v1/whoami` still names it |
 | Namespace in the realm whose Services are all outside `realm.services` | absent from the namespace list; its Service list is `200` with `[]` |
@@ -1336,7 +1470,7 @@ a value arriving through the raw block would bypass the structured value the cha
 
 - `targetmodel.js` satisfies the shape assertion `portmodel.js` does
   and is evaluated the same way, its one trailing `export` cut off and its functions read as globals.
-- a table-driven test drives all three functions in the same interpreter.
+- a table-driven test drives all four functions in the same interpreter.
   The query, over each state the port control can be in:
   `default` sends `explain=true` alone,
   a numeric selection sends `port=` beside it and a named one `portName=`,
@@ -1360,6 +1494,12 @@ a value arriving through the raw block would bypass the structured value the cha
   a body with no `excluded` field, and one whose `excluded` is `[]`,
   each produce the plain empty state and no rows;
   and a `count` of `1` reads the same plural wording as a count of `9`.
+  The line beside a disabled **Download**, over each summary the third function builds:
+  a summary with targets yields no line, which is the enabled control;
+  the `reasons` kind yields one line holding each row's count and wording in the order the rows arrived,
+  the ten reasons and an unrecognized one alike;
+  the `noSelector` kind yields the selector sentence;
+  and the `plain` kind yields "no target listed".
 
 `internal/ui`, against the Collection-control model:
 
@@ -1396,6 +1536,11 @@ a value arriving through the raw block would bypass the structured value the cha
   including a `202` whose `id` is outside the identifier grammar, which selects nothing and builds no path.
   `Retry-After`: `"7"` is seven seconds, `"0"` is none, `"900"` clamps to 300,
   and absent, empty, negative, fractional, non-numeric, and an HTTP-date each read as five seconds.
+  The line under the table:
+  a list body carrying a non-empty `nextCursor` yields it,
+  naming `profgate collections` with the namespace and the Service handed in;
+  a body without the field, and one whose `nextCursor` is an empty string, yield none;
+  and the text is the same for every token, because the token is never shown.
 
 `internal/httpapi`, against the fake `Discovery` extended with a namespace and Service catalog:
 
@@ -1508,8 +1653,16 @@ the branches of *Errors* no scenario can provoke — a truncated body, an Ingres
 a rejected `fetch`;
 a rolling update, which would need two builds in one cluster
 and which this design leaves out of scope rather than proves (*Layout and embedding*);
-and the port control and the target summary as `app.js` wires them,
-each proven apart from the widget and apart from the network.
+the port control and the target summary as `app.js` wires them,
+each proven apart from the widget and apart from the network;
+the download as `app.js` performs it — the fetch, the `Blob`, the object URL, the `Content-Disposition` filename,
+and the disabling of the control — beyond what the browser scenario asserts of it;
+the two **Refresh** controls' wiring, the same way;
+and the Collections artifact link, `GET /v1/collections/{id}/profile`, which stays a navigation:
+a `410 artifact_gone` or a `404 collection_not_found` on it shows the page nothing,
+which this document states rather than repairs,
+because the link is offered only from a record that reads `completed` with an artifact,
+and the profile download is the control an operator reaches by reflex.
 The source scan proves the page contains no interface that could render markup and no hand-built `/v1` path;
 the `internal/httpapi` tests prove the JSON the page receives carries hostile strings intact.
 What is left is closed by review, on every change to `app.js` and the three models,
@@ -1580,15 +1733,32 @@ so a runner that loses one, or drifts to a version outside the range, turns red 
   and the identity panel names the issuer's user and the realm it mapped to —
   which is the `401`, the redirect, the `returned=1` marker, and the once-per-load rule, executed rather than read;
 - choosing the namespace, the Service, and a profile fills the profile URL field with the URL *Flow* describes,
-  and pressing **Download** saves a file that is the gzip-framed body the profile endpoint streams;
+  and pressing **Download** saves a file that is the gzip-framed body the profile endpoint streams,
+  under the name `profile` the response's `Content-Disposition` carries, read from the browser's download events;
   that those bytes parse as a profile is proven by the profiles scenario and not repeated here;
 - the Collections table lists the Service's Collections and a row's detail shows its record;
   **Start collection**, pressed twice through its inline confirmation,
   sends exactly one `POST` carrying `Content-Type: application/json` and one `Idempotency-Key` —
   both read from the browser's own network events, which is the only place they can be observed as the page sent them —
-  and a row for the new Collection appears;
+  and a row for the new Collection appears,
+  awaited by pressing **Refresh** on the Collections table until the list carries it,
+  because the list reads a watched cache that may not hold the record yet (*Controls*);
+  **Refresh** on the Collections table, pressed while that row's **Cancel** is armed,
+  sends one `GET` of the list and no other request, read from the same network events,
+  and leaves **Confirm cancel** and **Keep** standing on the row;
   **Cancel** on that row, pressed twice the same way, moves it to `cancelled`,
   and the button goes with the state;
+- a second Service, its selector matching no Pod, shows the selector sentence where the Pod control was,
+  and **Download** is disabled with that sentence beside it;
+  then, as the scenario's last step against the app, because the app does not come back,
+  the test app is scaled to zero replicas after the first Service's targets fetch,
+  and the test awaits a targets answer listing no Pod through a request of its own under the same credential,
+  leaving the page's populated targets list as it is,
+  because a Pod the cache still holds is confirmed against the API server
+  and refused `503 target_changed` rather than `no_targets`;
+  pressing **Download** on the first Service then shows `no_targets` with its hint and saves nothing,
+  and **Refresh** on the targets list sends one targets `GET` carrying `explain=true`,
+  disables the control, and shows the empty state's wording beside it;
 - a load whose `ns` and `svc` carry `<img src=x onerror=…>` shows both through the "is not listed" message as text:
   the document holds no `img` element, the container's markup holds the escaped form,
   and the browser logged no script error.
@@ -1794,9 +1964,9 @@ Updated with the implementation: `docs/api.md` (the listing endpoints), `docs/co
 
 ### 14.1 Required by this revision and not yet made
 
-Nothing.
-Every edit this revision required elsewhere has been made,
-and this document is no longer ahead of the documents it names:
+One edit, in the table below.
+Every other edit this document requires elsewhere has been made,
+and in those this document is not ahead of the documents it names:
 the write controls' contract in [`pgo.md`](pgo.md) *Create a Collection* and *HTTP API*,
 the entity tags, the browser scenarios, and the rolling-update rows in [`gateway.md`](gateway.md),
 the browser scenarios beside the wire proofs in [`auth.md`](auth.md) *Testing*,
@@ -1805,6 +1975,10 @@ the Chromium the workflow installs before the suite runs,
 the console guide's own account of the two controls and of a rollout,
 and the end-to-end rule in
 [`.agents/rules/500-validation-and-workflow.md`](../../.agents/rules/500-validation-and-workflow.md).
+
+| File | Section | Change |
+|---|---|---|
+| `docs/console.md` | *Downloading a profile and copying its URL* | **Download** is a `fetch` followed by a save rather than an ordinary link, and an error from the profile endpoint is shown with its hint; the control is disabled, with the empty state's wording beside it, while the targets response lists no Pod; the targets list and the Collections table have a **Refresh** control; and the Collections table shows one page, with a line naming `profgate collections` when older Collections exist |
 
 ---
 
@@ -1836,3 +2010,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Changes to the accepted designs* | the section carries a second table for the edits this document requires elsewhere and has not made |
 | *Starting and cancelling a Collection*, *Required by this revision and not yet made* | a replay is answered `200` with `{id, state}` and a `Location` rather than the stored record, because `pgo.collect` and `pgo.read` are independent flags and the record belongs to the second; a mismatch is decided on the effective policy snapshot, so identical JSON can produce `409 idempotency_mismatch` after the stored override or the operator defaults moved; the key resolves from an authoritative read for the record's whole life; and the rows naming the contract this page relies on have left the pending table, which now holds the browser scenarios and the stable asset paths alone |
 | *Errors*, *Required by this revision and not yet made* | the `pgo_disabled` hint says the Collections view goes once the limits have been refetched, naming no route: *Rendering response values* forbids `app.js` a string literal beginning with `/v1` and a scan enforces it, so the narrower rule decides what the hint can say; every edit this revision required elsewhere has been made and the pending table is empty |
+| *Core decisions*, *Non-goals*, *Collections*, *Targets, with reasons*, *Flow*, *Controls*, *Starting and cancelling a Collection*, *Rendering response values*, *Errors*, *Response headers and CSP*, *Failure scenarios*, *Unit*, *What is not proven*, *End to end*, *Required by this revision and not yet made* | **Download** is a `fetch` followed by a save through an object URL rather than a navigation, so an error envelope from the profile endpoint is shown with its hint, at the cost of holding the body whole before the save; it is disabled, with the empty state's wording beside it, while the targets response lists no Pod; one **Refresh** control on the targets list and on the Collections table repeats the fetch its list came from, refetches nothing else, and leaves an armed control as it is, with automatic polling a stated non-goal; the Collections table shows the first page and says that older Collections exist when the response carries `nextCursor`, naming the CLI verb and adding no paging control, and [`cli.md`](cli.md) *Collections* has that verb walk every page the listing offers; the console guide's account of these controls is the one edit owed |

@@ -142,7 +142,7 @@ without it, a bare `<service>` is a usage error naming the flag and the context 
 | `profgate targets <ns>/<svc>` | `GET .../targets` | 1 |
 | `profgate profile <ns>/<svc> <profile>` | `GET .../profiles/{profile}` | 2 |
 | `profgate collect <ns>/<svc>` | `POST .../collections` | 1 |
-| `profgate collections <ns>/<svc>` | `GET .../collections` | 1 |
+| `profgate collections <ns>/<svc>` | `GET .../collections`, then `GET .../collections?cursor=` per further page | 1 |
 | `profgate collection get <id>` | `GET /v1/collections/{id}` | 1 |
 | `profgate collection cancel <id>` | `POST /v1/collections/{id}/cancel` | 1 |
 | `profgate download <id>` | `GET /v1/collections/{id}/profile` | 1 |
@@ -950,6 +950,22 @@ Stopping the work is `collection cancel`.
 because that status means "not yet claimable, retry" rather than "no" ([`pgo.md`](pgo.md) *Cancel*);
 `409 collection_terminal` is reported as-is and never retried.
 
+`collections` walks every page the listing offers ([`pgo.md`](pgo.md) *List Collections*):
+one `GET` per page, each after the first carrying the previous answer's `nextCursor` as `cursor`,
+until an answer carries none.
+It takes no flag for this and no filter,
+because the set is bounded by `pgo.jobRetention` ([`pgo.md`](pgo.md) *Sweeper*)
+and a verb the console names as the way to see older Collections must list them ([`ui.md`](ui.md) *Controls*).
+The table is printed once the walk completes, newest first, in the order the pages arrived,
+so a failure never leaves a partial table that reads as complete:
+in the default table output a page that fails mid-walk prints its envelope on stderr,
+prints no row, writes nothing on stdout,
+and exits by the rule of *Output and exit codes*: 3 for a `401`, 1 for every other refusal.
+Under `--output json` the pages' bodies are written after the walk completes, in order, one JSON document per page,
+each unchanged;
+a page that fails mid-walk instead leaves stdout holding that failing page's envelope alone,
+copied and not rebuilt, and no successful page's body.
+
 `download` streams the artifact to `-o <path>`, or to
 `<id>.pprof` in the working directory when `-o` is absent, and honours `-o -`.
 `410 artifact_gone` and `409 collection_not_completed` print their envelope and exit 1.
@@ -987,7 +1003,8 @@ Every invocation of `set` and `delete` sends at most one modifying request.
 ## 6. Output and exit codes
 
 `--output` takes `table` (default) or `json`, on every verb.
-Under `json`, a verb that maps to one route copies that route's body to stdout unchanged;
+Under `json`, a verb that maps to one route copies that route's body to stdout unchanged,
+and `collections` copies each page's body, one document per page (*Collections*);
 `collect --wait` prints the final record; `profile` and `download` write bytes to their file
 and print their metadata as JSON on stderr.
 Nothing is re-encoded, so `jq` sees the API's contract and not this client's idea of it.
@@ -1137,6 +1154,7 @@ and it does not turn a `403` into a probe.
 | `collect --wait` under a realm with `pgo.collect` and not `pgo.read` | the identifier is printed, the denied record route is reported, and exit 1; the Collection runs on |
 | `collect` answered `429 collection_in_progress` | another Collection holds the Service; reported; exit 1 without waiting |
 | `SIGINT` during `collect` before an identifier exists | a Collection may exist; `collections <ns>/<svc>` is named; exit 1 |
+| A page of `collections` fails mid-walk | the envelope is printed and no row is, because a partial table would read as complete; exit 1, or 3 when the failing page answered `401` |
 | `SIGINT` during `--wait` | watching stops, collecting does not; the identifier is printed; exit 1 |
 | Collection ends `failed` or `cancelled` under `--wait` | the record's `reason` is printed; exit 1 |
 | Collection ends `expired` under `--wait` | the fixed retention message is printed; exit 1 |
@@ -1316,6 +1334,15 @@ The security and recovery cases come first: their absence is a defect rather tha
 - **`collection cancel`.**
   `409 collection_initializing` is retried at one second up to ten;
   `409 collection_terminal` is not retried.
+- **`collections` paging.**
+  A first page without `nextCursor` sends one request and prints its rows;
+  two pages send two requests, the second carrying the first answer's token as `cursor`,
+  and print one table holding both pages' rows in the order they arrived;
+  in the default table output a second page that fails prints the envelope on stderr,
+  writes nothing on stdout, and exits 1, asserted against the rows the first page carried;
+  a second page answered `401` exits 3, as every `401` does;
+  under `--output json` stdout holds that failing page's envelope alone, copied and not rebuilt,
+  and no successful page's body.
 - **`pgo policy set` and `delete`.**
   A `GET` with an `ETag` sends `If-Match` with that value;
   a `GET` without one sends no `If-Match` header and never `If-Match: *`;
@@ -1581,3 +1608,5 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Core decisions*, *Command grammar*, *Help*, *Reading*, *Collections*, *`pgo policy`*, *Output and exit codes*, *Failure scenarios*, *Testing* | a help argument prints help on stdout and exits 0 on every command line the binary has, and wins over positional and flag parsing; a refusal under `--output json` copies the envelope's bytes to stdout beside the one line on stderr; a response that is not envelope-shaped prints its status and nothing the response carried, and a `401` in that state still exits 3; a namespace the gateway does not know is the empty list it answers rather than a not-found the client invents, which no verb can tell from a typo; and the file flag of `collect` and `pgo policy set` is `--file` on both |
 | *Reading* | `targets --explain` prints `selectorMatched` as a row of its own, between the target list and the `REASON  COUNT` table, so a selector that matched no Pod no longer prints two empty headers indistinguishable from a selector whose Pods were all excluded |
 | *Command grammar* | an unknown verb, an unknown subverb, and an unknown flag print the grammar of the command line they were given — the bare binary's usage line, the group's own line, or the leaf's own — with the cause above it, and an operator group prints its line alone |
+| *The verbs*, *Collections*, *Output and exit codes*, *Failure scenarios*, *Testing* | `collections` follows `nextCursor` through every page the listing offers, one `GET` per page, and prints one table once the walk completes, because the set is bounded by `pgo.jobRetention` and the console names the verb as the way to see older Collections; a page that fails mid-walk prints its envelope and no row |
+| *Collections*, *Failure scenarios*, *Testing* | a page of `collections` that fails mid-walk exits by the general rule — 3 for a `401`, 1 for every other refusal — rather than 1 unconditionally, because a login is still the thing that might fix a `401` wherever in the walk it arrives |
