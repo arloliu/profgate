@@ -1067,7 +1067,7 @@ The requirement is rule 300's alone: `-race` is always on (`.agents/rules/300-te
 *Layers* of `gateway.md` (`docs/specs/gateway.md:2032-2033`) calls the suite plain `go test` under the `e2e` tag
 and says nothing about the flag, so it is not what this task is answering and it does not change either.
 
-- [ ] **Run the suite under the flag**
+- [x] **Run the suite under the flag**
 
 On this machine, with a Chromium installed and the `current` lane:
 
@@ -1082,7 +1082,7 @@ The wall time goes into the commit body and the pull request description.
 If the run passes 30 minutes, `-timeout 40m` no longer holds a margin, and the same commit raises it and says so.
 The task is finished when this run passes under the flag, and not before.
 
-- [ ] **If the detector reports a race**
+- [x] **If the detector reports a race**
 
 A reported race is a defect in the harness or the gateway, which is what rule 300 says,
 so it is reproduced and fixed in this task and the suite is rerun under the flag.
@@ -1096,7 +1096,7 @@ If a fix turns out to need a design change larger than this plan,
 the task stops with the race reported and the plan does not reach `Done`;
 whether that work is carved out is decided then, and this plan does not pre-approve it.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 mise exec golangci-lint@2.12.2 -- golangci-lint run ./... && mise run test && mise run check && mise run prose
