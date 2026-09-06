@@ -2227,10 +2227,15 @@ Why kind rather than k3s for the old versions:
 
 GitHub Actions in this repository:
 
-- every push: `mise run check`, lint, unit tests;
+- every pull request and every push to `main`: `mise run check`, lint, unit tests;
 - pull requests: the `current` lane;
 - pushes to `main`: all three lanes, except documentation-only changes, which skip the lanes;
 - `v*` tags: the same unit gates and the `current` lane, then publication to GHCR.
+
+The unit gates name both events on one job and gate on neither.
+A pull request opened from a fork fires `pull_request` alone,
+so a job that runs only on `push` never sees the contribution it exists to check;
+a same-repo pull request does not run the job twice because the push half is limited to `main`.
 
 A tag publishes two artifacts, both gated on those runs passing.
 The image goes to `ghcr.io/arloliu/profgate` for `linux/amd64` and `linux/arm64`,
