@@ -44,7 +44,7 @@ and a rolling update of either Deployment is uneventful.
    `PROFGATE_CONFIG` and `PROFGATE_JOBS` are KV buckets;
    `PROFGATE_ARTIFACTS` is an Object Store bucket.
    No database, no PVC, no object storage service, no work queue.
-3. **No leader, and two kinds of process.**
+3. **No leader, and two kinds of process.** *(The separation is not built — see below.)*
    The scheduler, worker, and sweeper run in a collector Deployment,
    started as `profgate collector` and defaulting to one replica.
    Gateway replicas run `profgate serve`, keep every PGO route,
@@ -92,6 +92,29 @@ and a rolling update of either Deployment is uneventful.
   and only each process's own concurrency ceilings bound the total,
   which section 8.5 states as a per-Pod figure so an operator can check it against a workload.
 
+### 1.3 What this build does not carry
+
+**The two kinds of process are one.**
+The scheduler, the worker, and the sweeper run in every `profgate serve` replica that has `pgo.enabled`.
+No collector Deployment is built, `profgate collector` is not a subcommand,
+no process writes or reads a `collector.<instance>` heartbeat,
+no process exports `profgate_pgo_collector_available`,
+and the chart renders no alert over it.
+The reasoning, and what would bring the separation back, is
+[`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md).
+
+What this subsection names is the collector separation, not every deferral this document carries.
+The separation is accepted design and is described here in full, unchanged;
+what a reader discounts until it ships is the core decision naming two kinds of process
+and, wherever they appear,
+the collector Deployment, the `collector.*` heartbeat and its watch,
+`profgate_pgo_collector_available` and its alert,
+and `503 collector_unavailable`.
+Where the deferral changes what a reader would otherwise conclude about this build —
+a chart that computes a figure, a test that runs, a harness that deploys, a sweep that deletes —
+the section says so in its own words;
+elsewhere the collector is described as the design intends it.
+
 ---
 
 ## 2. Architecture
@@ -130,6 +153,9 @@ The three long-lived loops are a **scheduler** that turns per-Service policy int
 a **worker** that claims and executes them and revisits stalled ones,
 and a **sweeper** that expires artifacts and deletes old records and orphaned objects.
 All three run in the collector process and nowhere else.
+In this build there is no collector process and all three run in every gateway replica that has
+`pgo.enabled`, which is the one difference between what follows and what runs
+(*What this build does not carry*).
 A gateway replica adds to the gateway the PGO routes on its API listener,
 the watched caches those routes read — the collector heartbeat of section 7.5 among them,
 which is how a replica knows whether anything is there to run what it publishes —
@@ -356,7 +382,8 @@ it only widens group ownership,
 and the ConfigMap and projected ServiceAccount token stay readable exactly as before.
 The PGO-enabled end-to-end scenarios prove the readability end to end,
 because NATS preflight (section 3.2) fails startup when the credentials file cannot be read.
-The collector Deployment's memory limit is the sum of two terms:
+The collector Deployment's memory limit, which no chart computes yet because no such Deployment is rendered,
+is the sum of two terms:
 
 ```text
 collectorBaseMemory + maxActiveCollections × (maxParallel × decodeFactor × maxSampleBytes
@@ -660,9 +687,13 @@ Each role opens four, and they are not the same four:
 A gateway replica opens no `schedule.*` watch,
 because slot keys are read only by the scheduler and the sweeper, and both run in the collector.
 A collector opens no `collector.*` watch,
-because the heartbeat there is a key it writes for gateway replicas to read (section 7.5)
+because the heartbeat there is a key it writes for gateway replicas to read (*Collector availability*)
 and nothing in the collector decides from another collector's copy of it.
 Three prefixes are common to both roles, and each role adds one of its own.
+
+This build has one role, whose process runs every loop and opens four watches —
+`service.*`, `job.*`, `active.*`, and `schedule.*` —
+and no `collector.*` watch, because no heartbeat is written.
 The barrier, `pgoSynced`, is two halves for the current generation `gen = Generation()`:
 `Client.Synced(gen)`, true once every watch this process opened has delivered its marker under that generation,
 and `Caches.Synced(gen)`, true once every cache has applied the replay that marker ended.
@@ -763,7 +794,7 @@ Every piece of shared state has one primitive, named here and used nowhere else:
 | Collection ownership and every state transition | `job.<id>` | `Update` with the revision last read | the replica whose read was most recent; the loser re-reads |
 | policy override | `service.<ns>.<svc>` | `Create` for a new key; `Update` with the client's `If-Match` revision | the client whose ETag is current |
 | artifact bytes | `<id>-<attempt>.pprof` | `Put` by the owner of that attempt, then named in the `completed` `Update` | the attempt whose `Update` wins; every other attempt's object is unreferenced and is deleted by its writer or by the sweeper |
-| one collector's liveness | `collector.<instance>` | `Create`, then `Update` at the revision it last wrote | nobody contends: `<instance>` is unique per process, so the key has exactly one writer for its whole life |
+| one collector's liveness (no process writes this key in this build) | `collector.<instance>` | `Create`, then `Update` at the revision it last wrote | nobody contends: `<instance>` is unique per process, so the key has exactly one writer for its whole life |
 | what one idempotency key created | `idem.<hash>` | `Create` by the winner of `active.<ns>.<svc>`, before that winner's record becomes claimable; `Delete` at the revision the deleter read, once the record it names is gone | three writers that cannot meet: the winner, which holds the active key and is the only creator publishing in that scope, and which deletes a stale receipt at the revision a fresh `Get` returned only after that `Get` of the receipt's record found it absent, then creates its own; a keyed request that found the receipt stale; and the sweeper. The second and third act only on a receipt whose record a fresh `Get` shows absent, and each deletes at the revision it read, so a loser of that `Delete` does nothing (section 10.2) |
 
 Nothing takes a snapshot for reassurance, pre-checks before a conditional write, or reads one replica's memory to decide about another.
@@ -846,7 +877,7 @@ so every read of one is authoritative and a replica's watch set stays the four o
 The key lives in `PROFGATE_JOBS`, which the account fragment of section 3.3 grants as `$KV.PROFGATE_JOBS.>`,
 so the prefix adds no NATS permission.
 
-`collector.<instance>` in `PROFGATE_JOBS`:
+`collector.<instance>` in `PROFGATE_JOBS`, which arrives with the collector Deployment and is written by nothing today:
 
 | Path | Reads | Mutates |
 |---|---|---|
@@ -1280,6 +1311,16 @@ The value, not the current policy, decides the key's lifetime:
 lowering `every` after the fact cannot shorten the retention of a key created under a longer one.
 
 ### 7.5 Collector availability
+
+**None of this section is built.**
+The collection loops run in every `profgate serve` replica with `pgo.enabled`
+([`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md)),
+so there is no absent collector to report:
+no process writes a `collector.<instance>` key or reads one,
+no process exports `profgate_pgo_collector_available`,
+and the chart renders no alert over it.
+The design below is unchanged and holds from the collector Deployment on;
+until then a reader discounts every sentence of it.
 
 A gateway replica accepts a Collection that only a collector can run.
 With `pgo.enabled` and no collector, every acceptance is a record nobody will ever claim:
@@ -1877,7 +1918,7 @@ over the watched `job.*` and `schedule.*` caches and one `artifacts.List`:
 | object `<id>-<attempt>.pprof` not named by any `completed` record in the cache, `ModTime + 10m + skewMargin < now` | `jobs.Get("job.<id>")`; delete the object only when the record is absent, or terminal with `artifact.object` naming something else | `Get`, then `artifacts.Delete` |
 | `active.<ns>.<svc>` key | `jobs.Get` of the job it names; delete the key when that job is absent or terminal; `initializing`, `pending`, and `running` keep it | `Get`, then `Delete` at the key's revision |
 | `idem.*` key, on the reconciliation pass below, whose value's `createdAt + pgo.jobRetention + skewMargin` is past | `jobs.Get` of the record it names; delete the receipt only when that record is absent | `Get` of the receipt, `Get` of the record, then `Delete` at the receipt's revision |
-| `collector.*` key whose `writtenAt + 10m + skewMargin` is past | delete, no lookup | `Delete` at the cached revision |
+| `collector.*` key whose `writtenAt + 10m + skewMargin` is past — no such key exists in this build | delete, no lookup | `Delete` at the cached revision |
 | `probe.*` key whose `Entry.Created`, or `probe-*` object whose `ModTime`, plus `10m + skewMargin` is past | delete, no lookup | `Delete` |
 
 A `completed` record is never deleted directly:
@@ -2159,6 +2200,8 @@ The snapshot is validated as an effective policy — every ceiling and the reten
 With no fresh heartbeat in the watched `collector.*` cache,
 the handler answers `503 collector_unavailable` and writes nothing (section 7.5):
 the record would sit `pending` with nobody to claim it, and no worker would even fail it.
+This check arrives with the collector Deployment and is not built (*Collector availability*);
+the handler in this build reads no `collector.*` cache and answers no such code.
 That check runs before the on-demand token bucket,
 so a caller who is both rate-limited and collector-less reads the durable problem rather than the transient one;
 a replica whose bucket is then empty answers `429 rate_limited`, also before any write (section 7.3).
@@ -2300,8 +2343,9 @@ No `pending` or later non-terminal record carries a key its receipt does not bin
 
 **Where the lookup sits in the handler.**
 The handler decodes the body and builds the snapshot it would produce, and reads the receipt next:
-before the ceiling refusal, the token bucket, the collector check, the advisory target resolution,
-and the reservation.
+before the ceiling refusal, the token bucket,
+the collector check that *Collector availability* marks unbuilt,
+the advisory target resolution, and the reservation.
 A replay creates nothing, so none of the bounds those steps hold apply to it.
 Those steps would answer a retry `429 rate_limited`, `429 capacity_exhausted`, or `503 collector_unavailable`,
 withholding an identifier the caller already owns,
@@ -3197,6 +3241,7 @@ A collector that dies without draining stops renewing by dying;
 the next collector's scan reclaims its Collections once `leaseTTL + skewMargin` has passed.
 It also stops writing its heartbeat, so gateway replicas see it go stale within the window of section 7.5;
 a draining collector deletes its key first, which reaches them sooner and changes no answer.
+Both sentences arrive with the collector Deployment: this build writes no heartbeat and drains one process.
 
 A Collection's samples are bounded by the collector's own work context and the lease cutoff,
 not by the gateway spec's HTTP-server drain,
@@ -3214,6 +3259,9 @@ the `PodMonitor` that selects both roles, and one NetworkPolicy per role.
 What follows is the PGO half of those objects — what the collector needs that the gateway does not.
 
 **The collector Deployment.**
+It is not built: the chart renders one Deployment, which runs `profgate serve` and every PGO loop
+(*What this build does not carry*).
+The paragraph below holds from the collector Deployment on.
 It is rendered only when `pgo.enabled`, carries `app.kubernetes.io/component: collector`,
 and runs `profgate collector` over the same ConfigMap the gateway mounts (section 11).
 `pgo.collector.replicaCount` defaults to `1` (section 2).
@@ -3425,7 +3473,7 @@ one server per subtest.
   (the test fails when every write runs under the caller's context);
   a publication whose own 30-second bound passes mid-way, with the fake store holding one write open,
   leaves an `initializing` record and its active key, which the scan fails `not_published`.
-- `internal/pgo` collector heartbeat, with a fake clock:
+- `internal/pgo` collector heartbeat, with a fake clock — not built, and arriving with the collector Deployment:
   the writer `Create`s `collector.<instance>` on its first tick and `Update`s at its own revision thereafter,
   once every `leaseTTL / 3`, and writes nothing before the replay barrier clears;
   a reader holds available while a key is within `2 × leaseTTL/3 + skewMargin` of `writtenAt`,
@@ -3635,6 +3683,7 @@ one server per subtest.
   and increments `profgate_pgo_store_failures_total{op="expire"}` once, and a lost flip increments nothing;
   `404 collection_not_found` identical for a missing id and a realm-denied one;
   `410` on a `completed` record whose object is gone, and the record observed `expired` afterwards;
+  the following three cases arrive with the collector Deployment and are not built —
   `POST /collections` with the `collector.*` cache empty, and with it holding only a stale key,
   each answering `503 collector_unavailable` with no write to either bucket,
   and answering `202` again once a fresh key is delivered;
@@ -3775,7 +3824,9 @@ one server per subtest.
   exercised by handing the arithmetic ceilings the range check would refuse,
   which is the only way to reach it now that every range is bounded;
   a realm without `pgo` has all flags false.
-- `cmd/profgate`:
+- `cmd/profgate`, whose collector-daemon cases arrive with the collector Deployment and are not built —
+  this section spells that subcommand `collect`, where *Core decisions* spells it `profgate collector`,
+  and the `collect` the binary ships is the client verb of [`cli.md`](cli.md) *Collections*:
   `collect` and `serve` load one file the same way and reach the same resolved ceilings;
   `collect` starts the scheduler, worker, sweeper, and heartbeat writer and opens no API listener;
   `serve` with `pgo.enabled` starts none of those, opens its four watches of section 5.1, and serves the PGO routes,
@@ -3809,6 +3860,7 @@ one server per subtest.
   volume name, Secret source with `defaultMode: 0440`,
   mount path `/etc/profgate/nats/`, `readOnly: true` on the mount,
   and `fsGroup: 65532` in the pod `securityContext`.
+  The following collector assertions arrive with the collector Deployment and are not built.
   The collector Deployment renders only with `pgo.enabled`, runs `collect`, declares one replica,
   exposes the ops port and no API port, is selected by no Service, and carries no PodDisruptionBudget.
   Its `resources.limits.memory` equals what the binary computes for the same values, preset by preset and with an override,
@@ -3844,6 +3896,7 @@ its *Amendments* section lists this document's edits.
 (`nats:2.11-alpine`, one replica, `--jetstream` with a file store directory on an `emptyDir`, a ClusterIP Service),
 applied by `TestMain` with the gateway overlay,
 and a collector Deployment of one replica running `collect` against the same ConfigMap.
+The harness deploys no collector in this build; the gateway Deployment runs every loop.
 The harness provisions the three buckets with `nats.go` through a port-forward before either Deployment starts,
 with the configuration of section 3.2 (file storage, no TTL, `Discard: new`, no size limits).
 Between scenarios it purges every key and object so each starts empty;
@@ -3910,7 +3963,9 @@ Scenarios that need a proxy to a test-app Pod to complete declare `needsPodReach
     It is a scenario of its own rather than the tail of 11,
     so a degraded lane skips the recovery and still proves the refusal.
 
-Scenarios 1–5 and 10–12 run on every lane; the kind lanes do not need NetworkPolicy for NATS.
+Scenarios 1–5 run on every lane; the kind lanes do not need NetworkPolicy for NATS.
+Scenarios 10 to 12 need the collector Deployment and are not built, so no lane runs them;
+they run on every lane from the collector Deployment on.
 
 ---
 
@@ -3927,6 +3982,12 @@ Everything else is already in the gateway's table or the standard library.
 ---
 
 ## 15. Package Layout
+
+Three of the entries below are not built:
+the `collector.*` heartbeat writer and reader, the collector daemon subcommand, and the collector Deployment.
+Each arrives with the separation.
+The `collect` the entries name is that daemon, not the shipped client verb of the same spelling
+([`cli.md`](cli.md) *Collections*).
 
 ```text
 internal/natskv/     the NATS seam; sole non-test importer of nats.go; preflight and probes, KV, Objects
@@ -3947,6 +4008,15 @@ nothing depends on it except `httpapi` and `cmd`.
 ---
 
 ## 16. Failure Scenarios
+
+A row that turns on a collector being absent, on its heartbeat,
+or on a `pgo.enabled` manifest with no collector Deployment,
+describes a state this build cannot reach:
+the loops run in the gateway, so there is no separate process to be missing
+(*What this build does not carry*).
+Those rows hold from the collector Deployment on.
+A row about a rollout under a running Collection is reachable now,
+because the lease, the claim, and the reclaim it turns on run in the gateway.
 
 | Event | Behavior |
 |---|---|
@@ -4296,3 +4366,37 @@ Updated with the implementation:
 | `internal/metrics` | `profgate_pgo_store_failures_total` |
 | `cmd/profgate` | one jittered backoff for the retry loops |
 | `docs/deployment.md` | the new counter in the metrics table |
+
+The collector Deployment being deferred rather than carried by this build,
+said in this document rather than only in a decision record,
+amends the following text.
+
+Amended now:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *Overview* | a new *What this build does not carry* subsection: one process runs every loop, no `profgate collector` subcommand, no heartbeat written or read, and no collector gauge or alert; the subsection names the separation rather than every deferral; a section says so itself where the deferral changes what a reader would conclude about this build |
+| `docs/specs/pgo.md` | *Overview* | the core decision naming two kinds of process says the separation is not built |
+| `docs/specs/pgo.md` | *Architecture* | the three loops run in every gateway replica with `pgo.enabled`, which is the one difference between what the section describes and what runs |
+| `docs/specs/pgo.md` | *Container* | no chart computes the collector Deployment's memory limit, because no such Deployment is rendered |
+| `docs/specs/pgo.md` | *NATS Access* | the watch table is followed by the four watches this build's one role opens, and no `collector.*` watch; the atomicity table and the heartbeat access table say no process writes that key |
+| `docs/specs/pgo.md` | *Collector availability* | the section opens by saying none of it is built, and the design below holds from the collector Deployment on |
+| `docs/specs/pgo.md` | *Sweeper* | no `collector.*` key exists for the sweep row to delete |
+| `docs/specs/pgo.md` | *Create a Collection* | the collector check arrives with the collector Deployment; the handler in this build reads no `collector.*` cache; the replay lookup names the check as unbuilt where it lists the steps a replay skips |
+| `docs/specs/pgo.md` | *Deployment* | the collector Deployment is not built; the chart renders one Deployment running every loop |
+| `docs/specs/pgo.md` | *Shutdown* | this build writes no heartbeat and drains one process |
+| `docs/specs/pgo.md` | *Unit* | the heartbeat cases, the collector-daemon cases, the collector manifest assertions, and the three create-handler cases that read a `collector.*` cache arrive with the collector Deployment; the daemon this section spells `collect` is not the shipped client verb of that spelling |
+| `docs/specs/pgo.md` | *End to end* | the harness deploys no collector, and the collector rollout and the two collector-availability scenarios are not built, so no lane runs them |
+| `docs/specs/pgo.md` | *Package Layout* | the heartbeat writer and reader, the collector daemon subcommand, and the collector Deployment are the entries that are not built, the daemon being distinct from the shipped `collect` client verb |
+| `docs/specs/pgo.md` | *Failure Scenarios* | a row turning on an absent collector, its heartbeat, or a `pgo.enabled` manifest without a collector Deployment describes a state this build cannot reach; a rollout row is reachable now |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `docs/specs/pgo.md` | *Errors*: `503 collector_unavailable` leaves the status table and the `Retry-After` sentence, and is named below the table as a code this build does not register; *Overview* and *Collector availability* add that clause to what they list as unbuilt |
+| `docs/specs/ui.md` | *Starting and cancelling a Collection*, *Errors*, *Unit*: the console carries no rule for a code no route answers, so the idempotency key survives every unclassified `5xx` and the start and hints tables lose their rows |
+| `internal/httpapi` | `CodeCollectorUnavailable` and its registry entry are gone, and the OpenAPI `Error.code` enum drops the value |
+| `internal/ui` | `collectionmodel.js` drops the branch that dropped the key on the code, and `app.js` drops its hint |
+| `docs/deployment.md` | the registered-code count, without the sentence saying one of them is unanswered |
+| `CHANGELOG.md` | the code leaves the `Error.code` enum, which is a breaking change to that enum |
