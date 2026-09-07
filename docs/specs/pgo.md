@@ -99,9 +99,13 @@ The scheduler, the worker, and the sweeper run in every `profgate serve` replica
 No collector Deployment is built, `profgate collector` is not a subcommand,
 no process writes or reads a `collector.<instance>` heartbeat,
 no process exports `profgate_pgo_collector_available`,
-and the chart renders no alert over it.
+the chart renders no alert over it,
+and `collector_unavailable` is not a registered envelope code.
 The reasoning, and what would bring the separation back, is
 [`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md).
+The sentence above overtakes that record's consequence that `collector_unavailable` stays a registered code.
+A decision record is not edited once accepted ([`README.md`](../README.md)),
+so this document is where the current state is read.
 
 What this subsection names is the collector separation, not every deferral this document carries.
 The separation is accepted design and is described here in full, unchanged;
@@ -1318,7 +1322,8 @@ The collection loops run in every `profgate serve` replica with `pgo.enabled`
 so there is no absent collector to report:
 no process writes a `collector.<instance>` key or reads one,
 no process exports `profgate_pgo_collector_available`,
-and the chart renders no alert over it.
+the chart renders no alert over it,
+and `collector_unavailable` is not a registered envelope code (*Errors*).
 The design below is unchanged and holds from the collector Deployment on;
 until then a reader discounts every sentence of it.
 
@@ -2769,13 +2774,16 @@ Added to the gateway's table; same envelope, same rule that `code` is the contra
 | 428 | `precondition_required` |
 | 429 | `collection_in_progress`, `rate_limited`, `capacity_exhausted` |
 | 501 | `pgo_disabled` |
-| 503 | `pgo_unavailable`, `collector_unavailable` |
+| 503 | `pgo_unavailable` |
 
 Of the codes in this table, only `429 collection_in_progress` ever carries `Retry-After`,
 and only on the one path section 10.2 names; every other code here carries none,
-`429 rate_limited`, `429 capacity_exhausted`, `503 pgo_unavailable`, and `503 collector_unavailable` included.
+`429 rate_limited`, `429 capacity_exhausted`, and `503 pgo_unavailable` included.
 
-`collector_unavailable` is a code of its own rather than a second meaning for `pgo_unavailable`,
+`503 collector_unavailable` is not in the table above and is not a registered envelope code in this build.
+It arrives with the collector Deployment (*Collector availability*) and joins the `503` row then.
+In the design that returns with it,
+it is a code of its own rather than a second meaning for `pgo_unavailable`,
 because the two say different things to a caller and to an alert:
 `pgo_unavailable` means this gateway replica cannot reach the store or has not finished replaying it,
 which a retry usually resolves,

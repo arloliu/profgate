@@ -37,7 +37,7 @@ func specCodes() []string {
 		"precondition_required",
 		"collection_in_progress", "rate_limited", "capacity_exhausted",
 		"pgo_disabled",
-		"pgo_unavailable", "collector_unavailable",
+		"pgo_unavailable",
 	}
 }
 

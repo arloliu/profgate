@@ -486,10 +486,9 @@ All metrics are on the ops port at `/metrics`.
 a closed set derived from the status the console wrote, not the raw HTTP status.
 
 The `code` label's value set is closed apart from one family, so a query can match it on an exact value.
-Forty values are registered envelope codes;
+Thirty-nine values are registered envelope codes;
 [specs/gateway.md](specs/gateway.md) and [specs/pgo.md](specs/pgo.md) *Errors* hold the tables that name them,
 and `/v1/openapi.json` serves the same set.
-`collector_unavailable` is one of the forty and no route in this build answers it, so it never appears on a series.
 Eight more values reach this label and the audit log but never an error envelope:
 `ok`, `upstream_stream_failed`, `internal_error`, `auth_redirect`,
 `cas_contended`, `artifact_stream_failed`, `client_gone`, and `drain_expired`.
