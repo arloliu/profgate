@@ -1,6 +1,7 @@
 # The Spec Says What Is Not Built
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #36 marks the collector design unbuilt in the spec and removes the code no route answers.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -205,7 +206,7 @@ which is the point that paragraph is making.
 
 ### 1. Say in the spec that the collector design is not built
 
-- [ ] `docs/specs/pgo.md` *Overview* gains a *What this build does not carry* subsection:
+- [x] `docs/specs/pgo.md` *Overview* gains a *What this build does not carry* subsection:
       one process runs the scheduler, the worker, and the sweeper;
       no collector Deployment is built and `profgate collector` is not a subcommand;
       no process writes or reads a `collector.<instance>` heartbeat;
@@ -217,7 +218,7 @@ which is the point that paragraph is making.
       and says a section repeats this in its own words
       where the deferral changes what a reader would otherwise conclude about this build.
       It does not say `collector_unavailable` is unregistered: that is false until task 2.
-- [ ] A local marker lands where the deferral changes what a reader would otherwise conclude about this build —
+- [x] A local marker lands where the deferral changes what a reader would otherwise conclude about this build —
       a chart that computes a figure, a test that runs, a harness that deploys, a sweep that deletes —
       and nowhere else.
       The *Overview* subsection is the authority;
@@ -237,24 +238,24 @@ which is the point that paragraph is making.
       the three unbuilt entries under *Package Layout*;
       and the rows of *Failure Scenarios* that turn on an absent collector, its heartbeat,
       or a `pgo.enabled` manifest with no collector Deployment.
-- [ ] No marker is added to the design reasoning that merely names the collector —
+- [x] No marker is added to the design reasoning that merely names the collector —
       *Permission Boundary*, *Slots*, the replica-count argument under *Architecture*.
       Those describe the design, not a claim about what runs, and the *Overview* subsection covers them.
       Annotating every mention is what rule 900 calls patching.
-- [ ] The *Failure Scenarios* note says which rows stay reachable:
+- [x] The *Failure Scenarios* note says which rows stay reachable:
       a rollout under a running Collection turns on the lease, the claim, and the reclaim,
       and all three run in the gateway.
       It states no count of rows; a count is a number nothing checks.
-- [ ] `docs/specs/pgo.md` gains one *Amendments* block at the end of the document.
+- [x] `docs/specs/pgo.md` gains one *Amendments* block at the end of the document.
       Its first table — the edits made in this change — holds the markers above.
       Its second table — updated with the implementation —
       holds what tasks 2 and 3 carry:
       the *Errors* edits, the `docs/specs/ui.md` edits, `internal/httpapi`, `internal/ui`, `docs/deployment.md`,
       and `CHANGELOG.md`.
-- [ ] New text cites a section by its name, never by its number:
+- [x] New text cites a section by its name, never by its number:
       `AGENTS.md` forbids citing a document's internal section numbers.
       The numbered references already in the document are left alone.
-- [ ] No historical *Amendments* row is rewritten: those record earlier designs,
+- [x] No historical *Amendments* row is rewritten: those record earlier designs,
       and rewriting one records process rather than fact.
 
 **Validation:** `mise run check`;
@@ -270,20 +271,20 @@ which this task never denies.
 
 The spec edits here are false until the registry loses the code, so they land in this commit and not task 1.
 
-- [ ] `internal/httpapi/codes.go` loses `CodeCollectorUnavailable` and its comment,
+- [x] `internal/httpapi/codes.go` loses `CodeCollectorUnavailable` and its comment,
       and `envelopeCodes` loses the entry, leaving thirty-nine.
-- [ ] `internal/httpapi/codes_test.go`'s `specCodes()` loses `"collector_unavailable"`.
-- [ ] `internal/httpapi/openapi.json` loses `"collector_unavailable"` from the `Error.code` enum.
-- [ ] `docs/specs/pgo.md` *Errors*:
+- [x] `internal/httpapi/codes_test.go`'s `specCodes()` loses `"collector_unavailable"`.
+- [x] `internal/httpapi/openapi.json` loses `"collector_unavailable"` from the `Error.code` enum.
+- [x] `docs/specs/pgo.md` *Errors*:
       the `503` row of the status table is `pgo_unavailable` alone,
       and the `Retry-After` sentence names the three codes that remain.
       The paragraph below the table says `503 collector_unavailable` is not in the table
       and is not registered in this build,
       arrives with the collector Deployment, and joins the `503` row then —
       followed by the existing reasoning for why it is a code of its own, restated as the design that returns with it.
-- [ ] `docs/specs/pgo.md` *Overview* and *Collector availability* add the clause task 1 held back:
+- [x] `docs/specs/pgo.md` *Overview* and *Collector availability* add the clause task 1 held back:
       `collector_unavailable` is not a registered envelope code.
-- [ ] `docs/deployment.md` says thirty-nine values are registered envelope codes,
+- [x] `docs/deployment.md` says thirty-nine values are registered envelope codes,
       and drops the sentence saying `collector_unavailable` is one of them
       and never appears on a series.
 
@@ -302,21 +303,21 @@ the second holds the document's enum to the registry, so the two removals cannot
 
 The `docs/specs/ui.md` edits are false until the console loses its branch, so they land here.
 
-- [ ] `internal/ui/static/collectionmodel.js` loses the `status === 503 && code === "collector_unavailable"` branch,
+- [x] `internal/ui/static/collectionmodel.js` loses the `status === 503 && code === "collector_unavailable"` branch,
       and the comment above `startOutcome` says the three outcomes that keep the key
       are a rejected fetch, a `503 pgo_unavailable`, and any other `5xx`.
-- [ ] `internal/ui/static/app.js` loses the `collector_unavailable` hint.
-- [ ] `internal/ui/collectionmodel_test.go` loses the `"503 collector_unavailable drops the key"` table case,
+- [x] `internal/ui/static/app.js` loses the `collector_unavailable` hint.
+- [x] `internal/ui/collectionmodel_test.go` loses the `"503 collector_unavailable drops the key"` table case,
       and the classified answer in the key-lifetime test becomes `501 pgo_disabled`,
       with its message and its assertion text following.
-- [ ] `internal/ui/scan_test.go`'s `hintCodes` loses the code, leaving nineteen entries,
+- [x] `internal/ui/scan_test.go`'s `hintCodes` loses the code, leaving nineteen entries,
       and its comment reads "the seventeen codes its fifteen rows name, plus `too_many_auth` and `auth_unavailable`".
       The assertion and its message near the end of the same test count the vocabulary too;
       both move from twenty to nineteen.
       Recount against `docs/specs/ui.md` *Errors* as this task leaves it rather than trusting these figures:
       before the removal the table has eighteen data rows naming twenty codes, two rows naming two codes each,
       and the comment's count excludes the two authentication rows.
-- [ ] `docs/specs/ui.md` loses `503 collector_unavailable` from three places:
+- [x] `docs/specs/ui.md` loses `503 collector_unavailable` from three places:
       *Starting and cancelling a Collection*, in the retained-state sentence and the start-outcome table;
       the *Errors* hints table; and the *End to end* key rules.
       "Any other `5xx`" is the whole rule in each place afterwards,
@@ -336,7 +337,7 @@ which drive a headless Chromium and skip by name where none is installed.
 
 ### 4. Make the guide's listing paragraphs agree
 
-- [ ] `docs/pgo.md:261-264` says the listing holds the newest records a page at a time,
+- [x] `docs/pgo.md:261-264` says the listing holds the newest records a page at a time,
       rather than "at most the newest 100 records and offers no pagination",
       keeping the paragraph's point that a record stays readable at `GET /v1/collections/{id}`
       after it leaves the page.
@@ -349,15 +350,15 @@ The task edits one guide paragraph, so no linter or test reads anything it chang
 
 ### 5. Record the removal and close the item
 
-- [ ] `CHANGELOG.md` gains a `### Removed` section under `[Unreleased]`,
+- [x] `CHANGELOG.md` gains a `### Removed` section under `[Unreleased]`,
       between `### Changed` and `### Fixed` as Keep a Changelog orders them.
       It says `collector_unavailable` leaves the `Error.code` enum of `/v1/openapi.json`,
       that no route in this build ever answered it,
       and that a client generated from the document will no longer accept it —
       the breaking change to the enum this release note exists to carry.
-- [ ] `docs/plans/roadmap.md` ticks both bullets of *Say in the spec what is not built*,
+- [x] `docs/plans/roadmap.md` ticks both bullets of *Say in the spec what is not built*,
       and its `Shipped:` line names the pull request.
-- [ ] This plan's `Status:` becomes `Done`,
+- [x] This plan's `Status:` becomes `Done`,
       and line 4 becomes an `Outcome:` line naming the pull request, in this same commit.
 
 **Validation:** `mise run check`;

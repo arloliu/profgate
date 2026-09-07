@@ -241,6 +241,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `up{endpoint="ops"}` and the other per-scrape series lose a label whose value was always `ops`.
   The kustomize install renders no `PodMonitor` and is unchanged.
 
+### Removed
+
+- **BREAKING: `collector_unavailable` leaves the `Error.code` enum of `/v1/openapi.json`.**
+  The code was registered for a collector Deployment this build does not carry,
+  so no route ever answered it,
+  and the document published to every client a value nothing could send.
+  A client generated from the document now rejects the value where it used to accept it,
+  which is why the removal is breaking;
+  no answer changes, because nothing ever sent the code.
+
 ### Fixed
 
 - **A `403 realm_denied` opens the identity disclosure its hint names.**
