@@ -259,8 +259,8 @@ A `running` record is owned by one replica, which renews a lease on it while the
 the sweeper then deletes the object and flips the record to `expired`.
 Terminal records are kept for `pgo.jobRetention` (default `168h`) and then deleted.
 Until then a record stays readable at `GET /v1/collections/{id}`,
-even after newer records push it off the Service's listing,
-which holds at most the newest 100 records and offers no pagination —
+even after newer records push it off the first page of the Service's listing,
+which holds the newest records a page at a time, with `nextCursor` to continue it —
 a client that needs a Collection later keeps the `id` (or the `Location` header) from creation.
 
 ### Failure reasons
