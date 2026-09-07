@@ -526,14 +526,37 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	s.awaitRequestSince(t, at, "the identity refetch a cancel's 404 asks for", isWhoamiGET)
 	assertIdentityOpen(t, s, "a cancel answered 404 collection_not_found", false)
 
-	// The Collection the case started is ended, so the scenario leaves none running.
+	// The scenario leaves no Collection running.
+	// The record the 404 refetched is either still cancellable or already ended,
+	// and both leave nothing running, which is all the scale-down below needs.
+	// The loop above hands over a Collection at the end of the sampling that kept it cancellable,
+	// because a Collection created while the Pods are still busy ends at once,
+	// so the one it hands over has the shortest cancellable life any of them has
+	// and can reach a terminal state between that hand-over and this press.
+	// Waiting for the control to come back is waiting for something that never returns:
+	// a terminal record offers no cancel control, and the list is not asked for again on its own.
+	// That a cancel works is the earlier cancel's to prove, not this one's.
 	s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
-	s.waitFor(t, "the row offers Cancel again", fmt.Sprintf(`%s === "Cancel"`, rowCell(cancelled, 8)))
-	s.run(t, "arm the cancel control", chromedp.Click(control("Cancel"), chromedp.BySearch))
-	s.run(t, "wait past the window", chromedp.Sleep(confirmWindow))
-	s.run(t, "confirm the cancel", chromedp.Click(control("Confirm cancel"), chromedp.BySearch))
-	s.waitFor(t, "the Collection the cancel case started moves to cancelled",
-		fmt.Sprintf(`%s === "cancelled"`, rowCell(cancelled, 2)))
+	var offeredAgain bool
+	s.eval(t, "read the cancel control of the Collection the cancel case started",
+		fmt.Sprintf(`%s === "Cancel"`, rowCell(cancelled, 8)), &offeredAgain)
+	if offeredAgain {
+		s.run(t, "arm the cancel control", chromedp.Click(control("Cancel"), chromedp.BySearch))
+		s.run(t, "wait past the window", chromedp.Sleep(confirmWindow))
+		s.run(t, "confirm the cancel", chromedp.Click(control("Confirm cancel"), chromedp.BySearch))
+		// A record that ended between the read above and the press answers 409 collection_terminal,
+		// which the page takes as a Collections refetch and no error,
+		// so the wait is for the end the press asked for or the end that beat it.
+		s.waitFor(t, "the Collection the cancel case started ends",
+			fmt.Sprintf(`["cancelled","completed","failed","expired"].indexOf(String(%s)) >= 0`, rowCell(cancelled, 2)))
+	} else {
+		s.eval(t, "read the state of the Collection the cancel case started",
+			fmt.Sprintf(`String(%s)`, rowCell(cancelled, 2)), &ended)
+		if !terminal(ended) {
+			t.Fatalf("the Collection the cancel case started offers no Cancel and reads %q, which is neither cancellable nor ended\n%s",
+				ended, s.report())
+		}
+	}
 
 	// The app is scaled to zero as the scenario's last step against it, because it does not come back.
 	// The test awaits the empty targets answer through a request of its own under the same credential,
