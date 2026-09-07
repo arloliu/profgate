@@ -182,8 +182,8 @@ function startAnswer(keep, select, refetch, error, disableSeconds) {
 // id is the identifier a success carried,
 // body is the response text as it arrived, which only the unusable success reads,
 // and retryAfter is the header verbatim.
-// Three outcomes keep the key for the next press, which is the retry of the same attempt:
-// a rejected fetch, a 503 pgo_unavailable, and any other 5xx besides 503 collector_unavailable.
+// Two outcomes keep the key for the next press, which is the retry of the same attempt:
+// a rejected fetch, and any 5xx the rules above did not classify, 503 pgo_unavailable among them.
 // The whole 2xx range selects, not 202 and 200 alone,
 // so a later release answering a replay with another success status still selects the record.
 function startOutcome(answer) {
@@ -213,9 +213,6 @@ function startOutcome(answer) {
     }
     if (status === 501 && code === "pgo_disabled") {
       return startAnswer(false, null, ["limits"], errorText(a), 0);
-    }
-    if (status === 503 && code === "collector_unavailable") {
-      return startAnswer(false, null, [], errorText(a), 0);
     }
   }
   return startAnswer(a.rejected === true || status >= 500, null, [], errorText(a), 0);

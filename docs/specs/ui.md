@@ -889,8 +889,8 @@ is a pure function of those bytes in `collectionmodel.js`,
 so a test checks the bits without a browser and without a random source (*Unit*).
 
 **What the page holds after an outcome it could not classify.**
-Three outcomes leave the start control armed and holding the route it sent to and the key it sent:
-a rejected `fetch`, a `503 pgo_unavailable`, and any other `5xx` besides `503 collector_unavailable`.
+Two outcomes leave the start control armed and holding the route it sent to and the key it sent:
+a rejected `fetch`, and any `5xx` the rules above did not classify, `503 pgo_unavailable` among them.
 It holds both until a response classifies the attempt or the operator abandons it.
 **Keep** is the abandonment.
 Pressed before the first request it simply disarms the control;
@@ -953,7 +953,6 @@ one per control, so every arm is a test case rather than a branch a reader has t
 | `403 realm_denied` | `/v1/whoami` is refetched, since it is what decides whether the control exists, and, when the answer is the current attempt's, the identity disclosure opens (*Errors*); the key is dropped |
 | `501 pgo_disabled` | `/v1/limits` is refetched, since it is what decides whether the view exists; the key is dropped |
 | `503 pgo_unavailable` | the replica could not reach the store or had not finished replaying it, so the create may have committed; the error is shown, the control returns to its armed state, and the key is kept for the next press, which is the retry of the same attempt |
-| `503 collector_unavailable` | no collector is fresh and [`pgo.md`](pgo.md) *Collector availability* answers this code with no write, so nothing can have started; the error is shown as a durable one and the key is dropped |
 | a rejected `fetch`, or any other `5xx` | the error is shown, the control returns to its armed state, and the key is kept for the next press |
 | any other status | the envelope is shown as *Errors* shows every other error; the key is dropped |
 
@@ -1100,7 +1099,6 @@ plus a one-line hint for the codes a user can act on:
 | `discovery_unavailable` | the gateway could not read its cache or confirm the Pod; retry |
 | `pgo_disabled` | PGO collection is off on this gateway; the Collections view goes once the limits have been refetched |
 | `pgo_unavailable` | the gateway could not reach its store, so a start may or may not have taken; the same press can be repeated |
-| `collector_unavailable` | nothing is running Collections at the moment, and nothing was started; the press can be repeated once something is |
 | `collection_in_progress` | a Collection is already running for this Service; the list shows it |
 | `rate_limited`, `capacity_exhausted` | the gateway is at its limit for now; the control returns after the delay |
 | `collection_terminal` | the Collection ended before the cancel arrived; the list shows its final state |
@@ -1620,9 +1618,9 @@ a value arriving through the raw block would bypass the structured value the cha
   The start request:
   a `POST` to the Service's collections path, `Content-Type: application/json`,
   an empty object as the body, and exactly one `Idempotency-Key`;
-  the key is unchanged across presses that follow a rejected `fetch`, a `503 pgo_unavailable`,
-  or any other `5xx` besides `503 collector_unavailable`,
-  and different after any response that classified the attempt, `503 collector_unavailable` included.
+  the key is unchanged across presses that follow a rejected `fetch`,
+  or any `5xx` the rules above did not classify, `503 pgo_unavailable` among them,
+  and different after any response that classified the attempt.
   The armed state:
   a `submit` inside half a second of the arm leaves an armed control armed and says nothing,
   one at or past it moves to `inflight`,
@@ -2176,3 +2174,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *What is not proven*, *End to end* | `console-oidc` asserts the identity disclosure closed on the working load and a disclosure the scenario opened still open after a **Refresh** answer re-renders the panel, so what stays unproven of the arrangement is panel placement, control wrapping, and the opening a denial causes |
 | *Unit*, *End to end*, *What is not proven* | a source scan holds `app.js` to two calls of the disclosure's opening, neither of them in the function that runs an outcome's refetches, and counts call sites rather than proving behavior; `console-oidc` drives the four cases an answer the page classifies decides, writing each answer into a request it paused, which proves the refetch of `/v1/whoami` a listing's `403` causes and leaves panel placement and control wrapping as the whole of what the arrangement does not prove; and that the disclosure's `open` is never bound in the template is a rule this design carries and no test holds, a bound but unchanged value being indistinguishable from an unbound one |
 | *Required by this revision and not yet made* | the console guide describes the identity as a disclosure above the panels and the page as one panel to a row, and nothing is owed elsewhere |
+| *Starting and cancelling a Collection*, *Errors*, *Unit* | the console carries no rule for `collector_unavailable`, a code no route answers: the start control keeps its idempotency key after a rejected `fetch`, a `503 pgo_unavailable`, and any other `5xx`, and the hints table names the codes the gateway can send |

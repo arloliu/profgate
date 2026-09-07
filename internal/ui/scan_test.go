@@ -215,7 +215,7 @@ func TestScanPageUsesCollectionModel(t *testing.T) {
 }
 
 // hintCodes is the vocabulary of the hints table of Errors:
-// the eighteen codes its sixteen rows name,
+// the seventeen codes its fifteen rows name,
 // plus too_many_auth and auth_unavailable, which every /v1 route answers.
 // The list is held here rather than read out of the design's Markdown,
 // the way targetmodel_test.go holds the exclusion reasons,
@@ -230,7 +230,6 @@ var hintCodes = []string{
 	"discovery_unavailable",
 	"pgo_disabled",
 	"pgo_unavailable",
-	"collector_unavailable",
 	"collection_in_progress",
 	"rate_limited",
 	"capacity_exhausted",
@@ -316,8 +315,8 @@ func TestScanHintKeysRefuseWhatTheyCannotRead(t *testing.T) {
 // so each is a failure that names the name.
 // A property the scan cannot read is a failure too, never a key silently left out of the set.
 func TestScanHintsNameEveryCode(t *testing.T) {
-	if len(hintCodes) != 20 {
-		t.Fatalf("the vocabulary written out here holds %d codes, want twenty", len(hintCodes))
+	if len(hintCodes) != 19 {
+		t.Fatalf("the vocabulary written out here holds %d codes, want nineteen", len(hintCodes))
 	}
 	m := hintsObjectRe.FindStringSubmatch(readSource(t, "app.js"))
 	if m == nil {
