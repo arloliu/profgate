@@ -345,16 +345,19 @@ Why here: a gate that does not run is a claim the repository makes and does not 
 
 ### 9. Say in the spec what is not built
 
-- [ ] `docs/specs/pgo.md:1190-1242,3749-3800` describe a collector Deployment, a heartbeat, a gauge, and `503 collector_unavailable`
-  that no code implements; `internal/httpapi/codes.go:92` is dead,
-  and the OpenAPI enum and the console's `hints` carry the code.
+- [x] [`pgo.md`](../specs/pgo.md) *Collector availability* and *Deployment* described a collector Deployment,
+  a heartbeat, a gauge, and `503 collector_unavailable` that no code implemented;
+  the code was a dead constant of `internal/httpapi/codes.go`,
+  and the OpenAPI enum and the console's `hints` carried it.
   The deferral lives only in `docs/decisions/collection-stays-in-the-gateway.md`.
   The spec marks the amendment deferred where it stands, so a reader need not know to discount it;
   the dead code and its enum entry are removed with a changelog line.
-- [ ] `docs/pgo.md:147` says the listing pages and `:263` says it offers no pagination; it pages.
+- [x] `docs/pgo.md:147` says the listing pages and `:263` says it offers no pagination; it pages.
 
-Spec: [`pgo.md`](../specs/pgo.md), and [`ui.md`](../specs/ui.md) where it answers `collector_unavailable` (`docs/specs/ui.md:956,1103`).
-Shipped: not built yet.
+Spec: [`pgo.md`](../specs/pgo.md),
+and [`ui.md`](../specs/ui.md) for the console's rules —
+the *Errors* hints table and the start-outcome table under *Starting and cancelling a Collection*.
+Shipped: pull request #36.
 Why here: nothing here changes behavior,
 and the removal is a breaking change to the enum that a release note must carry.
 
