@@ -68,8 +68,6 @@ const hints = {
   discovery_unavailable: "the gateway could not read its cache or confirm the Pod; retry",
   pgo_disabled: "PGO collection is off on this gateway; the Collections view goes once the limits have been refetched",
   pgo_unavailable: "the gateway could not reach its store, so a start may or may not have taken; the same press can be repeated",
-  collector_unavailable:
-    "nothing is running Collections at the moment, and nothing was started; the press can be repeated once something is",
   collection_in_progress: "a Collection is already running for this Service; the list shows it",
   rate_limited: "the gateway is at its limit for now; the control returns after the delay",
   capacity_exhausted: "the gateway is at its limit for now; the control returns after the delay",

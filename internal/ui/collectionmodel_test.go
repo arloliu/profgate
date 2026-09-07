@@ -383,9 +383,6 @@ func TestCollectionModelStartOutcome(t *testing.T) {
 		{"503 pgo_unavailable keeps the key",
 			answer(503, "pgo_unavailable", "PGO collection is unavailable"),
 			startResult{Keep: true, Armed: true, Refetch: []string{}, Error: str("PGO collection is unavailable")}},
-		{"503 collector_unavailable drops the key",
-			answer(503, "collector_unavailable", "no collector is fresh"),
-			startResult{Refetch: []string{}, Error: str("no collector is fresh")}},
 		{"503 with another code keeps the key",
 			answer(503, "not_ready", "the gateway is still syncing"),
 			startResult{Keep: true, Armed: true, Refetch: []string{}, Error: str("the gateway is still syncing")}},
@@ -825,9 +822,9 @@ func TestCollectionModelKeySurvivesLostAnswers(t *testing.T) {
 		}
 	}
 	state = step(t, vm, state, map[string]any{"kind": "submit", "now": 5000}).State
-	classified := runStartOutcome(t, vm, answer(503, "collector_unavailable", "no collector is fresh"))
+	classified := runStartOutcome(t, vm, answer(501, "pgo_disabled", "PGO collection is disabled"))
 	if classified.Keep {
-		t.Errorf("503 collector_unavailable kept the key; no write can have happened")
+		t.Errorf("501 pgo_disabled kept the key; no write can have happened")
 	}
 	state = step(t, vm, state, map[string]any{
 		"kind": "outcome", "token": state.Token, "keep": classified.Keep, "disableSeconds": classified.DisableSeconds, "now": 1000,
