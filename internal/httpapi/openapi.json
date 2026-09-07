@@ -1127,7 +1127,6 @@
               "discovery_unavailable",
               "auth_unavailable",
               "pgo_unavailable",
-              "collector_unavailable",
               "upstream_timeout"
             ],
             "type": "string"

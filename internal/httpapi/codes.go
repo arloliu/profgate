@@ -87,9 +87,6 @@ const (
 	CodeAuthUnavailable = "auth_unavailable"
 	// CodePGOUnavailable is a PGO store this replica cannot decide from.
 	CodePGOUnavailable = "pgo_unavailable"
-	// CodeCollectorUnavailable is a store that is reachable with nothing running Collections.
-	// No route answers it in this build.
-	CodeCollectorUnavailable = "collector_unavailable"
 	// CodeUpstreamTimeout is a target that did not answer in time.
 	CodeUpstreamTimeout = "upstream_timeout"
 )
@@ -142,7 +139,6 @@ var envelopeCodes = [...]string{
 	CodeDiscoveryUnavailable,
 	CodeAuthUnavailable,
 	CodePGOUnavailable,
-	CodeCollectorUnavailable,
 	CodeUpstreamTimeout,
 }
 
