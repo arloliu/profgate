@@ -390,8 +390,8 @@ The collector Deployment's memory limit, which no chart computes yet because no 
 is the sum of two terms:
 
 ```text
-collectorBaseMemory + maxActiveCollections × (maxParallel × decodeFactor × maxSampleBytes
-                                              + 2 × decodeFactor × maxMergedBytes)
+collectorBaseMemory + maxActiveCollections × (maxParallel × (2 + decodeRetainFactor) × maxSampleBytes
+                                              + (1 + mergeRetainFactor) × maxMergedBytes)
 ```
 
 `collectorBaseMemory` is a fixed **256 MiB**.
@@ -400,18 +400,89 @@ the Go runtime and its heap floor, the three Kubernetes informer caches,
 the proxy transport's connection pool and buffers, and the NATS client with its four watches.
 It is the same figure for every preset, because none of those grows with a PGO ceiling.
 
-The second term is the PGO working set, with `decodeFactor = 8` and every term at its `pgo.limits` ceiling:
+The second term is the PGO working set, with every term at its `pgo.limits` ceiling:
 per active Collection, every in-flight sample as its compressed body, its decompressed bytes,
 and its decoded `*profile.Profile`;
 the running merged profile in decoded form;
 and the serialized copy written to the store at completion.
-The input bytes are bounded exactly (section 8.5);
-the decoded representations are not, so `decodeFactor` is an engineering estimate —
-two buffers of input plus about six times that in decoded structures —
-and the whole limit is a sizing rule, not a proof.
-Under `pgo.preset: standard` the working set is 2 × (4 × 8 × 32 MiB + 2 × 8 × 64 MiB) = 4 GiB
-and the limit is 256 MiB + 4 GiB = 4352 MiB;
+
+The `2` and the `1` are not estimates.
+*Rounds* reads a sample's body under a limit of `maxSampleBytes` and decompresses it under a second one,
+so both encodings are live at once and each is bounded;
+and a completed Collection holds one stored copy,
+whose length is the ceiling's own quantity give or take what gzip adds to input it cannot compress.
+What no limit covers is the decoded form, and the two factors are what estimates it —
+one for each decoded thing a collector holds.
+
+`decodeRetainFactor` is **12**:
+the heap a decoded `*profile.Profile` holds, against the decompressed bytes it was parsed from.
+`mergeRetainFactor` is **13**:
+the heap the running merged profile holds, against the length of its uncompressed encoding.
+The merged figure is the larger because `profile.Merge` rebuilds the location, function, and mapping tables.
+
+Both are measured over captured Go CPU profiles and over synthetic profiles swept across stack depth:
+[`2026-09-08-decoder-footprint.md`](../investigations/2026-09-08-decoder-footprint.md).
+The ratio is not a property of the input's length.
+It is flat in the sample count and rises as a sample's encoded size falls,
+so a shallow stack is the expensive case, not the cheap one:
+a captured profile of a busy process at eleven frames measures 7.2,
+the densest committed fixture 8.7,
+and a synthetic profile of two-frame stacks 9.9.
+The merged figure runs 6.4 to 10.6 across the captured and synthetic inputs the investigation merges,
+which are not the same set: a merge collapses samples, so a fixture built by repetition measures nothing there.
+Each factor stands above the largest measurement of its own quantity —
+21% above 9.9 for a decoded profile, and 23% above 10.6 for a merged one.
+
+Neither factor is a bound over every possible input.
+A synthetic profile of single-frame stacks reaches 14.7, which the Go runtime does not emit:
+a CPU profile records the whole stack, so its shallowest samples are three or four frames.
+The factors size the container for profiles a Go program produces,
+and `GOMEMLIMIT` below is what covers the rest.
+
+**Both factors multiply an encoding that is itself bounded.**
+`maxSampleBytes` bounds a sample's compressed body and its decompressed bytes alike,
+so `decodeRetainFactor` multiplies a quantity nothing can inflate.
+`maxMergedBytes` bounds the uncompressed encoding of the running merged profile for the same reason.
+It cannot usefully bound the gzipped one instead.
+What a profile compresses to is a property of the profile, not of the format:
+a repetitive one compresses 33 times where a captured one compresses under 3,
+and deflate's own ceiling is about a thousand to one.
+A gzipped ceiling therefore admits a decoded profile two orders of magnitude larger than a factor over it
+would suggest, which is not a sizing rule but a coincidence that holds for typical input.
+*Rounds* says how the two encodings are used: the ceiling counts one, the store holds the other.
+
+**The budget is what a decode retains, and a soft memory limit is what keeps the transient near it.**
+A parse allocates about half as much again on the way and a merge about twice,
+and the peak lies somewhere between the two, unmeasured.
+Rather than estimate it, a collecting process sets `GOMEMLIMIT` at startup to 90% of the smaller of
+the figure this section derives and the memory limit of its own cgroup.
+Reading the cgroup is what makes an explicitly lowered container limit count:
+`memory.max` under cgroup v2 and `memory.limit_in_bytes` under v1,
+found through `/proc/self/cgroup` and `/proc/self/mountinfo` where the usual container paths do not resolve.
+A value meaning unlimited, a file that is absent, and a file that does not parse are all the same case:
+the derived figure alone.
+
+What this buys is narrow and worth stating exactly.
+The runtime collects more often as the heap approaches the soft limit,
+which trades CPU for a smaller transient and can slow both collection and the interactive path,
+because collection shares the process.
+It does not prevent an out-of-memory kill.
+Go may exceed a soft limit rather than collect without end,
+and a live heap larger than the container is not reclaimable at any GC rate.
+The limit narrows the window in which a transient peak kills a correctly configured process;
+it does not make an undersized one safe.
+
+A process with `pgo.enabled` false sets no limit.
+`collectorBaseMemory` is asserted rather than measured,
+and a soft limit over an unmeasured figure would change how an installation behaves that decodes nothing.
+
+Under `pgo.preset: standard` the working set is 2 × (4 × 14 × 32 MiB + 14 × 64 MiB) = 5376 MiB
+and the limit is 256 MiB + 5376 MiB = 5632 MiB;
 section 11.1 gives both figures for each preset.
+At the shipped defaults a gateway replica's limit moves from 1536 MiB to 1856 MiB.
+[`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md) reopens the
+collector separation when the derived limit becomes what bounds how many replicas a node or a quota admits;
+a rise of a fifth does not, and this is where that is checked when the figure moves again.
 
 **The multiplication is checked, in the binary and in the chart alike.**
 Configuration validation forms the product under an overflow check:
@@ -419,7 +490,7 @@ an overflow is a validation failure naming the four ceilings that produced it,
 never a wrapped or negative byte count.
 The chart's own arithmetic already refuses the same case.
 At the ranges section 11 publishes the product cannot reach that bound —
-`maxActiveCollections` at 64 over the largest admissible ceilings is about 9 TiB,
+`maxActiveCollections` at 64 over the largest admissible ceilings is about 15 TiB,
 orders of magnitude inside a 64-bit byte count —
 so the check guards a later widening of a range rather than a value an operator can set today,
 and the test that exercises it feeds a ceiling the range check itself refuses,
@@ -1717,7 +1788,8 @@ A decode error is `parse_failed`.
 Per in-flight sample the input side is bounded exactly — compressed and decompressed bytes, each at most `maxSampleBytes` —
 and the decoded `*profile.Profile` is not:
 its heap size is slices, strings, and pointed-to objects whose total the encoded length does not bound.
-Section 3.4 budgets the collector with an engineering factor, stated as an estimate and not a proof.
+Section 3.4 budgets it with separate estimates for a decoded sample and for the running merged profile,
+stated as estimates and not as proofs.
 The decoder is a function on the worker, replaced in tests, so the input bound is testable without a real pprof endpoint.
 
 **Merging.**
@@ -1752,9 +1824,19 @@ A failed sample is recorded and skipped; only a round with zero successes fails 
 a Service with more Pods than that is sampled from a different shuffled subset each round,
 and the manifest records `truncated: true` so a reader knows the artifact is a sample of the fleet.
 The cap is what bounds the manifest, the running merge, the deadline, and the memory figure of section 3.4.
-The running profile is checked after every merge against `pgo.limits.maxMergedBytes`
-(the serialized size, which is also the size of the object that would be stored);
+The running profile is checked after every merge against `pgo.limits.maxMergedBytes`,
+which bounds the length of its uncompressed encoding;
 a Collection that outgrows it fails `merged_too_large` rather than exhausting the collector.
+The check counts that length rather than keeping it:
+serializing still allocates the encoding, but no output buffer is retained and nothing is compressed,
+where the same check over the stored form gzipped the running profile after every sample.
+The stored object is gzipped, as it always was, and the artifact records that stored length,
+which is what a client downloads and what the console and `profgate collect` report.
+The ceiling and the recorded size are two numbers rather than one,
+because the encoding a decoder sees is the only one worth bounding:
+what a profile compresses to varies by two orders of magnitude between profiles (*Container*).
+At completion the two encodings are briefly live together,
+which is part of the transient the soft memory limit exists for.
 
 **Sampling takes no admission slot.**
 A collector runs at most `pgo.limits.maxActiveCollections` Collections,
@@ -2878,7 +2960,7 @@ no reload mechanism exists yet, so today every change, `hot` or `restart`, takes
 the scheduler reads the config pointer on every tick.
 `pgo.limits` is restart because the memory figure in section 3.4 and the collector's sizing depend on it.
 `skewMargin` (section 8.4), `maxRecordBytes` (section 8.2),
-`decodeFactor` and `collectorBaseMemory` (section 3.4),
+`decodeRetainFactor`, `mergeRetainFactor`, and `collectorBaseMemory` (section 3.4),
 and the 10-minute orphan age (section 8.9) are constants, not configuration:
 a knob would invite tuning them past the assumptions they encode.
 The heartbeat interval and its freshness window (section 7.5) are not configuration either:
@@ -2980,8 +3062,8 @@ Each preset fixes three figures nobody types:
 
 | Figure | `small` | `standard` | `large` |
 |---|---|---|---|
-| PGO working set, from the second term of section 3.4 | 1 GiB | 4 GiB | 12 GiB |
-| collector memory, that working set plus the 256 MiB base | 1280 MiB | 4352 MiB | 12544 MiB |
+| PGO working set, from the second term of section 3.4 | 1344 MiB | 5376 MiB | 17920 MiB |
+| collector memory, that working set plus the 256 MiB base | 1600 MiB | 5632 MiB | 18176 MiB |
 | profile fetches one collector holds open, `maxParallel × maxActiveCollections` | 4 | 8 | 32 |
 | PGO fetches one Pod can receive from one collector, `maxActiveCollections` | 1 | 2 | 4 |
 | live Collections per publisher, `maxLiveCollections` | 16 | 64 | 256 |
@@ -3027,8 +3109,11 @@ validated where a policy is written, published, scheduled, and claimed.
 a record is metadata in KV and a artifact is bytes in an Object Store,
 so records outliving artifacts several times over is the right asymmetry, not an accident.
 The cost of the longer default is store size:
-a Service holds about `ceil(retention / every)` artifacts at once, each at most `maxMergedBytes`,
+a Service holds about `ceil(retention / every)` artifacts at once,
 which at `every: 15m` and `retention: 24h` is 96 of them.
+`maxMergedBytes` bounds each one before compression and the store holds it after,
+so that arithmetic states what a bucket needs at the ceiling
+and over-states it by whatever the profiles actually compress to.
 The 1 GiB floor section 3.2 requires of `PROFGATE_ARTIFACTS` is a floor, not a sizing recommendation;
 sizing the bucket is that arithmetic over the Services actually scheduled,
 and a bucket that fills fails the write as `artifact_store_failed` under `Discard: new` rather than evicting anything.
@@ -3549,8 +3634,25 @@ one server per subtest.
   a gzip body of 4 KiB that expands past `maxSampleBytes` is `sample_too_large` before `ParseData` is called,
   and the test fails when the decompression limit is removed;
   a gzip body whose decompressed bytes are again gzip is `sample_malformed` and `ParseData` is never called;
-  a regression guard, skipped under `-race`, parses a fixture profile and asserts the heap delta
-  (`runtime.ReadMemStats` before and after) is under `decodeFactor × len(fixture)`;
+  a regression guard parses a fixture profile and asserts its heap delta
+  (`runtime.ReadMemStats` before and after) against a band recorded per fixture,
+  holding the decompressed input alive to the second read alongside the parsed profile,
+  because dropping it lets the collection between the reads subtract it from the delta;
+  the band is ±15% of what that fixture measures and fails on a fall as well as a rise,
+  because a decoder that suddenly retains half as much is the moment to take memory back;
+  the guard runs in every build, the race detector moving the ratio by under half a percent
+  on the toolchain and fixtures the investigation measured;
+  it runs over at least two fixtures whose samples differ in encoded size,
+  because the ratio tracks that rather than the input's length;
+  a second guard merges a captured fixture of several thousand distinct samples
+  and bands its delta against the length of the merged result's uncompressed encoding,
+  which is what `maxMergedBytes` bounds;
+  its sources are decoded before the baseline read and held live past the second one alongside the result,
+  and the result is serialized only after that second read,
+  so neither the sources' own heap nor the serialization's allocations land inside the delta;
+  both guards read `HeapAlloc` with a collection before each read;
+  neither band is `decodeRetainFactor` or `mergeRetainFactor`,
+  which carry deliberate headroom and would only fail after the container was already mis-sized;
   a multi-batch Collection (`maxParallel` 2 over six Pods, three rounds) never has more than two samples in flight,
   counted by a fake transport, and needs no admission gate to hold that;
   a claim whose `Update` returns `ErrUnavailable` profiles nothing,
@@ -4408,3 +4510,29 @@ Updated with the implementation:
 | `internal/ui` | `collectionmodel.js` drops the branch that dropped the key on the code, and `app.js` drops its hint |
 | `docs/deployment.md` | the registered-code count, without the sentence saying one of them is unanswered |
 | `CHANGELOG.md` | the code leaves the `Error.code` enum, which is a breaking change to that enum |
+
+The decoded working set being sized by two measured factors,
+the merge ceiling bounding the encoding a decoder sees rather than the one a store holds,
+and a collecting process setting its own soft memory limit amend the following text.
+
+Amended now:
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *Container* | the working set splits `decodeFactor` into `decodeRetainFactor` and `mergeRetainFactor`; the exactly bounded buffers are written as the `2` and the `1` rather than folded into a factor; both factors are measured and cite the investigation; a collecting process sets `GOMEMLIMIT` from the smaller of its derived figure and its cgroup limit, and a process that collects nothing sets none; the preset figures, the worked example, and the overflow headroom follow; the rise is checked against the condition that would reopen the collector separation |
+| `docs/specs/pgo.md` | *Rounds* | `maxMergedBytes` bounds the running merged profile's uncompressed encoding, counted without being held; the stored object stays gzipped and its length is what the artifact records; the collector's budget is two estimates rather than one |
+| `docs/specs/pgo.md` | *Configuration* | the list of constants that are not configuration names both factors |
+| `docs/specs/pgo.md` | *Presets* | the working-set and collector-memory rows follow the new arithmetic; the bucket arithmetic says it now over-states by the compression ratio |
+| `docs/specs/pgo.md` | *Unit* | the heap guard holds the decompressed input alive to its second read, bands each fixture's own measurement rather than borrowing a sizing factor, fails on a fall as well as a rise, runs in every build, and runs over more than one sample density; a second guard bands a merged profile against its uncompressed length |
+
+Updated with the implementation:
+
+| File | Change |
+|---|---|
+| `internal/config` | `PGODecodeFactor` becomes `PGODecodeRetainFactor` and `PGOMergeRetainFactor`, each documented as what it was measured against; `PGOMemoryBytes` takes the new arithmetic; a collecting process sets its soft memory limit from the smaller of `GatewayMemoryBytes` — the working set over the gateway's own base, not the working set alone — and its cgroup limit |
+| `internal/pgo` | `serializedSize` counts the uncompressed encoding while `finish` still stores gzip; the guard keeps both lifetimes, loses its skip and its comment about an encoded length, and gains a band; a captured fixture and the merge guard arrive with it |
+| `deploy/chart/profgate` | the rendered limit follows the binary, and the values comment stops saying a profile costs eight times its compressed length |
+| `deploy/base` | the deployment's memory literal and the configmap's enablement comment |
+| `docs/configuration.md`, `docs/deployment.md`, `docs/pgo.md` | the worked sizing example, the figures `profgate config validate` prints, the container figure the PGO guide quotes, and an upgrade note saying `maxMergedBytes` now bounds the encoding before compression |
+| `cmd/profgate`, `deploy/chart_test.go` | the exact figures `config validate` is asserted to print, and the test that holds the chart's arithmetic equal to the binary's |
+| `CHANGELOG.md` | derived container limits change — at the shipped defaults from 1536 MiB to 1856 MiB, and downward wherever `maxMergedBytes` exceeds three times `maxParallel × maxSampleBytes` — so an operator recalculates for their own ceilings, and an explicit `resources.limits` in the chart overrides the derivation while the implicit request follows it; `maxMergedBytes` keeps its name and value while bounding a different encoding |
