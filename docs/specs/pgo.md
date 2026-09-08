@@ -105,7 +105,9 @@ The reasoning, and what would bring the separation back, is
 [`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md).
 The sentence above overtakes that record's consequence that `collector_unavailable` stays a registered code.
 A decision record is not edited once accepted ([`README.md`](../README.md)),
-so this document is where the current state is read.
+so that consequence is superseded by
+[`registered-codes-answer-a-route.md`](../decisions/registered-codes-answer-a-route.md),
+and this document is where the current state is read.
 
 What this subsection names is the collector separation, not every deferral this document carries.
 The separation is accepted design and is described here in full, unchanged;
