@@ -402,23 +402,48 @@ and nothing else on this list depends on any of it.
 
 ### 11. Size the decoder against what it actually retains
 
-- [ ] `TestRoundsDecodeHeapDelta` keeps only `parsed` alive across its measurement (`internal/pgo/rounds_test.go:869`),
+- [x] `TestRoundsDecodeHeapDelta` keeps only `parsed` alive across its measurement (`internal/pgo/rounds_test.go:869`),
   so the decompressed input is collected between the two `runtime.ReadMemStats` reads and subtracted from the delta.
-  `runtime.KeepAlive(plain)` joins it,
-  and the comment says the guard bounds retained heap rather than peak decoding memory.
-- [ ] With both lifetimes held, a decoded `cpu-heap.pprof` retains 8.35–8.65 times its decompressed length,
-  where `config.PGODecodeFactor` is `8` (`internal/config/config.go:529`),
-  and the test's bound is that factor times the input.
-  The guard needs a bound the corrected measurement passes, on more than one fixture.
-- [ ] `PGODecodeFactor` describes itself as "two buffers of input plus about six times that in decoded structures"
+  The input joins the parsed profile as something held live,
+  and the comment stops saying the fixture's encoded length where the code hands the decoder decompressed bytes.
+- [x] The guard borrows the whole sizing constant for one of its three terms,
+  so it can only fail after the container is already mis-sized.
+  It bands each fixture's own measurement instead, on more than one sample density,
+  fails on a fall as well as a rise, and runs in every build:
+  the race detector moves the ratio by under half a percent,
+  which is not the reason the guard has never run.
+- [x] `PGODecodeFactor` describes itself as "two buffers of input plus about six times that in decoded structures"
   (`internal/config/config.go:527-528`) and `PGOMemoryBytes` spends it per in-flight sample (`:551-554`),
   so the same constant sizes the container.
-  The decoded-structures share alone measures above the whole factor,
-  which says the sizing rule under-allocates the per-sample working set.
-  Whether the constant moves, and what a moved constant does to `PGOMemoryBytes` and the chart's memory request,
-  is decided from measurements over several fixtures rather than from this one.
+  Measured, a decoded profile retains 3.4 to 9.9 times the bytes it was parsed from and a real busy one 7.2,
+  so eight is a value inside the range rather than a ceiling over it.
+  The constant splits in two, each measured against the quantity it multiplies,
+  and `PGOMemoryBytes`, the chart's rendered limit, and the manifests follow.
+- [x] `pgo.limits.maxMergedBytes` bounds the gzipped serialized size
+  (`internal/pgo/rounds.go:99,392,418-425`), and what a profile compresses to is a property of the profile:
+  a repetitive one compresses 33 times where a captured one compresses under 3,
+  against a deflate ceiling of about a thousand to one.
+  So that ceiling times any multiplier is two orders of magnitude too loose to size anything,
+  where `maxSampleBytes` bounds a sample's compressed and decompressed bytes alike and is tight.
+  The ceiling moves to the encoding the decoder sees; the store keeps holding the gzipped one.
+- [x] The container is sized from what a decode retains, and the peak is higher and unmeasured:
+  a parse allocates half as much again, a merge twice,
+  `rounds.go:373` holds three profiles at once and `:536` a second merged one beside the first.
+  No `GOMEMLIMIT` is set anywhere, so the collector targets twice the live heap
+  and a container sized at base plus working set can be killed while the live heap is exactly that.
+  A collecting process sets its own soft limit instead of the arithmetic guessing at a peak.
+- [x] Three documents disagree about what the factor multiplies:
+  the chart says a profile costs eight times its compressed length
+  (`deploy/chart/profgate/values.yaml:496-497`, `templates/_helpers.tpl:230-231`),
+  `internal/config/config.go:526-528` says its encoded length,
+  and `internal/pgo/rounds_test.go:852-854` says the decompressed body and not the gzipped wire form.
+  Only the last matches the code, and all three are corrected.
 
-Spec: [`pgo.md`](../specs/pgo.md) *Unit* for what the guard bounds, and its memory sizing for the constant.
+Spec: [`pgo.md`](../specs/pgo.md) *Container* for the two factors, the soft memory limit, and the preset figures;
+*Rounds* for which encoding the merge ceiling bounds;
+*Configuration* and *Presets* for the constants and the arithmetic they feed;
+and *Unit* for what the guards band.
+Evidence: [`2026-09-08-decoder-footprint.md`](../investigations/2026-09-08-decoder-footprint.md).
 Shipped: not built yet.
 Why here: a test that measures the wrong thing passes for the wrong reason,
 and the constant it reads is also the gateway's own memory budget.
