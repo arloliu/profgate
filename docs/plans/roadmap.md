@@ -448,6 +448,39 @@ Shipped: not built yet.
 Why here: a test that measures the wrong thing passes for the wrong reason,
 and the constant it reads is also the gateway's own memory budget.
 
+### 12. Settle whether `pgo.preset` is deferred or abandoned
+
+- [ ] No Go source resolves a preset:
+  `grep -rn Preset --include=*.go .` finds nothing, and `internal/config` expands none into `pgo.limits`.
+  [`pgo.md`](../specs/pgo.md) *Presets* nonetheless says `profgate config validate` prints the preset name,
+  the twelve resolved ceilings, the derived figures, and the collector grace period (`docs/specs/pgo.md:3089-3091`);
+  the command prints the required grace period, the PGO working set, and the container memory
+  (`cmd/profgate/main.go:90-96`).
+- [ ] Two *Unit* bullets require tests that cannot be written against this build:
+  that each preset expands to the twelve ceilings exactly,
+  that an absent `pgo.preset` expands to `standard`, that an unknown name is rejected naming the key,
+  and that one `pgo.limits` key overrides its preset value and leaves the other eleven
+  (`docs/specs/pgo.md:3920-3923`),
+  and that `config validate` prints the preset name and the derived figures for a configuration of each preset
+  (`:3953-3954`).
+- [ ] *What this build does not carry* covers the collector separation
+  and says in its own words that it does not cover every deferral this document holds (`docs/specs/pgo.md:112`).
+  The preset's deferral is recorded only in
+  [`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md),
+  inside a bullet whose subject is lowered ceiling defaults,
+  and the reason it gives is not that the work is unstarted:
+  it holds that the twelve ceilings are not one axis,
+  and that one name over all of them would couple choices an operator makes separately.
+  The spec meanwhile carries the preset as accepted design.
+  Which of the two stands is what this item settles,
+  and the answer is written where the preset text is, not as another paragraph in that subsection.
+
+Spec: [`pgo.md`](../specs/pgo.md) *Presets* and *Unit*,
+and *Core decisions* as well if the answer is that the design does not stand.
+Shipped: not built yet.
+Why here: it changes no behavior and is met only by a reader of the spec,
+where every other item is met by an operator, a client, or a gate.
+
 ## Not on This List
 
 - A build version on any `/v1` response, a Grafana dashboard file, an HPA, any new route or chart resource.
