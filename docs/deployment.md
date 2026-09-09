@@ -408,6 +408,25 @@ so uncommenting the ConfigMap's PGO block means raising the limit too,
 to the figure `config validate` prints for the edited file.
 An explicit `resources.limits` replaces both paths and is rendered verbatim.
 
+A collecting process holds itself to a soft memory limit as well.
+With `pgo.enabled` it sets `GOMEMLIMIT` at startup to 90% of the smaller of two figures,
+the derived limit above and the memory limit of its own cgroup,
+so an explicitly lowered `resources.limits.memory` counts rather than being ignored.
+A process with `pgo.enabled: false` sets none.
+A `GOMEMLIMIT` already set in the environment is never raised by it —
+the chart sets none of its own, so the only way one arrives is `extraEnv` —
+and the process keeps the smaller of that and the figure it derived.
+
+What the limit buys is narrow, and worth stating exactly.
+The runtime collects more often as the heap approaches it,
+which trades CPU for a smaller transient
+and can slow both collection and the interactive path, because collection shares the process.
+It does not prevent an out-of-memory kill:
+Go may exceed a soft limit rather than collect without end,
+and a live heap larger than the container is not reclaimable at any collection rate.
+It narrows the window in which a transient peak kills a correctly configured process;
+it does not make an undersized one safe.
+
 `resources.requests` is rendered as written, and ships a CPU request of `100m`.
 A container with no CPU request at all is refused outright by a namespace whose `ResourceQuota` counts `requests.cpu`,
 which is what made such a namespace need the escape hatch to install.

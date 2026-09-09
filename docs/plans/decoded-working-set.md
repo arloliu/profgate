@@ -1013,7 +1013,7 @@ through the seam so no test reaches the runtime:
 and `math.MaxInt64` when nothing set one,
 so the comparison costs nothing in the ordinary case and never raises a `GOMEMLIMIT` an operator set.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 | Test | What it asserts, and how it fails today |
 |---|---|
@@ -1028,7 +1028,7 @@ The red state:
 mise exec -- go test -race -count=1 ./internal/config/ ./cmd/profgate/ -run 'SoftMemoryLimit|CgroupMemoryLimit'
 ```
 
-- [ ] **Document what it buys, and what it does not**
+- [x] **Document what it buys, and what it does not**
 
 `docs/deployment.md`, in the sizing section after the derived limit:
 a collecting process sets `GOMEMLIMIT` at startup to 90% of the smaller of the derived figure
@@ -1057,7 +1057,7 @@ and a `GOMEMLIMIT` already in the environment is never raised.
 This narrows the window in which a transient peak kills a correctly configured process.
 It does not make an undersized one safe.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/config/memlimit.go cmd/profgate/serve.go docs/deployment.md docs/configuration.md CHANGELOG.md

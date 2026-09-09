@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A collecting process sets its own soft memory limit.**
+  The container is sized by what a decode retains, and the peak is higher:
+  a parse allocates about half as much again on the way and a merge about twice,
+  and nothing set `GOMEMLIMIT`, so the runtime targeted twice the live heap.
+  A process with `pgo.enabled` true now sets it at startup to 90% of the smaller of two figures,
+  the derived container figure and the memory limit of its own cgroup;
+  a process that collects nothing sets none,
+  and a `GOMEMLIMIT` already in the environment is never raised.
+  This narrows the window in which a transient peak kills a correctly configured process.
+  It does not make an undersized one safe.
 - **The Collections table says when older Collections exist, and names the verb that lists them.**
   The table showed the newest hundred and dropped the token that said more existed.
   When the listing carries `nextCursor`, one line under the table now says older Collections exist beyond the page

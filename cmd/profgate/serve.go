@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,6 +97,11 @@ type serveDeps struct {
 	drainSlack    time.Duration                          // production: 0, so the API drain's bound adds drainSlack to the longest profile duration
 	authPoll      time.Duration                          // production: 0, so the users file and cookie key file are polled every 30 seconds
 	backoff       func() *backoff                        // production: nil, so each retry loop doubles from 1s to 30s on a timer
+	// The two halves of the soft memory limit.
+	// They are seams so that no test moves the limit the whole test binary runs under,
+	// and none reads the runner's own cgroup.
+	setMemoryLimit  func(int64) int64                  // production: nil, so serve calls debug.SetMemoryLimit
+	softMemoryLimit func(*config.Config) (int64, bool) // production: nil, so serve calls cfg.SoftMemoryLimit
 }
 
 // retryBackoff returns the backoff one retry loop draws its waits from:
@@ -108,6 +114,29 @@ func (d serveDeps) retryBackoff() *backoff {
 	}
 
 	return newBackoff(nil, nil)
+}
+
+// memoryLimitSetter returns what serve sets the soft memory limit through:
+// the function a test supplied, and the runtime's own otherwise.
+func (d serveDeps) memoryLimitSetter() func(int64) int64 {
+	if d.setMemoryLimit != nil {
+		return d.setMemoryLimit
+	}
+
+	return debug.SetMemoryLimit
+}
+
+// softLimit returns what serve asks for the soft memory limit:
+// the function a test supplied, and the configuration's own otherwise.
+// This is a seam beside the setter rather than instead of it,
+// because the configuration reads the cgroup the process belongs to,
+// and a test running inside a small one would otherwise derive a smaller figure than the one it asserts on.
+func (d serveDeps) softLimit() func(*config.Config) (int64, bool) {
+	if d.softMemoryLimit != nil {
+		return d.softMemoryLimit
+	}
+
+	return (*config.Config).SoftMemoryLimit
 }
 
 // serve runs the gateway until stop is closed or a fatal event happens, and returns the exit code.
@@ -208,6 +237,19 @@ func serve(ctx context.Context, cfgPath string, deps serveDeps, stdout, stderr i
 	// limits.maxConcurrentProfiles is a restart-only field.
 	// Collection sampling does not pass through it.
 	gate := admit.New(cfg.Limits.MaxConcurrentProfiles)
+	// The soft memory limit a collecting process holds itself to.
+	// It bounds the transient a parse or a merge allocates against the container's own ceiling,
+	// which the runtime would otherwise collect against twice the live heap.
+	// A limit already in force is never raised:
+	// a negative argument reads the current one without changing it,
+	// and answers the largest int64 when nothing has set one.
+	if limit, ok := deps.softLimit()(cfg); ok {
+		setLimit := deps.memoryLimitSetter()
+		if current := setLimit(-1); limit < current {
+			setLimit(limit)
+			logger.Info("soft memory limit set", "bytes", limit)
+		}
+	}
 	// The handlers' late-bound view of the PGO machinery:
 	// the HTTP server starts before the NATS preflight has passed,
 	// so every PGO route answers 503 through an unbound runtime until it does.
