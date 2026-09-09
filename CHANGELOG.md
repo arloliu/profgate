@@ -108,6 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by `maxActiveCollections × (6 × maxParallel × maxSampleBytes + maxMergedBytes)`.
   An installation with `pgo.enabled` false, and one that writes an explicit `resources.limits`,
   keep the figure they had.
+  The chart writes no memory request,
+  so Kubernetes takes the limit as the request:
+  a replica that scheduled under the old figure needs a node with the new one free.
   A configuration whose ceilings multiply out past a 64-bit byte count is now refused at startup, naming them.
   The Helm chart renders the new figure and refuses a base term or a container sum that leaves that range,
   and the kustomize base's comments name the figure an operator raises the limit to.
