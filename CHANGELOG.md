@@ -97,6 +97,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`pgo.limits.maxMergedBytes` bounds the merged profile's encoding before compression.**
+  It bounded the gzipped serialization, and what a profile compresses to is a property of the profile:
+  a repetitive one compresses 33 times where a captured one compresses under 3.
+  The key keeps its name and its value, and the stored artifact is still gzipped —
+  the size a download reports, and the size the console and `profgate collect` print, is still the stored length.
+  What changes is which Collections are refused as `merged_too_large`:
+  a Collection that compresses well and would have completed now fails at a ceiling it passed before.
+  An operator whose Collections approach the ceiling raises `maxMergedBytes` for the encoding it now reads.
 - **The console lays one panel to a row and folds the identity into a disclosure.**
   The three panels stood in a grid of auto-fitting columns,
   so a wide window put the tall Profile panel beside two short ones and left a column of empty page below them,

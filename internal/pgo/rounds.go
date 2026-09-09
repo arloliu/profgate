@@ -79,11 +79,15 @@ type RoundsDeps struct {
 type Rounds struct {
 	deps RoundsDeps
 
-	// decode, merge, and write are the pprof calls, behind seams so a test can
-	// count what they hold, assert what they are given, and fail inside them.
-	decode func(data []byte) (*profile.Profile, error)
-	merge  func(srcs []*profile.Profile) (*profile.Profile, error)
-	write  func(p *profile.Profile, w io.Writer) error
+	// decode, merge, write, and writeUncompressed are the pprof calls,
+	// behind seams so a test can count what they hold,
+	// assert what they are given, and fail inside them.
+	// write gzips, and is what the stored object is made of;
+	// writeUncompressed is the encoding maxMergedBytes bounds.
+	decode            func(data []byte) (*profile.Profile, error)
+	merge             func(srcs []*profile.Profile) (*profile.Profile, error)
+	write             func(p *profile.Profile, w io.Writer) error
+	writeUncompressed func(p *profile.Profile, w io.Writer) error
 }
 
 // NewRounds returns the work body one worker runs.
@@ -93,10 +97,11 @@ func NewRounds(deps RoundsDeps) *Rounds {
 	}
 
 	return &Rounds{
-		deps:   deps,
-		decode: profile.ParseData,
-		merge:  profile.Merge,
-		write:  func(p *profile.Profile, w io.Writer) error { return p.Write(w) },
+		deps:              deps,
+		decode:            profile.ParseData,
+		merge:             profile.Merge,
+		write:             func(p *profile.Profile, w io.Writer) error { return p.Write(w) },
+		writeUncompressed: func(p *profile.Profile, w io.Writer) error { return p.WriteUncompressed(w) },
 	}
 }
 
@@ -415,11 +420,14 @@ func (r *Rounds) recordSample(collection string, s Sample) {
 		"collection", collection, "pod", s.Pod, "round", s.Round, "result", s.Result, "bytes", s.Bytes)
 }
 
-// serializedSize is the size of the object the running profile would be stored
-// as, which is what maxMergedBytes bounds.
+// serializedSize is the length of the profile's encoding before compression,
+// which is what maxMergedBytes bounds.
+// The stored object is that encoding gzipped,
+// and what a profile compresses to is a property of the profile rather than of its size.
+// The encoding is counted and discarded, so nothing here retains it.
 func (r *Rounds) serializedSize(p *profile.Profile) (int64, error) {
 	var counter countingWriter
-	if err := r.write(p, &counter); err != nil {
+	if err := r.writeUncompressed(p, &counter); err != nil {
 		return 0, err
 	}
 
@@ -534,16 +542,21 @@ func (r *Rounds) finish(ctx context.Context, in workInput, state *runState) work
 	}
 
 	merged := state.merged.Compact()
+	size, err := r.serializedSize(merged)
+	if err != nil {
+		return state.fail(ReasonSerializeFailed)
+	}
+	if size > r.deps.Limits.MaxMergedBytes {
+		return state.fail(ReasonMergedTooLarge)
+	}
+
 	var buf bytes.Buffer
 	if err := r.write(merged, &buf); err != nil {
 		return state.fail(ReasonSerializeFailed)
 	}
-	if int64(buf.Len()) > r.deps.Limits.MaxMergedBytes {
-		return state.fail(ReasonMergedTooLarge)
-	}
 
-	// The size is taken before the Put, which consumes the buffer.
-	size := int64(buf.Len())
+	// The stored length is taken before the Put, which consumes the buffer.
+	stored := int64(buf.Len())
 	object := fmt.Sprintf("%s-%d.pprof", in.Record.ID, in.Record.Attempt)
 	if err := in.Artifacts.Put(ctx, object, &buf); err != nil {
 		r.deps.Log.Warn("pgo: storing the merged profile failed",
@@ -554,7 +567,7 @@ func (r *Rounds) finish(ctx context.Context, in workInput, state *runState) work
 
 	return workResult{
 		Object:          object,
-		Bytes:           size,
+		Bytes:           stored,
 		Manifest:        state.man,
 		ResolvedVersion: state.resolved,
 		Progress:        state.progress,
