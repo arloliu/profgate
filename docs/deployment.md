@@ -389,7 +389,7 @@ the accepted cost of a probe that cannot restart a healthy replica over a depend
 With `pgo.enabled`, the container memory limit is derived from `memoryLimitWithoutPGO` and the ceilings:
 
 ```text
-memoryLimitWithoutPGO + maxActiveCollections x (maxParallel x 8 x maxSampleBytes + 2 x 8 x maxMergedBytes)
+memoryLimitWithoutPGO + maxActiveCollections x (maxParallel x 14 x maxSampleBytes + 17 x maxMergedBytes)
 ```
 
 That is the binary's own sizing rule (`profgate config validate` prints both halves),
@@ -397,7 +397,7 @@ so raising a ceiling raises the limit with it.
 The chart rejects `pgo.enabled` and these four ceilings when they arrive through the raw `config:` block or `extraEnv`,
 so the derivation holds: no escape hatch can change the ceilings out from under the rendered limit,
 and every other key stays overridable through both.
-At the shipped ceilings the working set is 1Gi and the limit is 1536Mi;
+At the shipped ceilings the working set is 1440Mi and the limit is 1952Mi;
 [`configuration.md`](configuration.md) has the table of what each term buys and what raising one costs.
 With PGO off the limit is `memoryLimitWithoutPGO` alone, 512Mi,
 which covers the runtime, the informer caches, and the interactive transfer buffers —

@@ -44,8 +44,8 @@ func TestRun(t *testing.T) {
 			// The working set at the shipped ceilings, and the container
 			// that holds it over the gateway's own 512 MiB.
 			wantStdoutExact: "required terminationGracePeriodSeconds: 125\n" +
-				"pgo working set bytes: 1073741824\n" +
-				"container memory bytes: 1610612736\n",
+				"pgo working set bytes: 1509949440\n" +
+				"container memory bytes: 2046820352\n",
 		},
 		{
 			name:       "validate bad",

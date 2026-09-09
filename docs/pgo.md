@@ -359,7 +359,7 @@ The `pgo.limits` block is the operator's ceiling on everything a policy can ask 
 per-setting ranges and defaults are in [`configuration.md`](configuration.md),
 along with the table that sizes the container from them.
 The short of it: the Deployment's memory limit is the working set four of those ceilings size,
-plus the gateway's own footprint, which is `1536Mi` at the shipped defaults.
+plus the gateway's own footprint, which is `1952Mi` at the shipped defaults.
 `profgate config validate` prints both figures for the loaded configuration when collection is on,
 and prints `pgo collection: disabled` in place of the working set otherwise.
 

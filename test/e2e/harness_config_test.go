@@ -205,9 +205,9 @@ spec:
 
 // pgoGatewayMemoryLimit is what `profgate config validate` prints for the configuration gatewayConfig writes with a NATS URL:
 // collection on with every sizing ceiling at its shipped default,
-// a 1Gi working set over the gateway's own 512Mi.
+// a 1440Mi working set over the gateway's own 512Mi.
 // The base ships collection off at 512Mi.
-const pgoGatewayMemoryLimit = "1536Mi"
+const pgoGatewayMemoryLimit = "1952Mi"
 
 // memoryLimitPatch raises the profgate container's memory limit on the named
 // Deployment to limit, for a gateway whose configuration turns collection on

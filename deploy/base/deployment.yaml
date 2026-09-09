@@ -55,7 +55,7 @@ spec:
               # PGO collection is off; the ConfigMap comments its block out.
               # This is the gateway's own footprint. Turning collection on
               # means raising this figure to what `profgate config validate`
-              # then prints: 1536Mi at the shipped pgo.limits ceilings.
+              # then prints: 1952Mi at the shipped pgo.limits ceilings.
               memory: 512Mi
           volumeMounts:
             - name: config

@@ -225,8 +225,11 @@ It is the formula internal/config.Config.PGOMemoryBytes applies to the same
 four ceilings, so the container limit and the configuration cannot drift
 apart; the ceilings arrive through profgate.pgoLimitsValidated, the values
 the rendered configuration carries.
-8 is the decode factor: a profile occupies about eight times its compressed
-length once decoded.
+14 is two input buffers maxSampleBytes bounds -- a sample's compressed body
+and the bytes it decompresses to -- plus a decoded profile at 12 times those
+decompressed bytes. 17 is the stored copy plus the running merged profile at
+16 times the length of its uncompressed encoding, which is the quantity
+maxMergedBytes bounds.
 maxActiveCollections has no upper bound of its own, so the product is checked
 against what a 64-bit byte count holds before it is formed; without that, a
 huge ceiling would render a nonsense limit such as a negative number.
@@ -237,9 +240,9 @@ huge ceiling would render a nonsense limit such as a negative number.
 {{- $sample := int64 $l.maxSampleBytes -}}
 {{- $merged := int64 $l.maxMergedBytes -}}
 {{- $active := int64 $l.maxActiveCollections -}}
-{{- $perCollection := add (mul $parallel 8 $sample) (mul 2 8 $merged) -}}
+{{- $perCollection := add (mul $parallel 14 $sample) (mul 17 $merged) -}}
 {{- if gt $active (div 9223372036854775807 $perCollection) -}}
-{{- fail (printf "pgo.limits sizes a memory limit larger than a 64-bit byte count holds: maxActiveCollections %d x (maxParallel %d x 8 x maxSampleBytes %d + 2 x 8 x maxMergedBytes %d) overflows, so lower the ceilings" $active $parallel $sample $merged) -}}
+{{- fail (printf "pgo.limits sizes a memory limit larger than a 64-bit byte count holds: maxActiveCollections %d x (maxParallel %d x 14 x maxSampleBytes %d + 17 x maxMergedBytes %d) overflows, so lower the ceilings" $active $parallel $sample $merged) -}}
 {{- end -}}
 {{- mul $active $perCollection -}}
 {{- end -}}
@@ -252,6 +255,10 @@ rather than carry a second copy of the same figure.
 Mi and Gi are the suffixes the shipped value and every documented override
 use; anything else fails at render time rather than deploying a container
 sized from a number nobody wrote.
+Two overflow checks sit in front of the conversion for the same reason: a
+digit string past an int64 converts to zero, and a component that fits still
+wraps when it is multiplied by its unit, and either would size a container
+from a number nobody wrote.
 */}}
 {{- define "profgate.gatewayBaseMemoryBytes" -}}
 {{- $v := required "memoryLimitWithoutPGO is required: it is the gateway's own footprint, which every container carries" .Values.memoryLimitWithoutPGO -}}
@@ -268,6 +275,12 @@ sized from a number nobody wrote.
 {{- if or (eq $unit 0) (not (regexMatch "^[0-9]+$" $n)) -}}
 {{- fail (printf "memoryLimitWithoutPGO %v must be a whole number of Mi or Gi: the container limit adds it to the PGO working set, so the chart reads it as bytes" $v) -}}
 {{- end -}}
+{{- if gt (float64 $n) 9223372036854775807.0 -}}
+{{- fail (printf "memoryLimitWithoutPGO %v is not a byte count a 64-bit integer holds: the number before the unit is already larger than one, so lower it" $v) -}}
+{{- end -}}
+{{- if gt (int64 $n) (div 9223372036854775807 $unit) -}}
+{{- fail (printf "memoryLimitWithoutPGO %v is not a byte count a 64-bit integer holds: multiplying it by its unit overflows, so lower it" $v) -}}
+{{- end -}}
 {{- mul (int64 $n) $unit -}}
 {{- end -}}
 
@@ -277,9 +290,16 @@ the PGO working set plus what the gateway process costs before it decodes
 anything.
 It is the formula internal/config.Config.GatewayMemoryBytes applies, over the
 same base term the disabled branch renders on its own.
+The base term and the working set each fit a 64-bit byte count on their own
+and their sum need not, so the addition is checked before it is formed.
 */}}
 {{- define "profgate.gatewayMemoryBytes" -}}
-{{- add (include "profgate.gatewayBaseMemoryBytes" . | int64) (include "profgate.pgoMemoryBytes" . | int64) -}}
+{{- $base := include "profgate.gatewayBaseMemoryBytes" . | int64 -}}
+{{- $working := include "profgate.pgoMemoryBytes" . | int64 -}}
+{{- if gt $working (sub 9223372036854775807 $base) -}}
+{{- fail (printf "memoryLimitWithoutPGO %v plus the working set pgo.limits sizes, %d bytes, is not a byte count a 64-bit integer holds, so lower pgo.limits.maxActiveCollections or the sample ceilings" .Values.memoryLimitWithoutPGO $working) -}}
+{{- end -}}
+{{- add $base $working -}}
 {{- end -}}
 
 {{/*

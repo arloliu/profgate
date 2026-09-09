@@ -97,6 +97,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Derived container memory limits rise, and an operator recalculates for their own ceilings.**
+  The working set was sized by one constant standing for a decoded profile against its encoded length,
+  and that constant was a value inside the measured range rather than a ceiling over it.
+  It is now two: 12 for a decoded profile against the decompressed bytes it was parsed from,
+  and 16 for the running merged profile against the length of its uncompressed encoding —
+  which is larger partly because serializing a profile attaches an index the Collection then holds.
+  At the shipped defaults the limit rises from 1536 MiB to 1952 MiB.
+  Every derived limit rises where collection is enabled,
+  by `maxActiveCollections × (6 × maxParallel × maxSampleBytes + maxMergedBytes)`.
+  An installation with `pgo.enabled` false, and one that writes an explicit `resources.limits`,
+  keep the figure they had.
+  A configuration whose ceilings multiply out past a 64-bit byte count is now refused at startup, naming them.
+  The Helm chart renders the new figure and refuses a base term or a container sum that leaves that range,
+  and the kustomize base's comments name the figure an operator raises the limit to.
 - **`pgo.limits.maxMergedBytes` bounds the merged profile's encoding before compression.**
   It bounded the gzipped serialization, and what a profile compresses to is a property of the profile:
   a repetitive one compresses 33 times where a captured one compresses under 3.

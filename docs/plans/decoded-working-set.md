@@ -882,7 +882,7 @@ It says instead that 14 is two bounded input buffers plus a decoded profile at 1
 and 17 is the stored copy plus the running merged profile at 16 times its uncompressed encoding.
 `values.yaml:488-497` and `README.md:112-119` restate the same formula and figure, and follow.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 | Test | What it asserts, and how it fails today |
 |---|---|
@@ -903,7 +903,7 @@ mise exec -- go test -race -count=1 ./internal/config/ ./cmd/profgate/ \
 mise exec -- go test -race -count=1 ./deploy/ -run 'TestChartMemoryLimitIsDerived' -v
 ```
 
-- [ ] **Follow the figure everywhere it is written down**
+- [x] **Follow the figure everywhere it is written down**
 
 - `deploy/base/deployment.yaml:53-59`: the comment's `1536Mi` becomes `1952Mi`.
   The `512Mi` literal does not move.
@@ -921,7 +921,7 @@ mise exec -- go test -race -count=1 ./deploy/ -run 'TestChartMemoryLimitIsDerive
 - `docs/deployment.md:390-400`: the formula and `the working set is 1Gi and the limit is 1536Mi`.
 - `docs/pgo.md:361-362`: the container figure the guide quotes.
 
-- [ ] **Say what moved**
+- [x] **Say what moved**
 
 `CHANGELOG.md`, `### Changed`:
 **Derived container memory limits rise, and an operator recalculates for their own ceilings.**
@@ -939,7 +939,7 @@ A configuration whose ceilings multiply out past a 64-bit byte count is now refu
 The Helm chart renders the new figure and the kustomize base's comments name it;
 an explicit `resources.limits` in the chart still overrides the derivation, while the implicit request follows it.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/config/config.go docs/configuration.md docs/deployment.md docs/pgo.md \

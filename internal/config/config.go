@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"reflect"
@@ -523,10 +524,22 @@ func (c *Config) RequiredGracePeriod() time.Duration {
 // They live here because internal/pgo imports internal/config and the reverse
 // direction would be an import cycle.
 const (
-	// PGODecodeFactor estimates how much heap a decoded profile occupies
-	// against its encoded length: two buffers of input plus about six times
-	// that in decoded structures.
-	PGODecodeFactor = 8
+	// PGODecodeRetainFactor is the heap a decoded profile holds,
+	// against the decompressed bytes it was parsed from.
+	// Measured over captured Go CPU profiles
+	// and over synthetic profiles swept across stack depth:
+	// 3.4 to 9.9, a busy process at 7.2, the densest committed fixture at 8.7.
+	// Shallow stacks are the expensive case,
+	// because a sample costs about the same heap whatever its depth.
+	PGODecodeRetainFactor = 12
+	// PGOMergeRetainFactor is the heap the running merged profile holds,
+	// against the length of its uncompressed encoding,
+	// which is what maxMergedBytes bounds.
+	// Measured at 7.2 to 12.7.
+	// It is the larger of the two for two reasons.
+	// profile.Merge rebuilds the location, function, and mapping tables rather than reusing the ones it was given,
+	// and serializing a profile attaches an index to it that the Collection then holds for as long as it runs.
+	PGOMergeRetainFactor = 16
 	// PGOMaxRoundInterval is the largest roundInterval any policy may ask for.
 	PGOMaxRoundInterval = 10 * time.Minute
 	// PGOSampleOverhead is the per-sample allowance the deadline formula adds
@@ -546,10 +559,18 @@ const (
 // per active Collection, every in-flight sample as compressed bytes,
 // decompressed bytes, and a decoded profile;
 // the running merged profile; and the serialized copy written to the store.
-// It is a sizing rule, not a proof: the decoded sizes are an estimate.
+// The 2 is a sample's compressed body and the bytes it decompresses to,
+// each of which maxSampleBytes bounds.
+// The 1 is the stored copy,
+// whose length is maxMergedBytes give or take what gzip adds to input it cannot compress.
+// The two factors are what estimates the decoded forms no ceiling covers,
+// which makes this a sizing rule rather than a proof.
+// validatePGOSizing refuses the ceilings whose product leaves a byte count,
+// so a configuration that loaded sizes a positive figure here.
 func (c *Config) PGOMemoryBytes() int64 {
 	l := c.PGO.Limits
-	perCollection := int64(l.MaxParallel)*PGODecodeFactor*l.MaxSampleBytes + 2*PGODecodeFactor*l.MaxMergedBytes
+	perCollection := int64(l.MaxParallel)*(2+PGODecodeRetainFactor)*l.MaxSampleBytes +
+		(1+PGOMergeRetainFactor)*l.MaxMergedBytes
 
 	return int64(l.MaxActiveCollections) * perCollection
 }
@@ -1216,6 +1237,51 @@ func validatePGO(cfg *Config) error {
 	if cpu := time.Duration(cfg.Limits.CPUSeconds) * time.Second; limits.MaxDuration > cpu {
 		return fmt.Errorf("pgo.limits.maxDuration %v must be at most limits.cpuSeconds %v", limits.MaxDuration, cpu)
 	}
+
+	return validatePGOSizing(limits)
+}
+
+// validatePGOSizing holds the container figure PGOMemoryBytes derives to a byte count.
+// maxParallel, maxSampleBytes, and maxMergedBytes each carry a ceiling of their own,
+// so the term one Collection costs cannot leave the range on its own.
+// maxActiveCollections carries none,
+// so a configuration every per-key range admits can multiply out past what a signed 64-bit integer holds,
+// and a working set that fits can still leave a container sum that does not.
+// Each step is checked before the operation it guards,
+// because a product that has already wrapped reads as an ordinary byte count.
+// This runs only with collection on:
+// that is the branch the derivation belongs to,
+// and the branch the chart renders the same sum on.
+func validatePGOSizing(limits PGOLimits) error {
+	refuse := func() error {
+		return fmt.Errorf("pgo.limits sizes a memory limit larger than a 64-bit byte count holds: "+
+			"maxActiveCollections %d times (maxParallel %d times %d times maxSampleBytes %d "+
+			"plus %d times maxMergedBytes %d), over a %d byte base, overflows, so lower the ceilings",
+			limits.MaxActiveCollections, limits.MaxParallel, 2+PGODecodeRetainFactor, limits.MaxSampleBytes,
+			1+PGOMergeRetainFactor, limits.MaxMergedBytes, int64(PGOGatewayBaseMemory))
+	}
+
+	samples := int64(limits.MaxParallel) * (2 + PGODecodeRetainFactor)
+	if samples > math.MaxInt64/limits.MaxSampleBytes {
+		return refuse()
+	}
+	if 1+PGOMergeRetainFactor > math.MaxInt64/limits.MaxMergedBytes {
+		return refuse()
+	}
+	sampleTerm := samples * limits.MaxSampleBytes
+	mergedTerm := (1 + PGOMergeRetainFactor) * limits.MaxMergedBytes
+	if sampleTerm > math.MaxInt64-mergedTerm {
+		return refuse()
+	}
+
+	perCollection := sampleTerm + mergedTerm
+	if int64(limits.MaxActiveCollections) > math.MaxInt64/perCollection {
+		return refuse()
+	}
+	if int64(limits.MaxActiveCollections)*perCollection > math.MaxInt64-PGOGatewayBaseMemory {
+		return refuse()
+	}
+
 	return nil
 }
 
