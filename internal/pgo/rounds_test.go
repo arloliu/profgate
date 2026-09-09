@@ -910,38 +910,84 @@ func TestRoundsCancellationStoresNothing(t *testing.T) {
 	})
 }
 
-// TestRoundsDecodeHeapDelta is the regression guard on the decoder's
-// footprint: parsing a fixture must not cost more than
-// config.PGODecodeFactor times its encoded length.
-// It is skipped under -race, whose allocator accounting makes the delta
-// meaningless.
+// heapBandFraction is how far a fixture's measured delta may move before a guard fails.
+// A rise means the decoder retains more than the container was sized for;
+// a fall means it retains less,
+// which is when to take the memory back.
+const heapBandFraction = 0.15
+
+// TestRoundsDecodeHeapDelta is the regression guard on the decoder's footprint:
+// parsing a fixture retains the heap that fixture was measured to retain,
+// inside a band around it.
+// The centres below are HeapAlloc deltas measured against these fixtures as they are committed,
+// so a change in what a decoded profile keeps live moves a row off its centre in either direction.
 func TestRoundsDecodeHeapDelta(t *testing.T) {
-	if raceEnabled {
-		t.Skip("the race detector's allocator accounting makes a heap delta meaningless")
+	tests := []struct {
+		name    string
+		fixture string
+		centre  int64
+	}{
+		{
+			name:    "twenty thousand narrow samples",
+			fixture: "cpu-heap.pprof",
+			centre:  4_472_300,
+		},
+		{
+			name:    "four hundred samples three times as wide",
+			fixture: "cpu-large.pprof",
+			centre:  174_432,
+		},
+		{
+			name:    "a captured profile of a busy process",
+			fixture: "cpu-busy.pprof",
+			centre:  2_590_656,
+		},
 	}
-	// config.PGODecodeFactor multiplies maxSampleBytes, which bounds the decompressed
-	// body, so the guard measures against the bytes the decoder is actually
-	// handed and not against the gzipped wire form.
-	plain := gunzipBytes(t, fixtureProfile(t, "cpu-heap.pprof"))
 
-	runtime.GC()
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
+	for _, tc := range tests {
+		// No t.Parallel,
+		// and no allocation between the two reads but the parse itself:
+		// a row measures one call and nothing else.
+		t.Run(tc.name, func(t *testing.T) {
+			plain := gunzipBytes(t, fixtureProfile(t, tc.fixture))
 
-	parsed, err := profile.ParseData(plain)
-	if err != nil {
-		t.Fatalf("parse fixture: %v", err)
-	}
-	// A collection first, so the delta is what the decoded profile keeps live
-	// rather than what parsing allocated and threw away.
-	runtime.GC()
-	runtime.ReadMemStats(&after)
-	runtime.KeepAlive(parsed)
+			// Two collections.
+			// HeapAlloc counts unreachable objects the collector has not yet freed,
+			// and one collection can return with the garbage decompression left behind still unswept.
+			// Freed inside the interval, that garbage subtracts from the delta.
+			runtime.GC()
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
 
-	//nolint:gosec // G115: a heap figure never reaches the top bit of an int64
-	delta := int64(after.HeapAlloc) - int64(before.HeapAlloc)
-	if bound := int64(config.PGODecodeFactor * len(plain)); delta > bound {
-		t.Fatalf("decoding %d bytes grew the heap by %d, want at most %d", len(plain), delta, bound)
+			parsed, err := profile.ParseData(plain)
+			if err != nil {
+				t.Fatalf("parse fixture: %v", err)
+			}
+			// A collection first,
+			// so the delta is what the decoded profile keeps live rather than what parsing allocated and threw away.
+			runtime.GC()
+			runtime.ReadMemStats(&after)
+			// The decompressed input was allocated before the baseline read,
+			// so holding it past the second one adds nothing to the delta,
+			// while dropping it would subtract its whole length.
+			runtime.KeepAlive(parsed)
+			runtime.KeepAlive(plain)
+
+			//nolint:gosec // G115: a heap figure never reaches the top bit of an int64
+			delta := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+			low := int64(float64(tc.centre) * (1 - heapBandFraction))
+			high := int64(float64(tc.centre) * (1 + heapBandFraction))
+			// Logged whether or not the row passes,
+			// so a delta sitting just inside an end of its band is visible under go test -v.
+			t.Logf("%s retained %d bytes, %.1f%% of the %d measured for it",
+				tc.fixture, delta, 100*float64(delta)/float64(tc.centre), tc.centre)
+
+			if delta < low || delta > high {
+				t.Fatalf("decoding %s retained %d bytes, want %d to %d around %d",
+					tc.fixture, delta, low, high, tc.centre)
+			}
+		})
 	}
 }
 
