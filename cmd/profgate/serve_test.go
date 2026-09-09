@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/big"
 	mrand "math/rand/v2"
 	"net"
@@ -26,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -477,6 +479,60 @@ type gatewayOpts struct {
 	// pgoMaxDuration, when set, is written as pgo.limits.maxDuration and pgo.defaults.sampling.duration,
 	// which a row with pgo.enabled needs when its limits.cpuSeconds sits under the shipped ceiling.
 	pgoMaxDuration time.Duration
+	// memLimit, when set, is what the soft memory limit is read and written through;
+	// nil installs a stub that offers no limit, so no test reaches the runtime.
+	memLimit *memLimitStub
+}
+
+// memLimitStub stands in for both halves of the soft memory limit:
+// the figure the configuration would derive from the running process's own cgroup,
+// and the runtime call that sets it.
+// A test that let either reach production would move the whole test binary's memory limit,
+// or band an assertion against the cgroup the runner happens to sit in.
+type memLimitStub struct {
+	// limit and ok are what the reader answers.
+	limit int64
+	ok    bool
+
+	mu sync.Mutex
+	// current is the limit in force, which a negative argument reads without changing.
+	current int64
+	// calls is every argument the setter received, queries included.
+	calls []int64
+}
+
+// newMemLimitStub offers no limit and reports the largest int64 in force,
+// which is what the runtime reports when nothing has set one.
+func newMemLimitStub() *memLimitStub {
+	return &memLimitStub{current: math.MaxInt64}
+}
+
+// read is the seam serve asks for the figure through.
+func (s *memLimitStub) read(*config.Config) (int64, bool) {
+	return s.limit, s.ok
+}
+
+// set is the seam serve writes the figure through.
+// A negative argument is the query debug.SetMemoryLimit answers with the limit in force.
+func (s *memLimitStub) set(n int64) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, n)
+	if n < 0 {
+		return s.current
+	}
+	previous := s.current
+	s.current = n
+
+	return previous
+}
+
+// recorded is every argument the setter received, in order.
+func (s *memLimitStub) recorded() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return slices.Clone(s.calls)
 }
 
 // startGateway runs serve over cs with PGO off.
@@ -527,6 +583,16 @@ func startGatewayWith(t *testing.T, cs *fake.Clientset, l limits, o gatewayOpts)
 	if o.worker != nil {
 		deps.pgoWorker = o.worker
 	}
+	// Both halves of the soft memory limit are stubbed for every gateway this helper starts,
+	// not only the rows that assert on them:
+	// the setter has no scope,
+	// and the reader would otherwise measure the cgroup the test binary is running in.
+	memLimit := o.memLimit
+	if memLimit == nil {
+		memLimit = newMemLimitStub()
+	}
+	deps.softMemoryLimit = memLimit.read
+	deps.setMemoryLimit = memLimit.set
 	deps.listen = func(_ context.Context, _, address string) (net.Listener, error) {
 		switch address {
 		case gw.apiAddr:
@@ -2670,6 +2736,76 @@ func assertNoDisabledWarning(t *testing.T, gw *gateway) {
 	if recordIndex(gw.records(t), "authentication disabled") >= 0 {
 		t.Fatalf("the disabled-mode warning was logged under an authenticating mode:\n%s", gw.stdout.String())
 	}
+}
+
+// TestServeSetsTheSoftMemoryLimit drives the startup call through both seams.
+// The figure the setter receives is the soft limit itself,
+// not the container figure it is derived from;
+// a gateway that collects nothing never reaches the setter;
+// and a limit already lower than the derived one is read and left as it is.
+func TestServeSetsTheSoftMemoryLimit(t *testing.T) {
+	// The soft limit at the shipped ceilings, which is nine tenths of 2046820352.
+	const soft = int64(1842138315)
+
+	// startCollecting runs a gateway with collection on through the given stub.
+	// The NATS preflight fails, because the limit is set long before the
+	// preflight and a failing one needs no client of its own.
+	startCollecting := func(t *testing.T, stub *memLimitStub) *gateway {
+		t.Helper()
+
+		return startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(), gatewayOpts{
+			enabled:   true,
+			preflight: newPreflightStub(preflightResult{err: fmt.Errorf("dial nats: %w", natskv.ErrUnavailable)}),
+			worker:    newStubWorker(),
+			memLimit:  stub,
+		})
+	}
+
+	t.Run("a collecting gateway sets the soft figure", func(t *testing.T) {
+		stub := newMemLimitStub()
+		stub.limit, stub.ok = soft, true
+		gw := startCollecting(t, stub)
+		waitFor(t, waitTimeout, "the soft memory limit being set", func() bool {
+			return len(stub.recorded()) == 2
+		})
+		if got, want := stub.recorded(), []int64{-1, soft}; !slices.Equal(got, want) {
+			t.Fatalf("setter calls = %v, want %v: the query first, then the soft figure and not the container one", got, want)
+		}
+		waitFor(t, waitTimeout, "the soft memory limit being recorded", func() bool {
+			return recordIndex(gw.records(t), "soft memory limit set") >= 0
+		})
+		if got, want := gw.record(t, "soft memory limit set")["bytes"], float64(soft); got != want {
+			t.Fatalf("recorded bytes = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a gateway that collects nothing sets none", func(t *testing.T) {
+		stub := newMemLimitStub()
+		gw := startGatewayWith(t, fake.NewClientset(fixtureObjects()...), defaultLimits(), gatewayOpts{memLimit: stub})
+		gw.waitReady(t, waitTimeout)
+		if got := stub.recorded(); len(got) != 0 {
+			t.Fatalf("setter calls with collection off = %v, want none: an unmeasured figure sizes no limit", got)
+		}
+		if recordIndex(gw.records(t), "soft memory limit set") >= 0 {
+			t.Fatalf("a gateway that collects nothing logged a soft memory limit:\n%s", gw.stdout.String())
+		}
+	})
+
+	t.Run("a limit already lower is read and not raised", func(t *testing.T) {
+		stub := newMemLimitStub()
+		stub.limit, stub.ok, stub.current = soft, true, 1<<30
+		gw := startCollecting(t, stub)
+		// The limit is decided before anything binds,
+		// so a listener answering proves the decision has been made.
+		waitFor(t, waitTimeout, "the targets route answering 200", func() bool {
+			code, _, err := get(gw.apiAddr, targetsPath)
+
+			return err == nil && code == http.StatusOK
+		})
+		if got, want := stub.recorded(), []int64{-1}; !slices.Equal(got, want) {
+			t.Fatalf("setter calls = %v, want %v: a lower limit an operator set is never raised", got, want)
+		}
+	})
 }
 
 func TestServeAuth(t *testing.T) {

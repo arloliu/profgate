@@ -467,6 +467,11 @@ and with collection on the container limit is `512Mi + 1440Mi`, which is `1952Mi
 `config validate` prints both when `pgo.enabled` is true,
 and the Helm chart renders the second as `limits.memory`.
 
+A process with `pgo.enabled` true also sets `GOMEMLIMIT` at startup,
+to 90% of the smaller of that container figure and the memory limit of its own cgroup.
+That bounds the transient a parse or a merge allocates above the working set this table sizes;
+[`deployment.md`](deployment.md) says what it buys and what it does not.
+
 The gateway's own footprint is what the process costs before it decodes anything —
 the Go runtime, the informer caches, and `limits.maxConcurrentProfiles` transfer buffers —
 so it is there whether or not collection is enabled.
