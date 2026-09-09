@@ -746,7 +746,7 @@ The fixture is already in the tree; this task adds no file.
 Its properties are asserted by the guard itself,
 so a fixture that is not the one this plan measured is a test failure rather than a silent drift.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 | Test | What it asserts |
 |---|---|
@@ -765,7 +765,7 @@ Run that mutant once, record it, and put the call back.
 mise exec -- go test -race -count=1 ./internal/pgo/ -run 'TestRoundsMergeHeapDelta' -v
 ```
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/pgo/rounds_test.go
