@@ -159,6 +159,43 @@ A merged profile is heavier per uncompressed byte than a parsed one,
 6.4 to 10.6 against 3.4 to 9.9,
 because `profile.Merge` rebuilds the location, function, and mapping tables rather than reusing the ones it was given.
 
+## Serializing the running profile leaves state attached to it
+
+Measured 2026-09-09, on the same toolchain and the same inputs.
+
+The table above merges and measures.
+`internal/pgo/rounds.go:390-398` merges, measures, and then *serializes*,
+after every sample that succeeds,
+and what it serializes is the running merged profile itself.
+`profile.Write` and `profile.WriteUncompressed` both go through the package's `serialize`,
+which calls `preEncode` before it marshals
+(`profile/profile.go:336-341`).
+`preEncode` is not a read: it attaches a `locationIDX` slice to every sample and a `stringTable` to the profile
+(`profile/encode.go:80-84`, `:127-131`),
+and that state stays on the profile until something replaces it.
+So the running profile a Collection holds between two samples is a merged profile *plus* one encoding's worth of index.
+
+The same merges, measured with one `WriteUncompressed` inside the interval:
+
+| merged from | uncompressed | never serialized | serialized once |
+|---|---|---|---|
+| four 8-second busy profiles | 408,527 | 10.557 | 12.701 |
+| one 200-second busy profile | 358,318 | 10.362 | 12.436 |
+| a synthetic profile at depth 2 | 124,086 | 8.486 | 9.008 |
+| a synthetic profile at depth 8 | 147,324 | 7.799 | 8.854 |
+| a synthetic profile at depth 32 | 240,276 | 6.358 | 8.648 |
+| `cpu-large.pprof` | 32,461 | 6.642 | 7.159 |
+
+The rise is 8% to 36% and it is largest where the profile is densest,
+because the index is per sample and per distinct string rather than per byte.
+The quantity a sizing factor over `maxMergedBytes` has to stand above is the right-hand column,
+because that is what the process holds:
+7.2 to 12.7, against the 6.4 to 10.6 of a profile that has only been merged.
+
+This does not touch the decode figures.
+A decoded sample goes from `ParseData` into the merge without being serialized,
+so nothing attaches an index to it.
+
 ## What a profile compresses to is a property of the profile, so the gzipped ceiling bounds little
 
 The two pairs of columns above differ by the compression ratio, which varies by an order of magnitude:
