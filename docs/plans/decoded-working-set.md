@@ -552,7 +552,7 @@ the `int64(buf.Len()) > MaxMergedBytes` check at `:541` goes,
 because the length of the stored object is recorded rather than compared.
 `absorb`'s check at `:392` is unchanged in shape and changes meaning with the seam under it.
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 | Test | What it asserts, and how it fails today |
 |---|---|
@@ -577,7 +577,7 @@ Then add the seam, the two `finish` changes, and the three `TestRoundsFinishFail
 mise exec -- go test -race -count=1 ./internal/pgo/ -run 'TestRoundsMergedTooLarge|TestRoundsFinishFailures|TestRoundsMergesEverySample' -v
 ```
 
-- [ ] **Move the ceiling and say so**
+- [x] **Move the ceiling and say so**
 
 `CHANGELOG.md`, `### Changed`:
 **`pgo.limits.maxMergedBytes` bounds the merged profile's encoding before compression.**
@@ -589,7 +589,7 @@ What changes is which Collections are refused as `merged_too_large`:
 a Collection that compresses well and would have completed now fails at a ceiling it passed before.
 An operator whose Collections approach the ceiling raises `maxMergedBytes` for the encoding it now reads.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/pgo/rounds.go CHANGELOG.md

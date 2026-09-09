@@ -91,6 +91,10 @@ func TestRoundsMergesEverySample(t *testing.T) {
 	if res.Bytes != int64(len(stored)) {
 		t.Errorf("result reports %d bytes, stored %d", res.Bytes, len(stored))
 	}
+	// The stored object is gzipped, and its length is what a download reports.
+	if !bytes.HasPrefix(stored, []byte{0x1f, 0x8b}) {
+		t.Fatal("the stored object does not begin with the gzip magic")
+	}
 
 	merged, err := profile.Parse(bytes.NewReader(stored))
 	if err != nil {
@@ -580,36 +584,59 @@ func TestRoundsIncompatibleProfile(t *testing.T) {
 // TestRoundsMergedTooLarge proves the running profile is measured after every
 // merge, and the Collection stops before the next sample is merged.
 func TestRoundsMergedTooLarge(t *testing.T) {
-	fixture := fixtureProfile(t, "cpu-large.pprof")
-	targets := make([]k8s.Target, 0, 3)
-	for i := range 3 {
-		targets = append(targets, newPodServer(t, fmt.Sprintf("pod-%d", i), "1.42.3", fixture).target)
-	}
+	t.Run("below either encoding", func(t *testing.T) {
+		fixture := fixtureProfile(t, "cpu-large.pprof")
+		targets := make([]k8s.Target, 0, 3)
+		for i := range 3 {
+			targets = append(targets, newPodServer(t, fmt.Sprintf("pod-%d", i), "1.42.3", fixture).target)
+		}
 
-	r := newTestRounds(t, roundsOpts{
-		discovery: newFakeDiscovery(targets...),
-		// Under one fixture's serialized size, so the first sample already
-		// overruns it.
-		limits: limitsWith(func(l *config.PGOLimits) { l.MaxMergedBytes = 1 << 10 }),
+		r := newTestRounds(t, roundsOpts{
+			discovery: newFakeDiscovery(targets...),
+			// Under one fixture's encoding either way, compressed or not,
+			// so the first sample already overruns it
+			// and the case says nothing about which of the two the check reads.
+			limits: limitsWith(func(l *config.PGOLimits) { l.MaxMergedBytes = 1 << 10 }),
+		})
+		merges := 0
+		r.merge = func(srcs []*profile.Profile) (*profile.Profile, error) {
+			merges++
+
+			return profile.Merge(srcs)
+		}
+		in := newRunInput(t, func(rec *Record) { rec.Policy.Sampling.MaxParallel = 1 })
+
+		res := runRounds(t, r, in)
+		if res.Reason != ReasonMergedTooLarge {
+			t.Fatalf("reason is %q, want %q", res.Reason, ReasonMergedTooLarge)
+		}
+		if merges != 0 {
+			t.Fatalf("Merge ran %d times, want none: the first sample already crossed the limit", merges)
+		}
+		if in.artifacts.count() != 0 {
+			t.Fatal("an object was stored for a collection that failed")
+		}
 	})
-	merges := 0
-	r.merge = func(srcs []*profile.Profile) (*profile.Profile, error) {
-		merges++
 
-		return profile.Merge(srcs)
-	}
-	in := newRunInput(t, func(rec *Record) { rec.Policy.Sampling.MaxParallel = 1 })
+	t.Run("inside the gzipped ceiling and outside the uncompressed one", func(t *testing.T) {
+		// cpu-heap.pprof is 15,514 bytes gzipped and 516,906 decompressed,
+		// so a ceiling of 256 KiB stands well above the object the store holds
+		// and far below the encoding the ceiling bounds.
+		pod := newPodServer(t, "pod-a", "1.42.3", fixtureProfile(t, "cpu-heap.pprof"))
+		r := newTestRounds(t, roundsOpts{
+			discovery: newFakeDiscovery(pod.target),
+			limits:    limitsWith(func(l *config.PGOLimits) { l.MaxMergedBytes = 256 << 10 }),
+		})
+		in := newRunInput(t)
 
-	res := runRounds(t, r, in)
-	if res.Reason != ReasonMergedTooLarge {
-		t.Fatalf("reason is %q, want %q", res.Reason, ReasonMergedTooLarge)
-	}
-	if merges != 0 {
-		t.Fatalf("Merge ran %d times, want none: the first sample already crossed the limit", merges)
-	}
-	if in.artifacts.count() != 0 {
-		t.Fatal("an object was stored for a collection that failed")
-	}
+		res := runRounds(t, r, in)
+		if res.Reason != ReasonMergedTooLarge {
+			t.Fatalf("reason is %q, want %q", res.Reason, ReasonMergedTooLarge)
+		}
+		if in.artifacts.count() != 0 {
+			t.Fatal("an object was stored for a collection that failed")
+		}
+	})
 }
 
 // TestRoundsNoSamples proves a round in which nothing succeeded fails the
@@ -628,24 +655,67 @@ func TestRoundsNoSamples(t *testing.T) {
 	}
 }
 
-// TestRoundsFinishFailures proves the two ways finishing fails, and that
-// neither leaves an object behind.
+// TestRoundsFinishFailures proves the ways serializing and storing the merged profile fail,
+// and that none of them leaves an object behind.
 func TestRoundsFinishFailures(t *testing.T) {
 	fixture := fixtureProfile(t, "cpu-a.pprof")
 
-	t.Run("a writer that fails is serialize_failed", func(t *testing.T) {
+	t.Run("a writer that fails during absorption is serialize_failed", func(t *testing.T) {
 		pod := newPodServer(t, "pod-a", "1.42.3", fixture)
 		r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(pod.target)})
 		in := newRunInput(t)
 
-		// The size check writes too, so only the final serialization fails.
+		// The running profile is measured after the sample it absorbed,
+		// so the attempt ends before completion is reached.
+		r.writeUncompressed = func(*profile.Profile, io.Writer) error {
+			return errors.New("the writer gave up")
+		}
+
+		if got := runRounds(t, r, in).Reason; got != ReasonSerializeFailed {
+			t.Fatalf("reason is %q, want %q", got, ReasonSerializeFailed)
+		}
+		if in.artifacts.count() != 0 {
+			t.Fatal("an object was stored for a collection that could not serialize")
+		}
+	})
+
+	t.Run("a writer that fails at completion is serialize_failed", func(t *testing.T) {
+		pod := newPodServer(t, "pod-a", "1.42.3", fixture)
+		r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(pod.target)})
+		in := newRunInput(t)
+
+		// One Pod is one absorption,
+		// so the second call is the one completion makes:
+		// every absorption goes through and only the last measurement fails.
 		calls := 0
-		r.write = func(p *profile.Profile, w io.Writer) error {
+		r.writeUncompressed = func(p *profile.Profile, w io.Writer) error {
 			calls++
 			if calls == 1 {
-				return p.Write(w)
+				return p.WriteUncompressed(w)
 			}
 
+			return errors.New("the writer gave up")
+		}
+
+		if got := runRounds(t, r, in).Reason; got != ReasonSerializeFailed {
+			t.Fatalf("reason is %q, want %q", got, ReasonSerializeFailed)
+		}
+		if calls != 2 {
+			t.Fatalf("the uncompressed encoding was written %d times, want one absorption and one completion", calls)
+		}
+		if in.artifacts.count() != 0 {
+			t.Fatal("an object was stored for a collection that could not serialize")
+		}
+	})
+
+	t.Run("a gzip writer that fails is serialize_failed", func(t *testing.T) {
+		pod := newPodServer(t, "pod-a", "1.42.3", fixture)
+		r := newTestRounds(t, roundsOpts{discovery: newFakeDiscovery(pod.target)})
+		in := newRunInput(t)
+
+		// Only the stored object is gzipped,
+		// so this seam is reached once and no measurement passes through it.
+		r.write = func(*profile.Profile, io.Writer) error {
 			return errors.New("the writer gave up")
 		}
 
@@ -1433,9 +1503,9 @@ func TestCollectionMergeAndWriteHeldPastTheCutoff(t *testing.T) {
 				inner := r.write
 				var once sync.Once
 				r.write = func(p *profile.Profile, w io.Writer) error {
-					// The running profile's size check writes to a counter;
-					// only the serialization the object is made of writes to
-					// the buffer finish hands it.
+					// Completion is the only caller that gzips, and it gzips
+					// into a buffer;
+					// the running profile is measured through its own seam.
 					if _, ok := w.(*bytes.Buffer); ok {
 						once.Do(func() {
 							reached <- struct{}{}
