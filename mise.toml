@@ -34,7 +34,10 @@ run = "go build ./..."
 run = "go test -race ./..."
 
 [tasks.lint]
-run = "golangci-lint run ./..."
+# GOBIN is the go tool's own bin directory, and mise puts it on PATH ahead of
+# golangci-lint's, so a `go install`ed golangci-lint there shadows the version
+# pinned above. `mise exec` resolves the pin instead of walking PATH.
+run = "mise exec golangci-lint -- golangci-lint run ./..."
 
 [tasks."test:e2e"]
 description = "End-to-end suite on the lane named by PROFGATE_E2E_LANE (default current)"
