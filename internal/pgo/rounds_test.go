@@ -911,7 +911,7 @@ func TestRoundsCancellationStoresNothing(t *testing.T) {
 }
 
 // heapBandFraction is how far a fixture's measured delta may move before a guard fails.
-// A rise means the decoder retains more than the container was sized for;
+// A rise means a profile retains more than the container was sized for;
 // a fall means it retains less,
 // which is when to take the memory back.
 const heapBandFraction = 0.15
