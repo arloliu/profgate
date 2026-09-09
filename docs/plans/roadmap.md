@@ -317,7 +317,7 @@ Why here: the console is the surface a person clicks by reflex, and today a refl
 
 ### 8. Close the gates that do not run
 
-- [ ] `TestRoundsDecodeHeapDelta` skips under `-race` (`internal/pgo/rounds_test.go:849-851`),
+- [x] `TestRoundsDecodeHeapDelta` skips under `-race` (`internal/pgo/rounds_test.go:849-851`),
   and every test command in `mise.toml:34` and every workflow passes `-race`, so the guard has never run.
   Its stated reason does not hold: measured on the pinned toolchain, the delta moves by under 0.15% between builds.
   What blocks the removal is the guard itself.
@@ -340,7 +340,7 @@ Why here: the console is the surface a person clicks by reflex, and today a refl
   `test/e2e/harness_test.go` is 1,676 lines and unsplit.
 
 Spec: [`gateway.md`](../specs/gateway.md) *Continuous integration* for the pull-request gates; none for the rest.
-Shipped: pull request #33.
+Shipped: pull requests #33 and #41.
 Why here: a gate that does not run is a claim the repository makes and does not keep.
 
 ### 9. Say in the spec what is not built
@@ -444,7 +444,7 @@ Spec: [`pgo.md`](../specs/pgo.md) *Container* for the two factors, the soft memo
 *Configuration* and *Presets* for the constants and the arithmetic they feed;
 and *Unit* for what the guards band.
 Evidence: [`2026-09-08-decoder-footprint.md`](../investigations/2026-09-08-decoder-footprint.md).
-Shipped: not built yet.
+Shipped: pull request #41.
 Why here: a test that measures the wrong thing passes for the wrong reason,
 and the constant it reads is also the gateway's own memory budget.
 

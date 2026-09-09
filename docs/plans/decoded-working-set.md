@@ -1,6 +1,7 @@
 # The Decoded Working Set Is Sized by What It Retains
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #41 sizes the container from what a decode and a merge retain, and runs both heap guards.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -1102,7 +1103,7 @@ it deletes this file and rewrites every link that cited it, which `check_links` 
 and changes nothing else.
 `grep -rn decoded-working-set --include='*.md' .` finds the links.
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check docs/plans/decoded-working-set.md docs/plans/roadmap.md
