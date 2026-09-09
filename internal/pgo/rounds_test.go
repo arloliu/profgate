@@ -991,6 +991,93 @@ func TestRoundsDecodeHeapDelta(t *testing.T) {
 	}
 }
 
+// TestRoundsMergeHeapDelta is the regression guard on what a merge holds:
+// merging a captured fixture retains the heap that fixture was measured to retain,
+// inside a band around it.
+// The centre is a HeapAlloc delta measured against cpu-busy.pprof as it is committed,
+// so a change in what a running merged profile keeps live moves the delta off it in either direction.
+// The serialization is inside the measured interval because it is inside what a Collection holds:
+// encoding a profile attaches an index to it that stays until something replaces it,
+// and the length that index costs is banded here rather than left out of the figure.
+func TestRoundsMergeHeapDelta(t *testing.T) {
+	// The centre and the two fixture properties it was measured against.
+	// The encoding tolerance is tighter than the heap band
+	// because a length is arithmetic on the fixture rather than a measurement of the runtime.
+	const (
+		centre              = 4_456_000
+		wantSamples         = 7_818
+		wantEncoded         = 358_318
+		encodedBandFraction = 0.01
+	)
+
+	// The sources are decoded before the baseline read,
+	// so their own heap is in the baseline rather than in the delta.
+	plain := gunzipBytes(t, fixtureProfile(t, "cpu-busy.pprof"))
+	src, err := profile.ParseData(plain)
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	sources := []*profile.Profile{src}
+
+	// Two collections.
+	// HeapAlloc counts unreachable objects the collector has not yet freed,
+	// and one collection can return with the garbage decoding left behind still unswept.
+	// Freed inside the interval, that garbage subtracts from the delta.
+	runtime.GC()
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	// No t.Parallel,
+	// and nothing between the two reads but the merge and the one serialization the guard measures.
+	merged, err := profile.Merge(sources)
+	if err != nil {
+		t.Fatalf("merge fixture: %v", err)
+	}
+	var counter countingWriter
+	if err := merged.WriteUncompressed(&counter); err != nil {
+		t.Fatalf("encode the merged result: %v", err)
+	}
+	distinct := len(merged.Sample)
+	// A collection first,
+	// so the delta is what the merged result keeps live rather than what merging allocated and threw away.
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	// The sources were allocated before the baseline read,
+	// so holding them past the second one adds nothing to the delta,
+	// while dropping them would subtract their whole heap.
+	runtime.KeepAlive(merged)
+	runtime.KeepAlive(sources)
+
+	//nolint:gosec // G115: a heap figure never reaches the top bit of an int64
+	delta := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	// Logged whether or not the guard passes,
+	// so a delta sitting just inside an end of the band is visible under go test -v.
+	t.Logf("the merged profile retained %d bytes, %.1f%% of the %d measured for it",
+		delta, 100*float64(delta)/float64(centre), centre)
+
+	// The centre belongs to this fixture and to no other,
+	// so the two properties it was measured against are asserted before the delta is.
+	if distinct != wantSamples {
+		t.Fatalf("cpu-busy.pprof merged to %d distinct samples, want %d", distinct, wantSamples)
+	}
+	measuredEncoded := float64(wantEncoded)
+	lowEncoded := int64(measuredEncoded * (1 - encodedBandFraction))
+	highEncoded := int64(measuredEncoded * (1 + encodedBandFraction))
+	if counter.n < lowEncoded || counter.n > highEncoded {
+		t.Fatalf("the merged result encodes to %d bytes, want %d to %d around %d",
+			counter.n, lowEncoded, highEncoded, wantEncoded)
+	}
+
+	measuredHeap := float64(centre)
+	low := int64(measuredHeap * (1 - heapBandFraction))
+	high := int64(measuredHeap * (1 + heapBandFraction))
+	if delta < low || delta > high {
+		t.Fatalf("merging cpu-busy.pprof retained %d bytes, want %d to %d around %d",
+			delta, low, high, centre)
+	}
+}
+
 // TestSampleSinkStopsAtTheLimit pins the in-memory writer that is the only
 // difference between a Collection sample and an interactive request.
 func TestSampleSinkStopsAtTheLimit(t *testing.T) {
