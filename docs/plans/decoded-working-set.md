@@ -211,7 +211,7 @@ because its 20,000 samples merge to 400 distinct ones and so measure a repetitio
 The decode guard, in this order and no other:
 
 1. Decompress the fixture.
-2. `runtime.GC()`, then read the baseline.
+2. `runtime.GC()` twice, then read the baseline.
 3. `profile.ParseData`.
 4. `runtime.GC()`, then read the second `MemStats`.
 5. `runtime.KeepAlive` the parsed profile **and** the decompressed input.
@@ -219,12 +219,20 @@ The decode guard, in this order and no other:
 The input was allocated before the baseline read, so holding it adds nothing to the delta,
 and dropping it lets the collection between the reads subtract its whole length.
 
+The baseline takes two collections because `HeapAlloc` counts unreachable objects the collector has not yet freed,
+and one collection can return with the garbage decompression left behind still unswept.
+That garbage is then freed inside the measured interval, where it subtracts from the delta.
+Measured here, a single collection puts `cpu-large.pprof` at 63.6% to 73.1% of its centre and fails every run,
+while `cpu-heap.pprof` and `cpu-busy.pprof` move under 2%,
+because the same absolute deficit is a smaller share of a larger figure.
+With two, all three rows read 97.0% to 100.2% of their centres in every build.
+
 The merge guard:
 
 1. Decode the fixture's sources.
    This happens *before* the baseline read,
    so their own heap is in the baseline and contributes nothing to the delta.
-2. `runtime.GC()`, then read the baseline.
+2. `runtime.GC()` twice, then read the baseline, for the reason the decode guard's baseline gives.
 3. `profile.Merge` the sources.
 4. Serialize the merged result once, through a `countingWriter`,
    to learn the length the delta is banded against.
@@ -632,6 +640,7 @@ and after the second read `plain` appears only in its `KeepAlive`:
 plain := gunzipBytes(t, fixtureProfile(t, tc.fixture))
 
 runtime.GC()
+runtime.GC()
 var before, after runtime.MemStats
 runtime.ReadMemStats(&before)
 
@@ -653,7 +662,7 @@ The band is written as the measured centre and one fraction:
 const heapBandFraction = 0.15
 ```
 
-- [ ] **Write the test**
+- [x] **Write the test**
 
 | Test | What it asserts |
 |---|---|
@@ -701,7 +710,7 @@ mise exec -- go test -race -count=1 ./internal/pgo/ -run 'TestRoundsDecodeHeapDe
 mise exec -- go test -count=1 ./internal/pgo/ -run 'TestRoundsDecodeHeapDelta' -v
 ```
 
-- [ ] **Validate and commit**
+- [x] **Validate and commit**
 
 ```bash
 semlf check internal/pgo/rounds_test.go
@@ -741,7 +750,7 @@ so a fixture that is not the one this plan measured is a test failure rather tha
 
 | Test | What it asserts |
 |---|---|
-| `TestRoundsMergeHeapDelta`, new, beside `TestRoundsDecodeHeapDelta` | decodes `cpu-busy.pprof` before the baseline read; `runtime.GC()`; baseline `MemStats`; `profile.Merge` of the one source; `WriteUncompressed` into a `countingWriter`; `runtime.GC()`; second `MemStats`; `KeepAlive` on the merged result and on the sources. It logs the delta, the centre, and the percentage, then asserts the delta is inside ±15% of 4,456,000. It asserts the two properties the centre depends on, each with its own message: exactly 7,818 distinct samples, and an uncompressed encoding of 358,318 bytes within 1% |
+| `TestRoundsMergeHeapDelta`, new, beside `TestRoundsDecodeHeapDelta` | decodes `cpu-busy.pprof` before the baseline read; `runtime.GC()` twice; baseline `MemStats`; `profile.Merge` of the one source; `WriteUncompressed` into a `countingWriter`; `runtime.GC()`; second `MemStats`; `KeepAlive` on the merged result and on the sources. It logs the delta, the centre, and the percentage, then asserts the delta is inside ±15% of 4,456,000. It asserts the two properties the centre depends on, each with its own message: exactly 7,818 distinct samples, and an uncompressed encoding of 358,318 bytes within 1% |
 
 The guard does not exist today, so its first run is its own first result —
 its absence is not a compile failure,
