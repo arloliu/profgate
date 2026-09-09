@@ -454,20 +454,14 @@ because that value replaces the derivation rather than adding to it.
   so a bare `go test ./deploy/` can report success while asserting nothing.
   Every command below that exercises `deploy/` runs through `mise`, so the pinned helm is present,
   and a run whose output says `SKIP` is not a result.
-- **The linter is the pinned one, and the implementer checks which one resolves.**
+- **The linter is `mise run lint`, and nothing else runs it.**
   [`500-validation-and-workflow.md`](../../.agents/rules/500-validation-and-workflow.md)
-  gives the validation block as `mise run lint`.
-  On the machine this plan was written on it does not run the pinned linter.
-  `mise exec -- which golangci-lint` resolves
-  `~/.local/share/mise/installs/go/1.26.7/bin/golangci-lint`,
-  a binary installed by the Go toolchain that shadows the `golangci-lint@2.12.2` tool,
-  and `mise exec -- golangci-lint --version` reports `v2.1.6`.
-  Those two commands are the check, because they read the environment a `mise` task runs in;
-  comparing a bare shell's `golangci-lint` against an explicitly versioned `mise exec` does not.
-  Run them once before the first task.
-  If they agree, use `mise run lint` as the rules say.
-  If they disagree, use `mise exec golangci-lint@2.12.2 -- golangci-lint run ./...` in its place,
-  and say so in the pull request, because a task linted by the wrong version is not linted.
+  gives the validation block as `mise run lint`,
+  and `[tasks.lint]` in `mise.toml` runs `mise exec golangci-lint -- golangci-lint run ./...`,
+  which resolves the pinned `golangci-lint@2.12.2` instead of walking `PATH`.
+  A `golangci-lint` installed by the Go toolchain still sits in that toolchain's own bin directory,
+  which `mise` puts on `PATH` ahead of the pinned tool's,
+  so a bare `golangci-lint run ./...` can report an older version and is never the check.
 - **No jargon:** comments, commit messages, and documentation state the current fact,
   never this plan's ordering, a task name, or a review round.
 - Markdown prose uses semantic line breaks;
@@ -477,13 +471,15 @@ because that value replaces the derivation rather than adding to it.
   with a body that says what changed and why, one sentence per line under 120 characters,
   and no trailer of any kind
   ([`600-git-conventions.md`](../../.agents/rules/600-git-conventions.md)).
+  The body goes to a file and the commit reads it with `git commit -F`;
+  a body passed as a second `-m` arrives as one long line,
+  and the hook refuses a line that ends mid-clause.
   Every `git add` names the files the task owns; nothing is staged by directory.
   A commit is finished when `git log --oneline -1` shows it and `git status --short` is clean,
   because the hook can refuse a message after `git commit` has already run
   ([500](../../.agents/rules/500-validation-and-workflow.md));
   every validation block below ends with both.
-- Every task ends with the same validation block before its commit,
-  with the linter written as the check above decided:
+- Every task ends with the same validation block before its commit:
 
 ```bash
 mise run lint && mise run test && mise run check && mise run prose
@@ -599,7 +595,13 @@ An operator whose Collections approach the ceiling raises `maxMergedBytes` for t
 semlf check internal/pgo/rounds.go CHANGELOG.md
 mise run lint && mise run test && mise run check && mise run prose
 git add internal/pgo/rounds.go internal/pgo/rounds_test.go CHANGELOG.md
-git commit -m "fix(pgo): bound the merge before compression" -m "<body: what a profile compresses to is a property of the profile, so the gzipped ceiling bounded nothing; the count is uncompressed and the store still holds gzip>"
+msg="$(mktemp)"
+cat > "$msg" <<'EOF'
+fix(pgo): bound the merge before compression
+
+<body: what a profile compresses to is a property of the profile, so the gzipped ceiling bounded nothing; the count is uncompressed and the store still holds gzip>
+EOF
+git commit -F "$msg"
 git log --oneline -1 && git status --short
 ```
 
@@ -706,7 +708,13 @@ semlf check internal/pgo/rounds_test.go
 mise run lint && mise run test && mise run check && mise run prose
 git add internal/pgo/rounds_test.go
 git rm internal/pgo/race_on_test.go internal/pgo/race_off_test.go
-git commit -m "test(pgo): band the decoder's heap per fixture" -m "<body: the guard dropped the input between its reads and borrowed a sizing constant, and skipped in every build this repository runs; it holds both lifetimes, bands each fixture's own measurement, and fails on a fall>"
+msg="$(mktemp)"
+cat > "$msg" <<'EOF'
+test(pgo): band the decoder's heap per fixture
+
+<body: the guard dropped the input between its reads and borrowed a sizing constant, and skipped in every build this repository runs; it holds both lifetimes, bands each fixture's own measurement, and fails on a fall>
+EOF
+git commit -F "$msg"
 git log --oneline -1 && git status --short
 ```
 
@@ -754,7 +762,13 @@ mise exec -- go test -race -count=1 ./internal/pgo/ -run 'TestRoundsMergeHeapDel
 semlf check internal/pgo/rounds_test.go
 mise run lint && mise run test && mise run check && mise run prose
 git add internal/pgo/rounds_test.go
-git commit -m "test(pgo): band a merged profile's heap" -m "<body: nothing watched what a merge retains, and the running profile carries the index serialization attaches to it; the guard measures the merge and one serialization together, banded against the merged result's uncompressed encoding>"
+msg="$(mktemp)"
+cat > "$msg" <<'EOF'
+test(pgo): band a merged profile's heap
+
+<body: nothing watched what a merge retains, and the running profile carries the index serialization attaches to it; the guard measures the merge and one serialization together, banded against the merged result's uncompressed encoding>
+EOF
+git commit -F "$msg"
 git log --oneline -1 && git status --short
 ```
 
@@ -926,7 +940,13 @@ git add internal/config/config.go internal/config/config_test.go cmd/profgate/ma
   deploy/chart/profgate/templates/_helpers.tpl deploy/chart/profgate/values.yaml deploy/chart/profgate/README.md \
   deploy/chart_test.go deploy/base/deployment.yaml deploy/base/configmap.yaml test/e2e/harness_config_test.go \
   docs/configuration.md docs/deployment.md docs/pgo.md CHANGELOG.md
-git commit -m "fix(config): size the working set by measurement" -m "<body: one constant stood for both decoded forms and sat inside the measured range; two measured factors replace it, each against the quantity it multiplies, the product is checked, and the chart, the manifests, and the guides follow>"
+msg="$(mktemp)"
+cat > "$msg" <<'EOF'
+fix(config): size the working set by measurement
+
+<body: one constant stood for both decoded forms and sat inside the measured range; two measured factors replace it, each against the quantity it multiplies, the product is checked, and the chart, the manifests, and the guides follow>
+EOF
+git commit -F "$msg"
 git log --oneline -1 && git status --short
 ```
 
@@ -1035,7 +1055,13 @@ semlf check internal/config/memlimit.go cmd/profgate/serve.go docs/deployment.md
 mise run lint && mise run test && mise run check && mise run prose
 git add internal/config/memlimit.go internal/config/memlimit_test.go cmd/profgate/serve.go cmd/profgate/serve_test.go \
   docs/deployment.md docs/configuration.md CHANGELOG.md
-git commit -m "feat(pgo): set a soft limit when collecting" -m "<body: the container was sized by a live heap and nothing bounded the transient above it; a collecting process sets GOMEMLIMIT from the smaller of the derived figure and the limit of its own cgroup>"
+msg="$(mktemp)"
+cat > "$msg" <<'EOF'
+feat(pgo): set a soft limit when collecting
+
+<body: the container was sized by a live heap and nothing bounded the transient above it; a collecting process sets GOMEMLIMIT from the smaller of the derived figure and the limit of its own cgroup>
+EOF
+git commit -F "$msg"
 git log --oneline -1 && git status --short
 ```
 
@@ -1073,7 +1099,13 @@ and changes nothing else.
 semlf check docs/plans/decoded-working-set.md docs/plans/roadmap.md
 mise run lint && mise run test && mise run check && mise run prose
 git add docs/plans/decoded-working-set.md docs/plans/roadmap.md
-git commit -m "docs: close the decoded working set plan" -m "<body: the item's six bullets are done and its Shipped line names the pull request; the unrun heap guard now runs, so the gate item's first bullet is ticked too>"
+msg="$(mktemp)"
+cat > "$msg" <<'EOF'
+docs: close the decoded working set plan
+
+<body: the item's six bullets are done and its Shipped line names the pull request; the unrun heap guard now runs, so the gate item's first bullet is ticked too>
+EOF
+git commit -F "$msg"
 git log --oneline -1 && git status --short
 ```
 
