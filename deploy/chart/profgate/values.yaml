@@ -487,14 +487,17 @@ pgo:
   # The ceilings every effective policy is measured against. Four of them
   # decide the working set a Collection holds:
   #
-  #   maxActiveCollections x (maxParallel x 8 x maxSampleBytes
-  #                           + 2 x 8 x maxMergedBytes)
+  #   maxActiveCollections x (maxParallel x 14 x maxSampleBytes
+  #                           + 17 x maxMergedBytes)
   #
   # The chart adds memoryLimitWithoutPGO to that number and renders the sum as
   # limits.memory, so the limit cannot drift from the configuration it is
-  # sized for. 8 is the gateway's decode factor: a profile occupies about
-  # eight times its compressed length once decoded.
-  # At the values below the working set is 1Gi and the limit is 1536Mi.
+  # sized for. 14 is two input buffers maxSampleBytes bounds -- a sample's
+  # compressed body and the bytes it decompresses to -- plus a decoded profile
+  # at 12 times those decompressed bytes. 17 is the stored copy plus the
+  # running merged profile at 16 times the length of its uncompressed
+  # encoding, which is the quantity maxMergedBytes bounds.
+  # At the values below the working set is 1440Mi and the limit is 1952Mi.
   limits:
     maxParallel: 4
     maxSampleBytes: 16777216

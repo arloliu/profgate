@@ -112,7 +112,7 @@ configuration changes then take effect at the next unrelated rollout.
 With `pgo.enabled`, `limits.memory` is `memoryLimitWithoutPGO` plus the working set `pgo.limits` sizes:
 
 ```text
-memoryLimitWithoutPGO + maxActiveCollections x (maxParallel x 8 x maxSampleBytes + 2 x 8 x maxMergedBytes)
+memoryLimitWithoutPGO + maxActiveCollections x (maxParallel x 14 x maxSampleBytes + 17 x maxMergedBytes)
 ```
 
 That is the gateway's own sizing rule

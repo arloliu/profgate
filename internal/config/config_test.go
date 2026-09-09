@@ -1121,12 +1121,12 @@ func TestLoadPGO(t *testing.T) {
 
 func TestPGOSizing(t *testing.T) {
 	cfg := loadOK(t, fixture("pgo-full.yaml"))
-	// The working set at the shipped ceilings: 1 x (4 x 8 x 16 MiB + 2 x 8 x 32 MiB).
-	if got, want := cfg.PGOMemoryBytes(), int64(1<<30); got != want {
+	// The working set at the shipped ceilings: 1 x (4 x 14 x 16 MiB + 17 x 32 MiB).
+	if got, want := cfg.PGOMemoryBytes(), int64(1440<<20); got != want {
 		t.Fatalf("PGOMemoryBytes() = %d, want %d", got, want)
 	}
 	// The container holds that working set and the gateway's own 512 MiB beside it.
-	if got, want := cfg.GatewayMemoryBytes(), int64(1536<<20); got != want {
+	if got, want := cfg.GatewayMemoryBytes(), int64(1952<<20); got != want {
 		t.Fatalf("GatewayMemoryBytes() = %d, want %d", got, want)
 	}
 }
@@ -1137,7 +1137,7 @@ func TestPGOSizing(t *testing.T) {
 func TestGatewayMemoryWithCollectionOff(t *testing.T) {
 	t.Setenv("PROFGATE_PGO_ENABLED", "false")
 	cfg := loadOK(t, fixture("pgo-full.yaml"))
-	if got, want := cfg.PGOMemoryBytes(), int64(1<<30); got != want {
+	if got, want := cfg.PGOMemoryBytes(), int64(1440<<20); got != want {
 		t.Fatalf("PGOMemoryBytes() = %d, want %d: the ceiling arithmetic does not read pgo.enabled", got, want)
 	}
 	if got, want := cfg.GatewayMemoryBytes(), int64(512<<20); got != want {
@@ -1171,6 +1171,33 @@ func TestGatewayMemoryFollowsEveryCeiling(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPGOSizingRefusesAnOverflow proves a derived byte count is still a byte count.
+// maxActiveCollections carries no ceiling of its own,
+// so a value the per-key ranges admit can multiply the working set past what a signed 64-bit integer holds,
+// and a working set that fits can still leave a container sum that does not.
+// Either way the refusal names the four ceilings the product is formed from.
+// One step inside the boundary loads and sizes a positive container.
+func TestPGOSizingRefusesAnOverflow(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"the working set itself", "7000000000"},
+		{"the sum with the gateway's own footprint", "6108397932"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS", tc.value)
+			loadErrAll(t, fixture("pgo-full.yaml"),
+				"maxActiveCollections "+tc.value, "maxParallel", "maxSampleBytes", "maxMergedBytes")
+		})
+	}
+
+	t.Run("one step inside the boundary loads", func(t *testing.T) {
+		t.Setenv("PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS", "6108397931")
+		cfg := loadOK(t, fixture("pgo-full.yaml"))
+		if got := cfg.GatewayMemoryBytes(); got <= 0 {
+			t.Fatalf("GatewayMemoryBytes() = %d, want the container sum a byte count still holds", got)
+		}
+	})
 }
 
 // loadErrAll loads path and fails the test unless the error mentions every want.

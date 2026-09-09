@@ -676,6 +676,50 @@ func TestChartMemoryLimitRejectsAnUnreadableBase(t *testing.T) {
 	})
 }
 
+// TestChartMemoryLimitRefusesAnOverflow holds the rendered limit to a byte count a signed 64-bit integer carries.
+// Three steps of the arithmetic can leave that range and each is checked before the operation it guards,
+// because no one input reaches more than one of them:
+// a digit string larger than an int64 never reaches the multiplication,
+// a base term whose product with its unit wraps converts to a number nobody wrote,
+// and a working set that passes the product guard on its own can still exceed what is left under the base term.
+// The last is a boundary rather than a bare refusal: one step inside it renders.
+func TestChartMemoryLimitRefusesAnOverflow(t *testing.T) {
+	t.Run("a base term the digits alone put past an int64", func(t *testing.T) {
+		out := renderFailure(t, "--set", "memoryLimitWithoutPGO=99999999999999999999Mi")
+		if !strings.Contains(out, "memoryLimitWithoutPGO 99999999999999999999Mi is not a byte count a 64-bit integer holds") {
+			t.Errorf("helm's error does not name the base term whose digits are already too large:\n%s", out)
+		}
+	})
+
+	t.Run("a base term whose conversion to bytes wraps", func(t *testing.T) {
+		out := renderFailure(t, "--set", "memoryLimitWithoutPGO=17179869184Gi")
+		if !strings.Contains(out, "memoryLimitWithoutPGO 17179869184Gi is not a byte count a 64-bit integer holds") {
+			t.Errorf("helm's error does not name the base term whose unit conversion overflows:\n%s", out)
+		}
+		if !strings.Contains(out, "multiplying it by its unit") {
+			t.Errorf("helm's error does not say the multiplication is what overflows:\n%s", out)
+		}
+	})
+
+	t.Run("a working set that fits and a container sum that does not", func(t *testing.T) {
+		out := renderFailure(t, append(pgoValues(t), "--set", "pgo.limits.maxActiveCollections=6108397932")...)
+		if !strings.Contains(out, "memoryLimitWithoutPGO 512Mi plus the working set pgo.limits sizes") {
+			t.Errorf("helm's error does not name both halves of the sum:\n%s", out)
+		}
+		if strings.Contains(out, "overflows, so lower the ceilings") {
+			t.Errorf("the product guard spoke, so this input never reached the sum:\n%s", out)
+		}
+	})
+
+	t.Run("one step inside the boundary renders", func(t *testing.T) {
+		values := append(pgoValues(t), "--set", "pgo.limits.maxActiveCollections=6108397931")
+		got := containerMemoryLimit(t, render[appsv1.Deployment](t, "deployment.yaml", values...))
+		if got.Value() <= 0 {
+			t.Errorf("resources.limits.memory = %s, want the sum the boundary still holds", got.String())
+		}
+	})
+}
+
 // TestChartResourcesOverride covers the opt-out: an explicit resources.limits
 // replaces the derived memory limit wholesale even where the derivation would
 // apply, and resources.requests is rendered as written over the shipped one.

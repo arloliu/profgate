@@ -58,7 +58,7 @@ data:
     #   configAPI: enabled
     #
     # Uncommenting the block also means raising the memory limit in
-    # deployment.yaml to 1536Mi: the 1Gi working set the shipped pgo.limits
+    # deployment.yaml to 1952Mi: the 1440Mi working set the shipped pgo.limits
     # ceilings size, over the gateway's own 512Mi. That is the figure
     # `profgate config validate` prints for the uncommented file.
     #

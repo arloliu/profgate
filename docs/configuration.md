@@ -441,22 +441,29 @@ the same value is judged the same way from either source.
 Four of these ceilings size the working set a Collection holds:
 
 ```text
-maxActiveCollections × (maxParallel × 8 × maxSampleBytes + 2 × 8 × maxMergedBytes)
+maxActiveCollections × (maxParallel × 14 × maxSampleBytes + 17 × maxMergedBytes)
 ```
 
-The factor 8 estimates how much heap a decoded profile occupies against its encoded length;
-it is a sizing rule, not a proof.
+Two measured factors estimate the decoded forms no ceiling covers,
+each against the quantity it multiplies.
+12 is a decoded profile against the decompressed bytes it was parsed from, measured at 3.4 to 9.9.
+16 is the running merged profile against the length of its uncompressed encoding, measured at 7.2 to 12.7;
+it is the larger partly because serializing a profile attaches an index the Collection then holds.
+The rest of each multiplier is a buffer a ceiling already bounds:
+the 14 carries a sample's compressed body and the bytes it decompresses to,
+and the 17 carries the copy written to the store.
+It is a sizing rule, not a proof.
 
 | Term | Shipped | What it multiplies |
 |---|---|---|
 | `maxParallel` | `4` | one in-flight sample: its compressed bytes, its decompressed bytes, and the profile decoded from them |
 | `maxSampleBytes` | `16777216` (16 MiB) | the same in-flight sample |
-| `maxMergedBytes` | `33554432` (32 MiB) | twice: the running merged profile and the serialized copy written to the store |
+| `maxMergedBytes` | `33554432` (32 MiB) | seventeen times: sixteen for the running merged profile, and once for the serialized copy written to the store |
 | `maxActiveCollections` | `1` | the whole of the above, once per Collection running on the replica |
 | the gateway's own footprint | `512Mi` | nothing — it is a fixed term, not a multiplier |
 
-At the shipped ceilings the working set is `1 × (4 × 8 × 16 MiB + 2 × 8 × 32 MiB)`, which is 1 GiB,
-and with collection on the container limit is `512Mi + 1Gi`, which is `1536Mi`.
+At the shipped ceilings the working set is `1 × (4 × 14 × 16 MiB + 17 × 32 MiB)`, which is 1440 MiB,
+and with collection on the container limit is `512Mi + 1440Mi`, which is `1952Mi`.
 `config validate` prints both when `pgo.enabled` is true,
 and the Helm chart renders the second as `limits.memory`.
 
@@ -467,10 +474,18 @@ With `pgo.enabled: false` the container limit is that term alone.
 
 Raising a ceiling raises the limit with it.
 `maxActiveCollections: 2` lets one replica run two Collections at once
-and doubles the working set to 2 GiB, taking the container to `2560Mi`;
+and doubles the working set to 2880 MiB, taking the container to `3392Mi`;
 the chart derives that figure and a hand-written Deployment must follow it.
 Two replicas each collecting one Collection cost nothing extra per replica,
 which is what the shipped `1` assumes.
+
+An installation carrying a hand-written limit recalculates it for its own ceilings.
+`maxMergedBytes` now bounds the merged profile's encoding before compression rather than the gzipped serialization,
+and the working set is sized by two factors measured against what a decoded profile retains,
+so every derived limit rises wherever collection is enabled.
+An installation with `pgo.enabled: false` keeps the figure it had,
+and so does a chart installation that writes an explicit `resources.limits`,
+because that value replaces the derivation rather than adding to it.
 
 ### `pgo.defaults`
 
