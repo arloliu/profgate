@@ -714,8 +714,11 @@ func TestChartMemoryLimitRefusesAnOverflow(t *testing.T) {
 	t.Run("one step inside the boundary renders", func(t *testing.T) {
 		values := append(pgoValues(t), "--set", "pgo.limits.maxActiveCollections=6108397931")
 		got := containerMemoryLimit(t, render[appsv1.Deployment](t, "deployment.yaml", values...))
-		if got.Value() <= 0 {
-			t.Errorf("resources.limits.memory = %s, want the sum the boundary still holds", got.String())
+		// The exact sum,
+		// because a wrapped product can still render a positive figure and would pass a sign check.
+		const want = 9223372035747479552
+		if got.Value() != want {
+			t.Errorf("resources.limits.memory = %s, want %d", got.String(), int64(want))
 		}
 	})
 }
