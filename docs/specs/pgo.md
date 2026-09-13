@@ -3062,7 +3062,8 @@ so a memory budget and any three of them fix the fourth.
 An operator reads that relation in whichever direction their cluster constrains:
 down from a limit a node or a quota will admit, to the ceilings it pays for,
 or up from the profile sizes their workloads actually produce, to the limit those require.
-`profgate config validate` prints the working set and the container figure the four produce,
+`profgate config validate` prints the working set the four produce,
+and the container figure that adds the process's own footprint to it,
 which is how either direction is checked before a rollout.
 
 **Seven bound how much collection happens, and no arithmetic answers them.**
@@ -3926,8 +3927,9 @@ one server per subtest.
   a `pgo` block that contradicts itself rejected with `enabled: false`,
   and the rule against `limits` not applied to a disabled block;
   `maxActiveCollections` at `0` and at `65` rejected naming the key and the range, at `1` and at `64` accepted;
-  the memory figure and the collector grace period computed for the shipped ceilings match section 3.4,
-  base term included, so a figure that dropped `collectorBaseMemory` fails;
+  the memory figure computed for the shipped ceilings matches section 3.4, base term included,
+  so a figure that dropped `collectorBaseMemory` fails,
+  and the collector grace period matches section 12.4;
   the multiplication rejects an overflowing product rather than returning a wrapped or negative count,
   exercised by handing the arithmetic ceilings the range check would refuse,
   which is the only way to reach it now that every range is bounded;
@@ -3946,8 +3948,9 @@ one server per subtest.
   under `collect` the test injects a scheduler that never ticks,
   and under `serve` there is no scheduler to inject,
   so a build that drove the pass from `Scheduler.tick` fails both halves;
-  `config validate` prints the twelve ceilings, the collector memory figure, and the collector grace period,
-  for the shipped configuration and for one that changes a sizing ceiling;
+  `config validate` prints the required grace period, the PGO working set, and the container memory,
+  for the shipped configuration and for one that changes a sizing ceiling,
+  and says collection is disabled instead of the working set when it is;
   `serve` closes the drain signal when `/readyz` turns 503 and before `server.drainDelay`,
   and a request parked in `wait=` answers at that moment rather than at its own deadline,
   which is what keeps the drain bound of the gateway spec's *Startup and shutdown* section where it is;
