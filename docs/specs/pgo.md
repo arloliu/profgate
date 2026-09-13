@@ -70,11 +70,10 @@ and a rolling update of either Deployment is uneventful.
    two versions never merge.
 8. **Opaque Collection identifiers reveal nothing.**
    A realm that may not see a Collection receives `404`, never `403`.
-9. **An operator picks a size, not twelve numbers.**
-   `pgo.preset` is `small`, `standard`, or `large`,
-   and each name fixes every ceiling in `pgo.limits` (section 11.1).
-   A single `pgo.limits.<key>` overrides one ceiling for the case a preset does not fit.
-   The collector's memory limit and termination grace period are computed from the result by the chart,
+9. **An operator sets each ceiling on its own.**
+   `pgo.limits` carries twelve ceilings and no name that sets several of them at once,
+   because the twelve answer three different questions (section 11.1).
+   The collector's memory limit and termination grace period are computed from them by the chart,
    never carried from a command's output into a manifest by hand.
 
 ### 1.2 Non-goals
@@ -400,7 +399,7 @@ collectorBaseMemory + maxActiveCollections × (maxParallel × (2 + decodeRetainF
 It covers what the process holds before it decodes anything:
 the Go runtime and its heap floor, the three Kubernetes informer caches,
 the proxy transport's connection pool and buffers, and the NATS client with its four watches.
-It is the same figure for every preset, because none of those grows with a PGO ceiling.
+It does not move with any `pgo.limits` ceiling, because none of those grows with one.
 
 The second term is the PGO working set, with every term at its `pgo.limits` ceiling:
 per active Collection, every in-flight sample as its compressed body, its decompressed bytes,
@@ -488,9 +487,8 @@ A process with `pgo.enabled` false sets no limit.
 `collectorBaseMemory` is asserted rather than measured,
 and a soft limit over an unmeasured figure would change how an installation behaves that decodes nothing.
 
-Under `pgo.preset: standard` the working set is 2 × (4 × 14 × 32 MiB + 17 × 64 MiB) = 5760 MiB
-and the limit is 256 MiB + 5760 MiB = 6016 MiB;
-section 11.1 gives both figures for each preset.
+At the shipped ceilings the collector's working set is 1 × (4 × 14 × 16 MiB + 17 × 32 MiB) = 1440 MiB
+and its limit is 256 MiB + 1440 MiB = 1696 MiB.
 At the shipped defaults a gateway replica's limit moves from 1536 MiB to 1952 MiB.
 Every derived limit rises where collection is enabled:
 the difference is `maxActiveCollections × (6 × maxParallel × maxSampleBytes + maxMergedBytes)`,
@@ -516,17 +514,17 @@ and the test that exercises it feeds a ceiling the range check itself refuses,
 which is why the two layers are asserted separately (section 13.1).
 
 **The chart owns the arithmetic and refuses to be told the answer twice.**
-It computes the limit from `pgo.preset` and the `pgo.limits` overrides it was given
+It computes the limit from the `pgo.limits` values it was given
 and renders it as the collector's `resources.limits.memory`,
 so the limit cannot drift from the ceilings it was sized for.
 The binary applies `PROFGATE_*` overrides on top of the file,
 so a variable naming a sizing ceiling would move it after the chart had computed the limit
 and leave the container sized for ceilings it no longer runs under.
-The chart therefore rejects, at render time, in the collector's `extraEnv`:
-`PROFGATE_PGO_PRESET`, and the four sizing variables
+The chart therefore rejects, at render time, in the collector's `extraEnv`,
+the four sizing variables
 `PROFGATE_PGO_LIMIT_MAX_PARALLEL`, `PROFGATE_PGO_LIMIT_MAX_SAMPLE_BYTES`,
 `PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES`, and `PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS`.
-It rejects `config.pgo.preset` and the same four keys under `config.pgo.limits` in the raw configuration block,
+It rejects the same four keys under `config.pgo.limits` in the raw configuration block,
 for the same reason:
 that block is merged after the chart has read the structured values,
 so a value there would size the configuration differently from the limit.
@@ -1065,7 +1063,7 @@ A retention shorter than the interval leaves the Service with no downloadable ar
 which is the state a build asking for the newest profile finds.
 Every ceiling in `pgo.limits` bounds one field on its own,
 so no combination of them can express this:
-a preset admits `schedule.every: 24h` beside `artifact.retention: 1m`
+the ceilings admit `schedule.every: 24h` beside `artifact.retention: 1m`
 because each value sits inside its own range.
 The rule is therefore stated and validated on the effective policy, in five places:
 
@@ -1087,7 +1085,7 @@ so an override that sets only `schedule.every` is judged against the default `ar
 and one that sets only `artifact.retention` against the default `every`;
 the rule reads the effective policy, never the override, which is what makes that work.
 `pgo.limits.maxRetention ≥ pgo.limits.maxEvery` stays as the ceiling rule beside it (section 11.1):
-it is what guarantees a long enough retention is *available* under every preset,
+it is what guarantees a long enough retention is *available* under the ceilings in force,
 which is a different claim from every effective policy actually using one.
 
 **What `400 limit_exceeded` says in machine form.**
@@ -1650,7 +1648,7 @@ the fresh `Get` still precedes every `Update`, and the `Update` alone decides.
 The ceiling check comes first, on every claim and reclaim alike:
 a record carries the policy snapshot it was created under,
 and the ceilings that validated it then are not the ceilings of whichever collector claims it now —
-a preset changed under a rolling update, or a restart with a smaller one, can leave `pending` records
+a ceiling lowered under a rolling update, or a restart under a smaller one, can leave `pending` records
 whose `maxParallel`, `duration`, `rounds`, or `maxTargetsPerRound` exceed what this collector was sized for,
 including records a gateway replica published from ceilings the collector no longer holds.
 Such a record is failed `limit_exceeded` by the first worker that meets it and its active key released;
@@ -2944,23 +2942,22 @@ Loading, strict unknown-key handling, environment prefix, and the `atomic.Pointe
 | Key | Env | Default | Reload | Validation |
 |---|---|---|---|---|
 | `pgo.enabled` | `PROFGATE_PGO_ENABLED` | `false` | restart | bool |
-| `pgo.preset` | `PROFGATE_PGO_PRESET` | `standard` | restart | `small`, `standard`, or `large` (section 11.1) |
 | `pgo.configAPI` | `PROFGATE_PGO_CONFIG_API` | `enabled` | hot | `enabled` or `disabled` |
 | `pgo.leaseTTL` | `PROFGATE_PGO_LEASE_TTL` | `60s` | restart | 30s–10m |
 | `pgo.maxAttempts` | `PROFGATE_PGO_MAX_ATTEMPTS` | `3` | restart | 1–10 |
 | `pgo.jobRetention` | `PROFGATE_PGO_JOB_RETENTION` | `168h` | restart | ≥ `pgo.limits.maxRetention + 1h`; ≤ 2160h |
-| `pgo.limits.maxDuration` | `PROFGATE_PGO_LIMIT_MAX_DURATION` | preset | restart | 1s–`limits.cpuSeconds` |
-| `pgo.limits.maxRounds` | `PROFGATE_PGO_LIMIT_MAX_ROUNDS` | preset | restart | 1–20 |
-| `pgo.limits.maxParallel` | `PROFGATE_PGO_LIMIT_MAX_PARALLEL` | preset | restart | 1–64 |
-| `pgo.limits.minEvery` | `PROFGATE_PGO_LIMIT_MIN_EVERY` | preset | restart | 1m–`maxEvery` |
-| `pgo.limits.maxEvery` | `PROFGATE_PGO_LIMIT_MAX_EVERY` | preset | restart | `minEvery`–24h |
-| `pgo.limits.maxRetention` | `PROFGATE_PGO_LIMIT_MAX_RETENTION` | preset | restart | 1m–720h; ≥ `maxEvery` |
-| `pgo.limits.maxSampleBytes` | `PROFGATE_PGO_LIMIT_MAX_SAMPLE_BYTES` | preset | restart | 1 MiB–256 MiB |
-| `pgo.limits.maxMergedBytes` | `PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES` | preset | restart | `maxSampleBytes`–1 GiB |
-| `pgo.limits.maxTargetsPerRound` | `PROFGATE_PGO_LIMIT_MAX_TARGETS_PER_ROUND` | preset | restart | 1–256; `maxRounds × maxTargetsPerRound ≤ 256` |
-| `pgo.limits.maxActiveCollections` | `PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS` | preset | restart | 1–64 |
-| `pgo.limits.onDemandPerMinute` | `PROFGATE_PGO_LIMIT_ON_DEMAND_PER_MINUTE` | preset | restart | 1–600 |
-| `pgo.limits.maxLiveCollections` | `PROFGATE_PGO_LIMIT_MAX_LIVE_COLLECTIONS` | preset | restart | 1–1024 |
+| `pgo.limits.maxDuration` | `PROFGATE_PGO_LIMIT_MAX_DURATION` | `60s` | restart | 1s–`limits.cpuSeconds` |
+| `pgo.limits.maxRounds` | `PROFGATE_PGO_LIMIT_MAX_ROUNDS` | `5` | restart | 1–20 |
+| `pgo.limits.maxParallel` | `PROFGATE_PGO_LIMIT_MAX_PARALLEL` | `4` | restart | 1–64 |
+| `pgo.limits.minEvery` | `PROFGATE_PGO_LIMIT_MIN_EVERY` | `15m` | restart | 1m–`maxEvery` |
+| `pgo.limits.maxEvery` | `PROFGATE_PGO_LIMIT_MAX_EVERY` | `24h` | restart | `minEvery`–24h |
+| `pgo.limits.maxRetention` | `PROFGATE_PGO_LIMIT_MAX_RETENTION` | `24h` | restart | 1m–720h; ≥ `maxEvery` |
+| `pgo.limits.maxSampleBytes` | `PROFGATE_PGO_LIMIT_MAX_SAMPLE_BYTES` | `16777216` | restart | 1 MiB–256 MiB |
+| `pgo.limits.maxMergedBytes` | `PROFGATE_PGO_LIMIT_MAX_MERGED_BYTES` | `33554432` | restart | `maxSampleBytes`–1 GiB |
+| `pgo.limits.maxTargetsPerRound` | `PROFGATE_PGO_LIMIT_MAX_TARGETS_PER_ROUND` | `32` | restart | 1–256; `maxRounds × maxTargetsPerRound ≤ 256` |
+| `pgo.limits.maxActiveCollections` | `PROFGATE_PGO_LIMIT_MAX_ACTIVE_COLLECTIONS` | `1` | restart | 1–64 |
+| `pgo.limits.onDemandPerMinute` | `PROFGATE_PGO_LIMIT_ON_DEMAND_PER_MINUTE` | `10` | restart | 1–600 |
+| `pgo.limits.maxLiveCollections` | `PROFGATE_PGO_LIMIT_MAX_LIVE_COLLECTIONS` | `64` | restart | 1–1024 |
 | `pgo.defaults.schedule.every` | — | `6h` | hot | `minEvery`–`maxEvery` |
 | `pgo.defaults.schedule.jitter` | — | `10m` | hot | ≤ `every / 2` |
 | `pgo.defaults.sampling.duration` | — | `30s` | hot | 1s–`maxDuration` |
@@ -2994,9 +2991,9 @@ and cannot put the two out of step.
 because it is the outer multiplier of the memory limit (section 3.4)
 and an unbounded ceiling lets a typo render a limit no node can satisfy —
 or, before the checked multiplication, one that is not a byte count at all.
-Every preset sits far inside it: 1, 2, and 4.
-Every preset satisfies every cross-field rule as published (section 11.1),
-and so must a preset with overrides applied.
+The shipped default sits far inside it: 1.
+The twelve shipped ceilings satisfy every cross-field rule as published,
+and so must any set an operator writes.
 Every cross-field rule that judges the `pgo` block against itself —
 between limits, and between a default and its ceiling —
 runs whether or not `pgo.enabled` is true,
@@ -3004,7 +3001,7 @@ so a file carrying an inconsistent `pgo` block fails at startup as written rathe
 The one rule that measures a PGO ceiling against `limits` (`maxDuration ≤ limits.cpuSeconds`)
 waits for `pgo.enabled`:
 a gateway that never collects is free to set a `limits.cpuSeconds` under the shipped `maxDuration`,
-a value no preset can satisfy.
+a value the rule would refuse the moment the flag flipped.
 The `nats` requirements wait for the same flag:
 a disabled gateway reaches no NATS cluster and needs none configured.
 
@@ -3015,13 +3012,12 @@ nats:
   connectTimeout: 5s
 pgo:
   enabled: true
-  preset: standard
   configAPI: enabled
   leaseTTL: 60s
   maxAttempts: 3
   jobRetention: 168h
   limits:
-    # Every ceiling comes from the preset; an entry here replaces that one ceiling.
+    # Every ceiling not written here keeps its default; an entry replaces that one ceiling.
     maxTargetsPerRound: 24
   defaults:
     schedule:
@@ -3050,66 +3046,45 @@ The shipped example writes every flag as `true`, so the wide-open default is vis
 as the gateway spec's *Wide-open is explicit* section requires.
 A realm without a `pgo` block has every flag false.
 
-### 11.1 Presets
+### 11.1 Choosing the ceilings
 
-Twelve ceilings are twelve decisions an operator has to make before collecting anything,
-and eleven of them have no local answer:
-nothing about a particular cluster says whether `maxMergedBytes` should be 64 MiB.
-What an operator does know is how much of their fleet they intend to profile at once.
-`pgo.preset` asks that question once and answers the twelve.
+There is no `pgo.preset`, and no other name that sets several ceilings at once.
+The twelve answer three different questions,
+and one name over all of them would couple choices an operator makes separately;
+[`ceilings-are-chosen-per-axis.md`](../decisions/ceilings-are-chosen-per-axis.md)
+records why, and what a later proposal to collapse any of them has to establish first.
+Every key in the table above carries its own shipped default,
+so an operator moves the ones their deployment gives them a reason to move and leaves the rest.
 
-| `pgo.limits` key | `small` | `standard` | `large` |
-|---|---|---|---|
-| `maxDuration` | `30s` | `60s` | `60s` |
-| `maxRounds` | `3` | `5` | `8` |
-| `maxParallel` | `4` | `4` | `8` |
-| `minEvery` | `15m` | `15m` | `5m` |
-| `maxEvery` | `24h` | `24h` | `24h` |
-| `maxRetention` | `48h` | `72h` | `120h` |
-| `maxSampleBytes` | `16777216` (16 MiB) | `33554432` (32 MiB) | `33554432` (32 MiB) |
-| `maxMergedBytes` | `33554432` (32 MiB) | `67108864` (64 MiB) | `67108864` (64 MiB) |
-| `maxTargetsPerRound` | `16` | `32` | `32` |
-| `maxActiveCollections` | `1` | `2` | `4` |
-| `onDemandPerMinute` | `5` | `10` | `30` |
-| `maxLiveCollections` | `16` | `64` | `256` |
+**Four of them size the container, and the arithmetic of section 3.4 answers them.**
+`maxActiveCollections`, `maxParallel`, `maxSampleBytes`, and `maxMergedBytes` are its four terms,
+so a memory budget and any three of them fix the fourth.
+An operator reads that relation in whichever direction their cluster constrains:
+down from a limit a node or a quota will admit, to the ceilings it pays for,
+or up from the profile sizes their workloads actually produce, to the limit those require.
+`profgate config validate` prints the working set and the container figure the four produce,
+which is how either direction is checked before a rollout.
 
-`standard` is what this document shipped as its twelve defaults, unchanged except for `maxRetention` (below),
-so an existing configuration that names no preset keeps the ceilings it already had.
-`small` is a collector that runs one Collection at a time;
-`large` is one that runs four, profiles a Service every five minutes if a policy asks,
-and sits exactly on the `maxRounds × maxTargetsPerRound ≤ 256` record bound,
-which is what that rule is for.
-
-Each preset fixes three figures nobody types:
-
-| Figure | `small` | `standard` | `large` |
-|---|---|---|---|
-| PGO working set, from the second term of section 3.4 | 1440 MiB | 5760 MiB | 18688 MiB |
-| collector memory, that working set plus the 256 MiB base | 1696 MiB | 6016 MiB | 18944 MiB |
-| profile fetches one collector holds open, `maxParallel × maxActiveCollections` | 4 | 8 | 32 |
-| PGO fetches one Pod can receive from one collector, `maxActiveCollections` | 1 | 2 | 4 |
-| live Collections per publisher, `maxLiveCollections` | 16 | 64 | 256 |
-
-The two memory rows are listed separately because only the second is a container limit:
-the working set is what the ceilings buy, and the base is what the process costs before it decodes anything.
-The collector's `resources.limits.memory` is the second row, and the chart computes it (section 3.4).
-The per-Pod row is per collector replica;
-`C` overlapping collectors make it `C × maxActiveCollections`,
+**Seven bound how much collection happens, and no arithmetic answers them.**
+`maxDuration`, `maxRounds`, `minEvery`, `maxEvery`, `maxTargetsPerRound`,
+`onDemandPerMinute`, and `maxLiveCollections` each state how much profiling a fleet tolerates,
+which is a fact about the profiled workloads rather than about this process.
+Two of the sizing ceilings answer here as well,
+because the memory a Collection holds and the connections it opens are bought with the same numbers:
+one collector holds `maxParallel × maxActiveCollections` profile fetches open at once,
+and one Pod receives at most `maxActiveCollections` PGO fetches from one collector.
+That per-Pod figure is per collector replica,
+so `C` overlapping collectors make it `C × maxActiveCollections`,
 and interactive traffic adds `gatewayReplicas × limits.maxConcurrentProfiles` beside it (section 8.5).
-The collector's `terminationGracePeriodSeconds` does not vary with the preset:
-it is `pgo.leaseTTL + 30s`, 90 seconds at the shipped lease, for the reason section 12.4 gives.
-A gateway replica's memory limit and grace period do not vary with the preset either,
-because nothing in this section describes a gateway replica's work.
+A ceiling on two axes is chosen against both budgets;
+the other ten sit on one axis each, which is why no single name can stand over all twelve.
 
-**Overrides.**
-`pgo.limits.<key>` sets one ceiling and leaves the other eleven at the preset's value;
-so does the key's environment variable.
-An override is validated exactly as a preset value is —
-its own range, and every cross-field rule — so no override can produce a configuration a preset could not.
-`profgate config validate` prints the preset name, the twelve resolved ceilings,
-the figures above, and the collector grace period,
-which is how an operator reads what an override actually produced.
-A preset is a set of defaults, not a mode: nothing downstream branches on its name.
+**`maxRetention` answers a third question.**
+It bounds how long an artifact stays downloadable,
+which follows from what consumes the profiles rather than from how many are collected or how large each one is.
+Its default moved for a reason of its own, which section 11.2 gives.
+
+### 11.2 Retention
 
 **Why `maxRetention` moved, and where `artifact.retention` sits against it.**
 `pgo.defaults.artifact.retention` shipped at `2h` against a default `schedule.every` of `6h`,
@@ -3119,10 +3094,10 @@ Retention shorter than `every` is the incoherent case in general,
 so the shipped default is now `24h`,
 covering the `6h` default four times over and the `maxEvery` ceiling once.
 Two rules hold it there, and they claim different things.
-`pgo.limits.maxRetention ≥ pgo.limits.maxEvery` is a feasibility rule about the preset:
+`pgo.limits.maxRetention ≥ pgo.limits.maxEvery` is a feasibility rule about the ceilings:
 it guarantees that a retention long enough for the longest admissible interval is *available*.
 On its own it guarantees nothing about any particular policy —
-every preset would still admit `schedule.every: 24h` beside `artifact.retention: 1m`,
+the ceilings would still admit `schedule.every: 24h` beside `artifact.retention: 1m`,
 because each field satisfies its own range and no ceiling relates them.
 What rules out that policy is the effective-policy rule of section 6.3,
 `artifact.retention ≥ schedule.every`,
@@ -3939,10 +3914,9 @@ one server per subtest.
   every new environment variable lands on its field;
   `nats.url` required only when `pgo.enabled`;
   the complete example of section 11 loads and validates as written;
-  each of the three presets expands to the twelve ceilings of section 11.1 exactly,
-  and each satisfies every cross-field rule on its own;
-  an absent `pgo.preset` expands to `standard`, and an unknown name is rejected naming the key;
-  one `pgo.limits` key overrides its preset value and leaves the other eleven;
+  an absent `pgo.limits` key takes its shipped default,
+  and the twelve defaults satisfy every cross-field rule on their own;
+  one `pgo.limits` key written in the file leaves the other eleven at their defaults;
   the same through the key's environment variable;
   an override outside its own range, and one that breaks a cross-field rule, are both rejected
   (`maxRounds × maxTargetsPerRound` above 256, `maxRetention` below `maxEvery`,
@@ -3952,7 +3926,7 @@ one server per subtest.
   a `pgo` block that contradicts itself rejected with `enabled: false`,
   and the rule against `limits` not applied to a disabled block;
   `maxActiveCollections` at `0` and at `65` rejected naming the key and the range, at `1` and at `64` accepted;
-  the memory figure and the collector grace period computed for each preset match section 11.1,
+  the memory figure and the collector grace period computed for the shipped ceilings match section 3.4,
   base term included, so a figure that dropped `collectorBaseMemory` fails;
   the multiplication rejects an overflowing product rather than returning a wrapped or negative count,
   exercised by handing the arithmetic ceilings the range check would refuse,
@@ -3972,8 +3946,8 @@ one server per subtest.
   under `collect` the test injects a scheduler that never ticks,
   and under `serve` there is no scheduler to inject,
   so a build that drove the pass from `Scheduler.tick` fails both halves;
-  `config validate` prints the preset name, the resolved ceilings, the collector memory figure,
-  and the collector grace period, for a configuration of each preset;
+  `config validate` prints the twelve ceilings, the collector memory figure, and the collector grace period,
+  for the shipped configuration and for one that changes a sizing ceiling;
   `serve` closes the drain signal when `/readyz` turns 503 and before `server.drainDelay`,
   and a request parked in `wait=` answers at that moment rather than at its own deadline,
   which is what keeps the drain bound of the gateway spec's *Startup and shutdown* section where it is;
@@ -3997,19 +3971,20 @@ one server per subtest.
   The following collector assertions arrive with the collector Deployment and are not built.
   The collector Deployment renders only with `pgo.enabled`, runs `collect`, declares one replica,
   exposes the ops port and no API port, is selected by no Service, and carries no PodDisruptionBudget.
-  Its `resources.limits.memory` equals what the binary computes for the same values, preset by preset and with an override,
+  Its `resources.limits.memory` equals what the binary computes for the same values,
+  over shipped and over changed ceilings,
   and its `terminationGracePeriodSeconds` equals `pgo.leaseTTL + 30s`;
   the gateway Deployment's memory limit and grace period are the same with `pgo.enabled` true and false.
   The chart and the binary agree on three outcomes, over the same values each time:
   **success**, where the rendered limit equals `internal/config`'s figure for the rendered ConfigMap,
-  base term included, for each preset and for a single-key override of each sizing ceiling;
+  base term included, for the shipped ceilings and for a single changed value of each sizing ceiling;
   **rejection**, where a value outside a sizing ceiling's range fails the render and fails `config.Load`,
   each naming the key, with `maxActiveCollections` at `0` and at `65` among them;
   and **overflow**, where a product past a 64-bit byte count is refused by both rather than rendered,
   asserted at the layer each check occupies (section 3.4).
-  The collector's `extraEnv` refuses `PROFGATE_PGO_PRESET`
-  and the four `PROFGATE_PGO_LIMIT_MAX_*` sizing variables, each with a message naming the structured value;
-  the raw `config` block refuses `config.pgo.preset` and the four sizing keys under `config.pgo.limits` the same way;
+  The collector's `extraEnv` refuses the four `PROFGATE_PGO_LIMIT_MAX_*` sizing variables,
+  each with a message naming the structured value;
+  the raw `config` block refuses the four sizing keys under `config.pgo.limits` the same way;
   a non-sizing `pgo.limits` key and an unrelated `extraEnv` entry both still render.
   Every Pod of both Deployments carries the common labels and its own `app.kubernetes.io/component`;
   the `PodMonitor` selector matches both roles' Pods and names the ops container port;
@@ -4126,9 +4101,9 @@ The `collect` the entries name is that daemon, not the shipped client verb of th
 ```text
 internal/natskv/     the NATS seam; sole non-test importer of nats.go; preflight and probes, KV, Objects
 internal/admit/      the admission gate interactive requests pass through
-internal/pgo/        policy layering, presets and ceilings, identifiers, publisher (reservation counter, Run and its pass, and the publication writes: the record, the active key, the idempotency receipt, and the update that makes the record claimable), scheduler, worker scan and owner loop, merge, sweeper, collector heartbeat writer and reader, clock seam
+internal/pgo/        policy layering and ceilings, identifiers, publisher (reservation counter, Run and its pass, and the publication writes: the record, the active key, the idempotency receipt, and the update that makes the record claimable), scheduler, worker scan and owner loop, merge, sweeper, collector heartbeat writer and reader, clock seam
 internal/httpapi/    gains the seven PGO routes and their realm flags
-internal/config/     gains nats, pgo, and realm pgo blocks, and expands pgo.preset into pgo.limits
+internal/config/     gains nats, pgo, and realm pgo blocks, with the pgo.limits defaults and their cross-field rules
 internal/metrics/    gains the PGO metrics
 cmd/profgate/        serve wires NATS preflight, the caches, and Publisher.Run when pgo.enabled; collect wires preflight, the caches, Publisher.Run, the heartbeat writer, and the three loops
 deploy/              gains the NATS account fragment, the bucket provisioning commands, the collector Deployment with its derived memory limit and grace period and its NetworkPolicy (both outside the kustomize base), and the example creds mount
@@ -4576,3 +4551,24 @@ so the quantity the factor multiplies carries that index.
 | `docs/specs/pgo.md` | *Unit* | the merge guard serializes the result once inside its measurement interval rather than after it, because that is what the process holds |
 | `docs/specs/pgo.md` | *Finish* | the completion check counts the uncompressed encoding and refuses `merged_too_large` before the stored gzip is written, which is the same encoding *Rounds* bounds after every sample |
 | `docs/investigations/2026-09-08-decoder-footprint.md` | — | the same merges measured with one serialization inside the interval, and why the decode figures are untouched |
+
+Abandoning `pgo.preset` amends the following text.
+The twelve ceilings answer three different questions —
+what the container must hold, how much collection a fleet tolerates,
+and how long an artifact stays downloadable —
+so one name over all of them would couple choices an operator makes separately:
+[`ceilings-are-chosen-per-axis.md`](../decisions/ceilings-are-chosen-per-axis.md).
+Every `pgo.limits` key carries its own default, and no name sets several of them at once.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/pgo.md` | *Core decisions* | decision 9 is that an operator sets each ceiling on its own; the chart still computes the collector's memory limit and grace period from them |
+| `docs/specs/pgo.md` | *Container* | `collectorBaseMemory` moves with no ceiling rather than being the same for every preset; the worked example is the shipped ceilings; the chart computes the limit from `pgo.limits` alone, and its render-time refusals lose the two that named a preset |
+| `docs/specs/pgo.md` | *Ceilings* | the feasibility rule beside `artifact.retention ≥ schedule.every` is about the ceilings in force |
+| `docs/specs/pgo.md` | *Claim* | what a rolling update changes under a `pending` record is a lowered ceiling |
+| `docs/specs/pgo.md` | *Configuration* | the `pgo.preset` key is gone, every `pgo.limits` row carries its shipped default, and the example writes no preset |
+| `docs/specs/pgo.md` | *Choosing the ceilings* | replaces *Presets*: no preset name, the three questions the twelve answer, and what the two ceilings standing on two axes buy |
+| `docs/specs/pgo.md` | *Retention* | the `maxRetention` default and the rules that hold it there, unchanged, in a subsection of their own |
+| `docs/specs/pgo.md` | *Unit* | preset expansion and the per-preset figures go; an unwritten key takes its default, and the chart and the binary agree over shipped and over changed ceilings |
+| `docs/specs/pgo.md` | *Package Layout* | `internal/config` carries the `pgo.limits` defaults and their cross-field rules rather than a preset expansion |
+| `docs/decisions/ceilings-are-chosen-per-axis.md` | — | new: why no name stands over the twelve, and what a later proposal to collapse any of them has to establish |

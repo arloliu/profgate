@@ -450,20 +450,23 @@ and the constant it reads is also the gateway's own memory budget.
 
 ### 12. Settle whether `pgo.preset` is deferred or abandoned
 
-- [ ] No Go source resolves a preset:
+- [x] No Go source resolves a preset:
   `grep -rn Preset --include=*.go .` finds nothing, and `internal/config` expands none into `pgo.limits`.
   [`pgo.md`](../specs/pgo.md) *Presets* nonetheless says `profgate config validate` prints the preset name,
   the twelve resolved ceilings, the derived figures, and the collector grace period (`docs/specs/pgo.md:3089-3091`);
   the command prints the required grace period, the PGO working set, and the container memory
   (`cmd/profgate/main.go:90-96`).
-- [ ] Two *Unit* bullets require tests that cannot be written against this build:
+  The key is abandoned, so the sentence that asked for a preset name goes and the command is already right.
+- [x] Two *Unit* bullets require tests that cannot be written against this build:
   that each preset expands to the twelve ceilings exactly,
   that an absent `pgo.preset` expands to `standard`, that an unknown name is rejected naming the key,
   and that one `pgo.limits` key overrides its preset value and leaves the other eleven
   (`docs/specs/pgo.md:3920-3923`),
   and that `config validate` prints the preset name and the derived figures for a configuration of each preset
   (`:3953-3954`).
-- [ ] *What this build does not carry* covers the collector separation
+  Both bullets are rewritten against defaults:
+  an unwritten key takes its shipped default, and the figures are asserted over shipped and over changed ceilings.
+- [x] *What this build does not carry* covers the collector separation
   and says in its own words that it does not cover every deferral this document holds (`docs/specs/pgo.md:112`).
   The preset's deferral is recorded only in
   [`collection-stays-in-the-gateway.md`](../decisions/collection-stays-in-the-gateway.md),
@@ -472,12 +475,20 @@ and the constant it reads is also the gateway's own memory budget.
   it holds that the twelve ceilings are not one axis,
   and that one name over all of them would couple choices an operator makes separately.
   The spec meanwhile carries the preset as accepted design.
-  Which of the two stands is what this item settles,
-  and the answer is written where the preset text is, not as another paragraph in that subsection.
+  That reason is the one adopted, and the spec's design is abandoned rather than deferred,
+  because the two changes that produced the shipped ceilings both stayed on the memory axis
+  and left the other eight keys untouched,
+  which is the coupling the reason names, observed rather than argued.
+  The reason also leaves the bullet it was lodged in:
+  [`ceilings-are-chosen-per-axis.md`](../decisions/ceilings-are-chosen-per-axis.md) is its own record,
+  and it states what a later proposal to set several ceilings with one name has to establish.
 
-Spec: [`pgo.md`](../specs/pgo.md) *Presets* and *Unit*,
-and *Core decisions* as well if the answer is that the design does not stand.
-Shipped: not built yet.
+Spec: [`pgo.md`](../specs/pgo.md) *Presets*, which becomes *Choosing the ceilings* beside a new *Retention*;
+*Core decisions*, *Container*, *Ceilings*, *Claim*, *Configuration*, *Unit*, and *Package Layout*,
+each of which names the key or reads a value from it;
+and one appended *Amendments* block, the earlier ones left as the history they are.
+Decision: [`ceilings-are-chosen-per-axis.md`](../decisions/ceilings-are-chosen-per-axis.md).
+Shipped: pull request #43.
 Why here: it changes no behavior and is met only by a reader of the spec,
 where every other item is met by an operator, a client, or a gate.
 
