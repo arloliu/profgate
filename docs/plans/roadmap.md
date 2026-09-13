@@ -456,7 +456,9 @@ and the constant it reads is also the gateway's own memory budget.
   the twelve resolved ceilings, the derived figures, and the collector grace period (`docs/specs/pgo.md:3089-3091`);
   the command prints the required grace period, the PGO working set, and the container memory
   (`cmd/profgate/main.go:90-96`).
-  The key is abandoned, so the sentence that asked for a preset name goes and the command is already right.
+  The key is abandoned, so the sentence asking for a preset name goes,
+  and what the spec asks the command to print becomes what it prints:
+  the required grace period, the working set, and the container memory.
 - [x] Two *Unit* bullets require tests that cannot be written against this build:
   that each preset expands to the twelve ceilings exactly,
   that an absent `pgo.preset` expands to `standard`, that an unknown name is rejected naming the key,

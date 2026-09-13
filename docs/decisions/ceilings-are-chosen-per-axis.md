@@ -54,8 +54,8 @@ Under a preset, each would have forced all three columns to be redrawn.
 Needing a redraw whenever one measurement moves is the coupling stated as a cost.
 
 **Two smaller facts point the same way.**
-`maxEvery` was `24h` in all three columns and is capped at `24h` by its own range,
-so it could never have varied: the table was never twelve wide.
+`maxEvery` was `24h` in all three columns, so one of the twelve never varied at all;
+its own range caps it there, so a column that moved it could only have moved it down.
 And the spec said in its own words that a preset is a set of defaults and not a mode,
 because nothing downstream branches on its name —
 which makes it documentation carried as a configuration key.
@@ -102,5 +102,9 @@ whether the name covers twelve of them or two.
 - **A qualifying example exists.**
   One name over the four memory ceilings would qualify:
   they are the four terms of a single expression,
-  so a change to the container budget is a change to all four at once.
-  A name that reaches past them to retention or to the on-demand rate would not.
+  so each trades against the same container budget and a name can move along that budget coherently.
+  It would not follow that the four can only move together —
+  raising `maxMergedBytes` alone is a legitimate change,
+  and such a name would be a starting point rather than the only way to reach a figure.
+  A name reaching past them to retention or to the on-demand rate would not qualify,
+  because no budget relates those to the four.
