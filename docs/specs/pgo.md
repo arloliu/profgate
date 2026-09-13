@@ -1084,7 +1084,7 @@ Layering is one level deep per block (section 6.2),
 so an override that sets only `schedule.every` is judged against the default `artifact.retention`,
 and one that sets only `artifact.retention` against the default `every`;
 the rule reads the effective policy, never the override, which is what makes that work.
-`pgo.limits.maxRetention ≥ pgo.limits.maxEvery` stays as the ceiling rule beside it (section 11.1):
+`pgo.limits.maxRetention ≥ pgo.limits.maxEvery` stays as the ceiling rule beside it (section 11.2):
 it is what guarantees a long enough retention is *available* under the ceilings in force,
 which is a different claim from every effective policy actually using one.
 
@@ -3053,7 +3053,7 @@ The twelve answer three different questions,
 and one name over all of them would couple choices an operator makes separately;
 [`ceilings-are-chosen-per-axis.md`](../decisions/ceilings-are-chosen-per-axis.md)
 records why, and what a later proposal to collapse any of them has to establish first.
-Every key in the table above carries its own shipped default,
+Every key in the configuration table above carries its own shipped default,
 so an operator moves the ones their deployment gives them a reason to move and leaves the rest.
 
 **Four of them size the container, and the arithmetic of section 3.4 answers them.**
