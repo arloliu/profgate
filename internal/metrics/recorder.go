@@ -33,6 +33,8 @@ const (
 	EndpointNamespaces Endpoint = "namespaces"
 	// EndpointServices is the Service listing route family; profile is fixed to "none".
 	EndpointServices Endpoint = "services"
+	// EndpointCatalog is the whole-catalog listing route family; profile is fixed to "none".
+	EndpointCatalog Endpoint = "catalog"
 	// EndpointWhoami is the caller description route family; profile is fixed to "none".
 	EndpointWhoami Endpoint = "whoami"
 	// EndpointLimits is the limits description route family; profile is fixed to "none".
@@ -59,7 +61,8 @@ type Recorder interface {
 	// Request records one completed /v1 request.
 	// endpoint and profile come from the resolved route when there is one (method failures included):
 	// targets → ("targets","none"), a known profile route → ("profile", name),
-	// the listing routes → ("namespaces","none"), ("services","none"), ("whoami","none"), ("limits","none"),
+	// the listing routes → ("namespaces","none"), ("services","none"), ("catalog","none"),
+	// ("whoami","none"), ("limits","none"),
 	// the document route → ("openapi","none"),
 	// and the console → ("ui","none").
 	// Requests that fail before a route resolves, or name an unknown profile, record ("profile","none").

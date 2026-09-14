@@ -17,10 +17,11 @@ import (
 	"github.com/arloliu/profgate/internal/metrics"
 )
 
-// The four listing routes.
+// The five listing routes.
 const (
 	namespacesPath = "/v1/namespaces"
 	servicesPath   = "/v1/namespaces/payments/services"
+	catalogPath    = "/v1/catalog"
 	whoamiPath     = "/v1/whoami"
 	limitsPath     = "/v1/limits"
 )
@@ -30,6 +31,7 @@ func listingPaths() map[string]string {
 	return map[string]string{
 		"namespaces": namespacesPath,
 		"services":   servicesPath,
+		"catalog":    catalogPath,
 		"whoami":     whoamiPath,
 		"limits":     limitsPath,
 	}
@@ -126,7 +128,9 @@ func TestListingRoutes(t *testing.T) {
 				expectNoCORS(t, rec)
 			})
 		}
-		for _, path := range []string{"/v1/namespaces/", "/v1/namespaces/x/services/", "/v1/whoami/x", "/v1/limit"} {
+		for _, path := range []string{
+			"/v1/namespaces/", "/v1/namespaces/x/services/", "/v1/whoami/x", "/v1/limit", "/v1/catalog/",
+		} {
 			t.Run(path, func(t *testing.T) {
 				h := listingHarness()
 				rec := h.do(t, http.MethodGet, path)
@@ -370,7 +374,7 @@ func TestListingFilter(t *testing.T) {
 	})
 
 	t.Run("catalog error", func(t *testing.T) {
-		for _, path := range []string{namespacesPath, servicesPath} {
+		for _, path := range []string{namespacesPath, servicesPath, catalogPath} {
 			t.Run(path, func(t *testing.T) {
 				h := listingHarness()
 				h.disc.catalogErr = errors.New("boom")
@@ -423,7 +427,200 @@ func TestListingFilter(t *testing.T) {
 		if got := h.disc.catalogNamespacesSeen(); !reflect.DeepEqual(got, []string{""}) {
 			t.Errorf("Catalog namespaces = %q, want [\"\"]", got)
 		}
+		// The catalog reads the whole cache: one recorded call, carrying the empty namespace.
+		h = listingHarness()
+		h.do(t, http.MethodGet, catalogPath)
+		if got := h.disc.catalogNamespacesSeen(); !reflect.DeepEqual(got, []string{""}) {
+			t.Errorf("Catalog namespaces = %q, want [\"\"]", got)
+		}
 	})
+}
+
+// crossNamespaceCatalog holds one Service name in two namespaces,
+// and one name that sorts after every name the namespaces beside it hold,
+// so an answer ordered by name alone differs from one ordered by namespace and then by name.
+func crossNamespaceCatalog() []k8s.ServiceRef {
+	return []k8s.ServiceRef{
+		{Namespace: "orders", Name: "api"},
+		{Namespace: "orders", Name: "checkout"},
+		{Namespace: "orders", Name: "zebra"},
+		{Namespace: "payments", Name: "checkout"},
+		{Namespace: "payments", Name: "ledger"},
+		{Namespace: "staging", Name: "only"},
+	}
+}
+
+// catalogHarness is listingHarness over crossNamespaceCatalog.
+func catalogHarness() *harness {
+	h := listingHarness()
+	h.disc.catalog = crossNamespaceCatalog()
+
+	return h
+}
+
+func TestListingCatalog(t *testing.T) {
+	t.Run("realm filter", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			namespaces []string
+			services   []string
+			want       string
+		}{
+			{
+				name: "both wildcards", namespaces: []string{"*"}, services: []string{"*"},
+				want: `{"catalog":[{"namespace":"orders","name":"api"},{"namespace":"orders","name":"checkout"},` +
+					`{"namespace":"orders","name":"zebra"},{"namespace":"payments","name":"checkout"},` +
+					`{"namespace":"payments","name":"ledger"},{"namespace":"staging","name":"only"}]}`,
+			},
+			{
+				name: "named services", namespaces: []string{"*"}, services: []string{"checkout", "api"},
+				want: `{"catalog":[{"namespace":"orders","name":"api"},{"namespace":"orders","name":"checkout"},` +
+					`{"namespace":"payments","name":"checkout"}]}`,
+			},
+			{
+				name: "named namespaces", namespaces: []string{"payments"}, services: []string{"*"},
+				want: `{"catalog":[{"namespace":"payments","name":"checkout"},` +
+					`{"namespace":"payments","name":"ledger"}]}`,
+			},
+			{
+				name: "both named", namespaces: []string{"orders", "payments"}, services: []string{"checkout"},
+				want: `{"catalog":[{"namespace":"orders","name":"checkout"},` +
+					`{"namespace":"payments","name":"checkout"}]}`,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				h := catalogHarness()
+				h.realmLists(tc.namespaces, tc.services)
+				rec := h.do(t, http.MethodGet, catalogPath)
+				expectJSON(t, rec, tc.want)
+				h.expectAudit(t, http.StatusOK, codeOK)
+			})
+		}
+	})
+
+	// The catalog names no namespace in its path,
+	// so a realm that admits nothing is answered an empty array
+	// while the Service list of the same namespace is refused.
+	t.Run("a realm that admits no namespace", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			namespaces []string
+		}{
+			{"an empty list", []string{}},
+			{"a namespace the cache lacks", []string{"nowhere"}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				h := catalogHarness()
+				h.realmLists(tc.namespaces, []string{"*"})
+				expectJSON(t, h.do(t, http.MethodGet, catalogPath), `{"catalog":[]}`)
+				denied := h.do(t, http.MethodGet, servicesPath)
+				if denied.Code != http.StatusForbidden {
+					t.Fatalf("Service list status = %d, want 403 (body %q)", denied.Code, denied.Body.String())
+				}
+				if code, _ := errorBodyOf(t, denied); code != "realm_denied" {
+					t.Errorf("Service list code = %q, want realm_denied", code)
+				}
+			})
+		}
+	})
+
+	t.Run("empty catalog", func(t *testing.T) {
+		h := listingHarness()
+		h.disc.catalog = []k8s.ServiceRef{}
+		rec := h.do(t, http.MethodGet, catalogPath)
+		if got := rec.Body.String(); got != `{"catalog":[]}`+"\n" {
+			t.Errorf("body = %q, want %q", got, `{"catalog":[]}`)
+		}
+	})
+
+	// Narrowing is the caller's own work over the answer it holds,
+	// so no parameter is accepted and none reaches the cache.
+	t.Run("no parameter", func(t *testing.T) {
+		for _, query := range []string{"?q=checkout", "?limit=10", "?cursor=x", "?access_token=x"} {
+			t.Run(query, func(t *testing.T) {
+				h := catalogHarness()
+				rec := h.do(t, http.MethodGet, catalogPath+query)
+				h.expectError(t, rec, http.StatusBadRequest, "invalid_parameter")
+				if got := h.disc.catalogCalls.Load(); got != 0 {
+					t.Errorf("Catalog calls = %d, want 0", got)
+				}
+			})
+		}
+	})
+
+	// One fake answers all three routes and changes between none of them,
+	// so a difference between the answers is a difference in how each one filtered.
+	t.Run("agrees with the two lists", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			namespaces []string
+			services   []string
+		}{
+			{"both wildcards", []string{"*"}, []string{"*"}},
+			{"named services", []string{"*"}, []string{"checkout", "api"}},
+			{"named namespaces", []string{"payments"}, []string{"*"}},
+			{"both named", []string{"orders", "payments"}, []string{"checkout"}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				h := catalogHarness()
+				h.realmLists(tc.namespaces, tc.services)
+
+				var catalog catalogBody
+				decodeListing(t, h.do(t, http.MethodGet, catalogPath), &catalog)
+				names := map[string][]string{}
+				distinct := []string{}
+				for _, ref := range catalog.Catalog {
+					if _, held := names[ref.Namespace]; !held {
+						distinct = append(distinct, ref.Namespace)
+					}
+					names[ref.Namespace] = append(names[ref.Namespace], ref.Name)
+				}
+
+				var listed namespacesBody
+				decodeListing(t, h.do(t, http.MethodGet, namespacesPath), &listed)
+				if !reflect.DeepEqual(listed.Namespaces, distinct) {
+					t.Errorf("namespace list = %q, the catalog's distinct namespaces are %q", listed.Namespaces, distinct)
+				}
+
+				for _, ns := range []string{"orders", "payments", "staging", "nowhere"} {
+					rec := h.do(t, http.MethodGet, "/v1/namespaces/"+ns+"/services")
+					switch rec.Code {
+					case http.StatusForbidden:
+						if held := names[ns]; len(held) != 0 {
+							t.Errorf("the Service list of %s is refused while the catalog holds %q", ns, held)
+						}
+					case http.StatusOK:
+						var list servicesBody
+						decodeListing(t, rec, &list)
+						want := names[ns]
+						if want == nil {
+							want = []string{}
+						}
+						if !reflect.DeepEqual(list.Services, want) {
+							t.Errorf("Service list of %s = %q, the catalog holds %q", ns, list.Services, want)
+						}
+					default:
+						t.Fatalf("Service list of %s: status = %d (body %q)", ns, rec.Code, rec.Body.String())
+					}
+				}
+			})
+		}
+	})
+}
+
+// decodeListing decodes a 200 listing body into the view type the route answers with.
+func decodeListing(t *testing.T, rec *httptest.ResponseRecorder, body any) {
+	t.Helper()
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), body); err != nil {
+		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+	}
 }
 
 func TestListingWhoami(t *testing.T) {
@@ -594,7 +791,8 @@ func TestListingDisclosure(t *testing.T) {
 				if ipRE.MatchString(body) || strings.Contains(body, "podIP") {
 					t.Errorf("body names an address: %q", body)
 				}
-				if (path == namespacesPath || path == servicesPath) && strings.Contains(body, "6060") {
+				if (path == namespacesPath || path == servicesPath || path == catalogPath) &&
+					strings.Contains(body, "6060") {
 					t.Errorf("body names a port: %q", body)
 				}
 				expectNoCORS(t, rec)
@@ -690,6 +888,7 @@ func TestRouteKinds(t *testing.T) {
 		{kindCollectionLatestProfile, true, false, false, false},
 		{kindNamespaces, false, false, true, false},
 		{kindServices, false, false, true, false},
+		{kindCatalog, false, false, true, false},
 		{kindWhoami, false, false, true, false},
 		{kindLimits, false, false, true, false},
 		{kindAuth, false, false, false, false},
@@ -727,6 +926,7 @@ func TestListingAuditAndMetrics(t *testing.T) {
 	endpoints := map[string]metrics.Endpoint{
 		"namespaces": metrics.EndpointNamespaces,
 		"services":   metrics.EndpointServices,
+		"catalog":    metrics.EndpointCatalog,
 		"whoami":     metrics.EndpointWhoami,
 		"limits":     metrics.EndpointLimits,
 	}

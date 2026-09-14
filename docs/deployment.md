@@ -499,8 +499,8 @@ All metrics are on the ops port at `/metrics`.
 | `profgate_auth_file_reload_total` | counter | `file` (`users`/`cookie_key`), `result` | Re-reads of the users file or the cookie key file |
 | `profgate_auth_cookie_key_info` | gauge | `fingerprint`, `role` (`current`/`previous`) | One series per loaded cookie key, always `1` |
 
-`profgate_requests_total`'s `endpoint` label also carries `namespaces`, `services`, `whoami`, and `limits` for the four listing routes, and `ui` for `/ui/`, every path under it, and `/`;
-`profile` is `none` for all five.
+`profgate_requests_total`'s `endpoint` label also carries `namespaces`, `services`, `whoami`, `limits`, and `catalog` for the five listing routes, and `ui` for `/ui/`, every path under it, and `/`;
+`profile` is `none` for all six.
 `ui`'s `code` is one of `ok`, `route_unknown`, `method_not_allowed`, or `internal_error` —
 a closed set derived from the status the console wrote, not the raw HTTP status.
 

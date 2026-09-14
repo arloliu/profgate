@@ -368,6 +368,21 @@
           }
         }
       },
+      "Catalog": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CatalogResponse"
+            }
+          }
+        },
+        "description": "the Services the realm admits, in every namespace it admits",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
       "Collection": {
         "content": {
           "application/json": {
@@ -773,6 +788,21 @@
         },
         "required": [
           "mode"
+        ],
+        "type": "object"
+      },
+      "CatalogResponse": {
+        "description": "every Service the caller's realm admits, ordered by namespace and then by name; [] when it admits none.",
+        "properties": {
+          "catalog": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceRef"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "catalog"
         ],
         "type": "object"
       },
@@ -1738,6 +1768,22 @@
         ],
         "type": "object"
       },
+      "ServiceRef": {
+        "description": "one entry of the catalog: the namespace a Service sits in, and its name.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "type": "object"
+      },
       "ServicesResponse": {
         "description": "the Services of one namespace the caller's realm admits.",
         "properties": {
@@ -2054,6 +2100,21 @@
           }
         },
         "summary": "Describe how to authenticate"
+      }
+    },
+    "/v1/catalog": {
+      "get": {
+        "description": "Every Service the caller's realm admits, in every namespace it admits, as namespace-and-name pairs.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Catalog"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List every Service the caller may reach"
       }
     },
     "/v1/collections/{id}": {

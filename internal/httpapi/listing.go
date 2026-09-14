@@ -12,7 +12,7 @@ import (
 // logoutPath is the one logout route the browser flow serves.
 const logoutPath = "/auth/logout"
 
-// The response shapes of the four listing routes, field for field.
+// The response shapes of the five listing routes, field for field.
 
 // namespacesBody answers the namespace list.
 type namespacesBody struct {
@@ -23,6 +23,17 @@ type namespacesBody struct {
 type servicesBody struct {
 	Namespace string   `json:"namespace"`
 	Services  []string `json:"services"`
+}
+
+// catalogBody answers every Service the caller's realm admits, across every namespace it admits.
+type catalogBody struct {
+	Catalog []serviceRefView `json:"catalog"`
+}
+
+// serviceRefView is one entry of the catalog: the namespace a Service sits in, and its name.
+type serviceRefView struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
 }
 
 // whoamiBody describes the caller: the principal, its realm as configured, and the authentication mode.
@@ -80,9 +91,9 @@ type pgoView struct {
 	Enabled bool `json:"enabled"`
 }
 
-// serveListing answers one of the four listing routes after the realm step:
+// serveListing answers one of the five listing routes after the realm step:
 // any query parameter is refused, then whoami and limits answer from the configuration snapshot
-// and the two lists read the Service cache through Catalog and apply the realm filter.
+// and the three lists read the Service cache through Catalog and apply the realm filter.
 func (s *server) serveListing(
 	w http.ResponseWriter, r *http.Request, q *request, cfg *config.Config, p auth.Principal, realm config.Realm,
 ) {
@@ -98,28 +109,24 @@ func (s *server) serveListing(
 		body = whoamiView(cfg, p, realm)
 	case kindLimits:
 		body = limitsView(cfg)
-	case kindNamespaces, kindServices:
-		refs, err := s.deps.Discovery.Catalog(r.Context(), q.route.namespace)
-		if err != nil {
-			q.fail(w, &requestError{
-				status:  http.StatusServiceUnavailable,
-				code:    CodeDiscoveryUnavailable,
-				message: "discovery cannot list services",
-			})
-
+	case kindNamespaces:
+		refs, ok := s.admittedCatalog(w, r, q, realm)
+		if !ok {
 			return
 		}
-		refs = filterCatalog(realm, refs)
-		if q.route.kind == kindNamespaces {
-			body = namespacesBody{Namespaces: namespacesOf(refs)}
-		} else {
-			names := make([]string, 0, len(refs))
-			for _, ref := range refs {
-				names = append(names, ref.Name)
-			}
-			slices.Sort(names)
-			body = servicesBody{Namespace: q.route.namespace, Services: names}
+		body = namespacesBody{Namespaces: namespacesOf(refs)}
+	case kindServices:
+		refs, ok := s.admittedCatalog(w, r, q, realm)
+		if !ok {
+			return
 		}
+		body = servicesBody{Namespace: q.route.namespace, Services: servicesOf(refs)}
+	case kindCatalog:
+		refs, ok := s.admittedCatalog(w, r, q, realm)
+		if !ok {
+			return
+		}
+		body = catalogBody{Catalog: catalogOf(refs)}
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
 		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindAuth, kindAuthLogin,
 		kindAuthCallback, kindAuthLogout, kindOpenAPI, kindConsole:
@@ -135,6 +142,28 @@ func (s *server) serveListing(
 	q.audit.status = http.StatusOK
 	q.audit.code = codeOK
 	writeJSON(w, http.StatusOK, body)
+}
+
+// admittedCatalog is what the three cache-reading lists share:
+// one read of the Service cache through Catalog, then the realm filter.
+// The namespace it asks for is the route's own,
+// which the Service list captures from its path and the other two leave empty, reading every namespace.
+// A read that fails is answered here, and the caller returns on the false.
+func (s *server) admittedCatalog(
+	w http.ResponseWriter, r *http.Request, q *request, realm config.Realm,
+) ([]k8s.ServiceRef, bool) {
+	refs, err := s.deps.Discovery.Catalog(r.Context(), q.route.namespace)
+	if err != nil {
+		q.fail(w, &requestError{
+			status:  http.StatusServiceUnavailable,
+			code:    CodeDiscoveryUnavailable,
+			message: "discovery cannot list services",
+		})
+
+		return nil, false
+	}
+
+	return filterCatalog(realm, refs), true
 }
 
 // whoamiView describes the caller from the configuration snapshot and the resolved principal.
@@ -188,6 +217,28 @@ func filterCatalog(realm config.Realm, refs []k8s.ServiceRef) []k8s.ServiceRef {
 	}
 
 	return kept
+}
+
+// servicesOf is the sorted Service names of a filtered catalog.
+func servicesOf(refs []k8s.ServiceRef) []string {
+	names := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		names = append(names, ref.Name)
+	}
+	slices.Sort(names)
+
+	return names
+}
+
+// catalogOf is one entry per Service of a filtered catalog, in the order Catalog returned them.
+// Nothing is sorted here: Catalog orders by namespace and then by name, and the filter keeps that order.
+func catalogOf(refs []k8s.ServiceRef) []serviceRefView {
+	views := make([]serviceRefView, 0, len(refs))
+	for _, ref := range refs {
+		views = append(views, serviceRefView{Namespace: ref.Namespace, Name: ref.Name})
+	}
+
+	return views
 }
 
 // namespacesOf is the sorted distinct namespaces of a filtered catalog.

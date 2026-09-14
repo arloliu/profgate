@@ -61,6 +61,7 @@ var routeTable = [...]declaration{
 	{"/v1/collections/{id}/cancel", kindCollectionCancel, []string{http.MethodPost}},
 	{"/v1/namespaces", kindNamespaces, []string{http.MethodGet}},
 	{"/v1/namespaces/{namespace}/services", kindServices, []string{http.MethodGet}},
+	{"/v1/catalog", kindCatalog, []string{http.MethodGet}},
 	{"/v1/whoami", kindWhoami, []string{http.MethodGet}},
 	{"/v1/limits", kindLimits, []string{http.MethodGet}},
 	{"/v1/auth", kindAuth, []string{http.MethodGet}},

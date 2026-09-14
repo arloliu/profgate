@@ -118,13 +118,14 @@ only when its browser flow is configured:
 /auth/logout
 ```
 
-The accepted console design ([`docs/specs/ui.md`](../../docs/specs/ui.md)) adds four read-only listing routes that always exist:
+The accepted console design ([`docs/specs/ui.md`](../../docs/specs/ui.md)) adds five read-only listing routes that always exist:
 
 ```
 /v1/namespaces
 /v1/namespaces/{namespace}/services
 /v1/whoami
 /v1/limits
+/v1/catalog
 ```
 
 and three routes present only when `ui.enabled`:

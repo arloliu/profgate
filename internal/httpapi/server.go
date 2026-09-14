@@ -135,7 +135,7 @@ func New(d Deps) http.Handler {
 // routeKind is which of the /v1 routes a path matched.
 type routeKind int
 
-// The routes the gateway serves: the two interactive ones, the seven PGO ones, the four listing ones,
+// The routes the gateway serves: the two interactive ones, the seven PGO ones, the five listing ones,
 // the one authentication-discovery route, which runs no authentication step,
 // the three browser-login routes, the document route, and the console.
 // Each classification below is an exhaustive switch that names every kind,
@@ -154,6 +154,7 @@ const (
 	kindCollectionLatestProfile
 	kindNamespaces
 	kindServices
+	kindCatalog
 	kindWhoami
 	kindLimits
 	kindAuth
@@ -177,7 +178,7 @@ func (k routeKind) isAuthRoute() bool {
 		return true
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
 		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindNamespaces, kindServices,
-		kindWhoami, kindLimits, kindAuth, kindOpenAPI, kindConsole:
+		kindCatalog, kindWhoami, kindLimits, kindAuth, kindOpenAPI, kindConsole:
 		return false
 	default:
 		return false
@@ -191,7 +192,7 @@ func (k routeKind) isPGO() bool {
 	case kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile, kindCollectionCancel,
 		kindCollectionLatest, kindCollectionLatestProfile:
 		return true
-	case kindTargets, kindProfile, kindNamespaces, kindServices, kindWhoami, kindLimits, kindAuth,
+	case kindTargets, kindProfile, kindNamespaces, kindServices, kindCatalog, kindWhoami, kindLimits, kindAuth,
 		kindAuthLogin, kindAuthCallback, kindAuthLogout, kindOpenAPI, kindConsole:
 		return false
 	default:
@@ -209,8 +210,8 @@ func (k routeKind) isPGOWrite() bool {
 		return true
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollection, kindCollectionProfile,
 		kindCollectionLatest, kindCollectionLatestProfile, kindNamespaces,
-		kindServices, kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout,
-		kindOpenAPI, kindConsole:
+		kindServices, kindCatalog, kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback,
+		kindAuthLogout, kindOpenAPI, kindConsole:
 		return false
 	default:
 		return false
@@ -224,7 +225,7 @@ func (k routeKind) isCollectionScoped() bool {
 	case kindCollection, kindCollectionProfile, kindCollectionCancel:
 		return true
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollectionLatest,
-		kindCollectionLatestProfile, kindNamespaces, kindServices, kindWhoami,
+		kindCollectionLatestProfile, kindNamespaces, kindServices, kindCatalog, kindWhoami,
 		kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout, kindOpenAPI, kindConsole:
 		return false
 	default:
@@ -232,11 +233,11 @@ func (k routeKind) isCollectionScoped() bool {
 	}
 }
 
-// isListing reports whether the route is one of the four listing endpoints,
+// isListing reports whether the route is one of the five listing endpoints,
 // which run the algorithm up to the realm step and then read the cache or the configuration.
 func (k routeKind) isListing() bool {
 	switch k {
-	case kindNamespaces, kindServices, kindWhoami, kindLimits:
+	case kindNamespaces, kindServices, kindCatalog, kindWhoami, kindLimits:
 		return true
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollection, kindCollectionProfile,
 		kindCollectionCancel, kindCollectionLatest, kindCollectionLatestProfile, kindAuth, kindAuthLogin,
@@ -303,6 +304,8 @@ func (q *request) labels() (metrics.Endpoint, string) {
 		return metrics.EndpointNamespaces, labelNone
 	case kindServices:
 		return metrics.EndpointServices, labelNone
+	case kindCatalog:
+		return metrics.EndpointCatalog, labelNone
 	case kindWhoami:
 		return metrics.EndpointWhoami, labelNone
 	case kindLimits:

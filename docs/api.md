@@ -64,7 +64,7 @@ The examples in the rest of this guide stay HTTP,
 except where authentication requires TLS;
 on an HTTPS listener this same shape applies to every one of them.
 
-Fifteen routes live under `/v1`; the nine that name a Service or a Collection in the path are:
+Sixteen routes live under `/v1`; the nine that name a Service or a Collection in the path are:
 
 | Route | Methods |
 |---|---|
@@ -78,8 +78,8 @@ Fifteen routes live under `/v1`; the nine that name a Service or a Collection in
 | `/v1/collections/{id}/profile` | GET |
 | `/v1/collections/{id}/cancel` | POST |
 
-Six more routes under `/v1` name neither:
-[Listing endpoints](#listing-endpoints) below covers four of them,
+Seven more routes under `/v1` name neither:
+[Listing endpoints](#listing-endpoints) below covers five of them,
 [Discovering how to log in](#discovering-how-to-log-in) covers `GET /v1/auth`,
 one of the two `/v1` routes that require no credential,
 and `GET /v1/openapi.json` serves the document described just below.
@@ -118,7 +118,7 @@ neither has a credential-placement, authentication, or realm step,
 because each is read before the client holds a credential
 ([Discovering how to log in](#discovering-how-to-log-in)).
 
-1. **Route** — the path must match one of the fifteen `/v1` routes (`404 route_unknown`),
+1. **Route** — the path must match one of the sixteen `/v1` routes (`404 route_unknown`),
    and a profile route must name a known profile (`404 profile_unknown`).
 2. **Method** — `405 method_not_allowed` plus `Allow` otherwise.
 3. **JSON media type** — the two Collection writes,
@@ -275,14 +275,17 @@ GET /v1/namespaces
 GET /v1/namespaces/{ns}/services
 GET /v1/whoami
 GET /v1/limits
+GET /v1/catalog
 ```
 
-Four routes let a script, or [the console](console.md), discover what a realm can reach without already knowing a namespace or a Service name.
+Five routes let a script, or [the console](console.md), discover what a realm can reach without already knowing a namespace or a Service name.
 They read informer caches and configuration, never the API server, take no query parameter
 (any parameter is `400 invalid_parameter`), and answer from the realm the caller's credential resolves to.
-Every array in these responses is `[]`, never `null`, when empty, and lists are sorted by name.
-The client's `namespaces`, `services <namespace>`, `whoami`, and `limits` verbs call these four routes
-and print the bodies below as tables, or verbatim under `--output json`.
+Every array in these responses is `[]`, never `null`, when empty,
+and lists are sorted by name, the catalog by namespace and then by name.
+The client's `namespaces`, `services <namespace>`, `whoami`, and `limits` verbs call four of these routes
+and print the bodies below as tables, or verbatim under `--output json`;
+the catalog backs [the console](console.md) and has no client verb of its own.
 
 ```sh
 curl http://localhost:8080/v1/namespaces
@@ -308,6 +311,22 @@ A namespace the realm does not admit is absent from the namespace list,
 and its Service list is `403 realm_denied` whether or not the namespace holds a Service —
 a namespace whose only Services fall outside `realm.services` is absent from the namespace list the same way,
 because listing it would disclose that it exists.
+
+```sh
+curl http://localhost:8080/v1/catalog
+```
+
+```json
+{"catalog": [{"namespace": "orders", "name": "checkout"}, {"namespace": "payments", "name": "ledger"}]}
+```
+
+The catalog applies the same Service rule across every namespace at once, with no namespace argument to pass,
+and returns the admitted pairs flat, in namespace-then-name order.
+It differs from the Service list in one way: it is filtered rather than refused.
+A realm that admits no namespace gets `200` and `catalog: []`, never `403 realm_denied`,
+because the route names no namespace in its path for a realm to deny.
+A cache read that fails answers `503 discovery_unavailable`,
+the same code every listing endpoint gives for that failure.
 
 ```sh
 curl http://localhost:8080/v1/whoami
@@ -999,7 +1018,7 @@ the gateway forwards that status and body verbatim instead of wrapping it.
 | 401 | `unauthenticated` | No credential, a wrong or expired one, or one that maps to no realm; see [Authentication](#authentication). `WWW-Authenticate` names the scheme. |
 | 403 | `realm_denied` | The realm does not allow this namespace, Service, profile, or PGO action. |
 | 403 | `config_api_disabled` | `pgo.configAPI` is `disabled`; policy reads still work. |
-| 404 | `route_unknown` | The path is not one of the fifteen `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
+| 404 | `route_unknown` | The path is not one of the sixteen `/v1` routes (malformed names and identifiers included), or, under `/auth/`, not one of the three routes, or the browser block is not configured. |
 | 404 | `profile_unknown` | The profile name is not in the profile table. |
 | 404 | `service_not_found` | The Service does not exist in that namespace. |
 | 404 | `pod_not_found` | The pinned Pod is not currently an eligible target. |
