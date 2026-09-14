@@ -633,29 +633,29 @@ the freshness and recovery changes need the cases below, because no existing sce
 
 ### What goes
 
-- [ ] `internal/ui/static/app.js`: `loadNamespaces`, `loadServices`, the `servicesSeq` field and every use of it,
+- [x] `internal/ui/static/app.js`: `loadNamespaces`, `loadServices`, the `servicesSeq` field and every use of it,
       and the `stale` predicate the Service listing passed (`:562-595`, `:335-340`).
       There is no second listing whose late answer can arrive for a namespace the page has left,
       because there is no second listing.
-- [ ] `internal/ui/static/app.js`: the `namespaces` and `services` state fields.
+- [x] `internal/ui/static/app.js`: the `namespaces` and `services` state fields.
       Both become derivations of `state.catalog` at render.
-- [ ] `internal/ui/static/urls.js`: `namespacesURL` and `servicesURL`, which nothing else imports,
+- [x] `internal/ui/static/urls.js`: `namespacesURL` and `servicesURL`, which nothing else imports,
       and their imports in `app.js:9-10`.
-- [ ] The error keys `namespaces` and `services`, and the two `panelError` calls that render them
+- [x] The error keys `namespaces` and `services`, and the two `panelError` calls that render them
       (`:1273`, `:1275`), replaced by one `catalog` key and one call.
 
 ### What arrives
 
-- [ ] `internal/ui/static/urls.js`: `catalogURL()`, built with `build("/v1", ["catalog"])`.
-- [ ] `internal/ui/static/catalogmodel.js`: `namespacesOf(catalog)`, the distinct namespaces in the
+- [x] `internal/ui/static/urls.js`: `catalogURL()`, built with `build("/v1", ["catalog"])`.
+- [x] `internal/ui/static/catalogmodel.js`: `namespacesOf(catalog)`, the distinct namespaces in the
       catalog's order, which is already namespace-then-name, so it compacts and does not sort;
       and `servicesOf(catalog, ns)`, the names under `ns` in the catalog's order.
-- [ ] `internal/ui/static/app.js`: state gains `catalog`, `catalogLoaded`, and `catalogLoading`,
+- [x] `internal/ui/static/app.js`: state gains `catalog`, `catalogLoaded`, and `catalogLoading`,
       the last of which only the Refresh control renders from;
       the instance gains `catalogPending`, `catalogSeq`, `catalogAgain`, and `targetsFor`,
       beside the counters and the `collectionsFor` it already holds (`:335-352`).
       `loadAfterBoot` calls `loadLimits()` and `loadCatalog()` (`:465-468`).
-- [ ] `internal/ui/static/app.js`: `loadCatalog` is the whole lifecycle, and it is this shape:
+- [x] `internal/ui/static/app.js`: `loadCatalog` is the whole lifecycle, and it is this shape:
 
 ```text
 loadCatalog():
@@ -677,7 +677,7 @@ loadCatalog():
       control (`:494-499`, `:527-533`, `:286`), so the timer and the button are one wrapper,
       and a later attempt makes an earlier timer inert by raising the generation.
       Every settled outcome releases the claim, `not_ready` included.
-- [ ] `internal/ui/static/app.js`: `activate` is the callback above, and it tests each fetch separately:
+- [x] `internal/ui/static/app.js`: `activate` is the callback above, and it tests each fetch separately:
 
 ```text
 activate():
@@ -694,25 +694,25 @@ activate():
       (`:568-572`, `:588-594`).
       `maybeLoadCollections` waits on limits and the catalog rather than limits and the Service list,
       and is still started by whichever answers last (`:550-558`, `:638-643`).
-- [ ] `internal/ui/static/app.js`: a **Refresh** on the Service panel calls `loadCatalog`,
+- [x] `internal/ui/static/app.js`: a **Refresh** on the Service panel calls `loadCatalog`,
       disabled while `state.catalogLoading` is true, as the targets and Collections controls are
       (`:1412-1420`, `:1519-1525`).
-- [ ] `internal/ui/static/app.js`: `selectionListed()` is derived from the catalog rather than from the
+- [x] `internal/ui/static/app.js`: `selectionListed()` is derived from the catalog rather than from the
       two deleted arrays (`:1141-1143`).
       It reads the whole catalog and never a filtered menu,
       because it gates the Collections view, the profile URL, and the start control
       (`:638-643`, `:1153-1156`, `:1489-1492`),
       none of which may turn on what a person typed into a filter field.
-- [ ] `internal/ui/static/app.js`: the two `service_not_found` recoveries refetch the catalog.
+- [x] `internal/ui/static/app.js`: the two `service_not_found` recoveries refetch the catalog.
       `afterServiceError` covers targets and Collections (`:901-907`),
       and `onDownload` covers the profile download (`:1073-1075`),
       whose `setState({ downloading: false })` keeps running after the recovery starts (`:1078`).
       Each sets `catalogAgain` instead when a catalog request is already in flight.
       These three are the only refetches that happen without a press.
-- [ ] `internal/ui/static/app.js:63`: the `service_not_found` hint says the page refreshes the Service
+- [x] `internal/ui/static/app.js:63`: the `service_not_found` hint says the page refreshes the Service
       list, which it no longer has; it names the catalog instead.
       The `no_targets` hint beside it (`:64-65`) names the targets list's own Refresh and stands.
-- [ ] `internal/ui/scan_test.go`: the import and export scans gain `namespacesOf` and `servicesOf`.
+- [x] `internal/ui/scan_test.go`: the import and export scans gain `namespacesOf` and `servicesOf`.
 
 ### The selection transition
 
@@ -778,24 +778,24 @@ after the new selection is applied, as they do today (`:930-946`, `:963-977`).
 
 **Tests**
 
-- [ ] `internal/ui/catalogmodel_test.go`: `namespacesOf` over an empty catalog, one namespace,
+- [x] `internal/ui/catalogmodel_test.go`: `namespacesOf` over an empty catalog, one namespace,
       several namespaces each with several Services, and a catalog whose order it must preserve;
       `servicesOf` for a namespace with none, one, and several, and for a namespace the catalog lacks;
       neither mutates its input.
-- [ ] `test/e2e/scenarios_console_test.go`: the load sends `/v1/whoami`, `/v1/limits`, and `/v1/catalog`,
+- [x] `test/e2e/scenarios_console_test.go`: the load sends `/v1/whoami`, `/v1/limits`, and `/v1/catalog`,
       and sends neither listing route, asserted per route with `s.sentTo` and never as a total.
-- [ ] `test/e2e/scenarios_console_test.go`, the freshness change, which no existing scenario reaches:
+- [x] `test/e2e/scenarios_console_test.go`, the freshness change, which no existing scenario reaches:
       a Service created after the catalog answered is absent from the menu,
       changing namespaces sends no request at all,
       and **Refresh** makes it selectable.
-- [ ] `test/e2e/scenarios_console_test.go`: a bookmarked selection is drawn once the catalog answers,
+- [x] `test/e2e/scenarios_console_test.go`: a bookmarked selection is drawn once the catalog answers,
       and on a load where nothing else is touched the catalog's answer is what starts its targets fetch.
       This could fail: it is the path `loadNamespaces` used to own.
       The assertion is scoped to an untouched load, because a port change reaches `loadTargets`
       on its own (`internal/ui/static/app.js:1006-1010`) and this plan does not gate that.
-- [ ] `test/e2e/scenarios_console_test.go`: **Refresh** on the Service panel sends exactly one catalog request
+- [x] `test/e2e/scenarios_console_test.go`: **Refresh** on the Service panel sends exactly one catalog request
       from a boundary, is disabled while that request is held, and redraws both menus from the answer.
-- [ ] `test/e2e/scenarios_console_test.go`, the retry lifecycle, counted per route from a boundary:
+- [x] `test/e2e/scenarios_console_test.go`, the retry lifecycle, counted per route from a boundary:
       a catalog answered `503 not_ready` clears the loading state and schedules one attempt;
       that attempt sends exactly one request;
       a Refresh pressed during the wait sends one request and makes the scheduled attempt a no-op,
@@ -803,38 +803,38 @@ after the new selection is applied, as they do today (`:930-946`, `:963-977`).
       a Refresh or Retry pressed while a request is held sends nothing;
       and a repeated `not_ready` schedules one attempt each time, never two.
       Every one of these could fail, and the first would fail against a guard held across the wait.
-- [ ] `test/e2e/scenarios_console_test.go`, the synchronous claim:
+- [x] `test/e2e/scenarios_console_test.go`, the synchronous claim:
       two presses dispatched in one evaluated expression send one request, not two.
       `s.eval` runs a single expression that can carry both actions
       (`test/e2e/browser_test.go:567-573`), so this needs no export from the page.
       It could fail, and would against a guard that read component state.
-- [ ] `test/e2e/scenarios_console_test.go`: several `404 service_not_found` answers during one held
+- [x] `test/e2e/scenarios_console_test.go`: several `404 service_not_found` answers during one held
       catalog request start exactly one further request when it settles;
       a recovery whose catalog still lists the Service starts no second targets fetch,
       which is what stops the two from recovering at each other;
       and when that follow-up succeeds after a `not_ready`, the earlier timer sends nothing.
-- [ ] `test/e2e/scenarios_console_test.go`, a load whose catalog failed and recovers through Refresh:
+- [x] `test/e2e/scenarios_console_test.go`, a load whose catalog failed and recovers through Refresh:
       the answer starts the first targets and the first Collections fetch, one each,
       and a further Refresh starts neither again.
-- [ ] `test/e2e/scenarios_console_test.go`, the two activation conditions, counted separately:
+- [x] `test/e2e/scenarios_console_test.go`, the two activation conditions, counted separately:
       with the catalog held, let limits answer, change the port so targets are fetched,
       then release the catalog — the Collections fetch still starts.
       This is the case a single combined condition fails.
-- [ ] `test/e2e/scenarios_console_test.go`: a catalog answered `503` on a Refresh keeps the earlier menus
+- [x] `test/e2e/scenarios_console_test.go`: a catalog answered `503` on a Refresh keeps the earlier menus
       with the error beside them.
       A `401` showing the sign-in control is asserted under `basic`, or under `oidc` in the returned state,
       because an ordinary eligible `oidc` `401` navigates to the login instead
       (`internal/ui/static/app.js:432-433`, `:512-524`).
-- [ ] `test/e2e/scenarios_console_test.go`: a profile download answered `404 service_not_found`
+- [x] `test/e2e/scenarios_console_test.go`: a profile download answered `404 service_not_found`
       refetches the catalog and still clears `downloading` (`internal/ui/static/app.js:1073-1078`).
-- [ ] `test/e2e/scenarios_console_test.go`: with both filter fields carrying a query that matches
+- [x] `test/e2e/scenarios_console_test.go`: with both filter fields carrying a query that matches
       neither selected value, both menus still show the pair — `filterOptions` keeps the current value —
       and the profile URL is still built and the Collections view still offered.
       The browser cannot tell this page from one whose membership read the retained menus,
       because a menu that retains its value answers the same;
       that `selectionListed()` reads the whole catalog is held by reading the source,
       which is what the scan tests are for.
-- [ ] `test/e2e/scenarios_console_test.go`: the existing case that drives a Service listing answered for a
+- [x] `test/e2e/scenarios_console_test.go`: the existing case that drives a Service listing answered for a
       namespace the page had left (`:453-467`) goes with the listing it drove.
       **The identity-disclosure cases stay as they are**: they are driven by a targets denial, which is a
       real answer of a real route (`:360-411`).
@@ -845,12 +845,12 @@ after the new selection is applied, as they do today (`:930-946`, `:963-977`).
       opens no disclosure, and asks for no identity — is replaced by delayed **targets** and
       **Collections** answers across a selection change and a return to the original pair,
       whose generations this transition still raises.
-- [ ] Two limits of the browser harness belong in these instructions.
+- [x] Two limits of the browser harness belong in these instructions.
       `holdRequest` holds a request before it reaches the gateway (`test/e2e/browser_test.go:466-473`),
       so no case may assume an already-computed successful answer can be replayed;
       and `answerRequest` writes an error envelope (`:511-529`),
       so a case needing an old success needs an injection extension named as part of its own task.
-- [ ] The two console scenarios and both authentication scenarios pass unchanged otherwise.
+- [x] The two console scenarios and both authentication scenarios pass unchanged otherwise.
 
 **Validation**
 
@@ -864,7 +864,7 @@ An end-to-end failure is classified by the step that failed:
 `TestMain` resolves the lane, creates the cluster, builds the images, connects, provisions,
 and deploys the gateway before any scenario runs (`test/e2e/harness_test.go:171-270`).
 
-- [ ] Commit: `refactor(ui): fill both menus from one catalog`
+- [x] Commit: `refactor(ui): fill both menus from one catalog`
 
 ---
 

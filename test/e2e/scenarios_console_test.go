@@ -77,7 +77,36 @@ const (
 	// which is longer than the sampling above the Pods are busy with.
 	consoleCancelInterval = 10 * time.Second
 	consoleCancelBudget   = 90 * time.Second
+
+	// consoleNotReadyDelay is how long the page waits before the attempt a not_ready answer schedules,
+	// which is notReadyDelay in internal/ui/static/app.js.
+	consoleNotReadyDelay = 2 * time.Second
+	// consoleNotReadyWindow bounds what a step may spend between writing a not_ready
+	// and pressing a control that has to land while the scheduled attempt is still pending.
+	// A step that spends more fails,
+	// so such a press is inside the wait by construction rather than on a machine that happened to be quick.
+	consoleNotReadyWindow = consoleNotReadyDelay / 2
+	// consoleLateRequest is how long a step waits before it reports that no late request followed:
+	// past the delay above, with room for one to be recorded.
+	consoleLateRequest = consoleNotReadyDelay + time.Second
+	// consoleRecorded is a wait past the moment a request the page starts reaches the recorder,
+	// so a count that has to read zero is read after the events that would carry one.
+	consoleRecorded = 500 * time.Millisecond
+
+	// latecomerServiceName is the Service created after the page's catalog had already answered.
+	latecomerServiceName = "latecomer"
 )
+
+// consoleCatalogRoute is the one listing the console reads: the namespace and Service pairs the realm admits.
+// Both menus are drawn from its answer, so the page asks for no namespace listing and no Service listing.
+const consoleCatalogRoute = gatewayOrigin + "/v1/catalog"
+
+// isCatalogGET selects the catalog request among the ones its Fetch pattern reaches.
+// The URL carries no query, because the realm is what bounds the answer.
+func isCatalogGET(u string) bool { return u == consoleCatalogRoute }
+
+// isCatalogRequest matches that request among the ones the browser has recorded.
+func isCatalogRequest(r sentRequest) bool { return r.method == http.MethodGet && isCatalogGET(r.url) }
 
 // scenarioConsoleOIDC drives the console in a browser against a gateway in oidc mode with PGO on.
 // It is the first thing that executes app.js: every proof below is the page running,
@@ -86,8 +115,8 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	b := requireBrowser(t, h)
 	ns := h.Namespace(t)
 	deployTestApp(t, h, ns)
-	// The second Service is created before the page loads the Service list it keeps,
-	// because the page fetches that list on a namespace change and on a service_not_found and on nothing else,
+	// The second Service is created before the page loads the catalog it keeps,
+	// because the page reads that catalog once at load and again only on a Refresh or a service_not_found,
 	// and every fixture between here and that load is time for the informer to deliver it.
 	nobodyService(t, h, ns)
 	ctx := t.Context()
@@ -217,10 +246,11 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	// whether a value is listed is read from the whole listing,
 	// which is also what draws the line saying this one is not, under a query as without one.
 	// The load has settled by here: the Profile panel standing is the limits answer applied,
-	// and the page asks for no Services under a namespace outside the listing,
+	// and the page draws both menus from the one catalog answer it already holds,
 	// so a request recorded past the boundary below is one the filter sent.
 	s.waitFor(t, "the Profile panel draws its menu", profileMenuDrawn)
 	bookmarkRoutes := []consoleRoute{
+		{"the catalog", consoleCatalogRoute},
 		{"the namespace listing", gatewayOrigin + "/v1/namespaces"},
 		{"the limits", gatewayOrigin + "/v1/limits"},
 		{"the identity", gatewayOrigin + "/v1/whoami"},
@@ -262,11 +292,27 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	assertRenderedAsText(t, s, "the load with the hostile query", consolePrincipalPayload, consoleQueryPayload)
 	s.assertClean(t, "the login round trip")
 
+	// route is the Service's Collections route: the list the page reads and the start it posts.
+	route := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/collections"
+
 	// The second load is the working one: a listed namespace and a listed Service.
+	// What that load asks for is counted per route from the boundary taken before the navigation:
+	// the identity, the limits, and the one catalog behind both menus,
+	// and neither the namespace listing nor the Service listing, which the page no longer has.
+	loadFrom := countRoutes(s, ns, testAppName)
+	loadAt := s.requestCount()
 	s.run(t, "open the console on the test app",
 		chromedp.Navigate(gatewayOrigin+uiPath+"?"+url.Values{"ns": {ns}, "svc": {testAppName}}.Encode()))
-	s.waitFor(t, "the Service list answers", `document.querySelector(".panels") !== null`)
+	s.waitFor(t, "the console renders", `document.querySelector(".panels") !== null`)
 	s.waitFor(t, "the profile URL is built", `(document.querySelector("input.url") || {}).value !== ""`)
+	// The Collections fetch is awaited on its own, because the limits and the catalog answer in either order
+	// and it is whichever of the two comes last that starts it.
+	s.awaitRequestSince(t, loadAt, "the load", func(r sentRequest) bool {
+		return r.method == http.MethodGet && strings.HasPrefix(r.url, route)
+	})
+	s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
+	assertSent(t, s, ns, testAppName, loadFrom,
+		consoleCounts{Catalog: 1, Targets: 1, Collections: 1, Limits: 1, Whoami: 1}, "the load")
 
 	// The disclosure is closed on load: what a realm admits is read when something asks for it.
 	// The property is read and not the attribute, because open is the element's own state
@@ -319,7 +365,6 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	// Start collection, pressed twice through its inline confirmation:
 	// first as a double-click, which arms the control and sends nothing,
 	// then once more past the window, which sends the one POST.
-	route := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/collections"
 	pressTwiceInsideTheWindow(t, s, route)
 	s.run(t, "confirm the start", chromedp.Click(control("Confirm start"), chromedp.BySearch))
 	s.awaitRequest(t, http.MethodPost, route)
@@ -423,6 +468,7 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	// and a filter lowercases both sides before it compares them.
 	const unmatched = "NO SUCH NAME"
 	filterRoutes := []consoleRoute{
+		{"the catalog", consoleCatalogRoute},
 		{"the namespace listing", gatewayOrigin + "/v1/namespaces"},
 		{"the Service listing", gatewayOrigin + "/v1/namespaces/" + ns + "/services"},
 		{"the targets listing", gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/targets"},
@@ -527,7 +573,7 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	typeFilter(t, s, "Namespace filter", "")
 	typeFilter(t, s, "Service filter", "")
 	s.chooseOption(t, "Namespace", ns)
-	s.waitFor(t, "the Service list answers for the namespace chosen again", serviceOffered(testAppName))
+	s.waitFor(t, "the Service menu offers the namespace's Services again", serviceOffered(testAppName))
 	s.chooseOption(t, "Service", testAppName)
 	s.waitFor(t, "the Pod control lists a Pod again", podListed)
 
@@ -538,7 +584,6 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	targetsRoute := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/targets"
 	isTargetsGET := func(u string) bool { return strings.HasPrefix(u, targetsRoute) && strings.Contains(u, "explain=true") }
 	profileRoute := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/profiles/heap"
-	servicesRoute := gatewayOrigin + "/v1/namespaces/" + ns + "/services"
 	whoamiRoute := gatewayOrigin + "/v1/whoami"
 	denied := writtenResponse{status: http.StatusForbidden, code: "realm_denied",
 		message: "the realm does not admit this request"}
@@ -638,26 +683,39 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	s.waitFor(t, "the identity refetch succeeds and takes its error with it",
 		"!("+identityRecovery+")")
 
-	// A stale Service listing's denial is discarded before it is recorded, so it opens nothing.
-	// The namespace is chosen, left for the placeholder, and chosen again,
-	// so the page is back on the namespace the parked request asked for
-	// and no comparison of the namespace can tell that answer from a current one.
-	answerServices := s.answerRequest(t, "the Service listing for a namespace the page leaves",
-		servicesRoute, func(u string) bool { return u == servicesRoute },
-		func() { s.chooseOption(t, "Namespace", ns) }, denied)
-	s.chooseOption(t, "Namespace", "")
-	s.chooseOption(t, "Namespace", ns)
-	// The second Service listing reaches the gateway and answers, which the Service menu offering the Service says.
-	// It is awaited before the parked answer is written,
-	// because a success landing after the denial would clear the error under the key
-	// and leave the case green against a page that recorded it.
-	s.waitFor(t, "the Service list answers for the namespace chosen again", serviceOffered(testAppName))
-	answerServices()
+	// A targets denial and a Collections denial the page has moved past are discarded before either is recorded,
+	// so neither opens the disclosure, neither shows an error, and neither asks for the identity.
+	// Both are parked while the Service is left for another and chosen again,
+	// so the page is back on the pair the parked requests asked for
+	// and no comparison of the namespace and the Service can tell either answer from a current one:
+	// the generation each fetch stamps is what tells them apart.
+	closeIdentity("the two answers the page moves past")
+	movedPast := countRoutes(s, ns, testAppName)
+	answerStaleTargets := s.answerRequest(t, "the targets listing for a selection the page leaves",
+		targetsRoute+"*", isTargetsGET, pressTargetsRefresh(t, s), denied)
+	answerStaleCollections := s.answerRequest(t, "the Collections listing for a selection the page leaves",
+		route, func(u string) bool { return u == route },
+		func() {
+			s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
+			s.run(t, "press Refresh on the Collections table", chromedp.Click(refreshButton("Collections"), chromedp.BySearch))
+		}, denied)
+	s.chooseOption(t, "Service", nobodyServiceName)
 	s.chooseOption(t, "Service", testAppName)
 	s.waitFor(t, "the Pod control lists a Pod again", podListed)
-	assertIdentityOpen(t, s, "a Service listing answered for a namespace the page had left", false)
-	if selection := s.textOf(t, ".selection"); strings.Contains(selection, "realm_denied") {
-		t.Fatalf("the Service panel shows a denial the page asked for before it left the namespace:\n%s", selection)
+	answerStaleTargets()
+	answerStaleCollections()
+	// A round trip of the page's own is run after both answers were written,
+	// because "nothing was recorded" is only readable once the answers have been delivered,
+	// and a fulfilled answer reaches the page long before a request reaches the gateway and comes back.
+	s.run(t, "press Refresh on the targets list", chromedp.Click(refreshButton("Profile"), chromedp.BySearch))
+	s.waitFor(t, "the targets Refresh control is idle", refreshEnabled("Profile"))
+	assertIdentityOpen(t, s, "two answers the page had moved past", false)
+	if shown := s.textOf(t, ".panels"); strings.Contains(shown, "realm_denied") {
+		t.Fatalf("a panel shows a denial the page asked for before it left the selection:\n%s", shown)
+	}
+	if got := countRoutes(s, ns, testAppName).since(movedPast); got.Whoami != 0 {
+		t.Fatalf("two answers the page had moved past asked for the identity %d times, want none\n%s",
+			got.Whoami, s.report())
 	}
 
 	// A cancel's 404 collection_not_found refetches the identity and opens nothing:
@@ -751,6 +809,325 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 				ended, s.report())
 		}
 	}
+
+	// The catalog's own lifecycle, on the page the cases above left on a listed pair.
+	// Every count below is per route from a boundary of that case's own,
+	// because the recorder holds the navigation and every static asset beside the page's own fetches.
+	notReady := writtenResponse{status: http.StatusServiceUnavailable, code: "not_ready",
+		message: "the gateway is still filling its cache"}
+	missing := writtenResponse{status: http.StatusNotFound, code: "service_not_found",
+		message: "no such Service"}
+	unavailable := writtenResponse{status: http.StatusServiceUnavailable, code: "discovery_unavailable",
+		message: "the gateway could not read its cache"}
+
+	t.Run("Refresh reads the catalog once", func(t *testing.T) {
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		namespaceMenu := readMenu(t, s, "Namespace")
+		serviceMenu := readMenu(t, s, "Service")
+		catalogFrom := countRoutes(s, ns, testAppName)
+		// The GET is held at the browser while the control is read disabled and pressed again to no effect,
+		// so the in-flight state is observed rather than inferred from a control that was enabled before and after.
+		// The control renders whatever that state is, so it never goes away while its request stands unanswered.
+		release := holdCatalogRefresh(t, s, "the Refresh of the Service panel")
+		pressRefreshWhileHeld(t, s, "Service")
+		release()
+		s.waitFor(t, "the Service Refresh control is idle again", refreshEnabled("Service"))
+		assertSent(t, s, ns, testAppName, catalogFrom, consoleCounts{Catalog: 1}, "Refresh on the Service panel")
+		if s.heldCount() != 0 {
+			t.Fatalf("a request is still held after the Refresh of the Service panel\n%s", s.report())
+		}
+		// Both menus are drawn from the answer, and this answer names what the last one named.
+		// That an answer naming something else redraws them is the case below on a Service created since.
+		// The Service menu is held to the exact names it offered, which are this namespace's and the scenario's own;
+		// the namespace menu is held to the one the page is on,
+		// because its options are the cluster's and a namespace another test left terminating leaves it as it goes.
+		assertMenusStand(t, s, "Service", serviceMenu, "the Refresh of the Service panel")
+		got := readMenu(t, s, "Namespace")
+		if got.Value != ns || !slices.Contains(got.Options, ns) {
+			t.Fatalf("the namespace menu reads %q of %q after the Refresh, want %q offered and chosen",
+				got.Value, got.Options, ns)
+		}
+		if len(got.Options) != len(namespaceMenu.Options) {
+			t.Logf("the namespace menu offers %d of the cluster's namespaces after the Refresh and %d before it",
+				len(got.Options), len(namespaceMenu.Options))
+		}
+	})
+
+	t.Run("two presses in one expression read the catalog once", func(t *testing.T) {
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		catalogFrom := countRoutes(s, ns, testAppName)
+		at := s.requestCount()
+		pressRefreshTwice(t, s, "Service")
+		s.awaitRequestSince(t, at, "two presses in one expression", isCatalogRequest)
+		s.waitFor(t, "the Service Refresh control is idle again", refreshEnabled("Service"))
+		assertSent(t, s, ns, testAppName, catalogFrom, consoleCounts{Catalog: 1}, "two presses in one expression")
+	})
+
+	t.Run("the attempt a not_ready schedules reads the catalog once", func(t *testing.T) {
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		catalogFrom := countRoutes(s, ns, testAppName)
+		// The attempt the first answer schedules is caught and held unanswered,
+		// so the page is read with a catalog request in flight and the failed one's error still standing.
+		answer := s.answerRequest(t, "the catalog answered not_ready", consoleCatalogRoute, isCatalogGET,
+			pressServiceRefresh(t, s), notReady)
+		release := s.holdRequest(t, "the attempt the not_ready scheduled", consoleCatalogRoute, isCatalogGET, answer)
+		pressRefreshWhileHeld(t, s, "Service")
+		var retried bool
+		s.eval(t, "press Retry beside the two menus while a request is in flight", pressCatalogRetry, &retried)
+		if !retried {
+			t.Fatalf("the failed catalog offers no Retry beside the two menus:\n%s", s.textOf(t, ".selection"))
+		}
+		release()
+		s.waitFor(t, "the error beside the two menus goes with the answer", `(`+catalogError+`) === ""`)
+		s.run(t, "wait past the delay a not_ready schedules", chromedp.Sleep(consoleLateRequest))
+		assertSent(t, s, ns, testAppName, catalogFrom, consoleCounts{Catalog: 2}, "a catalog answered not_ready")
+	})
+
+	t.Run("a repeated not_ready schedules one attempt each time", func(t *testing.T) {
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		catalogFrom := countRoutes(s, ns, testAppName)
+		first := s.answerRequest(t, "the catalog answered not_ready", consoleCatalogRoute, isCatalogGET,
+			pressServiceRefresh(t, s), notReady)
+		// The second entry's press is the first entry's answer, so it catches the attempt that answer schedules.
+		second := s.answerRequest(t, "the attempt the first not_ready scheduled", consoleCatalogRoute,
+			isCatalogGET, first, notReady)
+		at := s.requestCount()
+		second()
+		// The attempt is awaited as a request and not as a render,
+		// because a page that scheduled none would leave the error standing
+		// and report a missing attempt as a wait for that error to go.
+		s.awaitRequestSince(t, at, "the attempt the second not_ready scheduled", isCatalogRequest)
+		s.waitFor(t, "the error beside the two menus goes with the answer", `(`+catalogError+`) === ""`)
+		s.run(t, "wait past the delay a not_ready schedules", chromedp.Sleep(consoleLateRequest))
+		assertSent(t, s, ns, testAppName, catalogFrom, consoleCounts{Catalog: 3}, "two not_ready answers in a row")
+	})
+
+	t.Run("a Refresh inside the wait makes the scheduled attempt a no-op", func(t *testing.T) {
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		catalogFrom := countRoutes(s, ns, testAppName)
+		answer := s.answerRequest(t, "the catalog answered not_ready", consoleCatalogRoute, isCatalogGET,
+			pressServiceRefresh(t, s), notReady)
+		answered := time.Now()
+		at := s.requestCount()
+		answer()
+		// A not_ready clears the loading state, which is the control standing enabled again
+		// while the attempt that answer scheduled is still pending.
+		s.waitFor(t, "the Service Refresh control is idle after the not_ready", refreshEnabled("Service"))
+		pressServiceRefresh(t, s)()
+		if waited := time.Since(answered); waited >= consoleNotReadyWindow {
+			t.Fatalf("the Refresh was pressed %v after the not_ready, want under %v:"+
+				" the press has to land while the attempt that answer scheduled is still pending",
+				waited, consoleNotReadyWindow)
+		}
+		s.awaitRequestSince(t, at, "the Refresh pressed inside the wait", isCatalogRequest)
+		s.waitFor(t, "the error beside the two menus goes with the answer", `(`+catalogError+`) === ""`)
+		s.run(t, "wait past the delay a not_ready schedules", chromedp.Sleep(consoleLateRequest))
+		assertSent(t, s, ns, testAppName, catalogFrom, consoleCounts{Catalog: 2},
+			"a Refresh pressed inside the wait a not_ready started")
+	})
+
+	t.Run("service_not_found answers during one held catalog request start one refetch", func(t *testing.T) {
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		s.waitFor(t, "the targets Refresh control is idle", refreshEnabled("Profile"))
+		// One catalog request stands sent and unanswered while two targets answers say the Service has moved.
+		catalog := s.answerRequest(t, "the catalog held while the Service goes missing", consoleCatalogRoute,
+			isCatalogGET, pressServiceRefresh(t, s), notReady)
+		for i := range 2 {
+			what := fmt.Sprintf("the targets listing answered service_not_found (%d of 2)", i+1)
+			answer := s.answerRequest(t, what, targetsRoute+"*", isTargetsGET, pressTargetsRefresh(t, s), missing)
+			answer()
+			s.waitFor(t, "the targets Refresh control is idle after "+what, refreshEnabled("Profile"))
+		}
+		if shown := s.textOf(t, ".request"); !strings.Contains(shown, "service_not_found") {
+			t.Fatalf("the Profile panel does not show the answer that says the Service has moved:\n%s", shown)
+		}
+		// The refetch both answers recorded goes out when the held request settles, once,
+		// and raises the generation, so the attempt the not_ready scheduled sends nothing.
+		heldFrom := countRoutes(s, ns, testAppName)
+		at := s.requestCount()
+		catalog()
+		// The refetch is awaited as a request and not as a render,
+		// because a page that started none would leave the error standing
+		// and report a missing refetch as a wait for that error to go.
+		s.awaitRequestSince(t, at, "the refetch two service_not_found answers asked for", isCatalogRequest)
+		s.waitFor(t, "the error beside the two menus goes with the refetch", `(`+catalogError+`) === ""`)
+		s.run(t, "wait past the delay a not_ready schedules", chromedp.Sleep(consoleLateRequest))
+		// The refetch's answer still lists the Service,
+		// so it repeats neither the targets fetch nor the Collections fetch this selection has already had.
+		assertSent(t, s, ns, testAppName, heldFrom, consoleCounts{Catalog: 1},
+			"the catalog refetch two service_not_found answers asked for")
+		s.run(t, "press Refresh on the targets list", chromedp.Click(refreshButton("Profile"), chromedp.BySearch))
+		s.waitFor(t, "the Pod control lists a Pod again", podListed)
+	})
+
+	t.Run("a download answered service_not_found refetches the catalog", func(t *testing.T) {
+		s.waitFor(t, "the Pod control lists a Pod", podListed)
+		s.waitFor(t, "the Download control is idle", downloadIdle)
+		downloadFrom := countRoutes(s, ns, testAppName)
+		at := s.requestCount()
+		answer := s.answerRequest(t, "the profile download answered service_not_found", profileRoute+"*",
+			func(u string) bool { return strings.HasPrefix(u, profileRoute) },
+			func() { s.run(t, "press Download", chromedp.Click(control("Download"), chromedp.BySearch)) }, missing)
+		answer()
+		s.awaitRequestSince(t, at, "the catalog refetch the download asks for", isCatalogRequest)
+		// The refetch starts beside the download's own end, and the end still runs.
+		s.waitFor(t, "the Download control is idle again", downloadIdle)
+		assertSent(t, s, ns, testAppName, downloadFrom, consoleCounts{Catalog: 1},
+			"a download answered service_not_found")
+		// A download that succeeds takes the error the case wrote with it,
+		// so the page is left as the case found it.
+		s.run(t, "press Download", chromedp.Click(control("Download"), chromedp.BySearch))
+		s.awaitDownload(t, "the profile download that succeeds")
+		s.waitFor(t, "the error beside Download goes with the answer",
+			fmt.Sprintf(`!(%s || { textContent: "" }).textContent.includes("service_not_found")`, profilePanel))
+	})
+
+	t.Run("a catalog answered 503 keeps the menus it drew", func(t *testing.T) {
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		namespaceMenu := readMenu(t, s, "Namespace")
+		serviceMenu := readMenu(t, s, "Service")
+		answer := s.answerRequest(t, "the catalog answered 503", consoleCatalogRoute, isCatalogGET,
+			pressServiceRefresh(t, s), unavailable)
+		answer()
+		s.waitFor(t, "the error stands beside the two menus", `(`+catalogError+`).includes("discovery_unavailable")`)
+		assertMenusStand(t, s, "Namespace", namespaceMenu, "a catalog answered 503")
+		assertMenusStand(t, s, "Service", serviceMenu, "a catalog answered 503")
+		// The Retry beside them reads the catalog again, which takes the error with it.
+		var retried bool
+		s.eval(t, "press Retry beside the two menus", pressCatalogRetry, &retried)
+		if !retried {
+			t.Fatalf("the failed catalog offers no Retry beside the two menus:\n%s", s.textOf(t, ".selection"))
+		}
+		s.waitFor(t, "the error beside the two menus goes with the answer", `(`+catalogError+`) === ""`)
+	})
+
+	t.Run("a Service created after the catalog answered arrives with Refresh", func(t *testing.T) {
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		unmatchedService(t, h, ns, latecomerServiceName)
+		awaitCatalogLists(t, client, bearer, gatewayOrigin+"/v1/catalog", ns, latecomerServiceName)
+		// The menu is the answer the page already has, which named no such Service.
+		if got := readMenu(t, s, "Service"); slices.Contains(got.Options, latecomerServiceName) {
+			t.Fatalf("the Service menu offers %q from a catalog answered before that Service existed; the options are %q",
+				latecomerServiceName, got.Options)
+		}
+		// Changing namespaces asks for nothing at all: both menus come from the answer the page holds.
+		freshnessFrom := countRoutes(s, ns, testAppName)
+		s.chooseOption(t, "Namespace", "")
+		s.waitFor(t, "the Service menu is disabled with no namespace chosen", menuDisabled("Service"))
+		s.chooseOption(t, "Namespace", ns)
+		s.waitFor(t, "the Service menu offers the namespace's Services again", serviceOffered(testAppName))
+		s.run(t, "let any fetch a namespace change starts be recorded", chromedp.Sleep(consoleRecorded))
+		assertSent(t, s, ns, testAppName, freshnessFrom, consoleCounts{}, "changing namespaces")
+		if got := readMenu(t, s, "Service"); slices.Contains(got.Options, latecomerServiceName) {
+			t.Fatalf("a namespace change put %q in the Service menu, which only a new catalog answer can:"+
+				" the options are %q", latecomerServiceName, got.Options)
+		}
+		// Refresh is what makes it selectable.
+		pressServiceRefresh(t, s)()
+		s.waitFor(t, "the Service menu offers the Service created since", serviceOffered(latecomerServiceName))
+		s.chooseOption(t, "Service", latecomerServiceName)
+		if got := readMenu(t, s, "Service"); got.Value != latecomerServiceName {
+			t.Fatalf("the Service menu reads %q with the Service created since chosen, want %q",
+				got.Value, latecomerServiceName)
+		}
+	})
+
+	// The page goes back to the pair the cases below read.
+	s.chooseOption(t, "Service", testAppName)
+	s.waitFor(t, "the Pod control lists a Pod again", podListed)
+
+	t.Run("a bookmarked selection is drawn by the catalog answer", func(t *testing.T) {
+		loadFrom := countRoutes(s, ns, testAppName)
+		at := s.requestCount()
+		release := loadWithHeldCatalog(t, s, "the load whose catalog is held", ns, testAppName)
+		// The limits answer has landed and nothing has drawn the pair,
+		// because nothing the page holds yet says that pair exists.
+		s.waitFor(t, "the Profile panel draws its menu", profileMenuDrawn)
+		if got := readMenu(t, s, "Namespace"); len(got.Options) != 0 || got.Value != "" {
+			t.Fatalf("the namespace menu reads %q of %q with the catalog held, want nothing offered and nothing chosen",
+				got.Value, got.Options)
+		}
+		if got := readMenu(t, s, "Service"); len(got.Options) != 0 || got.Value != "" {
+			t.Fatalf("the Service menu reads %q of %q with the catalog held, want nothing offered and nothing chosen",
+				got.Value, got.Options)
+		}
+		assertSent(t, s, ns, testAppName, loadFrom, consoleCounts{Catalog: 1, Limits: 1, Whoami: 1},
+			"a load whose catalog is held")
+		release()
+		// The answer is what draws the pair and what starts the targets fetch that pair is owed,
+		// on a load where nothing else was touched.
+		s.awaitRequestSince(t, at, "the targets fetch the catalog answer starts", func(r sentRequest) bool {
+			return r.method == http.MethodGet && isTargetsGET(r.url)
+		})
+		s.waitFor(t, "the Pod control lists a Pod", podListed)
+		if got := readMenu(t, s, "Namespace"); got.Value != ns {
+			t.Fatalf("the namespace menu reads %q once the catalog answered, want the bookmarked %q", got.Value, ns)
+		}
+		if got := readMenu(t, s, "Service"); got.Value != testAppName {
+			t.Fatalf("the Service menu reads %q once the catalog answered, want the bookmarked %q",
+				got.Value, testAppName)
+		}
+	})
+
+	t.Run("a catalog that failed on load recovers through Refresh", func(t *testing.T) {
+		loadFrom := countRoutes(s, ns, testAppName)
+		answer := s.answerRequest(t, "the catalog of a load that fails", consoleCatalogRoute, isCatalogGET,
+			openConsole(t, s, "open the console for the load whose catalog fails", ns, testAppName), unavailable)
+		answer()
+		s.waitFor(t, "the error stands beside the two menus", `(`+catalogError+`).includes("discovery_unavailable")`)
+		s.waitFor(t, "the Profile panel draws its menu", profileMenuDrawn)
+		assertSent(t, s, ns, testAppName, loadFrom, consoleCounts{Catalog: 1, Limits: 1, Whoami: 1},
+			"a load whose catalog failed")
+		// The answer that recovers is what starts the first targets fetch and the first Collections fetch.
+		failedFrom := countRoutes(s, ns, testAppName)
+		at := s.requestCount()
+		pressServiceRefresh(t, s)()
+		s.awaitRequestSince(t, at, "the Collections fetch the catalog answer starts", func(r sentRequest) bool {
+			return r.method == http.MethodGet && strings.HasPrefix(r.url, route)
+		})
+		s.waitFor(t, "the Pod control lists a Pod", podListed)
+		s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
+		assertSent(t, s, ns, testAppName, failedFrom, consoleCounts{Catalog: 1, Targets: 1, Collections: 1},
+			"the Refresh that recovered the catalog")
+		// A further Refresh starts neither again: this selection has had both.
+		recoveredFrom := countRoutes(s, ns, testAppName)
+		again := s.requestCount()
+		pressServiceRefresh(t, s)()
+		s.awaitRequestSince(t, again, "a second Refresh of the Service panel", isCatalogRequest)
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		s.run(t, "let any fetch the answer starts be recorded", chromedp.Sleep(consoleRecorded))
+		assertSent(t, s, ns, testAppName, recoveredFrom, consoleCounts{Catalog: 1},
+			"a second Refresh of the Service panel")
+	})
+
+	t.Run("the Collections fetch starts on the catalog answer after a port change", func(t *testing.T) {
+		at := s.requestCount()
+		release := loadWithHeldCatalog(t, s, "the load whose catalog is held past a port change", ns, testAppName)
+		s.waitFor(t, "the Profile panel draws its menu", profileMenuDrawn)
+		// A port change reaches the targets fetch carrying no membership check of its own,
+		// so that fetch is this selection's before anything has said the selection exists.
+		// The fetch records the selection it ran for when it starts, which the request being recorded says.
+		choosePort(t, s, "port:6061")
+		s.awaitRequestSince(t, at, "the targets fetch the port change starts", func(r sentRequest) bool {
+			return r.method == http.MethodGet && isTargetsGET(r.url)
+		})
+		portFrom := countRoutes(s, ns, testAppName)
+		n := s.requestCount()
+		release()
+		// The catalog answer owes this selection its Collections list and no second targets fetch.
+		// One condition over both would leave that list unstarted.
+		s.awaitRequestSince(t, n, "the Collections fetch the catalog answer starts", func(r sentRequest) bool {
+			return r.method == http.MethodGet && strings.HasPrefix(r.url, route)
+		})
+		s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
+		s.run(t, "let any fetch the answer starts be recorded", chromedp.Sleep(consoleRecorded))
+		assertSent(t, s, ns, testAppName, portFrom, consoleCounts{Collections: 1},
+			"the catalog answer after a port change")
+	})
+
+	// The port goes back to the gateway's default, and the page to the state the scale-down below reads.
+	choosePort(t, s, "default")
+	s.waitFor(t, "the Pod control lists a Pod again", podListed)
 
 	// The app is scaled to zero as the scenario's last step against it, because it does not come back.
 	// The test awaits the empty targets answer through a request of its own under the same credential,
@@ -900,6 +1277,24 @@ func scenarioConsoleBasic(t *testing.T, h *Harness) {
 	if n := s.challengeCount(); n != 1 {
 		t.Fatalf("the download raised another challenge: %d in all, want 1", n)
 	}
+
+	// A catalog answered 401 shows the sign-in notice beside the two menus and keeps them.
+	// It is read here and not under oidc,
+	// where a 401 the page is eligible to navigate on takes the browser to the login instead of showing anything.
+	namespaceMenu := readMenu(t, s, "Namespace")
+	serviceMenu := readMenu(t, s, "Service")
+	answer := s.answerRequest(t, "the catalog answered 401", consoleCatalogRoute, isCatalogGET,
+		pressServiceRefresh(t, s),
+		writtenResponse{status: http.StatusUnauthorized, code: "unauthorized", message: "sign in to continue"})
+	answer()
+	s.waitFor(t, "the sign-in notice stands beside the two menus", catalogSignIn)
+	// An answer that failed replaces no catalog, so both menus are the ones the last answer drew.
+	assertMenusStand(t, s, "Namespace", namespaceMenu, "a catalog answered 401")
+	assertMenusStand(t, s, "Service", serviceMenu, "a catalog answered 401")
+	// The answer carried no challenge, so the browser asked for no credential of its own.
+	if n := s.challengeCount(); n != 1 {
+		t.Fatalf("a catalog answered 401 raised another challenge: %d in all, want 1", n)
+	}
 	s.assertClean(t, "the console scenario")
 }
 
@@ -941,15 +1336,22 @@ const nobodyServiceName = "nobody"
 // because a manifest would be a second fixture for one selector.
 func nobodyService(t *testing.T, h *Harness, ns string) {
 	t.Helper()
+	unmatchedService(t, h, ns, nobodyServiceName)
+}
+
+// unmatchedService creates the Service nobodyService describes, under the name given,
+// so a case that needs a second one names it without a fixture of its own.
+func unmatchedService(t *testing.T, h *Harness, ns, name string) {
+	t.Helper()
 	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: nobodyServiceName},
+		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{testAppLabel: nobodyServiceName},
+			Selector: map[string]string{testAppLabel: name},
 			Ports:    []corev1.ServicePort{{Name: "pprof", Port: 6060, Protocol: corev1.ProtocolTCP}},
 		},
 	}
 	if _, err := h.Client.CoreV1().Services(ns).Create(t.Context(), svc, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("create the Service %s/%s: %v", ns, nobodyServiceName, err)
+		t.Fatalf("create the Service %s/%s: %v", ns, name, err)
 	}
 }
 
@@ -1367,7 +1769,7 @@ const pressIdentityRetry = `((e) => { const b = e && [...e.querySelectorAll("but
 	identityErrorBox + `)`
 
 // serviceOffered is the expression that is true while the Service menu offers the Service named,
-// which is a Service listing's answer having been applied.
+// which is the catalog the page holds naming it under the namespace the page is on.
 func serviceOffered(svc string) string {
 	return fmt.Sprintf(`(() => {
   const l = [...document.querySelectorAll("label")].find((l) => l.querySelector("select") && l.textContent.trim().startsWith("Service"));
@@ -1742,6 +2144,232 @@ func assertNothingSent(t *testing.T, s *session, routes []consoleRoute, since []
 			t.Fatalf("%s sent %d requests to %s, want none: it narrows what the page already holds\n%s",
 				what, got-since[i], routes[i].what, s.report())
 		}
+	}
+}
+
+// consoleCounts is how many GETs the page has sent to each route a catalog case watches.
+// The two listing routes are counted because the page must ask for neither:
+// a set that left them out would read the same against a page that still listed namespaces and Services.
+type consoleCounts struct {
+	Catalog     int
+	Namespaces  int
+	Services    int
+	Targets     int
+	Collections int
+	Limits      int
+	Whoami      int
+}
+
+// countRoutes reads those counts at one moment, which a case takes as its boundary.
+// Every count is per route and never of the page as a whole,
+// because the recorder holds the navigation and every static asset beside the page's own fetches.
+func countRoutes(s *session, ns, svc string) consoleCounts {
+	service := gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + svc
+
+	return consoleCounts{
+		Catalog:     sentToRoute(s, consoleCatalogRoute),
+		Namespaces:  sentToRoute(s, gatewayOrigin+"/v1/namespaces"),
+		Services:    sentToRoute(s, gatewayOrigin+"/v1/namespaces/"+ns+"/services"),
+		Targets:     sentToRoute(s, service+"/targets"),
+		Collections: sentToRoute(s, service+"/collections"),
+		Limits:      sentToRoute(s, gatewayOrigin+"/v1/limits"),
+		Whoami:      sentToRoute(s, gatewayOrigin+"/v1/whoami"),
+	}
+}
+
+// sentToRoute is how many GETs the browser has recorded to one route,
+// counting a request that carries a query as the same route.
+func sentToRoute(s *session, rawURL string) int {
+	return routeCounts(s, []consoleRoute{{rawURL, rawURL}})[0]
+}
+
+// since is what has been sent to each route between the boundary and the counts it is called on.
+func (c consoleCounts) since(before consoleCounts) consoleCounts {
+	return consoleCounts{
+		Catalog:     c.Catalog - before.Catalog,
+		Namespaces:  c.Namespaces - before.Namespaces,
+		Services:    c.Services - before.Services,
+		Targets:     c.Targets - before.Targets,
+		Collections: c.Collections - before.Collections,
+		Limits:      c.Limits - before.Limits,
+		Whoami:      c.Whoami - before.Whoami,
+	}
+}
+
+// assertSent fails unless exactly want was asked for on each route since the boundary.
+// A route left out of want is a route the step must not have asked for at all.
+func assertSent(t *testing.T, s *session, ns, svc string, since, want consoleCounts, what string) {
+	t.Helper()
+	if got := countRoutes(s, ns, svc).since(since); got != want {
+		t.Fatalf("%s sent %+v, want %+v\n%s", what, got, want, s.report())
+	}
+}
+
+// catalogError is the expression that reads the error standing beside the two menus,
+// or the empty string for none.
+// The box sits between the Service panel's header and its fields, which is where the page draws it.
+const catalogError = `((e) => e ? e.textContent : "")(document.querySelector("article.selection .error"))`
+
+// catalogSignIn is true while that box is the sign-in notice a 401 shows, with the control it offers.
+const catalogSignIn = `((e) => Boolean(e) && e.textContent.includes("sign in required") && ` +
+	`[...e.querySelectorAll("button")].some((b) => b.textContent.trim() === "Retry"))(` +
+	`document.querySelector("article.selection .error"))`
+
+// pressCatalogRetry presses the Retry that box offers and reports whether it pressed.
+const pressCatalogRetry = `((e) => { if (!e) { return false; } ` +
+	`const b = [...e.querySelectorAll("button")].find((b) => b.textContent.trim() === "Retry"); ` +
+	`if (!b) { return false; } b.click(); return true; })(document.querySelector("article.selection .error"))`
+
+// downloadIdle is true while the Download control stands enabled and reads Download,
+// which is the page holding no download in flight:
+// the label reads Downloading and the control is disabled from the press until the body has been read whole.
+const downloadIdle = `((b) => Boolean(b) && !b.disabled && b.textContent.trim() === "Download")(` +
+	`[...document.querySelectorAll(".request .actions button")].find((b) => b.textContent.trim().startsWith("Download")))`
+
+// pressServiceRefresh returns the press that reads the catalog again, which redraws both menus.
+func pressServiceRefresh(t *testing.T, s *session) func() {
+	return func() {
+		s.run(t, "press Refresh on the Service panel", chromedp.Click(refreshButton("Service"), chromedp.BySearch))
+	}
+}
+
+// pressTargetsRefresh returns the press that repeats the targets fetch.
+func pressTargetsRefresh(t *testing.T, s *session) func() {
+	return func() {
+		s.run(t, "press Refresh on the targets list", chromedp.Click(refreshButton("Profile"), chromedp.BySearch))
+	}
+}
+
+// pressRefreshTwice clicks a panel's Refresh control twice inside one evaluated expression,
+// so both presses land in one task of the page's own event loop and no render stands between them.
+// A claim taken in state rather than in a field would be read by the second press as the first left it.
+func pressRefreshTwice(t *testing.T, s *session, panel string) {
+	t.Helper()
+	var pressed bool
+	s.eval(t, "press the "+panel+" Refresh control twice in one expression",
+		fmt.Sprintf(`((b) => { if (!b) { return false; } b.click(); b.click(); return true; })(%s)`,
+			refreshControl(panel)), &pressed)
+	if !pressed {
+		t.Fatalf("the %s panel offers no Refresh control:\n%s", panel, s.textOf(t, ".panels"))
+	}
+}
+
+// openConsole returns the navigation to the console on a pair,
+// which is the press a case parks a load's catalog request behind.
+// The navigation is written once, because three cases park a load's catalog request behind it.
+func openConsole(t *testing.T, s *session, what, ns, svc string) func() {
+	return func() {
+		s.run(t, what, chromedp.Navigate(gatewayOrigin+uiPath+"?"+url.Values{"ns": {ns}, "svc": {svc}}.Encode()))
+	}
+}
+
+// holdCatalogRefresh presses Refresh on the Service panel,
+// and returns once the browser has paused the catalog request that press sends.
+// The release it hands back continues that request,
+// so a step can read the page while the request stands sent and unanswered.
+func holdCatalogRefresh(t *testing.T, s *session, what string) (release func()) {
+	t.Helper()
+
+	return s.holdRequest(t, what, consoleCatalogRoute, isCatalogGET, pressServiceRefresh(t, s))
+}
+
+// loadWithHeldCatalog opens the console on the pair,
+// and returns once the browser has paused the catalog request that load sends, before it reaches the gateway.
+// The release it hands back continues that request.
+// The handler is live before the navigation starts, which is what catches that request.
+// A paused fetch is no subresource of the document,
+// so it holds up neither the load event the navigation waits on nor the two answers the page applies meanwhile.
+func loadWithHeldCatalog(t *testing.T, s *session, what, ns, svc string) (release func()) {
+	t.Helper()
+
+	return s.holdRequest(t, what, consoleCatalogRoute, isCatalogGET,
+		openConsole(t, s, "open the console for "+what, ns, svc))
+}
+
+// choosePort picks a value in the Port menu and dispatches the change event the page listens for.
+// That menu is the select inside the fieldset the legend names and carries no label of its own,
+// so chooseOption, which finds a menu by its label, cannot reach it.
+// It polls the way chooseOption polls, for the reason chooseOption states.
+func choosePort(t *testing.T, s *session, value string) {
+	t.Helper()
+	expr := fmt.Sprintf(`(() => {
+  const f = [...document.querySelectorAll("fieldset")].find((f) => (f.querySelector("legend") || { textContent: "" }).textContent.trim() === "Port");
+  if (!f) { return "no fieldset is titled Port"; }
+  const sel = f.querySelector("select");
+  if (!sel) { return "the Port fieldset holds no menu"; }
+  if (![...sel.options].some((o) => o.value === %q)) {
+    return %q + " is not offered; the options are " + [...sel.options].map((o) => o.value).join(", ");
+  }
+  sel.value = %q;
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+  return "";
+})()`, value, value, value)
+	var why string
+	err := poll(s.ctx, browserDeadline, func(ctx context.Context) (bool, error) {
+		if err := chromedp.Run(ctx, chromedp.Evaluate(expr, &why)); err != nil {
+			return false, err
+		}
+
+		return why == "", nil
+	})
+	if err != nil {
+		// A transport error leaves no reason behind, so the error itself is the reason.
+		if why == "" {
+			why = err.Error()
+		}
+		t.Fatalf("choose the port %q: %s\n%s", value, why, s.report())
+	}
+}
+
+// assertMenusStand fails unless a menu offers what it offered and reads what it read.
+// An answer that failed replaces no catalog, so the menus the page already drew are the ones still on screen.
+func assertMenusStand(t *testing.T, s *session, label string, before menuState, what string) {
+	t.Helper()
+	got := readMenu(t, s, label)
+	if !slices.Equal(got.Options, before.Options) || got.Value != before.Value {
+		t.Fatalf("the %s menu reads %q of %q after %s, want %q of %q",
+			label, got.Value, got.Options, what, before.Value, before.Options)
+	}
+}
+
+// catalogResponse is the catalog as the gateway answers it.
+type catalogResponse struct {
+	Catalog []struct {
+		Namespace string `json:"namespace"`
+		Name      string `json:"name"`
+	} `json:"catalog"`
+}
+
+// awaitCatalogLists polls the catalog route until the gateway names ns and svc as one pair,
+// which is the informer having delivered a Service the test created.
+// The request is the test's own, under the scenario's credential,
+// so the catalog the page holds is left as the answer it already applied.
+func awaitCatalogLists(t *testing.T, c *http.Client, header http.Header, rawURL, ns, svc string) {
+	t.Helper()
+	var last response
+	err := poll(t.Context(), settleDeadline, func(ctx context.Context) (bool, error) {
+		resp, err := try(ctx, c, http.MethodGet, rawURL, header, nil)
+		if err != nil {
+			return false, nil //nolint:nilerr // the forward settles; the poll bounds the wait
+		}
+		last = resp
+		if resp.Status != http.StatusOK {
+			return false, nil
+		}
+		var catalog catalogResponse
+		if err := json.Unmarshal(resp.Body, &catalog); err != nil {
+			return false, fmt.Errorf("decode the catalog answer: %w: %s", err, resp.Body)
+		}
+		for _, entry := range catalog.Catalog {
+			if entry.Namespace == ns && entry.Name == svc {
+				return true, nil
+			}
+		}
+
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("the gateway never listed %s/%s in its catalog: %v (last %d: %s)", ns, svc, err, last.Status, last.Body)
 	}
 }
 

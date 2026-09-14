@@ -6,8 +6,7 @@
 import { h, Component, render, createRef } from "./vendor/preact/preact.module.js";
 import htm from "./vendor/htm/htm.module.js";
 import {
-  namespacesURL,
-  servicesURL,
+  catalogURL,
   targetsURL,
   collectionsURL,
   collectionURL,
@@ -36,7 +35,7 @@ import {
   progressText,
   olderCollectionsNote,
 } from "./collectionmodel.js";
-import { filterOptions } from "./catalogmodel.js";
+import { namespacesOf, servicesOf, filterOptions } from "./catalogmodel.js";
 
 const html = htm.bind(h);
 
@@ -61,7 +60,7 @@ const hints = {
   too_many_auth: "the gateway is checking too many passwords at once; retry in a moment",
   auth_unavailable: "the gateway cannot decide who you are right now; retry",
   realm_denied: "your realm does not admit this; the identity shows what it does",
-  service_not_found: "the Service left the cache since the list was fetched; the page refreshes the Service list",
+  service_not_found: "the Service left the cache since the catalog was fetched; the page refetches the catalog",
   no_targets:
     "no Pod is eligible for the selection; Refresh on the targets list updates the available Pods and the empty state",
   port_not_allowed: "allowedSelections does not admit the value; the port control shows what it does admit",
@@ -331,23 +330,31 @@ class App extends Component {
     // keeps answering 401 ends in a message rather than a loop.
     this.navigatedToLogin = false;
     this.returnedFromLogin = q.returned;
-    // targetsSeq stamps each targets request,
-    // collectionsSeq each Collections request,
-    // and servicesSeq each Service listing,
+    // targetsSeq stamps each targets request and collectionsSeq each Collections request,
     // so a stale answer is dropped when a later selection or a later refresh has already replaced it.
-    // The three lists count apart, because a refresh of one must never discard another's answer.
+    // The two lists count apart, because a refresh of one must never discard another's answer.
     this.targetsSeq = 0;
     this.collectionsSeq = 0;
-    this.servicesSeq = 0;
+    // catalogSeq stamps each catalog request,
+    // so the attempt a not_ready scheduled does nothing once a later attempt has superseded it.
+    // catalogPending is the claim on the one request in flight, taken and released synchronously,
+    // so two presses landing in one tick cannot both pass it;
+    // catalogAgain is the one further request an answer records while that claim is held.
+    this.catalogSeq = 0;
+    this.catalogPending = false;
+    this.catalogAgain = false;
     // identity is the disclosure the realm_denied hint names.
     // Its open is the element's own state, set once per qualifying answer rather than bound in the template,
     // because a native close changes open without the template knowing,
     // and a template that re-asserted the value it asserted last render would not reopen what a person closed.
     this.identity = createRef();
-    // selection counts namespace and Service changes, and collectionsFor is
-    // the selection the Collections list was last requested for, so the list
-    // is fetched once whether limits or the Service list answers last.
+    // selection counts namespace and Service changes,
+    // and targetsFor and collectionsFor are the selections those two lists were last requested for.
+    // A catalog answer tests each on its own, so it starts the fetch its selection is still owed
+    // and repeats neither that selection has already had.
+    // The Collections list waits on the limits beside that, and whichever of the two answers last starts it.
     this.selection = 0;
+    this.targetsFor = -1;
     this.collectionsFor = -1;
     this.timers = [];
     // startTimer, cancelTimer, and cancelRetryTimer hold the transitions the two controls schedule:
@@ -369,8 +376,14 @@ class App extends Component {
       limits: null,
       ns: q.ns,
       svc: q.svc,
-      namespaces: [],
-      services: [],
+      // catalog is the one answer behind both menus: the namespace and Service pairs the realm admits.
+      // Neither menu's options are stored beside it, because both are derived from it at render,
+      // so no two answers about what exists can disagree.
+      // catalogLoaded records that an answer has been applied,
+      // and catalogLoading is true while a request is in flight, which is what disables the Refresh control.
+      catalog: [],
+      catalogLoaded: false,
+      catalogLoading: false,
       // nsFilter and svcFilter are what has been typed into the field beside each menu.
       // They narrow what that menu draws and are sent nowhere,
       // so neither reaches the page query and neither is restored from it.
@@ -481,7 +494,7 @@ class App extends Component {
 
   loadAfterBoot() {
     this.loadLimits();
-    this.loadNamespaces();
+    this.loadCatalog();
   }
 
   // request runs one request after boot and applies the mode the page now
@@ -576,40 +589,72 @@ class App extends Component {
     });
   };
 
-  loadNamespaces = async () => {
-    const body = await this.request("namespaces", namespacesURL(), this.loadNamespaces);
-    if (!body) {
+  // loadCatalog is the whole lifecycle of the one source behind both menus:
+  // the load's first fetch, each press of the Service panel's Refresh,
+  // the attempt a not_ready schedules, and the refetch a service_not_found owes.
+  // The claim is an instance field and not state,
+  // because a setState is applied later than the line after it
+  // and two presses in one tick would both read the value it had before either of them.
+  // Every settled outcome releases the claim, not_ready included:
+  // holding it across the two-second wait would hang the page,
+  // because the scheduled attempt would meet the claim it is waiting on and return.
+  // An answer that failed replaces no catalog,
+  // so the menus the page already had stand with the error beside them.
+  loadCatalog = async () => {
+    if (this.catalogPending) {
       return;
     }
-    const namespaces = asList(body.namespaces);
-    this.setState({ namespaces: namespaces }, () => {
-      if (this.state.ns && namespaces.includes(this.state.ns)) {
-        this.loadServices();
+    this.catalogPending = true;
+    const seq = ++this.catalogSeq;
+    this.setState({ catalogLoading: true });
+    // One wrapper is both the timer's callback and the error's Retry control, so those two cannot diverge,
+    // and a later attempt makes an earlier timer inert by raising the generation.
+    const retry = () => {
+      if (seq === this.catalogSeq) {
+        this.loadCatalog();
       }
-    });
+    };
+    const body = await this.request("catalog", catalogURL(), retry);
+    this.catalogPending = false;
+    const again = this.catalogAgain;
+    this.catalogAgain = false;
+    if (body) {
+      this.setState({ catalog: asList(body.catalog), catalogLoaded: true, catalogLoading: again }, this.activate);
+    } else {
+      this.setState({ catalogLoading: again });
+    }
+    if (again) {
+      this.loadCatalog();
+    }
   };
 
-  // loadServices is the Service listing, over a generation of its own,
-  // so an answer for a namespace the page has left is dropped before it is recorded.
-  // A counter and not a comparison of the namespace:
-  // choosing one namespace, leaving for another, and returning to the first
-  // leaves the selection where a namespace that was never left leaves it.
-  loadServices = async () => {
-    const ns = this.state.ns;
-    const seq = ++this.servicesSeq;
-    const stale = () => seq !== this.servicesSeq;
-    const body = await this.request("services", servicesURL(ns), this.loadServices, undefined, stale);
-    if (!body || stale()) {
+  // activate starts the fetches a catalog answer owes the selection the page is on,
+  // which is how a bookmarked selection reaches its targets with nobody touching a menu.
+  // The two are tested apart:
+  // a port change reaches loadTargets before the catalog has answered and carries no membership check of its own,
+  // and one condition over both would leave unstarted the Collections fetch the limits could not start.
+  activate = () => {
+    if (!this.selectionListed()) {
       return;
     }
-    const services = asList(body.services);
-    this.setState({ services: services }, () => {
-      if (this.state.svc && services.includes(this.state.svc)) {
-        this.loadTargets();
-        this.maybeLoadCollections();
-      }
-    });
+    if (this.targetsFor !== this.selection) {
+      this.loadTargets();
+    }
+    this.maybeLoadCollections();
   };
+
+  // invalidateCatalog refetches the catalog an answer says has moved,
+  // and records the one further request instead while a request is in flight,
+  // so an answer computed before the Service left the cache does not stand as the catalog.
+  // However many answers record it, the settling request starts exactly one more.
+  invalidateCatalog() {
+    if (this.catalogPending) {
+      this.catalogAgain = true;
+
+      return;
+    }
+    this.loadCatalog();
+  }
 
   // loadTargets asks for the listing with explain=true and the port selection,
   // and repeats the one fetch without explain when a gateway refuses the parameter.
@@ -620,6 +665,8 @@ class App extends Component {
   loadTargets = async () => {
     const { ns, svc } = this.state;
     const seq = ++this.targetsSeq;
+    // The selection this fetch ran for, so a catalog answer does not repeat one that selection has had.
+    this.targetsFor = this.selection;
     this.setState({ targetsLoading: true });
     const port = this.portChoice();
     const retryOnce = (status, code) =>
@@ -650,8 +697,8 @@ class App extends Component {
   };
 
   // maybeLoadCollections fetches the Collections list once per selection,
-  // when the view is offered and the selection is listed; limits and the
-  // Service list answer in either order, and whichever comes last starts it.
+  // when the view is offered and the selection is listed;
+  // the limits and the catalog answer in either order, and whichever comes last starts it.
   maybeLoadCollections() {
     if (!this.collectionsOffered() || !this.selectionListed() || this.collectionsFor === this.selection) {
       return;
@@ -915,12 +962,12 @@ class App extends Component {
     }));
   }
 
-  // afterServiceError refetches the Service list when a targets or
+  // afterServiceError refetches the catalog when a targets or
   // Collections fetch answered service_not_found.
   afterServiceError(key) {
     const rec = this.state.errors[key];
     if (rec && typeof rec.error === "object" && rec.error !== null && rec.error.code === "service_not_found") {
-      this.loadServices();
+      this.invalidateCatalog();
     }
   }
 
@@ -929,63 +976,28 @@ class App extends Component {
     history.replaceState(null, "", pageURL(ns, svc).href);
   }
 
-  onNamespace = (e) => {
-    const ns = e.target.value;
-    // The Service listing counts here and not in onService:
-    // a Service change leaves the namespace, and the listing, exactly where they were.
-    this.servicesSeq++;
+  // selectPair is the only writer of the selection after the constructor,
+  // whichever control passed the pair.
+  // It has one case and not three:
+  // identical arguments produce identical behavior,
+  // and with both menus derived from the catalog there is nothing to clear and nothing to fetch
+  // when only the namespace moves.
+  // Clearing either menu is the same call, and the condition on svc is what makes both of them start nothing.
+  // It tests no equality either,
+  // so the same pair chosen again runs the same transition and refetches its targets,
+  // which is what Refresh on that list does.
+  // Emptying a filter field belongs to the caller:
+  // it is the one thing that differs between a menu pick and a search result naming the same pair.
+  selectPair(ns, svc) {
     this.targetsSeq++;
     this.collectionsSeq++;
     this.selection++;
-    this.writeQuery(ns, "");
+    // The page query is written before the new selection is applied,
+    // so the query and the menus never disagree about which pair is chosen.
+    this.writeQuery(ns, svc);
     this.setState(
       {
         ns: ns,
-        svc: "",
-        services: [],
-        // The Service menu is about to offer another namespace's names,
-        // and a query typed against the names it was offering says nothing about those.
-        svcFilter: "",
-        targets: [],
-        targetSummary: null,
-        targetsLoading: false,
-        collections: [],
-        collectionsNote: "",
-        collectionsLoading: false,
-        collection: null,
-        pod: "",
-        version: "",
-      },
-      () => {
-        this.clearError("services");
-        this.clearError("targets");
-        this.clearError("collections");
-        this.clearWriteControls();
-        if (ns) {
-          this.loadServices();
-        }
-      },
-    );
-  };
-
-  // The two filter fields change what their menu draws and nothing else:
-  // no fetch, no page query, and no selection.
-  onNsFilter = (e) => {
-    this.setState({ nsFilter: e.target.value });
-  };
-
-  onSvcFilter = (e) => {
-    this.setState({ svcFilter: e.target.value });
-  };
-
-  onService = (e) => {
-    const svc = e.target.value;
-    this.targetsSeq++;
-    this.collectionsSeq++;
-    this.selection++;
-    this.writeQuery(this.state.ns, svc);
-    this.setState(
-      {
         svc: svc,
         targets: [],
         targetSummary: null,
@@ -1007,6 +1019,27 @@ class App extends Component {
         }
       },
     );
+  }
+
+  onNamespace = (e) => {
+    // The Service menu is about to offer another namespace's names,
+    // and a query typed against the names it was offering says nothing about those.
+    this.setState({ svcFilter: "" });
+    this.selectPair(e.target.value, "");
+  };
+
+  // The two filter fields change what their menu draws and nothing else:
+  // no fetch, no page query, and no selection.
+  onNsFilter = (e) => {
+    this.setState({ nsFilter: e.target.value });
+  };
+
+  onSvcFilter = (e) => {
+    this.setState({ svcFilter: e.target.value });
+  };
+
+  onService = (e) => {
+    this.selectPair(this.state.ns, e.target.value);
   };
 
   onProfile = (e) => {
@@ -1048,6 +1081,13 @@ class App extends Component {
     }
   };
 
+  // onRefreshCatalog repeats the catalog fetch and redraws both menus from the answer.
+  // It repeats no fetch downstream of the selection that the selection has already had,
+  // and it starts nothing while a catalog request is in flight.
+  onRefreshCatalog = () => {
+    this.loadCatalog();
+  };
+
   // onRefreshCollections repeats the Collections fetch and nothing else.
   // It touches neither the start state, the armed cancel, nor the three write-control timers,
   // and it leaves the targets list alone.
@@ -1085,7 +1125,7 @@ class App extends Component {
 
   // onDownload fetches the profile and saves a 200 through an object URL;
   // any other answer is shown in the Profile panel under the rule every listing follows,
-  // and a service_not_found refetches the Service list as the two loaders do.
+  // and a service_not_found refetches the catalog as the two listings do.
   // The control is disabled from the press until the body has been read whole and the save has begun.
   // The refetch reads the value settle returned and not the recorded error,
   // because a setState is applied later than the line after it.
@@ -1102,7 +1142,7 @@ class App extends Component {
     } else {
       const err = this.settle("download", res, this.onDownload);
       if (isEnvelope(err) && err.code === "service_not_found") {
-        this.loadServices();
+        this.invalidateCatalog();
       }
     }
     this.setState({ downloading: false });
@@ -1165,12 +1205,15 @@ class App extends Component {
     return applyInput(this.state).params;
   }
 
-  // selectionListed reports whether the page's namespace and Service are both
-  // in the fetched lists; an unlisted bookmark leaves the control unselected
-  // and builds no URL.
+  // selectionListed reports whether the catalog holds the page's namespace and Service as one pair;
+  // an unlisted bookmark leaves the control unselected and builds no URL.
+  // It reads the whole catalog and never a filtered menu,
+  // because it gates the Collections view, the profile URL, and the start control,
+  // none of which may turn on what someone typed into a filter field.
   selectionListed() {
-    const { ns, svc, namespaces, services } = this.state;
-    return Boolean(ns && svc && namespaces.includes(ns) && services.includes(svc));
+    const { ns, svc, catalog } = this.state;
+
+    return Boolean(ns && svc && servicesOf(catalog, ns).includes(svc));
   }
 
   collectionsOffered() {
@@ -1277,13 +1320,17 @@ class App extends Component {
   }
 
   renderSelection() {
-    const { ns, svc, namespaces, services, nsFilter, svcFilter } = this.state;
+    const { ns, svc, catalog, nsFilter, svcFilter, catalogLoading } = this.state;
+    // Both menus are derived from the one catalog answer here, at render,
+    // and neither list is stored beside it.
+    const namespaces = namespacesOf(catalog);
+    const services = servicesOf(catalog, ns);
     const nsListed = !ns || namespaces.includes(ns);
     const svcListed = !svc || services.includes(svc);
     // A menu offers what its own filter admits, plus the value it is showing,
     // which is what keeps a query from removing the current selection.
     // Whether a value is listed, and the placeholder each menu carries,
-    // are read from the whole listing instead,
+    // are read from the whole catalog instead,
     // so a query that matches nothing narrows a menu without unlisting anything.
     const nsOptions = filterOptions(namespaces, nsFilter, ns);
     const svcOptions = filterOptions(services, svcFilter, svc);
@@ -1293,6 +1340,7 @@ class App extends Component {
     return html`
       <article class="selection">
         <header><strong>Service</strong></header>
+        ${this.panelError("catalog")}
         <div class="fields">
           <div class="menu">
             <label>
@@ -1322,11 +1370,14 @@ class App extends Component {
             </label>
             <${FilterNote} query=${svcFilter} shown=${svcOptions.length} total=${services.length} />
           </div>
+          <div class="actions">
+            <button type="button" class="secondary" disabled=${catalogLoading} onClick=${this.onRefreshCatalog}>
+              Refresh
+            </button>
+          </div>
         </div>
         ${nsListed ? null : html`<p><small>${ns} is not listed</small></p>`}
-        ${this.panelError("namespaces")}
         ${svcListed ? null : html`<p><small>${svc} is not listed</small></p>`}
-        ${this.panelError("services")}
       </article>
     `;
   }
