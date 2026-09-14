@@ -155,7 +155,7 @@ func (s *server) servePGOCollection(
 	case kindCollectionCancel:
 		s.serveCollectionCancel(w, r, q, sess, stored)
 	case kindTargets, kindProfile, kindPGOPolicy, kindCollections, kindCollectionLatest,
-		kindCollectionLatestProfile, kindNamespaces, kindServices,
+		kindCollectionLatestProfile, kindNamespaces, kindServices, kindCatalog,
 		kindWhoami, kindLimits, kindAuth, kindAuthLogin, kindAuthCallback, kindAuthLogout,
 		kindOpenAPI, kindConsole:
 		q.fail(w, errCollectionNotFound)

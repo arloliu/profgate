@@ -2431,7 +2431,7 @@ Each row names the heading it edits.
 | `docs/specs/auth.md` | *What is redirected* | "a future UI's JSON requests" names this document |
 | `docs/specs/auth.md` | *Testing* | the two lanes gain the scenarios of [`ui.md`](ui.md) *End to end* |
 | `.agents/rules/100-project-map.md` | *Planned Structure* | `internal/ui/` |
-| `.agents/rules/100-project-map.md` | *External HTTP API* | the four listing routes; `/ui/`, the asset paths under it, and `/`, present only when `ui.enabled` |
+| `.agents/rules/100-project-map.md` | *External HTTP API* | the five listing routes, `/v1/catalog` among them; `/ui/`, the asset paths under it, and `/`, present only when `ui.enabled` |
 | `AGENTS.md` | *Three Specs, All Accepted* | four, adding this document |
 | `docs/README.md` | *Where Contributors Start* | [`specs/ui.md`](ui.md) beside the PGO and authentication specs |
 

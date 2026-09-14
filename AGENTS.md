@@ -22,7 +22,7 @@ PGO collection layered on the gateway — scheduling, NATS coordination, in-memo
 [`docs/specs/auth.md`](docs/specs/auth.md) is `Accepted`:
 `basic` and `oidc` authentication layered on the gateway's realm step, with an optional stateless browser login.
 [`docs/specs/ui.md`](docs/specs/ui.md) is `Accepted`:
-an embedded operator console served at `/ui/`, off by default, that reads the gateway through four listing endpoints and adds no Kubernetes permission.
+an embedded operator console served at `/ui/`, off by default, that reads the gateway through five listing endpoints and adds no Kubernetes permission.
 [`docs/specs/cli.md`](docs/specs/cli.md) is `Accepted`:
 first-party client verbs in the `profgate` binary that obtain a token by device code, list what a realm admits, pull a profile, and drive PGO collection.
 Read a draft for context and revise it freely;

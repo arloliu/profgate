@@ -482,27 +482,27 @@ git log --oneline -1 && git status --short
 
 Write the tests first and run them red.
 
-- [ ] `internal/metrics/recorder.go`: `EndpointCatalog Endpoint = "catalog"` with the doc comment its siblings carry,
+- [x] `internal/metrics/recorder.go`: `EndpointCatalog Endpoint = "catalog"` with the doc comment its siblings carry,
       and `Recorder.Request`'s listing-endpoint list gains it (`:59-64`).
-- [ ] `internal/httpapi/server.go`: `kindCatalog` in the `routeKind` block;
+- [x] `internal/httpapi/server.go`: `kindCatalog` in the `routeKind` block;
       `isListing` returns true for it;
       `isAuthRoute`, `isPGO`, `isPGOWrite`, and `isCollectionScoped` list it among the kinds they answer false for;
       `labels()` returns `EndpointCatalog`.
-- [ ] `internal/httpapi/auth.go`: `authRouteName` lists it among the kinds that name no auth route.
-- [ ] `internal/httpapi/realm.go`: `pgoAllows` lists it among the kinds with no PGO flag.
-- [ ] `internal/httpapi/pgo.go:150-161`: the Collection-route switch lists it among the kinds it refuses.
-- [ ] `internal/httpapi/routes.go`: `{"/v1/catalog", kindCatalog, []string{http.MethodGet}}`,
+- [x] `internal/httpapi/auth.go`: `authRouteName` lists it among the kinds that name no auth route.
+- [x] `internal/httpapi/realm.go`: `pgoAllows` lists it among the kinds with no PGO flag.
+- [x] `internal/httpapi/pgo.go:150-161`: the Collection-route switch lists it among the kinds it refuses.
+- [x] `internal/httpapi/routes.go`: `{"/v1/catalog", kindCatalog, []string{http.MethodGet}}`,
       beside the two listing rows it belongs with (`:62-63`).
-- [ ] `internal/httpapi/listing.go`: `catalogBody` holding `Catalog []serviceRefView`,
+- [x] `internal/httpapi/listing.go`: `catalogBody` holding `Catalog []serviceRefView`,
       each `{namespace, name}` with lowercase JSON tags, the slice initialized so an empty answer is `[]`;
       the `kindNamespaces, kindServices` case gains `kindCatalog` and its branch,
       which appends the filtered refs in order and sorts nothing,
       because `Catalog` sorts by namespace then name before it returns (`internal/k8s/catalog.go:43-45`).
-- [ ] `internal/httpapi/openapi.json`: the `/v1/catalog` path, its `200` shape, its error codes,
+- [x] `internal/httpapi/openapi.json`: the `/v1/catalog` path, its `200` shape, its error codes,
       and the `X-Request-Id` header every response documents.
       The document's own checks cover canonical encoding, resolvable references, and parameters
       (`internal/httpapi/openapi_test.go:296-310`, `:359-370`, `:585-610`, `:637-651`).
-- [ ] `docs/api.md`, **in this commit and not the last one**:
+- [x] `docs/api.md`, **in this commit and not the last one**:
       the route, its response, and its errors;
       and the four spelled-out counts `scripts/check-repo.py` compares against the route table —
       fifteen `/v1` routes becomes sixteen (`:67`, `:121`, `:1002`)
@@ -510,18 +510,18 @@ Write the tests first and run them red.
       with the listing sentence beside them counting five (`:82`).
       `scripts/check-repo.py:289-307` is the list of sentences it checks;
       `mise run check` fails without these edits.
-- [ ] `AGENTS.md:25` and `.agents/rules/100-project-map.md:121-128`: five listing routes.
-- [ ] `docs/deployment.md:502-503`: the `endpoint` label gains `catalog`,
+- [x] `AGENTS.md:25` and `.agents/rules/100-project-map.md:121-128`: five listing routes.
+- [x] `docs/deployment.md:502-503`: the `endpoint` label gains `catalog`,
       and both the listing-route count and the total endpoint-value count beside it.
 
 **Tests.**
 These three would leave the commit red if the kind were added without them, so they are part of it:
 
-- [ ] `internal/httpapi/routes_test.go:66-100`: `endpointOf` gains the catalog case.
+- [x] `internal/httpapi/routes_test.go:66-100`: `endpointOf` gains the catalog case.
       Without it the expectation falls back to `EndpointProfile`
       and `TestRouteTableAcceptedMethod` compares that against the handler (`:226-240`).
-- [ ] `internal/httpapi/listing_test.go:677-708`: `TestRouteKinds` gains its row, whose order matches the enum.
-- [ ] `internal/httpapi/listing_test.go:26-35`: `listingPaths()` gains the catalog,
+- [x] `internal/httpapi/listing_test.go:677-708`: `TestRouteKinds` gains its row, whose order matches the enum.
+- [x] `internal/httpapi/listing_test.go:26-35`: `listingPaths()` gains the catalog,
       which carries the new route into the shared method, readiness, authentication, redirect,
       and audit cases (`:148-249`, `:726-751`);
       the endpoint map in `TestListingAuditAndMetrics` follows it (`:726-732`),
@@ -532,23 +532,23 @@ These three would leave the commit red if the kind were added without them, so t
 
 The rest, in `internal/httpapi/listing_test.go`:
 
-- [ ] The catalog answers every admitted pair, in namespace-then-name order, over the harness's `realmLists`
+- [x] The catalog answers every admitted pair, in namespace-then-name order, over the harness's `realmLists`
       (`:60`), with duplicate Service names across namespaces and all four realm-filter combinations.
-- [ ] A realm that admits no namespace gets `200` and an empty array, never `403`.
+- [x] A realm that admits no namespace gets `200` and an empty array, never `403`.
       This is the invariant that separates this route from the Service list; it could fail, and must.
-- [ ] The catalog is asked for with an empty namespace argument, once, which the fake records
+- [x] The catalog is asked for with an empty namespace argument, once, which the fake records
       (`internal/httpapi/fixtures_test.go:169-183`).
-- [ ] Over one immutable fake, the catalog's names under each namespace are what the Service list answers,
+- [x] Over one immutable fake, the catalog's names under each namespace are what the Service list answers,
       and its distinct namespaces are what the namespace list answers.
-- [ ] The response keys are lowercase and an empty catalog is `[]`, not `null`.
-- [ ] Any query parameter is `400 invalid_parameter`, `access_token` included,
+- [x] The response keys are lowercase and an empty catalog is `[]`, not `null`.
+- [x] Any query parameter is `400 invalid_parameter`, `access_token` included,
       and the refusal happens before any cache read.
-- [ ] `POST` is `405` with `Allow: GET`.
-- [ ] A `Catalog` error is `503 discovery_unavailable`.
-- [ ] The response carries no address, `podIP`, or port —
+- [x] `POST` is `405` with `Allow: GET`.
+- [x] A `Catalog` error is `503 discovery_unavailable`.
+- [x] The response carries no address, `podIP`, or port —
       the disclosure assertion the other listing responses run (`:581-605`).
-- [ ] The metrics label of a catalog request is `catalog` with profile `none`.
-- [ ] The golden ClusterRole and chart rule tests run unchanged and green, with no edit to the golden file.
+- [x] The metrics label of a catalog request is `catalog` with profile `none`.
+- [x] The golden ClusterRole and chart rule tests run unchanged and green, with no edit to the golden file.
 
 **Validation**
 
@@ -557,7 +557,7 @@ mise run lint && mise run test && mise run check && mise run prose
 git log --oneline -1 && git status --short
 ```
 
-- [ ] Commit: `feat(httpapi): answer the whole Service catalog`
+- [x] Commit: `feat(httpapi): answer the whole Service catalog`
 
 ---
 

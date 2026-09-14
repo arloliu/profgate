@@ -85,6 +85,8 @@ func endpointOf(kind routeKind) metrics.Endpoint {
 		return metrics.EndpointNamespaces
 	case kindServices:
 		return metrics.EndpointServices
+	case kindCatalog:
+		return metrics.EndpointCatalog
 	case kindWhoami:
 		return metrics.EndpointWhoami
 	case kindLimits:
