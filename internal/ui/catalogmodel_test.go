@@ -11,13 +11,140 @@ import (
 const catalogModelName = "catalogmodel.js"
 
 // catalogModelFunctions is what the module exports, in the order of its export statement.
-var catalogModelFunctions = []string{"filterOptions"}
+var catalogModelFunctions = []string{"namespacesOf", "servicesOf", "filterOptions"}
+
+// catalogEntry is one entry of the catalog: a namespace and the name of one Service in it.
+type catalogEntry struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+}
 
 // loadCatalogModel evaluates the catalog model with its functions reachable as globals.
 func loadCatalogModel(tb testing.TB) *goja.Runtime {
 	tb.Helper()
 
 	return loadModel(tb, catalogModelName, catalogModelFunctions...)
+}
+
+// TestCatalogModelNamespacesOf drives the namespace menu's derivation.
+// The menu offers the distinct namespaces the catalog names, each once,
+// in the order the catalog arrived rather than in an order the function chose.
+func TestCatalogModelNamespacesOf(t *testing.T) {
+	cases := []struct {
+		name    string
+		catalog []catalogEntry
+		want    []string
+	}{
+		{
+			"an empty catalog names no namespace",
+			[]catalogEntry{},
+			[]string{},
+		},
+		{
+			"one namespace holding several Services is named once",
+			[]catalogEntry{
+				{"payments", "checkout"},
+				{"payments", "ledger"},
+				{"payments", "refunds"},
+			},
+			[]string{"payments"},
+		},
+		{
+			"several namespaces each holding several Services are each named once",
+			[]catalogEntry{
+				{"billing", "invoices"},
+				{"billing", "statements"},
+				{"orders", "checkout"},
+				{"orders", "shipping"},
+				{"payments", "ledger"},
+				{"payments", "refunds"},
+			},
+			[]string{"billing", "orders", "payments"},
+		},
+		{
+			"the order is the catalog's, which is not alphabetical here",
+			[]catalogEntry{
+				{"payments", "ledger"},
+				{"payments", "refunds"},
+				{"orders", "checkout"},
+				{"billing", "invoices"},
+			},
+			[]string{"payments", "orders", "billing"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := loadCatalogModel(t)
+			got := callModel(t, vm, "namespacesOf", tc.catalog)
+			if !got.Unchanged {
+				t.Errorf("namespacesOf mutated its argument")
+			}
+			if !sameJSON(t, got.Result, tc.want) {
+				t.Errorf("namespacesOf(%v) = %s, want %v", tc.catalog, got.Result, tc.want)
+			}
+		})
+	}
+}
+
+// TestCatalogModelServicesOf drives the Service menu's derivation.
+// The menu offers the names the catalog holds under the selected namespace, in the catalog's order,
+// and a namespace the catalog does not hold leaves the menu empty rather than offering every name.
+func TestCatalogModelServicesOf(t *testing.T) {
+	cases := []struct {
+		name    string
+		catalog []catalogEntry
+		ns      string
+		want    []string
+	}{
+		{
+			"an empty catalog holds no Service under any namespace",
+			[]catalogEntry{},
+			"payments",
+			[]string{},
+		},
+		{
+			"a namespace holding one Service offers that one",
+			[]catalogEntry{
+				{"billing", "invoices"},
+				{"orders", "checkout"},
+				{"payments", "ledger"},
+			},
+			"orders",
+			[]string{"checkout"},
+		},
+		{
+			"a namespace holding several offers them in the catalog's order",
+			[]catalogEntry{
+				{"billing", "invoices"},
+				{"payments", "refunds"},
+				{"payments", "checkout"},
+				{"payments", "ledger"},
+			},
+			"payments",
+			[]string{"refunds", "checkout", "ledger"},
+		},
+		{
+			"a namespace the catalog does not hold offers nothing",
+			[]catalogEntry{
+				{"orders", "checkout"},
+				{"payments", "ledger"},
+			},
+			"billing",
+			[]string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := loadCatalogModel(t)
+			got := callModel(t, vm, "servicesOf", tc.catalog, tc.ns)
+			if !got.Unchanged {
+				t.Errorf("servicesOf mutated an argument")
+			}
+			if !sameJSON(t, got.Result, tc.want) {
+				t.Errorf("servicesOf(%v, %q) = %s, want %v", tc.catalog, tc.ns, got.Result, tc.want)
+			}
+		})
+	}
 }
 
 // TestCatalogModelFilterOptions drives the rule behind both Service menus.

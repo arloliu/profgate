@@ -27,12 +27,10 @@ function build(base, segments, params) {
   return url;
 }
 
-export function namespacesURL() {
-  return build("/v1", ["namespaces"]);
-}
-
-export function servicesURL(ns) {
-  return build("/v1", ["namespaces", ns, "services"]);
+// catalogURL is the one namespace-and-name listing the page reads;
+// it takes no parameter, because the realm is what bounds the answer.
+export function catalogURL() {
+  return build("/v1", ["catalog"]);
 }
 
 // targetsURL lists the Pods of a Service; query is what targetmodel.js built.
