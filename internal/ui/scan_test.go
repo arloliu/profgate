@@ -13,7 +13,7 @@ import (
 // consoleSources returns the console's own modules, the files the source scan
 // of Rendering response values runs against.
 func consoleSources() []string {
-	return []string{"app.js", "urls.js", "portmodel.js", "targetmodel.js", "collectionmodel.js"}
+	return []string{"app.js", "urls.js", "portmodel.js", "targetmodel.js", "collectionmodel.js", "catalogmodel.js"}
 }
 
 // htmlInterfaceRe matches every interface that turns a string into markup.
@@ -211,6 +211,80 @@ func TestScanPageUsesCollectionModel(t *testing.T) {
 		if !strings.Contains(src, fn+"(") {
 			t.Errorf("app.js: never calls %s(", fn)
 		}
+	}
+}
+
+// catalogModelImportRe matches app.js's import of the catalog model and captures the names it binds.
+var catalogModelImportRe = regexp.MustCompile(`import\s*\{([^}]*)\}\s*from\s*["']\./catalogmodel\.js["']`)
+
+// TestScanPageUsesCatalogModel holds the page to the catalog model:
+// app.js imports the module's functions from ./catalogmodel.js and calls each at least once,
+// so a page that spells the rule behind either Service menu by hand turns the suite red.
+func TestScanPageUsesCatalogModel(t *testing.T) {
+	src := readSource(t, "app.js")
+	m := catalogModelImportRe.FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("app.js: no import from ./catalogmodel.js")
+	}
+	for _, fn := range catalogModelFunctions {
+		if !regexp.MustCompile(`\b` + fn + `\b`).MatchString(m[1]) {
+			t.Errorf("app.js: the import from ./catalogmodel.js does not name %s: %q", fn, m[1])
+		}
+		if !strings.Contains(src, fn+"(") {
+			t.Errorf("app.js: never calls %s(", fn)
+		}
+	}
+}
+
+// exportNamesRe matches the trailing export statement cutExport removes,
+// and captures what stands between its braces.
+var exportNamesRe = regexp.MustCompile(`(?m)^export \{([^}]*)\};\s*$`)
+
+// braceNames returns the names an import or export statement lists between its braces,
+// in the order they are written.
+func braceNames(list string) []string {
+	var names []string
+	for _, part := range strings.Split(list, ",") {
+		if name := strings.TrimSpace(part); name != "" {
+			names = append(names, name)
+		}
+	}
+
+	return names
+}
+
+// TestScanCatalogModelExportsWhatThePageImports holds the module's export statement
+// and app.js's import of the module to each other.
+// The interpreter evaluates the model with that statement cut off and reads its functions as globals,
+// so what it proves says nothing about what a browser can import:
+// a name spelled on one side of the import and not on the other turns the suite red here or nowhere.
+// The statement is held to the one brace form, last in the file,
+// which is the shape the interpreter's loading requires.
+func TestScanCatalogModelExportsWhatThePageImports(t *testing.T) {
+	src := readSource(t, catalogModelName)
+	if n := len(exportAnyRe.FindAllString(src, -1)); n != 1 {
+		t.Errorf("%s: %d export statements, want one", catalogModelName, n)
+	}
+	if rest := cutExport(t, catalogModelName, src); exportAnyRe.MatchString(rest) {
+		t.Errorf("%s: an export remains after the trailing statement is cut", catalogModelName)
+	}
+	m := exportNamesRe.FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("%s: declares no export statement the scan recognises", catalogModelName)
+	}
+	exported := braceNames(m[1])
+	if got, want := strings.Join(exported, ", "), strings.Join(catalogModelFunctions, ", "); got != want {
+		t.Errorf("%s: the export statement names %q, want %q", catalogModelName, got, want)
+	}
+	im := catalogModelImportRe.FindStringSubmatch(readSource(t, "app.js"))
+	if im == nil {
+		t.Fatalf("app.js: no import from ./%s", catalogModelName)
+	}
+	imported := braceNames(im[1])
+	sort.Strings(exported)
+	sort.Strings(imported)
+	if strings.Join(exported, ", ") != strings.Join(imported, ", ") {
+		t.Errorf("%s exports %v and app.js imports %v", catalogModelName, exported, imported)
 	}
 }
 

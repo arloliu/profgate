@@ -90,7 +90,7 @@ and a signing-key rotation at the issuer meet a real issuer only in the authenti
 their unit tests drive fakes.
 The console meets a real gateway and issuer only in the authentication and console scenarios:
 its shell, its assets at their stable paths, their headers, and the login return.
-Its three model modules — `portmodel.js`, `targetmodel.js`, and `collectionmodel.js` —
+Its four model modules — `portmodel.js`, `targetmodel.js`, `collectionmodel.js`, and `catalogmodel.js` —
 run under the goja interpreter in Go tests,
 and `app.js` itself runs in the two browser scenarios, `console-oidc` and `console-basic`,
 which drive a headless Chromium and skip by name on a machine that has none,

@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -39,6 +40,11 @@ const (
 	// no img element and no logged error together would not prove it.
 	consoleQuerySentinel     = "profgateQueryRan"
 	consolePrincipalSentinel = "profgatePrincipalRan"
+
+	// consoleBookmarkQuery is what the namespace filter is typed with while the bookmarked namespace is outside the listing.
+	// consoleQueryPayload, the bookmarked namespace, holds it.
+	// A filter matching the value it keeps against the query would therefore offer a namespace no answer ever named.
+	consoleBookmarkQuery = "img"
 
 	// consoleUsernameClaim is the claim the console gateway reads as the principal.
 	// It is not email, because the login has to succeed with a well formed address
@@ -204,6 +210,55 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		t.Fatalf("the page does not show the unlisted selection as text against a namespace list that arrived:\n%s",
 			listed)
 	}
+
+	// A query in the namespace filter draws no namespace the listing lacks.
+	// The bookmarked namespace holds the query and the menu still does not offer it,
+	// because a filter keeps the value its menu is showing and this menu is showing none:
+	// whether a value is listed is read from the whole listing,
+	// which is also what draws the line saying this one is not, under a query as without one.
+	// The load has settled by here: the Profile panel standing is the limits answer applied,
+	// and the page asks for no Services under a namespace outside the listing,
+	// so a request recorded past the boundary below is one the filter sent.
+	s.waitFor(t, "the Profile panel draws its menu", profileMenuDrawn)
+	bookmarkRoutes := []consoleRoute{
+		{"the namespace listing", gatewayOrigin + "/v1/namespaces"},
+		{"the limits", gatewayOrigin + "/v1/limits"},
+		{"the identity", gatewayOrigin + "/v1/whoami"},
+	}
+	bookmarkSent := routeCounts(s, bookmarkRoutes)
+	bookmarkHere := s.location(t)
+	nsTotal := len(readMenu(t, s, "Namespace").Options)
+	typeFilter(t, s, "Namespace filter", consoleBookmarkQuery)
+	s.waitFor(t, "the count line stands beside the namespace menu", noteStands("Namespace"))
+	bookmarked := readMenu(t, s, "Namespace")
+	if slices.Contains(bookmarked.Options, consoleQueryPayload) {
+		t.Fatalf("the namespace menu offers the bookmarked namespace, which the listing lacks; the options are %q",
+			bookmarked.Options)
+	}
+	for _, option := range bookmarked.Options {
+		if !strings.Contains(strings.ToLower(option), consoleBookmarkQuery) {
+			t.Fatalf("the namespace menu offers %q under the query %q, which that name does not hold", option, consoleBookmarkQuery)
+		}
+	}
+	if bookmarked.Value != "" {
+		t.Fatalf("the namespace menu reads %q, want none chosen while the bookmarked namespace is outside the listing",
+			bookmarked.Value)
+	}
+	if want := fmt.Sprintf("%d of %d shown", len(bookmarked.Options), nsTotal); bookmarked.Note != want {
+		t.Fatalf("the line beside the namespace menu reads %q, want %q, which counts the whole listing",
+			bookmarked.Note, want)
+	}
+	if listed := s.textOf(t, ".panels"); !strings.Contains(listed, consoleQueryPayload+" is not listed") {
+		t.Fatalf("a query in the namespace filter took the unlisted selection's line with it:\n%s", listed)
+	}
+	if here := s.location(t); here != bookmarkHere {
+		t.Fatalf("the page is at %q with a namespace filter typed, want %q: a filter is no part of the selection",
+			here, bookmarkHere)
+	}
+	assertNothingSent(t, s, bookmarkRoutes, bookmarkSent, "typing in the namespace filter")
+	// The field is emptied again, so what the assertions below read is the load and not this case.
+	typeFilter(t, s, "Namespace filter", "")
+
 	assertRenderedAsText(t, s, "the load with the hostile query", consolePrincipalPayload, consoleQueryPayload)
 	s.assertClean(t, "the login round trip")
 
@@ -336,6 +391,145 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	// the URL field cannot say that, because the URL is built from the selection alone.
 	s.chooseOption(t, "Service", testAppName)
 	s.waitFor(t, "the Pod control lists a Pod", podListed)
+
+	// Each filter field narrows the menu it stands beside and moves nothing else.
+	// What a query leaves in the Service menu is written out,
+	// because this namespace holds the three Services the scenario created and nothing else;
+	// the namespace menu's options are the cluster's,
+	// so the cases there name the namespace the page is showing and read how many of how many are drawn.
+	nsAll := readMenu(t, s, "Namespace")
+	svcAll := readMenu(t, s, "Service")
+	if nsAll.Value != ns || svcAll.Value != testAppName {
+		t.Fatalf("the menus read %q and %q before any query is typed, want %q and %q",
+			nsAll.Value, svcAll.Value, ns, testAppName)
+	}
+	if len(nsAll.Options) < 2 {
+		t.Fatalf("the namespace menu offers %q; a menu of one cannot be seen to narrow", nsAll.Options)
+	}
+	if want := []string{dexName, nobodyServiceName, testAppName}; !slices.Equal(svcAll.Options, want) {
+		t.Fatalf("the Service menu offers %q, want %q, the Services this namespace holds", svcAll.Options, want)
+	}
+	if nsAll.Note != "" || svcAll.Note != "" {
+		t.Fatalf("a count line stands beside a menu with no query typed: %q and %q", nsAll.Note, svcAll.Note)
+	}
+	// The profile URL and the Collections view are read as they stand before any query,
+	// because both are membership, which is read from the listing and never from what a query left.
+	var builtURL string
+	s.eval(t, "read the profile URL", profileURLField, &builtURL)
+	if builtURL == "" {
+		t.Fatalf("the profile URL field is empty before any query is typed:\n%s", s.textOf(t, ".panels"))
+	}
+	// unmatched is a query no Kubernetes name holds: a name is a DNS label, which admits neither a space nor a capital,
+	// and a filter lowercases both sides before it compares them.
+	const unmatched = "NO SUCH NAME"
+	filterRoutes := []consoleRoute{
+		{"the namespace listing", gatewayOrigin + "/v1/namespaces"},
+		{"the Service listing", gatewayOrigin + "/v1/namespaces/" + ns + "/services"},
+		{"the targets listing", gatewayOrigin + "/v1/namespaces/" + ns + "/services/" + testAppName + "/targets"},
+		{"the Collections listing", route},
+		{"the identity", gatewayOrigin + "/v1/whoami"},
+	}
+	for _, tc := range []struct {
+		name              string
+		nsQuery, svcQuery string
+		wantNs, wantSvc   []string
+	}{
+		{
+			name:    "a namespace query narrows that menu and leaves the Service menu whole",
+			nsQuery: unmatched,
+			wantNs:  []string{ns},
+			wantSvc: svcAll.Options,
+		},
+		{
+			name:     "a Service query keeps what it matches beside the Service shown",
+			svcQuery: nobodyServiceName,
+			wantNs:   nsAll.Options,
+			wantSvc:  []string{nobodyServiceName, testAppName},
+		},
+		{
+			name:     "a query in both fields narrows both menus",
+			nsQuery:  unmatched,
+			svcQuery: nobodyServiceName,
+			wantNs:   []string{ns},
+			wantSvc:  []string{nobodyServiceName, testAppName},
+		},
+		{
+			name:     "a query neither chosen value holds leaves each menu showing it",
+			nsQuery:  unmatched,
+			svcQuery: unmatched,
+			wantNs:   []string{ns},
+			wantSvc:  []string{testAppName},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sentAt := routeCounts(s, filterRoutes)
+			here := s.location(t)
+			typeFilter(t, s, "Namespace filter", tc.nsQuery)
+			typeFilter(t, s, "Service filter", tc.svcQuery)
+			gotNs := awaitMenu(t, s, "Namespace", tc.wantNs)
+			gotSvc := awaitMenu(t, s, "Service", tc.wantSvc)
+			// Each select is read for the value it reports and not for the value the scenario chose,
+			// because a menu that kept its value and a menu redrawn with it are one page and two implementations.
+			if gotNs.Value != ns || gotSvc.Value != testAppName {
+				t.Fatalf("the menus read %q and %q under these queries, want %q and %q: a filter chooses nothing",
+					gotNs.Value, gotSvc.Value, ns, testAppName)
+			}
+			assertNote(t, "namespace", gotNs, tc.nsQuery, len(nsAll.Options))
+			assertNote(t, "Service", gotSvc, tc.svcQuery, len(svcAll.Options))
+			if got := s.location(t); got != here {
+				t.Fatalf("the page is at %q under these queries, want %q: neither field is part of the selection",
+					got, here)
+			}
+			var stillBuilt string
+			s.eval(t, "read the profile URL", profileURLField, &stillBuilt)
+			if stillBuilt != builtURL {
+				t.Fatalf("the profile URL reads %q under these queries, want %q, which a query does not decide",
+					stillBuilt, builtURL)
+			}
+			var collectionsStanding bool
+			s.eval(t, "read the Collections panel", `document.querySelector(".collections") !== null`, &collectionsStanding)
+			if !collectionsStanding {
+				t.Fatalf("the Collections view is gone under these queries; it is offered on membership and not on a query:\n%s",
+					s.textOf(t, ".panels"))
+			}
+			assertNothingSent(t, s, filterRoutes, sentAt, "typing in the filter fields")
+		})
+	}
+
+	// Choosing a namespace clears the Service filter and leaves the namespace filter standing.
+	// The Service menu is about to offer another namespace's names,
+	// and a query typed against the names it was offering says nothing about those,
+	// while the query that found the namespace is the one whoever typed it is still reading.
+	t.Run("choosing a namespace clears the Service filter", func(t *testing.T) {
+		typeFilter(t, s, "Namespace filter", unmatched)
+		typeFilter(t, s, "Service filter", nobodyServiceName)
+		awaitMenu(t, s, "Service", []string{nobodyServiceName, testAppName})
+		// The namespace menu is left for its placeholder, which stands whatever a filter admits.
+		// The fields are read once the Service menu is disabled, which is what no namespace chosen leaves.
+		// Waiting for the field to empty would instead report a filter that never clears as a timeout.
+		s.chooseOption(t, "Namespace", "")
+		s.waitFor(t, "the Service menu is disabled with no namespace chosen", menuDisabled("Service"))
+		if got := readFilter(t, s, "Service filter"); got != "" {
+			t.Fatalf("the Service filter reads %q after the namespace changed, want empty:"+
+				" the menu it narrows is about to offer another namespace's names", got)
+		}
+		if got := readFilter(t, s, "Namespace filter"); got != unmatched {
+			t.Fatalf("the namespace filter reads %q after the namespace changed, want %q, which nothing typed over",
+				got, unmatched)
+		}
+		if got := readMenu(t, s, "Service"); got.Value != "" {
+			t.Fatalf("the Service menu reads %q with no namespace chosen, want none", got.Value)
+		}
+	})
+
+	// The page goes back to the pair every case below needs, with both fields empty.
+	// The namespace filter is emptied first, because a menu narrowed to nothing offers no namespace to choose.
+	typeFilter(t, s, "Namespace filter", "")
+	typeFilter(t, s, "Service filter", "")
+	s.chooseOption(t, "Namespace", ns)
+	s.waitFor(t, "the Service list answers for the namespace chosen again", serviceOffered(testAppName))
+	s.chooseOption(t, "Service", testAppName)
+	s.waitFor(t, "the Pod control lists a Pod again", podListed)
 
 	// The identity disclosure's opening rule, on the four cases an answer the page classifies decides.
 	// Each answer is written into a request the test paused, so the realm the gateway serves never changes.
@@ -796,6 +990,16 @@ const podListed = `(() => {
   const l = [...document.querySelectorAll("label")].find((l) => l.querySelector("select") && l.textContent.trim().startsWith("Pod"));
   return Boolean(l) && l.querySelector("select").options.length > 1;
 })()`
+
+// profileMenuDrawn is the expression that is true once the Profile panel offers its menu,
+// which is the limits answer applied: the panel draws no control of its own until that answer lands.
+const profileMenuDrawn = `(() => {
+  const l = [...document.querySelectorAll("label")].find((l) => l.querySelector("select") && l.textContent.trim().startsWith("Profile"));
+  return Boolean(l);
+})()`
+
+// profileURLField is the expression that reads the profile URL the page built, or the empty string for no field.
+const profileURLField = `(document.querySelector("input.url") || { value: "" }).value`
 
 // lastResourceType names what the browser was fetching the last of the requests for, or nothing for none.
 func lastResourceType(sent []sentRequest) network.ResourceType {
@@ -1376,6 +1580,168 @@ func (s *session) chooseOption(t *testing.T, label, value string) {
 			why = err.Error()
 		}
 		t.Fatalf("choose %s = %q: %s\n%s", label, value, why, s.report())
+	}
+}
+
+// menuState is what a menu of the Service panel is showing, as the page has drawn it:
+// the values it offers beyond the placeholder, the value the select itself reports,
+// and the count line beside it.
+type menuState struct {
+	Options []string `json:"options"`
+	Value   string   `json:"value"`
+	Note    string   `json:"note"`
+}
+
+// readMenu reads the menu the label names, once.
+// The menu is the label that holds a select, which is never the label beside it holding the filter field:
+// each cell carries two labels, and only the menu's own names a select.
+// The count line is read from the cell around both, which is where the page draws it.
+func readMenu(t *testing.T, s *session, label string) menuState {
+	t.Helper()
+	var got menuState
+	s.eval(t, "read the "+label+" menu", fmt.Sprintf(`(() => {
+  const l = [...document.querySelectorAll("label")].find((l) => l.querySelector("select") && l.textContent.trim().startsWith(%q));
+  if (!l) { return { options: null, value: "", note: "" }; }
+  const sel = l.querySelector("select");
+  const note = l.parentElement.querySelector("small.shown");
+  return {
+    options: [...sel.options].map((o) => o.value).filter((v) => v !== ""),
+    value: sel.value,
+    note: note ? note.textContent.trim() : "",
+  };
+})()`, label), &got)
+	if got.Options == nil {
+		t.Fatalf("no menu is labelled %s:\n%s", label, s.report())
+	}
+
+	return got
+}
+
+// awaitMenu polls the menu the label names until it offers exactly the values wanted, and returns that read,
+// so every assertion after it reads one render rather than one render per fact.
+// It polls the way chooseOption polls:
+// a menu the page has not finished redrawing is waited for instead of reported as wrong.
+func awaitMenu(t *testing.T, s *session, label string, want []string) menuState {
+	t.Helper()
+	var got menuState
+	err := poll(s.ctx, browserDeadline, func(context.Context) (bool, error) {
+		got = readMenu(t, s, label)
+
+		return slices.Equal(got.Options, want), nil
+	})
+	if err != nil {
+		t.Fatalf("the %s menu offers %q, want %q: %v\n%s", label, got.Options, want, err, s.report())
+	}
+
+	return got
+}
+
+// assertNote fails when the count line beside a menu is not what that many options of that many draw.
+// The line stands only while a query stands, and the total it names is the whole listing:
+// a total counted from what the query left is a line that always reads the same number twice.
+func assertNote(t *testing.T, what string, got menuState, query string, total int) {
+	t.Helper()
+	want := ""
+	if query != "" {
+		want = fmt.Sprintf("%d of %d shown", len(got.Options), total)
+	}
+	if got.Note != want {
+		t.Fatalf("the line beside the %s menu reads %q, want %q", what, got.Note, want)
+	}
+}
+
+// filterField is the expression that finds the filter field the label names,
+// which is the label of a cell's pair that holds a search input and no menu.
+func filterField(label string) string {
+	return fmt.Sprintf(`[...document.querySelectorAll("label")]`+
+		`.find((l) => l.querySelector("input[type=search]") && !l.querySelector("select") && l.textContent.trim().startsWith(%q))`,
+		label)
+}
+
+// menuDisabled is the expression that is true while the menu the label names stands disabled.
+func menuDisabled(label string) string {
+	return fmt.Sprintf(`((l) => Boolean(l) && l.querySelector("select").disabled)(`+
+		`[...document.querySelectorAll("label")]`+
+		`.find((l) => l.querySelector("select") && l.textContent.trim().startsWith(%q)))`, label)
+}
+
+// noteStands is the expression that is true while a count line stands beside the menu the label names.
+// The line is drawn under a query and not otherwise, so it is the render a query typed into that menu's filter causes.
+func noteStands(label string) string {
+	return fmt.Sprintf(`((l) => Boolean(l) && Boolean(l.parentElement.querySelector("small.shown")))(`+
+		`[...document.querySelectorAll("label")]`+
+		`.find((l) => l.querySelector("select") && l.textContent.trim().startsWith(%q)))`, label)
+}
+
+// typeFilter replaces whatever stands in the filter field the label names with query,
+// and dispatches the input event the page listens for, which setting the property alone would not.
+func typeFilter(t *testing.T, s *session, label, query string) {
+	t.Helper()
+	var typed bool
+	s.eval(t, fmt.Sprintf("type %q into the %s field", query, label), fmt.Sprintf(`((l) => {
+  if (!l) { return false; }
+  const field = l.querySelector("input[type=search]");
+  field.value = %q;
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  return true;
+})(%s)`, query, filterField(label)), &typed)
+	if !typed {
+		t.Fatalf("no filter field is labelled %s:\n%s", label, s.report())
+	}
+}
+
+// filterState is what a filter field is showing: the text in it, and whether the field stands at all.
+// The two are read together,
+// because a field that went away and a field someone emptied both read as no text through the value alone.
+type filterState struct {
+	Value  string `json:"value"`
+	Stands bool   `json:"stands"`
+}
+
+// readFilter is what stands in the filter field the label names.
+func readFilter(t *testing.T, s *session, label string) string {
+	t.Helper()
+	var got filterState
+	s.eval(t, "read the "+label+" field",
+		fmt.Sprintf(`((l) => l ? { value: l.querySelector("input[type=search]").value, stands: true } `+
+			`: { value: "", stands: false })(%s)`, filterField(label)), &got)
+	if !got.Stands {
+		t.Fatalf("no filter field is labelled %s:\n%s", label, s.report())
+	}
+
+	return got.Value
+}
+
+// consoleRoute is one route a case watches, named for the failure it would report.
+type consoleRoute struct {
+	what, url string
+}
+
+// routeCounts is how many GETs the browser has recorded to each route, in the routes' order.
+// A count is per route and never of the page as a whole,
+// because the recorder holds the navigation and every static asset beside the page's own fetches.
+func routeCounts(s *session, routes []consoleRoute) []int {
+	sent := s.sent(http.MethodGet)
+	counts := make([]int, len(routes))
+	for i, r := range routes {
+		for _, req := range sent {
+			if req.url == r.url || strings.HasPrefix(req.url, r.url+"?") {
+				counts[i]++
+			}
+		}
+	}
+
+	return counts
+}
+
+// assertNothingSent fails when any of the routes was asked for since the counts given.
+func assertNothingSent(t *testing.T, s *session, routes []consoleRoute, since []int, what string) {
+	t.Helper()
+	for i, got := range routeCounts(s, routes) {
+		if got != since[i] {
+			t.Fatalf("%s sent %d requests to %s, want none: it narrows what the page already holds\n%s",
+				what, got-since[i], routes[i].what, s.report())
+		}
 	}
 }
 

@@ -36,6 +36,7 @@ import {
   progressText,
   olderCollectionsNote,
 } from "./collectionmodel.js";
+import { filterOptions } from "./catalogmodel.js";
 
 const html = htm.bind(h);
 
@@ -265,6 +266,17 @@ function text(value) {
   return String(value);
 }
 
+// FilterNote is the line beside a menu saying how many of its options are drawn.
+// It stands only while the filter's query is not empty,
+// because a query of whitespace alone leaves every option standing
+// and a line saying so is a line that never changes.
+function FilterNote(props) {
+  if (props.query.trim() === "") {
+    return null;
+  }
+  return html`<small class="shown">${props.shown} of ${props.total} shown</small>`;
+}
+
 // errorParts splits an error of fetchJSON into what the page shows.
 function errorParts(err) {
   if (typeof err === "string") {
@@ -359,6 +371,11 @@ class App extends Component {
       svc: q.svc,
       namespaces: [],
       services: [],
+      // nsFilter and svcFilter are what has been typed into the field beside each menu.
+      // They narrow what that menu draws and are sent nowhere,
+      // so neither reaches the page query and neither is restored from it.
+      nsFilter: "",
+      svcFilter: "",
       targets: [],
       targetSummary: null,
       // targetsLoading and collectionsLoading are true from a list's fetch until its latest request has settled;
@@ -926,6 +943,9 @@ class App extends Component {
         ns: ns,
         svc: "",
         services: [],
+        // The Service menu is about to offer another namespace's names,
+        // and a query typed against the names it was offering says nothing about those.
+        svcFilter: "",
         targets: [],
         targetSummary: null,
         targetsLoading: false,
@@ -946,6 +966,16 @@ class App extends Component {
         }
       },
     );
+  };
+
+  // The two filter fields change what their menu draws and nothing else:
+  // no fetch, no page query, and no selection.
+  onNsFilter = (e) => {
+    this.setState({ nsFilter: e.target.value });
+  };
+
+  onSvcFilter = (e) => {
+    this.setState({ svcFilter: e.target.value });
   };
 
   onService = (e) => {
@@ -1247,27 +1277,51 @@ class App extends Component {
   }
 
   renderSelection() {
-    const { ns, svc, namespaces, services } = this.state;
+    const { ns, svc, namespaces, services, nsFilter, svcFilter } = this.state;
     const nsListed = !ns || namespaces.includes(ns);
     const svcListed = !svc || services.includes(svc);
+    // A menu offers what its own filter admits, plus the value it is showing,
+    // which is what keeps a query from removing the current selection.
+    // Whether a value is listed, and the placeholder each menu carries,
+    // are read from the whole listing instead,
+    // so a query that matches nothing narrows a menu without unlisting anything.
+    const nsOptions = filterOptions(namespaces, nsFilter, ns);
+    const svcOptions = filterOptions(services, svcFilter, svc);
+    // Each menu and the field that narrows it sit in one cell as two sibling labels.
+    // The field is never nested inside the menu's label,
+    // because a label naming a menu is the name of that one control.
     return html`
       <article class="selection">
         <header><strong>Service</strong></header>
         <div class="fields">
-          <label>
-            Namespace
-            <select value=${nsListed ? ns : ""} onChange=${this.onNamespace}>
-              <option value="">${namespaces.length ? "choose a namespace" : "no namespace listed"}</option>
-              ${namespaces.map((n) => html`<option key=${n} value=${n}>${n}</option>`)}
-            </select>
-          </label>
-          <label>
-            Service
-            <select value=${svcListed ? svc : ""} onChange=${this.onService} disabled=${!ns || !nsListed}>
-              <option value="">${services.length ? "choose a Service" : "no Service listed"}</option>
-              ${services.map((s) => html`<option key=${s} value=${s}>${s}</option>`)}
-            </select>
-          </label>
+          <div class="menu">
+            <label>
+              Namespace
+              <select value=${nsListed ? ns : ""} onChange=${this.onNamespace}>
+                <option value="">${namespaces.length ? "choose a namespace" : "no namespace listed"}</option>
+                ${nsOptions.map((n) => html`<option key=${n} value=${n}>${n}</option>`)}
+              </select>
+            </label>
+            <label>
+              Namespace filter
+              <input type="search" value=${nsFilter} onInput=${this.onNsFilter} />
+            </label>
+            <${FilterNote} query=${nsFilter} shown=${nsOptions.length} total=${namespaces.length} />
+          </div>
+          <div class="menu">
+            <label>
+              Service
+              <select value=${svcListed ? svc : ""} onChange=${this.onService} disabled=${!ns || !nsListed}>
+                <option value="">${services.length ? "choose a Service" : "no Service listed"}</option>
+                ${svcOptions.map((s) => html`<option key=${s} value=${s}>${s}</option>`)}
+              </select>
+            </label>
+            <label>
+              Service filter
+              <input type="search" value=${svcFilter} onInput=${this.onSvcFilter} />
+            </label>
+            <${FilterNote} query=${svcFilter} shown=${svcOptions.length} total=${services.length} />
+          </div>
         </div>
         ${nsListed ? null : html`<p><small>${ns} is not listed</small></p>`}
         ${this.panelError("namespaces")}
