@@ -5,7 +5,7 @@
 This document designs a thin operator console for the gateway
 ([`gateway.md`](gateway.md)):
 a static page served by the gateway itself,
-plus four read-only listing endpoints the page needs and a command-line client can use as well.
+plus five read-only listing endpoints the page needs and a command-line client can use as well.
 Everything in the gateway design — permission boundary, discovery seam, request algorithm, realms,
 non-disclosure, configuration, testing — is assumed and not restated;
 the browser flow, session cookie, and `Sec-Fetch` rules of [`auth.md`](auth.md) are assumed the same way,
@@ -44,10 +44,14 @@ through the same request algorithm, and the browser saves them as a file.
    are `POST`s declaring `Content-Type: application/json`,
    which is the whole of what separates them from a form another site could submit
    (*Starting and cancelling a Collection*).
-2. **Four listing endpoints, all read-only, each bounded by what it describes.**
-   The four are:
-   `GET /v1/namespaces`, `GET /v1/namespaces/{namespace}/services`, `GET /v1/whoami`, and `GET /v1/limits`.
-   The two catalogs are realm-filtered.
+2. **Five listing endpoints, all read-only, each bounded by what it describes.**
+   The five are:
+   `GET /v1/namespaces`, `GET /v1/namespaces/{namespace}/services`, `GET /v1/catalog`,
+   `GET /v1/whoami`, and `GET /v1/limits`.
+   The three catalogs are realm-filtered:
+   the namespace list, the Service list,
+   and `/v1/catalog`, which answers every Service the realm admits as a namespace-and-name pair
+   and is the one thing the console knows about namespaces and Services (*Controls*).
    `whoami` is caller-specific: it describes the caller and that caller's realm.
    `limits` is global: it describes the gateway's own configuration, is identical for every caller,
    and is answered to every request the configured `auth.mode` admits —
@@ -94,8 +98,9 @@ through the same request algorithm, and the browser saves them as a file.
   it starts a single Collection on demand and cancels one (*Starting and cancelling a Collection*).
 - Automatic refresh or polling of any list.
   A list that has arrived is not refetched on a timer.
-  The targets list and the Collections table have a **Refresh** control (*Controls*);
-  a change of selection, the refetch an answer causes (*Errors*),
+  The Service panel, the targets list, and the Collections table each have a **Refresh** control (*Controls*);
+  a change of selection, which fetches targets and Collections and no listing (*Controls*),
+  the refetch an answer causes (*Errors*),
   and the retry of a `not_ready` answer every two seconds remain.
   Every listing request writes an audit record —
   gateway *Logging* for the targets fetch, [`pgo.md`](pgo.md) *Logging* for the Collections list —
@@ -133,7 +138,7 @@ through the same request algorithm, and the browser saves them as a file.
 
 ## 2. Routes
 
-The API listener gains a static route family and four `/v1` routes.
+The API listener gains a static route family and five `/v1` routes.
 The ops listener is unchanged.
 
 | Route | Methods | Authentication | Realm | Exists when |
@@ -145,15 +150,16 @@ The ops listener is unchanged.
 | `/v1/limits` | `GET` | yes | none | always |
 | `/v1/namespaces` | `GET` | yes | filter | always |
 | `/v1/namespaces/{namespace}/services` | `GET` | yes | namespace check, then filter | always |
+| `/v1/catalog` | `GET` | yes | filter | always |
 
 The static routes and `/` accept `HEAD` because they serve files,
 and a `HEAD` is how a proxy or a monitor asks about a file;
 `HEAD` answers the headers of the `GET`, the `302` and its `Location` included, with no body,
 and any other method is `405 method_not_allowed` with `Allow: GET, HEAD`.
-The four `/v1` routes accept `GET` only, like the other `GET`-only `/v1` routes,
+The five `/v1` routes accept `GET` only, like the other `GET`-only `/v1` routes,
 and answer `405` with `Allow: GET` otherwise.
 
-The four `/v1` routes exist whether or not `ui.enabled` is set:
+The five `/v1` routes exist whether or not `ui.enabled` is set:
 they are useful to a script,
 and a route that appears and disappears with a page would make the API's shape depend on a display option.
 
@@ -185,35 +191,43 @@ That is the same source anyone can read here.
 
 ### 2.2 Request algorithm for the listing endpoints
 
-The four `/v1` routes run the gateway *Request algorithm* as [`auth.md`](auth.md) *Request algorithm* composes it,
+The five `/v1` routes run the gateway *Request algorithm* as [`auth.md`](auth.md) *Request algorithm* composes it,
 in the order `internal/httpapi` runs it today, and stop at the cache:
 
-1. **Route.** The path is one of the four; `{namespace}` must be a DNS-1123 label → `404 route_unknown`.
+1. **Route.** The path is one of the five;
+   the Service list's `{namespace}` must be a DNS-1123 label → `404 route_unknown`,
+   and the catalog's path captures nothing, so it has no segment to reject.
 2. **Method.** `GET` only → `405 method_not_allowed` with `Allow: GET`.
 3. **Readiness.** The readiness `internal/httpapi` composes for every `/v1` route —
    discovery synced and, under `oidc`, the issuer discovered with its first keys fetched
    ([`auth.md`](auth.md) *Request algorithm*; `Deps.Ready` in `internal/httpapi`) —
-   false → `503 not_ready`, for all four,
+   false → `503 not_ready`, for all five,
    so a client learns the gateway's readiness from every `/v1` route in the same way.
 4. **Credential placement.**
    `access_token` as a query parameter → `400 invalid_parameter`.
 5. **Authentication.** Per `auth.mode` → `401 unauthenticated`, `429 too_many_auth`, `503 auth_unavailable`,
    or `302` to login for a navigation under the browser flow.
 6. **Realm.** Service list only: the realm's `namespaces` must admit `{namespace}` → `403 realm_denied`.
-   The other three have no realm step to fail:
+   The other four have no realm step to fail:
    `whoami` describes the caller,
    `limits` describes the gateway and is the same for every caller,
-   and the namespace list is filtered rather than refused.
+   and the namespace list and the catalog are filtered rather than refused.
+   Neither of those two names a namespace in its path, which is what the Service list is refused for,
+   so a realm that admits nothing is answered `200` and an empty list and never `403 realm_denied`.
 7. **Parameters.** Any query parameter → `400 invalid_parameter`.
-   None of the four takes one.
+   None of the five takes one, the catalog included:
+   it accepts no `q=`, no `limit=`, and no `cursor=`,
+   and narrowing the answer is the page's own work over the answer it holds (*Controls*).
 8. **Read.** `whoami` and `limits` answer `200` from the configuration snapshot the request loaded at entry.
-   The namespace and Service lists call `Catalog` on the seam (*Package layout*),
+   The namespace list, the Service list, and the catalog call `Catalog` on the seam (*Package layout*),
    apply the realm filter (*The realm filter*), and answer `200`;
+   the catalog calls `Catalog` with the empty namespace, which is every namespace,
+   and answers the admitted pairs in namespace-then-name order (*Response shapes*);
    an error from `Catalog` → `503 discovery_unavailable`,
    the same mapping `internal/httpapi` gives every unclassified `Targets` error today,
    and never an empty `200`.
 
-The realm check precedes the read for the same reason it precedes discovery on the interactive routes:
+The Service list's realm check precedes its read for the same reason it precedes discovery on the interactive routes:
 a caller denied a namespace learns nothing from a malformed query, and causes no read of the cache;
 the denial happens before `Catalog` is called, which a unit test proves (*Unit*).
 Nothing after the read exists:
@@ -237,6 +251,13 @@ The filter is that predicate applied to what the Service cache holds, list by li
 - A **profile** is offered when `realm.profiles` admits it;
   `["*"]` therefore expands to every name `/v1/limits` returns,
   and an explicit list is intersected with it in the order `/v1/limits` uses.
+
+The filter runs in three places over that one predicate, and `internal/httpapi` runs one `filterCatalog` for all three.
+The catalog is the Service rule alone, applied to every Service the cache holds:
+it answers the pairs the rule admits and derives nothing from them.
+The Service list is that same rule inside one namespace,
+and the namespace list is the distinct namespaces of what the rule kept.
+So the three answers cannot disagree about what a realm admits (*Response shapes*).
 
 The two lists are independent, so the four combinations are all real configurations:
 
@@ -276,15 +297,16 @@ which the gateway *Informers* section already states as the contract for everyth
 ## 3. Response shapes
 
 Every successful listing response and every gateway error envelope is `application/json`,
-carries `Cache-Control: no-store`, and sorts its lists by name;
+carries `Cache-Control: no-store`, and sorts its lists —
+the lists of names by name, and the catalog by namespace and then by name;
 arrays are `[]` and never `null` when empty.
 The one response on these routes that is not JSON is inherited from [`auth.md`](auth.md) *What is redirected*:
-under `oidc`, a browser navigation to one of the four routes without a session —
+under `oidc`, a browser navigation to one of the five routes without a session —
 a URL typed or pasted into the address bar —
 is a bodyless `302` to `/auth/login`,
 as it is on every `/v1` route.
 The console never receives it, because a `fetch` is not a navigation.
-No response of the four names a Pod, a Pod IP, a node, or a port a Pod declares;
+No response of the five names a Pod, a Pod IP, a node, or a port a Pod declares;
 the targets response of the gateway (*Targets, with reasons*) names Pods and nodes as it always has,
 and no response on any route the console reads names a Pod IP or a port a Pod declares.
 
@@ -421,7 +443,7 @@ What the view shows and when the download link appears is in *Controls*.
 GET /v1/namespaces/{namespace}/services/{service}/targets?explain=true
 ```
 
-The targets endpoint is the gateway's rather than one of the four,
+The targets endpoint is the gateway's rather than one of the five,
 and the gateway *List targets* section defines every field of its response.
 The console sends `explain=true` on every targets fetch, not only when it expects an empty list:
 on a gateway that accepts `explain`, one request then answers both which Pods can be profiled and why none can,
@@ -460,6 +482,39 @@ A `400 invalid_parameter` a current gateway earned on the port selection is retr
 and fails the same way the second time,
 which costs one request and keeps the rule from needing a second clause.
 
+### 3.7 Catalog
+
+```http
+GET /v1/catalog
+```
+
+```json
+{"catalog": [{"namespace": "orders", "name": "checkout"}, {"namespace": "payments", "name": "ledger"}]}
+```
+
+One entry is one namespace-and-name pair, and the array is ordered by namespace and then by name,
+which is the order the seam returns and the realm filter preserves.
+It is flat rather than grouped under namespace keys because a pair is what the console's search matches
+and what a result row renders (*Controls*),
+so the gateway has no grouping step and the page no ungrouping one.
+The array is `[]` and never `null`, an admitted realm holding nothing included.
+
+Over one cache read and one realm snapshot the catalog and the two lists agree:
+the names the catalog carries under a namespace are what the Service list derives for that namespace,
+and the catalog's distinct namespaces are what the namespace list derives.
+All three apply the one filter to the one lister (*The realm filter*), so the agreement holds by construction.
+It is equivalent filtering over the same data rather than equality between two responses:
+each request loads the configuration and reads the cache on its own,
+so two responses taken while the cluster moves may differ.
+
+The response is proportional to the number of Services the realm admits, and the gateway imposes no ceiling.
+The size is an estimate from the encoding rather than a measurement:
+at fifteen characters in each name a pair costs about 57 bytes with its separator,
+so five thousand pairs are about 280 KiB, uncompressed as every `/v1` response is.
+Naming namespaces in a realm bounds which namespaces are admitted, not how many Services they hold.
+That size is what one source behind both menus costs (*Controls*),
+and compression is a decision about every response the gateway sends rather than about this route.
+
 ---
 
 ## 4. The page
@@ -471,10 +526,9 @@ which costs one request and keeps the rule from needing a second clause.
   |
   |-- GET /v1/whoami ------> principal, realm, auth mode; "not signed in" -> Signing in and out
   |-- GET /v1/limits ------> duration bounds, port choices, pgo.enabled
-  |-- GET /v1/namespaces --> namespace <select>
-  |         (ns chosen)
-  |-- GET /v1/namespaces/{ns}/services ----------------> service <select>
-  |         (svc chosen)
+  |-- GET /v1/catalog -----> namespace <select>, service <select>, and the search, all derived from it
+  |         (Refresh on the Service panel repeats this fetch and redraws both menus)
+  |         (ns and svc chosen, from the two menus or from one search result)
   |-- GET .../services/{svc}/targets?explain=true[&port=|&portName=] --> pod <select>, versions, empty state
   |         (Refresh on the targets list repeats this fetch)
   |-- GET .../collections   (only when pgo.enabled and realm.pgo.read)     --> collections table, first page
@@ -492,6 +546,11 @@ which costs one request and keeps the rule from needing a second clause.
   [Start collection] = POST .../collections            two presses; Content-Type: application/json, Idempotency-Key
   [Cancel]           = POST /v1/collections/{id}/cancel two presses; Content-Type: application/json
 ```
+
+The page sends no namespace listing and no Service listing.
+Both routes stay for every other client (*Routes*),
+and the console reads the catalog instead, once at load and again on each **Refresh** of the Service panel;
+a change of namespace or Service sends no listing request at all (*Controls*).
 
 The selection lives in the page's query string, `?ns=&svc=`, and nothing else is remembered:
 the browser flow seals the return path as path plus query and drops the fragment
@@ -572,23 +631,121 @@ feature-detects `navigator.clipboard.writeText`, and renders the copy button onl
 
 ### 4.2 Controls
 
+**The page's one source.**
+The page holds the catalog answer and holds nothing else about which namespaces and Services exist.
+The namespace menu's options, the Service menu's options, and the search's results are all derived from it
+when the page renders, and none of the three is stored beside it.
+So no two answers can disagree about what exists,
+and the page needs no rule saying which of them wins.
+
 The controls, their defaults, and what each change does,
 so the behavior is a contract and not an implementation guess:
 
 | Control | Choices | Default | Sent as | On change |
 |---|---|---|---|---|
-| namespace | `/v1/namespaces` | the page's `ns`, when listed; else none | page query `ns` | fetch the Service list; clear Service, Pod, version, Collections |
-| Service | `/v1/namespaces/{ns}/services` | the page's `svc`, when listed; else none | page query `svc` | fetch targets and, when offered, Collections; clear Pod and version |
+| namespace | the catalog's distinct namespaces, narrowed by the namespace filter | the page's `ns`, when the catalog holds it; else none | page query `ns` | `selectPair(ns, "")`, which clears the Service, the Pod, the version, and the Collections state, and fetches no listing |
+| namespace filter | free text | empty | nothing | narrows the namespace menu's options; the menu's own value stays offered |
+| Service | the catalog's names under the chosen namespace, narrowed by the Service filter | the page's `svc`, when the catalog holds it under `ns`; else none | page query `svc` | `selectPair(ns, svc)`, which fetches targets and, when offered, Collections, and clears the Pod and the version |
+| Service filter | free text | empty | nothing | narrows the Service menu's options; the menu's own value stays offered |
+| search | free text | empty | nothing | draws one row per matching `namespace/name` pair, at most fifty of them; a row chosen calls `selectPair` with both values |
+| **Refresh** on the Service panel | it chooses no value | — | nothing | refetches the catalog and redraws both menus from the answer |
 | profile | `limits.profiles` filtered by `realm.profiles` | `cpu` when offered, else the first offered | path segment | show or hide the duration input |
 | seconds | integer, `1` to the profile's limit | the gateway's upstream default (`30` for `cpu`, `1` for `trace`), or the limit when it is lower | `seconds=`, always sent for `cpu` and `trace` | none |
 | port | see below | `default` | `port=` or `portName=`, nothing for `default` | refetch targets; clear Pod and version |
 | Pod | `targets[].pod` | `any` | `pod=`, nothing for `any` | none |
 | version | the distinct `targets[].version` values | `any` | `version=`, nothing for `any` | none |
 
+The two filters, the search, and the Service panel's **Refresh** are sent nowhere.
+They change what the page draws from the answer it already holds,
+and the page query keeps `ns` and `svc` alone (*Flow*).
+Both filter fields are drawn at every size of menu, with no threshold:
+a field that appeared at some number of options would put that number in this contract with a rule on each side of it,
+and an empty filter changes nothing.
+
+Each filter field is a labelled `<input type="search">` drawn beside its menu,
+a sibling `<label>` of the menu's own inside a shared wrapper and never nested within it,
+so a `<label>` that holds a `<select>` holds exactly one control
+and the menu a label names stays the one control that label names.
+The search is a labelled `<input type="search">` of its own,
+and each result row is a `<button>` labelled `namespace/name` that calls `selectPair` with both values.
+Each is one of the native controls *Non-goals* names.
+
 `seconds` is always sent explicitly for `cpu` and `trace`,
 so the request never depends on an upstream default that could exceed the configured limit;
 the input's `min` is `1` and its `max` is the profile's limit,
 and a value outside that range disables **Download** and names the bound next to the input.
+
+The menus, the filters, and the search are four pure functions in `catalogmodel.js`,
+built and tested the way `portmodel.js` is (*Unit*):
+
+- `namespacesOf(catalog)` is the distinct namespaces of the catalog in the order it arrived.
+  That order is already namespace-then-name (*Catalog*), so the function compacts and sorts nothing.
+- `servicesOf(catalog, ns)` is the names under `ns` in the catalog's order,
+  and an empty list for a namespace the catalog does not hold.
+- `filterOptions(list, query, keep)` keeps an entry when the entry matches the query
+  **or** when it equals `keep`, the value the menu is currently showing.
+  It adds no entry the list lacks, preserves the list's order, mutates nothing,
+  and returns every entry when the query is empty.
+  A filter therefore never removes the value its menu shows and never invents one:
+  a bookmarked selection outside the catalog stays outside it
+  and keeps the line that says it is not listed (below).
+- `searchCatalog(catalog, query, limit)` matches `namespace` and `name` joined by `/` as one string,
+  so `payments/check` narrows by both halves,
+  and returns the first `limit` matches in the catalog's order beside the number that matched.
+  An empty query matches nothing, so results appear only once someone has typed.
+
+The two matching functions share one rule — trim the query, lowercase both sides, test for a substring —
+because a person who learned the search field would otherwise guess wrong at the filter field.
+A line beside each menu says how many of how many options are shown, while that filter's query is not empty.
+The page draws at most fifty result rows and says how many matched when more did.
+That is a cap on what is rendered and not on what is known:
+the page holds the whole catalog, and someone who wants fewer rows types more.
+Membership is read from the whole catalog and never from a filtered menu,
+because it gates the Collections view, the profile URL, and the start control,
+none of which may turn on what someone typed into a filter field.
+
+**The selection.**
+The page's constructor restores `ns` and `svc` from the page query,
+and after that `selectPair(ns, svc)` is the only writer of either.
+The namespace menu, the Service menu, and a search result all go through it,
+so every path settles in the same state.
+Because both menus are derived, `selectPair` fetches no listing:
+it starts the targets fetch and the Collections fetch, and on a change of selection nothing else does.
+
+| What it does | In detail |
+|---|---|
+| raises three counters | the targets generation, the Collections generation, and the selection counter, so an answer in flight for the previous pair is discarded when it lands (*Errors*) |
+| writes the page query | `writeQuery(ns, svc)`, before the new selection is applied, so the query and the menus never disagree about which pair is chosen |
+| writes the selection | `ns` and `svc`, clearing `targets`, `targetSummary`, `targetsLoading`, `collections`, `collectionsNote`, `collectionsLoading`, `collection`, `pod`, and `version` |
+| clears two errors | `clearError("targets")` and `clearError("collections")`, which is the call and not an assignment, because it also drops the sign-in control standing beside each error |
+| clears the write controls | `clearWriteControls()`, which is the call and not an imitation of it: it transitions a start attempt, disarms a cancel, cancels the cancel retry timer, and clears the write errors (*Starting and cancelling a Collection*) |
+| starts two fetches | when `svc` is not empty, the targets fetch and, when the Collections view is offered, the Collections fetch |
+
+The page query is written before the new selection is applied,
+and the error clearing, the write-control cleanup, and the two fetches run after it is.
+
+It has one case and not three.
+Identical arguments produce identical behavior whichever control passed them:
+there is no namespace branch,
+because with the Service menu derived there is nothing to clear and nothing to fetch when only the namespace moves.
+Clearing either menu is the same call —
+`selectPair("", "")` from the namespace menu and `selectPair(ns, "")` from the Service menu —
+and the condition on `svc` is what makes both of them start nothing.
+`selectPair` tests no equality either,
+so choosing the same pair again runs the same transition and refetches its targets,
+which is what **Refresh** on that list does.
+
+Each caller does one thing of its own:
+
+| Caller | Call | Its own extra work |
+|---|---|---|
+| the namespace menu | `selectPair(ns, "")` — the menu always clears the Service | clears the Service filter |
+| the Service menu | `selectPair(ns, svc)` | none |
+| a search result | `selectPair(ns, name)` | clears the Service filter |
+
+Clearing the filter belongs to the callers and not to `selectPair`.
+It is the one thing that differs between a Service-menu pick and a result row naming the same pair,
+and a function whose behavior depended on which of them called it would be a function whose arguments lie.
 
 The port control follows `allowedSelections` (gateway *Port resolution*).
 Its rules are two pure functions in `portmodel.js` —
@@ -686,7 +843,7 @@ because a request the page cannot foresee failing is one the user may send and r
 The line beside the control is the fourth function of `targetmodel.js`, over the summary the third builds,
 and a test executes it (*Unit*).
 
-A bookmarked `ns` or `svc` that is not in the fetched list — the realm changed, the Service went away,
+A bookmarked `ns` or `svc` the catalog does not hold — the realm changed, the Service went away,
 the label was typed by hand — leaves the control with no selection and shows
 "`<value>` is not listed" beside it, as text;
 the page query keeps the value until the user picks another, so a reload retries it.
@@ -717,19 +874,46 @@ and a walk through a week of records is a terminal's job.
 Whether the line exists, and its text, is a pure function in `collectionmodel.js` (*Unit*).
 
 **Refresh.**
-One control, **Refresh**, sits on the targets list and on the Collections table,
+One control, **Refresh**, sits on the Service panel, on the targets list, and on the Collections table,
 and is the one control on the page that neither chooses a value nor changes state.
 Each press repeats the one fetch its list came from, with nothing else in it:
+on the Service panel the catalog fetch of *Response shapes*, with no parameter;
 on the targets list the fetch of *Targets, with reasons*, `explain=true` and the port selection included,
 with the same one retry without `explain` a replica older than that design earns;
 on the Collections table the list fetch of *Collections*, with no parameter.
-It refetches neither `/v1/limits` nor the Service list —
+None of the three refetches `/v1/limits` —
 what the answer then does is what that fetch's answer always does,
-the Service list refetched on `service_not_found` included (*Errors*) —
-and it reissues a request the page already sends, so it adds no endpoint (*Core decisions*).
-The control is disabled while its fetch is in flight, so a second press sends nothing,
-and the two controls are independent:
-a refresh of one list does not refetch, clear, or discard the answer of the other.
+the catalog refetched on `service_not_found` included (*Errors*) —
+and each reissues a request the page already sends, so none adds an endpoint (*Core decisions*).
+Each control is disabled while its own fetch is in flight, so a second press sends nothing,
+and the three are independent:
+a refresh of one list does not refetch, clear, or discard the answer of another.
+
+The Service panel's **Refresh** redraws both menus from the answer.
+That is the whole of the page's freshness for what namespaces and Services exist:
+nothing else refetches the catalog but the three answers of *Errors*.
+It repeats no fetch downstream of the selection that the selection has already had.
+The page records the selection each of the targets and Collections fetches ran for
+and tests those two separately, starting only the one the selection is still owed.
+So a refresh whose selection has had both starts neither,
+while a refresh recovering a load whose catalog failed starts the first targets fetch
+and the first Collections fetch of that selection —
+which is also how a bookmarked selection reaches its targets with nobody touching a menu.
+Testing the two together would strand one of them:
+a change of port fetches targets on its own before the catalog has answered,
+and the Collections fetch that limits had not yet allowed would then never start.
+The Collections fetch holds a condition of its own beside membership:
+it waits on the `/v1/limits` answer the load already sends,
+and whichever of the two answers last is what attempts it,
+so a catalog that lands before the limits leaves the attempt to them.
+A refresh whose answer no longer holds the selected pair leaves the selection in the page query
+and draws the line that says it is not listed, as a bookmarked value outside the catalog does (above).
+It starts neither fetch either:
+every catalog answer, the load's first one and a refresh's alike,
+tests that the answer holds the selected pair before it attempts either fetch,
+and that membership is read from the whole catalog and never from a filtered menu (above),
+so an answer that does not hold the pair leaves the page with no fetch in flight for it.
+
 A refresh of the targets list keeps the Pod and version choices while the answer still lists them
 and returns each to `any` otherwise, so no URL is built for a Pod the page no longer lists.
 A refresh disturbs no write control:
@@ -753,14 +937,15 @@ and what each answer does to the page are in *Starting and cancelling a Collecti
 The page is the identity disclosure and then panels, one panel to a row of the page, in the order they load:
 the Service panel, the Profile panel, and, when offered, the Collections panel.
 Each panel lays its own controls across its row rather than down it, every control keeping its own label:
-the Service panel's namespace and Service selects on one line;
+the Service panel's two selects on one line, each with its filter field beside it,
+its **Refresh** on that line too, and the search field with its result rows on the lines under them;
 the Profile panel's profile, port, Pod, and version controls with its **Refresh** on one line,
 plus the seconds control a configured limit adds and the extra field the port control's menu can open,
 with the URL field, **Download**, and **Copy URL** on the lines under them;
 the Collections table on the row it already had.
 Each control on a line takes an equal share of it,
 and stops growing at a width past which a menu of Pod names reads no better;
-**Refresh** takes the width of its own label;
+each **Refresh** takes the width of its own label;
 and below the width a line needs, its controls wrap onto the next line in the same order,
 so nothing is hidden and nothing is reordered at any width.
 The empty state stands where the Pod and version controls were and takes the whole row,
@@ -1092,7 +1277,7 @@ plus a one-line hint for the codes a user can act on:
 | `too_many_auth` | the gateway is checking too many passwords at once; retry in a moment |
 | `auth_unavailable` | the gateway cannot decide who you are right now; retry |
 | `realm_denied` | your realm does not admit this; the identity shows what it does |
-| `service_not_found` | the Service left the cache since the list was fetched; the page refreshes the Service list |
+| `service_not_found` | the Service left the cache since the catalog was fetched; the page refetches the catalog |
 | `no_targets` | no Pod is eligible for the selection; **Refresh** on the targets list updates the available Pods and the empty state |
 | `port_not_allowed` | `allowedSelections` does not admit the value; the port control shows what it does admit |
 | `seconds_exceeds_limit` | the limit the duration input was bounded by |
@@ -1109,9 +1294,40 @@ plus a one-line hint for the codes a user can act on:
 Every other code is shown as is.
 The page never rewrites a message the gateway generated, and never shows a message the gateway did not send.
 
+**The catalog's error surface.**
+The catalog has one error key, where the namespace list and the Service list had one each.
+Its error, the sign-in control a `401` puts beside it, and the **Retry** control render in the Service panel,
+above the two menus and the search.
+A load whose catalog failed leaves both menus empty, with the error and its controls above them;
+a **Refresh** that failed leaves the menus the page already had, with the error beside them,
+because an answer that failed replaces no catalog.
+
+One catalog request is in flight at a time, with one scheduled attempt behind it.
+The claim on a request is taken and released synchronously,
+so two presses landing in one tick cannot both pass it,
+and a **Refresh** or a **Retry** pressed beside a request still in flight starts nothing.
+Each request raises a generation of its own,
+and the attempt a `not_ready` schedules runs only while that generation is still current,
+so a manual attempt that supersedes a scheduled one makes the timer a no-op rather than a second request.
+One wrapper is both the timer's callback and the error's **Retry** control, so those two cannot diverge.
+Every settled outcome releases the claim, `not_ready` included:
+holding it across the two-second wait would hang the page,
+because the scheduled attempt would meet the claim it is waiting on and return.
+
+An invalidation that arrives while a request is in flight is not lost, and is consumed once.
+A `404 service_not_found` answered during a pending catalog request records that one more request is owed;
+the settling request reads that, clears it, and starts exactly one further request,
+however many answers recorded it.
+Without that, the answer already in flight — computed before the Service left the cache — would stand as the catalog.
+
+Three answers refetch the catalog with nobody pressing anything, and they are the only ones:
+a `404 service_not_found` on a targets fetch, one on a Collections fetch,
+and one on a profile download, which starts the refetch and still clears its downloading state (*Flow*).
+Each of the three records the pending invalidation instead when a catalog request is already in flight.
+
 **When the identity disclosure opens.**
-The page opens the disclosure on each non-stale `403 realm_denied` it handles for a listing,
-for a profile download, or for the current start attempt,
+The page opens the disclosure on each non-stale `403 realm_denied` it handles for the targets listing,
+for the Collections listing, for a profile download, or for the current start attempt,
 and starts the refetch of `/v1/whoami` at the same time.
 Non-stale is one predicate per path, applied before the answer is recorded at all —
 before the error, before the opening, and before the refetch.
@@ -1119,13 +1335,14 @@ A listing's answer is non-stale when its own generation counter still names it:
 the targets and Collections listings carry one already,
 the `stale` predicate `loadTargets` and `loadCollections` pass with their `targetsSeq` and `collectionsSeq`
 (`internal/ui/static/app.js:324-331`, `:607`, `:617-619`, `:655`, `:662-664`).
-The Service listing had none:
-`loadServices` passed no `stale` predicate
-and compared the namespace it asked for only after the answer had been recorded,
-so a denial for a namespace the page had left was recorded as if it were current.
-It carries a generation of its own (`:584-587`), read where the other two read theirs,
-so that leaving a namespace and returning to it does not make an obsolete answer look current;
-a counter, not a comparison of the namespace, is what tells those two apart.
+`selectPair` raises both counters (*Controls*),
+so leaving a pair and returning to it does not make an obsolete answer look current:
+a counter, not a comparison of the namespace and the Service, is what tells those two apart.
+Those two are the only listing generations the page holds.
+It has no Service listing, so no answer for a namespace it has left can arrive to be discarded,
+and the catalog carries a generation that bounds a scheduled retry rather than a selection (above);
+a `403 realm_denied` reaches neither, because the catalog is filtered and never refused
+(*Request algorithm for the listing endpoints*).
 A download's answer is always current, because the control is disabled from the press until the fetch settles,
 so there is never a second one in flight (`:1065`, `:1069`, `:1434`).
 A start's answer is the current attempt's when the model reports the step moved (`:830`).
@@ -1179,12 +1396,15 @@ a response body is never shown as HTML.
 internal/ui/static/
   index.html                 the shell: <link> to the stylesheet, <script type="module"> to app.js, one <main>
   app.js                     the console; an ES module importing ./urls.js, ./portmodel.js, ./targetmodel.js,
-                             ./collectionmodel.js, ./vendor/preact/preact.module.js, and ./vendor/htm/htm.module.js
+                             ./collectionmodel.js, ./catalogmodel.js,
+                             ./vendor/preact/preact.module.js, and ./vendor/htm/htm.module.js
   urls.js                    the URL builders of Rendering response values; the only module that spells a /v1 path
   portmodel.js               the port control's two pure functions, importing nothing so a test can evaluate them
   targetmodel.js             the targets query, the retry rule, and the target summary, importing nothing either
   collectionmodel.js         the Collection controls: when they exist, what the start request carries,
                              and what each answer does; importing nothing either
+  catalogmodel.js            the catalog's four pure functions: the two menus, the filter rule,
+                             and the search; importing nothing either
   app.css                    the console's own rules on top of Pico
   vendor/
     MANIFEST                 one line per file: name, version, license, source URL, SHA-256
@@ -1367,12 +1587,12 @@ The listing endpoints reuse the gateway's codes with their meanings:
 |---|---|---|
 | 400 | `invalid_parameter` | any query parameter, or `access_token` in the query |
 | 401 | `unauthenticated` | [`auth.md`](auth.md) *Failure responses* |
-| 403 | `realm_denied` | Service list for a namespace the realm denies; identical for a present and an absent namespace |
+| 403 | `realm_denied` | Service list for a namespace the realm denies; identical for a present and an absent namespace; never the namespace list or the catalog, which are filtered |
 | 404 | `route_unknown` | a `{namespace}` that is not a DNS-1123 label; any `/ui/` path this build does not serve |
-| 405 | `method_not_allowed` | `Allow: GET` on the four `/v1` routes; `Allow: GET, HEAD` under `/ui/` and on `/` |
+| 405 | `method_not_allowed` | `Allow: GET` on the five `/v1` routes; `Allow: GET, HEAD` under `/ui/` and on `/` |
 | 429 | `too_many_auth` | [`auth.md`](auth.md) *`basic` mode* |
 | 503 | `not_ready`, `auth_unavailable` | as on every `/v1` route |
-| 503 | `discovery_unavailable` | `Catalog` returned an error on the namespace or Service list; never an empty `200` |
+| 503 | `discovery_unavailable` | `Catalog` returned an error on the namespace list, the Service list, or the catalog; never an empty `200` |
 
 No new code is needed.
 `404 route_unknown` covers every `/ui/` miss:
@@ -1389,9 +1609,11 @@ so a fetch of a missing asset reads the same envelope every gateway error carrie
 ## 8. Audit and metrics
 
 **Audit.**
-Each of the four listing routes writes the gateway *Logging* record on completion:
-`principal`, `namespace` (the Service list only), empty `service`, `pod`, `profile`, `port`, zero `seconds`,
+Each of the five listing routes writes the gateway *Logging* record on completion:
+`principal`, `namespace`, empty `service`, `pod`, `profile`, `port`, zero `seconds`,
 `status`, `code`, and `duration_ms`.
+`namespace` carries the Service list's namespace and the empty string on the other four, the catalog included,
+which is the shape the record's writer always emits rather than a field the catalog omits.
 `auth_reason` appears on authentication failures as it does elsewhere.
 Requests under `/ui/` and to `/` write no audit line:
 they carry no principal, name nothing a realm bounds, and one page load is several of them;
@@ -1402,8 +1624,8 @@ this design adds no field to them.
 
 **Metrics.**
 `profgate_requests_total{endpoint,profile,code}` gains `endpoint` values
-`namespaces`, `services`, `whoami`, `limits`, and `ui`,
-with `profile` fixed to `none` for all five.
+`namespaces`, `services`, `catalog`, `whoami`, `limits`, and `ui`,
+with `profile` fixed to `none` for all six.
 `ui` covers `/ui/`, every path under it, and `/`;
 its `code` is `ok` for a `200`, a `304`, or the `302`, `route_unknown`, `method_not_allowed`,
 or `internal_error` for any status the console wrote outside `2xx`, `3xx`, `404`, and `405`,
@@ -1420,7 +1642,7 @@ A `304` falls in the `3xx` the `ok` code already covers, so a revalidation count
 
 | Event | Behavior |
 |---|---|
-| `ui.enabled` false | `/ui/` and `/` are `404 route_unknown`; the four listing routes still answer |
+| `ui.enabled` false | `/ui/` and `/` are `404 route_unknown`; the five listing routes still answer |
 | Gateway not yet synced | the shell loads; every `fetch` is `503 not_ready`; the page retries every 2 seconds until the first `200` |
 | Session cookie expires while the page is open | the next `fetch` is `401`; the page navigates to `/auth/login?return=` with its current query, and the callback's landing page brings it back to the same selection |
 | Login fails after the redirect | the callback answers `401` as a page; nothing on the console side loops back to login |
@@ -1429,15 +1651,19 @@ A `304` falls in the `3xx` the `ok` code already covers, so a revalidation count
 | Rolling update in progress, both builds carrying the asset | the asset answers `200` from either replica; a load whose shell and modules came from different builds runs unless two of those files changed incompatibly in that release, and one that does not run recovers on a reload once the rollout has converged, which `no-cache` makes fetch the current bytes |
 | Rolling update of a release that adds or drops an asset | the build without the file answers `404 route_unknown` for it; the load recovers on a reload once the rollout has converged (*Layout and embedding*) |
 | Rolling update from hashed prefixes to stable paths | neither build serves what the other's shell names, so a load reaching the other build fails until the rollout has converged; a reload after it recovers, and this is the one release with that property |
-| Service deleted between listing and download | `404 service_not_found` from the profile endpoint; the page shows the envelope with its hint and refreshes the Service list |
+| Service deleted between the catalog answer and a download | `404 service_not_found` from the profile endpoint; the page shows the envelope with its hint, refetches the catalog, and clears the downloading state |
 | Service with no eligible target | the Pod and version controls are replaced by the counted reasons of *Controls*, in the order the gateway sent them; **Download** is disabled with the same reasons beside it |
 | Service whose selector matches no Pod | the same empty state says the selector matches no Pod, from `selectorMatched` of `0`, and lists no reason; **Download** is disabled with that sentence beside it |
 | Download pressed after the Service's last eligible Pod left since the targets fetch | `503 no_targets` from the profile endpoint; the page shows the code and its hint and saves nothing; **Refresh** on the targets list then shows the reasons and disables the control |
 | Service with more than 100 retained Collections | the table shows the newest 100 and one line says older Collections exist, naming the CLI verb; no paging control |
 | Targets fetch refused `400 invalid_parameter` by a replica older than this design | retried once without `explain`, keeping the port selection; the plain body renders with no reasons and no error, and a second failure is an ordinary error |
-| Namespace in the realm holds no Service | absent from the namespace list; its Service list is `200` with `[]`; `/v1/whoami` still names it |
-| Namespace in the realm whose Services are all outside `realm.services` | absent from the namespace list; its Service list is `200` with `[]` |
-| Namespace not in the realm | absent from the namespace list; its Service list is `403 realm_denied`, present or not, and `Catalog` is not called |
+| Namespace in the realm holds no Service | absent from the namespace list and from the catalog; its Service list is `200` with `[]`; `/v1/whoami` still names it |
+| Namespace in the realm whose Services are all outside `realm.services` | absent from the namespace list and from the catalog; its Service list is `200` with `[]` |
+| Namespace not in the realm | absent from the namespace list and from the catalog; its Service list is `403 realm_denied`, present or not, and `Catalog` is not called |
+| Realm that admits no namespace | the catalog is `200` with an empty array, as the namespace list is; neither is ever `403 realm_denied` |
+| Catalog fetch fails on load | both menus are empty, with the error and its **Retry** above them in the Service panel; **Refresh** recovers, and its answer starts the first targets fetch and the first Collections fetch the selection is owed |
+| Catalog fetch fails on a **Refresh** | the menus the page already had stay, with the error beside them, because an answer that failed replaces no catalog |
+| A Service leaves the cache while a catalog request is in flight | the `404 service_not_found` is recorded rather than lost, and the settling request starts exactly one more, however many answers recorded it |
 | Cache read fails on a listing route | `503 discovery_unavailable`; never an empty `200` |
 | Kubernetes API unreachable while running | listings serve the cache unchanged; downloads fail at confirmation with `503 discovery_unavailable`, as the gateway *Failure Scenarios* section states |
 | Page served over HTTP (`disabled`, or `basic` with plaintext permitted) | `navigator.clipboard` is absent in an insecure context; the copy button is not rendered and the URL is shown for manual copying |
@@ -1512,11 +1738,11 @@ a value arriving through the raw block would bypass the structured value the cha
 - every vendored file's SHA-256 equals its `MANIFEST` line, and every file in `vendor/` has a line;
 - no vendored module, `app.js`, or `urls.js` contains an `import` or dynamic `import(`
   whose specifier does not start with `./` or `../`,
-  and `portmodel.js`, `targetmodel.js`, and `collectionmodel.js` contain neither at all;
+  and `portmodel.js`, `targetmodel.js`, `collectionmodel.js`, and `catalogmodel.js` contain neither at all;
 - the shell and every `.js` file contain no `<script>` with a body, no `<style>`, no `style=`, no `on[a-z]+=`,
   no `eval(`, and no `new Function(`;
 - the source scan of *Rendering response values*:
-  `app.js`, `urls.js`, `portmodel.js`, `targetmodel.js`, and `collectionmodel.js` contain none of
+  `app.js`, `urls.js`, `portmodel.js`, `targetmodel.js`, `collectionmodel.js`, and `catalogmodel.js` contain none of
   `innerHTML`, `outerHTML`, `dangerouslySetInnerHTML`, `insertAdjacentHTML`, `document.write`, or `DOMParser`;
   `app.js` contains no string literal beginning with `/v1`, `/ui`, or `/auth`;
   `app.js` contains none of `confirm(`, `alert(`, or `prompt(`,
@@ -1647,9 +1873,41 @@ a value arriving through the raw block would bypass the structured value the cha
   a body without the field, and one whose `nextCursor` is an empty string, yield none;
   and the text is the same for every token, because the token is never shown.
 
+`internal/ui`, against the catalog model:
+
+- `catalogmodel.js` satisfies the shape assertion `portmodel.js` does
+  and is evaluated the same way, its one trailing `export` cut off and its functions read as globals.
+- two source scans hold the module and its caller to each other,
+  which is what cutting that statement off leaves open:
+  one holds `app.js` to importing every function it uses from `catalogmodel.js` and to calling each of them,
+  and one asserts that the trailing export statement names exactly what `app.js` imports and nothing else.
+  A model evaluated with that statement cut off says nothing about what a browser can import,
+  so a name that matches on one side of the import and not on the other turns the suite red here or nowhere.
+- a scan reads `selectionListed()` in `app.js`
+  and holds it to the stored catalog, naming none of the filtered option lists the menus were drawn from,
+  which is the membership rule of *Controls* and a claim no browser can check (*What is not proven*).
+- a table-driven test drives all four functions in the same interpreter.
+  `namespacesOf`, over an empty catalog, one namespace, several namespaces each holding several Services,
+  and a catalog whose order it must preserve.
+  `servicesOf`, for a namespace holding none, one, and several, and for a namespace the catalog lacks.
+  `filterOptions`:
+  an empty query returns every entry;
+  a query matches case-insensitively and mid-string;
+  a query is trimmed;
+  `keep` survives a query that excludes it and is not duplicated when it also matches;
+  a `keep` the list lacks is **not** added;
+  an empty list stays empty;
+  the order is the input's.
+  `searchCatalog`:
+  an empty query matches nothing;
+  a query matches the name alone, the namespace alone, and both parts when it holds the separator;
+  the cap bounds the matches returned while the total counts every match;
+  the order is the catalog's.
+  None of the four mutates its input.
+
 `internal/httpapi`, against the fake `Discovery` extended with a namespace and Service catalog:
 
-- a table over the four routes and every step of *Request algorithm for the listing endpoints*:
+- a table over the five routes and every step of *Request algorithm for the listing endpoints*:
   each method, `?access_token=`, readiness false, an unknown query parameter, a `{namespace}` that is not a label;
 - realm filtering, over all four combinations of the *The realm filter* table and a fake that holds,
   in three namespaces, a Service the realm names and one it does not
@@ -1661,18 +1919,28 @@ a value arriving through the raw block would bypass the structured value the cha
   the Service list of a denied namespace is `403` with an identical body whether the fake holds the namespace or not,
   and the fake records that `Catalog` was not called;
   the Service list of an admitted namespace the fake lacks is `200` with `[]`;
-  a fake whose `Catalog` returns an error yields `503 discovery_unavailable` on both list routes;
+  a fake whose `Catalog` returns an error yields `503 discovery_unavailable` on all three routes that read the cache;
   lists are sorted and empty ones encode as `[]`;
+- the catalog, over the same fake and the same four combinations:
+  it answers every admitted pair in namespace-then-name order, duplicate Service names across namespaces included;
+  a realm admitting no namespace is `200` with an empty array and never `403`,
+  which is the one behavior that separates this route from the Service list;
+  the fake records that `Catalog` was asked with an empty namespace, once;
+  its keys are lowercase and an empty catalog encodes as `[]` and not `null`;
+- over one immutable fake, the catalog's names under each namespace are what the Service list answers,
+  and its distinct namespaces are what the namespace list answers,
+  which is *Catalog*'s agreement stated over one cache read,
+  so a later change that filtered one of the three differently cannot pass quietly;
 - `/v1/whoami` returns the configured lists verbatim, the wildcard included, the three `pgo` flags,
   `auth.mode`, and `auth.logout` only under the browser flow;
 - `/v1/limits` reflects each of `cpuSeconds`, `traceSeconds`, a numeric default, a named default,
   and `allowedSelections` as an array of one-key objects — `[]` when the list is empty and never `null`,
   and carrying `{"port": "*"}` and `{"portName": "*"}` as configured;
-- no Service or namespace listing exposes a Pod-discovered or selected backend port,
+- no Service, namespace, or catalog listing exposes a Pod-discovered or selected backend port,
   and no listing response contains a string that matches an IP address or a `podIP` field,
   with the fake holding Pods that have both;
   `/v1/limits` returns `allowedSelections` and the default by design (*Limits*),
-  and the two list responses are asserted to contain no `6060`;
+  and the namespace list, the Service list, and the catalog are each asserted to contain no `6060`;
 - hostile names survive encoding:
   a principal, a namespace, and a Service name that carry HTML metacharacters (`<`, `>`, `&`, `"`, `'`)
   are JSON-escaped in the responses and decode to the configured strings unchanged,
@@ -1686,9 +1954,10 @@ a value arriving through the raw block would bypass the structured value the cha
   which is the order of *Starting and cancelling a Collection* asserted rather than described;
   the header with a `charset` parameter is accepted;
   the check reads the header and never the body, so a `POST` with no body passes it;
-- the audit line for each listing route carries the principal and, for the Service list, the namespace;
+- the audit line for each listing route carries the principal,
+  the namespace on the Service list and the empty string on the other four, the catalog included;
   `/ui/` writes none;
-  the recorder sees `endpoint` `namespaces`, `services`, `whoami`, `limits`, or `ui` with `profile` `none`,
+  the recorder sees `endpoint` `namespaces`, `services`, `catalog`, `whoami`, `limits`, or `ui` with `profile` `none`,
   and for `ui` the `code` `ok` on `200`, `304`, and `302`, `route_unknown` on `404`, `method_not_allowed` on `405`,
   and `internal_error` on any other status the console wrote.
 
@@ -1713,7 +1982,7 @@ a value arriving through the raw block would bypass the structured value the cha
 `app.js` is executed by a headless Chromium in the end-to-end suite (*End to end*) and by nothing else.
 No unit test runs it, and `mise run test` starts no browser.
 
-The three model modules are executed by unit tests as well,
+The four model modules are executed by unit tests as well,
 in a pure-Go ECMAScript interpreter, which is why each is a module of its own.
 Each is a decision table rather than a rendering:
 pure, DOM-free, and wrong in ways a reader does not see —
@@ -1721,7 +1990,8 @@ an option that duplicates the default, a value serialized under the kind it was 
 a counted reason dropped instead of shown, rows re-sorted out of the gateway's order,
 a query that stopped asking for `explain`,
 a cancel offered on a state that will refuse it,
-an idempotency key that changed between two presses of one attempt —
+an idempotency key that changed between two presses of one attempt,
+a filter that dropped the value its own menu is showing —
 where being wrong sends the caller's request under a parameter the caller did not choose,
 tells an operator a Service has no Pods when the gateway said why it has none,
 or starts a second Collection nobody asked for.
@@ -1764,9 +2034,13 @@ the download as `app.js` performs it — the fetch, the `Blob`, the object URL,
 the `Content-Disposition` filename read out of the header's quoted or bare parameters,
 the reading of every status but `200` as an error whatever its body,
 and the disabling of the control — beyond what the browser scenario asserts of it;
-the two **Refresh** controls' wiring, the same way;
+the three **Refresh** controls' wiring, the same way;
 the arrangement of *Controls*: the browser scenarios load the stylesheet,
-but none of them asserts panel placement or control wrapping;
+but none of them asserts panel placement or control wrapping,
+the search panel and the two filter fields included;
+that membership is read from the whole catalog and never from a filtered menu,
+which no browser can tell apart, because a menu that keeps the value it is showing answers the same either way,
+and which the source scan of *Unit* holds instead;
 that the disclosure's `open` is never bound in the render template,
 which is a rule this design carries rather than a claim any test holds:
 a binding the template repeats is compared against the value of the last render and never written back,
@@ -1782,8 +2056,8 @@ because the link is offered only from a record that reads `completed` with an ar
 and the profile download is the control an operator reaches by reflex.
 The source scan proves the page contains no interface that could render markup and no hand-built `/v1` path;
 the `internal/httpapi` tests prove the JSON the page receives carries hostile strings intact.
-What is left is closed by review, on every change to `app.js` and the three models,
-which is why all four stay small and why the three besides `app.js` are separate files.
+What is left is closed by review, on every change to `app.js` and the four models,
+which is why all five stay small and why the four besides `app.js` are separate files.
 
 ### 11.3 End to end
 
@@ -1799,9 +2073,10 @@ which is why all four stay small and why the three besides `app.js` are separate
   `GET /ui/?ns=x` with the cookie is `200` whatever `Sec-Fetch-Site` says,
   because the shell has no authentication step (*Why the page itself is not authenticated*);
   then, with the cookie and `Sec-Fetch-Site: same-origin`,
-  `GET /v1/whoami`, `/v1/limits`, `/v1/namespaces`, and `/v1/namespaces/<test ns>/services` are each `200`,
+  `GET /v1/whoami`, `/v1/limits`, `/v1/namespaces`, `/v1/namespaces/<test ns>/services`,
+  and `/v1/catalog` are each `200`,
   `whoami` names the Dex user and its mapped realm,
-  and the Service list holds the test app's Service;
+  and the Service list and the catalog each hold the test app's Service;
   `GET /auth/logout` with the cookie is `302` to `/` and `GET /` is `302` to `/ui/`.
 - **`basic` over TLS.**
   `GET /ui/` without a credential is `200`;
@@ -1812,7 +2087,7 @@ which is why all four stay small and why the three besides `app.js` are separate
   what is proven is the pair of responses it reacts to.
 
 A scenario that reaches no application Pod declares nothing;
-the Service list reads the cache, so neither wire proof adds `needsPodReach` to its scenario.
+the listing routes read the cache, so neither wire proof adds `needsPodReach` to its scenario.
 
 **Two browser scenarios**, `console-oidc` and `console-basic`,
 live in `test/e2e` behind the build tag the suite already uses,
@@ -1862,10 +2137,56 @@ so a runner that loses one, or drifts to a version outside the range, turns red 
   and that error, with the **Retry** control it carries,
   stands outside the disclosure and outside the panels,
   so a closed disclosure hides no way out of a failed identity fetch.
-  A Service listing answered `403 realm_denied` is discarded before it is recorded
-  when the page has left the namespace it asked for and returned to it,
-  so it opens nothing and leaves the Service panel showing no denial;
+  A targets answer and a Collections answer each delayed across a change of selection
+  and a return to the pair they were asked for are discarded before they are recorded,
+  so neither opens the disclosure, records an error, or asks for the identity;
   a cancel answered `404 collection_not_found` leaves the disclosure as it stood too;
+- the load sends `/v1/whoami`, `/v1/limits`, and `/v1/catalog`, and neither listing route,
+  counted per route from a boundary rather than as a total of the page's requests;
+  a change of namespace sends no request at all;
+  and a Service created after the catalog answered is absent from the menu
+  until **Refresh** on the Service panel makes it selectable;
+- **Refresh** on the Service panel sends exactly one catalog request,
+  is disabled while that request is held, and redraws both menus from the answer;
+  a catalog answered `503 not_ready` clears the loading state and schedules one attempt,
+  and that attempt sends exactly one request;
+  a repeated `not_ready` schedules one attempt each time and never two;
+  a **Refresh** pressed during the wait sends one request and leaves the scheduled attempt inert,
+  so no late request follows it;
+  a **Refresh** or a **Retry** pressed while a request is held sends nothing;
+  two presses dispatched in one evaluated expression send one request and not two;
+  several `404 service_not_found` answers during one held request start exactly one further request when it settles;
+  a recovery whose catalog still lists the Service starts no second targets fetch,
+  which is what stops the catalog and the targets fetch from recovering at each other;
+  that follow-up succeeding after a `not_ready` leaves the earlier timer sending nothing;
+  and a catalog answered `503` on a **Refresh** keeps the earlier menus with the error beside them;
+- a bookmarked selection is drawn once the catalog answers,
+  and on a load nothing else touched, that answer is what starts its targets fetch;
+  a load whose catalog failed and then recovered through **Refresh** starts the first targets fetch
+  and the first Collections fetch, one each,
+  and a further **Refresh** starts neither again;
+  and with the catalog held, limits answered, and the port changed so that targets are fetched,
+  releasing the catalog still starts the Collections fetch,
+  which is the case one condition over both fetches fails;
+- typing in a filter field narrows its menu while the menu's own value stays selectable,
+  a bookmarked value outside the catalog is still absent from the options and still draws its not-listed line,
+  the Service filter clears when the namespace changes,
+  the page query is unchanged by any of it,
+  and a query in both fields matching neither selected value still leaves the profile URL built
+  and the Collections view offered;
+- a search for the test app's name draws a result naming its namespace,
+  and clicking it selects both menus, enables the Service menu, builds the profile URL,
+  and fetches targets exactly once from a boundary;
+  the result click and the two-menu sequence settle in the same state —
+  the page query, both menus, the Pod and version menus, the Collections state, the write controls,
+  and the errors;
+  a search matching nothing draws no row and says so,
+  and one run before the catalog answers says it is loading and draws its rows when the answer lands;
+  a Service deleted between the catalog answer and the click has its targets fetch answered
+  `404 service_not_found`, which clears the summary and refetches the catalog,
+  and the redrawn menus no longer offer it;
+- a profile download answered `404 service_not_found` refetches the catalog
+  and still clears the page's downloading state;
 - choosing the namespace, the Service, and a profile fills the profile URL field with the URL *Flow* describes,
   and pressing **Download** saves a file that is the body the profile endpoint streams, byte for byte,
   gzip-framed as every `heap` profile is,
@@ -1970,7 +2291,8 @@ No Go module is added to the gateway binary.
 `embed`, `crypto/sha256`, `mime`, and `net/http` are the standard library.
 
 Two modules are added to the tests and to nothing else:
-the pure-Go ECMAScript interpreter that evaluates `portmodel.js`, `targetmodel.js`, and `collectionmodel.js`,
+the pure-Go ECMAScript interpreter that evaluates
+`portmodel.js`, `targetmodel.js`, `collectionmodel.js`, and `catalogmodel.js`,
 and `github.com/chromedp/chromedp` with the DevTools Protocol and WebSocket modules it brings,
 which only `test/e2e` imports and only behind the suite's build tag.
 Both are listed in gateway *Dependencies* and argued for in *What is not proven*.
@@ -2007,11 +2329,12 @@ Every vendored file is the upstream's published build, unmodified, which is what
 
 ```text
 internal/ui/           the console: embedded static tree, per-file entity tags, the shell, asset handler, headers
-internal/ui/static/    index.html, app.js, urls.js, portmodel.js, targetmodel.js, collectionmodel.js, app.css, vendor/
-internal/httpapi/      gains the four listing routes, the /ui/ and / dispatch, and the endpoint labels
+internal/ui/static/    index.html, app.js, urls.js, portmodel.js, targetmodel.js, collectionmodel.js,
+                       catalogmodel.js, app.css, vendor/
+internal/httpapi/      gains the five listing routes, the /ui/ and / dispatch, and the endpoint labels
 internal/k8s/          gains Catalog on the Discovery interface, reading the Service lister
 internal/config/       gains the ui block
-internal/metrics/      gains the five Endpoint values
+internal/metrics/      gains the six Endpoint values
 cmd/profgate/          constructs internal/ui when ui.enabled and passes it to httpapi
 test/e2e/              gains the two browser scenarios of End to end, behind the build tag the suite already uses
 ```
@@ -2088,14 +2411,14 @@ Each row names the heading it edits.
 
 | File | Section | Change |
 |---|---|---|
-| `docs/specs/gateway.md` | *HTTP API* | "except the three `/auth/` routes that [`auth.md`](auth.md) adds when its browser flow is configured" gains "and the `/ui/` and `/` routes of [`ui.md`](ui.md) when `ui.enabled`"; the four listing routes are named as `/v1` routes defined in [`ui.md`](ui.md) |
-| `docs/specs/gateway.md` | *Request algorithm* | the sentence introducing the endpoint-specific tail gains the four listing routes of [`ui.md`](ui.md): they run route, method, readiness, credential placement, authentication, and parameter checks as the interactive routes do; the realm check refuses only the Service list (a namespace the realm does not admit), while the namespace list is filtered and `whoami` and `limits` describe the caller; after that they read the cache, with no discovery, admission, confirmation, or proxy step; the method rule that the interactive routes accept `GET` only stays true of them |
-| `docs/specs/gateway.md` | *List targets* | a following subsection, *Listing endpoints*, pointing to [`ui.md`](ui.md) *Response shapes* for the four response shapes |
+| `docs/specs/gateway.md` | *HTTP API* | "except the three `/auth/` routes that [`auth.md`](auth.md) adds when its browser flow is configured" gains "and the `/ui/` and `/` routes of [`ui.md`](ui.md) when `ui.enabled`"; the five listing routes are named as `/v1` routes defined in [`ui.md`](ui.md) |
+| `docs/specs/gateway.md` | *Request algorithm* | the sentence introducing the endpoint-specific tail gains the five listing routes of [`ui.md`](ui.md): they run route, method, readiness, credential placement, authentication, and parameter checks as the interactive routes do; the realm check refuses only the Service list (a namespace the realm does not admit), while the namespace list and the catalog are filtered and `whoami` and `limits` describe the caller; after that they read the cache, with no discovery, admission, confirmation, or proxy step; the method rule that the interactive routes accept `GET` only stays true of them |
+| `docs/specs/gateway.md` | *List targets* | a following subsection, *Listing endpoints*, pointing to [`ui.md`](ui.md) *Response shapes* for the five response shapes |
 | `docs/specs/gateway.md` | *Errors* | `503 discovery_unavailable` also covers a cache read that fails on a listing route; `405` under `/ui/` and on `/` carries `Allow: GET, HEAD` |
 | `docs/specs/gateway.md` | *The seam* | `ServiceRef` and `Catalog`, reading the Service cache and issuing no request |
 | `docs/specs/gateway.md` | *Non-disclosure* | a fourth listed observation: `/v1/limits` returns `allowedSelections` and the default to every request the configured `auth.mode` admits, anonymous requests under `disabled` included, with the argument of [`ui.md`](ui.md) *Limits* |
 | `docs/specs/gateway.md` | *Logging* | the listing routes write the record with `namespace` on the Service list only and the other target fields empty; requests under `/ui/` and to `/` write no record |
-| `docs/specs/gateway.md` | *Metrics* | `endpoint` gains `namespaces`, `services`, `whoami`, `limits`, `ui`; the `ui` codes |
+| `docs/specs/gateway.md` | *Metrics* | `endpoint` gains `namespaces`, `services`, `catalog`, `whoami`, `limits`, `ui`; the `ui` codes |
 | `docs/specs/gateway.md` | *Layers* | unit rows for `internal/ui`, the listing routes, `Catalog`, and the `ui.enabled` validation, per [`ui.md`](ui.md) *Unit* |
 | `docs/specs/gateway.md` | *What end-to-end proves* | the two scenarios of [`ui.md`](ui.md) *End to end* |
 | `docs/specs/gateway.md` | *Configuration* | the `ui.enabled` row |
@@ -2115,10 +2438,18 @@ Each row names the heading it edits.
 The stale `302` this document once assumed from the callback is gone:
 [`auth.md`](auth.md) *Amendments* records the landing page, and *Signing in and out* here describes that flow.
 
-Updated with the implementation: `docs/api.md` (the listing endpoints), `docs/configuration.md` (`ui.enabled`),
-`docs/deployment.md` (Ingress paths),
+Updated with the implementation:
+`docs/api.md` (the listing endpoints, the catalog among them),
+`docs/configuration.md` (`ui.enabled`),
+`docs/deployment.md` (Ingress paths, and the `endpoint` label's values),
+`docs/console.md` (the search, the two filter fields, and the Service panel's **Refresh**),
+`CHANGELOG.md` (one entry for the catalog route and one for the console),
 `deploy/chart/profgate/values.yaml` and `deploy/chart/profgate/README.md`
-(the `ui.enabled` value and the raw-block guard).
+(the `ui.enabled` value and the raw-block guard),
+the model-module count in
+[`.agents/rules/500-validation-and-workflow.md`](../../.agents/rules/500-validation-and-workflow.md),
+and the listing-route inventories of [`AGENTS.md`](../../AGENTS.md)
+and [`.agents/rules/100-project-map.md`](../../.agents/rules/100-project-map.md).
 
 ### 14.1 Required by this revision and not yet made
 
@@ -2127,10 +2458,11 @@ Every edit this document required elsewhere has been made,
 and this document is no longer ahead of the documents it names:
 the write controls' contract in [`pgo.md`](pgo.md) *Create a Collection* and *HTTP API*,
 the entity tags, the browser scenarios, and the rolling-update rows in [`gateway.md`](gateway.md),
+the fifth listing route, its filtered realm step, and the `catalog` endpoint value there as well,
 the browser scenarios beside the wire proofs in [`auth.md`](auth.md) *Testing*,
 the media type on both write routes in [`docs/api.md`](../api.md),
 the Chromium the workflow installs before the suite runs,
-the console guide's own account of the page, of the four controls, and of a rollout,
+the console guide's own account of the page, of its controls, and of a rollout,
 and the end-to-end rule in
 [`.agents/rules/500-validation-and-workflow.md`](../../.agents/rules/500-validation-and-workflow.md).
 
@@ -2175,3 +2507,4 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Unit*, *End to end*, *What is not proven* | a source scan holds `app.js` to two calls of the disclosure's opening, neither of them in the function that runs an outcome's refetches, and counts call sites rather than proving behavior; `console-oidc` drives the four cases an answer the page classifies decides, writing each answer into a request it paused, which proves the refetch of `/v1/whoami` a listing's `403` causes and leaves panel placement and control wrapping as the whole of what the arrangement does not prove; and that the disclosure's `open` is never bound in the template is a rule this design carries and no test holds, a bound but unchanged value being indistinguishable from an unbound one |
 | *Required by this revision and not yet made* | the console guide describes the identity as a disclosure above the panels and the page as one panel to a row, and nothing is owed elsewhere |
 | *Starting and cancelling a Collection*, *Errors*, *Unit* | the console carries no rule for `collector_unavailable`, a code no route answers: the start control keeps its idempotency key after a rejected `fetch`, a `503 pgo_unavailable`, and any other `5xx`, and the hints table names the codes the gateway can send |
+| *Overview*, *Core decisions*, *Non-goals*, *Routes*, *Request algorithm for the listing endpoints*, *The realm filter*, *Response shapes*, *Catalog*, *Flow*, *Controls*, *Errors*, *Layout and embedding*, *Audit and metrics*, *Failure scenarios*, *Unit*, *What is not proven*, *End to end*, *Dependencies*, *Package layout*, *Changes to the accepted designs* | `GET /v1/catalog` is a fifth listing route answering the realm-filtered catalog as a flat array of namespace-and-name pairs in namespace-then-name order, filtered like the namespace list and never refused, and agreeing with the two lists over one cache read and one realm snapshot; the console derives the namespace menu, the Service menu, and a new search from that one answer and sends neither listing route, both of which stay for every other client; a filter field beside each menu narrows its options while `filterOptions` keeps the value the menu is showing and invents none, and the search matches `namespace` and `name` joined by `/`, drawing at most fifty rows and saying how many matched; `selectPair(ns, svc)` is the only writer of the selection after the constructor, so a menu pick and a result click settle in one state; **Refresh** on the Service panel refetches the catalog, redraws both menus, and starts only the targets or Collections fetch the selection is still owed; one `catalog` error key replaces `namespaces` and `services`, with one request in flight at a time, a generation that makes a superseded retry a no-op, and a `service_not_found` arriving mid-request coalesced into exactly one further request; and the four functions behind all of it are a fourth model module, `catalogmodel.js`, whose caller is held to it by two source scans — one over `app.js`'s imports and calls, one over the module's trailing export statement — because a model evaluated with that statement cut off says nothing about what a browser can import |
