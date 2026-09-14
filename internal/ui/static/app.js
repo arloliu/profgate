@@ -35,7 +35,7 @@ import {
   progressText,
   olderCollectionsNote,
 } from "./collectionmodel.js";
-import { namespacesOf, servicesOf, filterOptions } from "./catalogmodel.js";
+import { namespacesOf, servicesOf, filterOptions, searchCatalog } from "./catalogmodel.js";
 
 const html = htm.bind(h);
 
@@ -52,6 +52,12 @@ const notReadyDelay = 2000;
 // and nothing restarts it while a request is in flight or after an outcome the page could not classify,
 // where disarming would drop the key that a repeat of the same attempt needs.
 const armDelay = 10000;
+
+// searchLimit is how many result rows the search draws at most.
+// It bounds what the page draws and not what the page knows:
+// the page holds the whole catalog,
+// and it says how many matched whenever more matched than it drew.
+const searchLimit = 50;
 
 // hints are the one-line hints for the codes a user can act on; every other
 // code is shown as is.
@@ -276,6 +282,33 @@ function FilterNote(props) {
   return html`<small class="shown">${props.shown} of ${props.total} shown</small>`;
 }
 
+// SearchNote is the line under the search results saying why there are no more of them.
+// Before the catalog answer arrives there is nothing to search,
+// which is why the line names that rather than an empty result:
+// a page that said nothing matched would be answering a question it cannot yet read.
+// It separates an answer that has not come yet from one that came to nothing,
+// because a request that failed is not a request still running,
+// and the error standing above the menus carries the reason and the way to ask again.
+// Past that the line stands for a query that matched nothing
+// and for a query that matched more rows than searchLimit draws,
+// and it stands not at all when every match is on the page.
+function SearchNote(props) {
+  if (!props.loaded) {
+    if (props.failed) {
+      return html`<small class="note">the catalog could not be read</small>`;
+    }
+    return html`<small class="note">the catalog is still loading</small>`;
+  }
+  if (props.total === 0) {
+    return html`<small class="note">nothing matched</small>`;
+  }
+  if (props.total > props.shown) {
+    return html`<small class="note">${props.total} matched; the first ${props.shown} are shown</small>`;
+  }
+
+  return null;
+}
+
 // errorParts splits an error of fetchJSON into what the page shows.
 function errorParts(err) {
   if (typeof err === "string") {
@@ -389,6 +422,11 @@ class App extends Component {
       // so neither reaches the page query and neither is restored from it.
       nsFilter: "",
       svcFilter: "",
+      // search is what has been typed into the search field.
+      // It draws result rows from the whole catalog rather than narrowing either menu,
+      // and it is sent nowhere,
+      // so it reaches neither the page query nor a request and is not restored from the query.
+      search: "",
       targets: [],
       targetSummary: null,
       // targetsLoading and collectionsLoading are true from a list's fetch until its latest request has settled;
@@ -1038,6 +1076,22 @@ class App extends Component {
     this.setState({ svcFilter: e.target.value });
   };
 
+  // The search field draws its result rows from the whole catalog and does nothing else:
+  // no fetch, no page query, and no selection.
+  onSearch = (e) => {
+    this.setState({ search: e.target.value });
+  };
+
+  // A result row chooses both halves of a pair at once,
+  // so the Service menu is about to offer another namespace's names
+  // and a query typed against the names it was offering says nothing about those.
+  // The filter is cleared before selectPair,
+  // which is safe because a pending state change is merged rather than replaced.
+  onSearchResult = (ns, name) => {
+    this.setState({ svcFilter: "" });
+    this.selectPair(ns, name);
+  };
+
   onService = (e) => {
     this.selectPair(this.state.ns, e.target.value);
   };
@@ -1320,7 +1374,7 @@ class App extends Component {
   }
 
   renderSelection() {
-    const { ns, svc, catalog, nsFilter, svcFilter, catalogLoading } = this.state;
+    const { ns, svc, catalog, nsFilter, svcFilter, search, catalogLoaded, catalogLoading } = this.state;
     // Both menus are derived from the one catalog answer here, at render,
     // and neither list is stored beside it.
     const namespaces = namespacesOf(catalog);
@@ -1334,6 +1388,16 @@ class App extends Component {
     // so a query that matches nothing narrows a menu without unlisting anything.
     const nsOptions = filterOptions(namespaces, nsFilter, ns);
     const svcOptions = filterOptions(services, svcFilter, svc);
+    // The search reads the whole catalog rather than either menu,
+    // so a row it draws can name a namespace the namespace filter is hiding.
+    // Its rows stand only once someone has typed,
+    // because an empty query matches nothing and a page of every Service is the menus' job.
+    const found = searchCatalog(catalog, search, searchLimit);
+    const searching = search.trim() !== "";
+    // A catalog that has not arrived is either still being read or was asked for and refused.
+    // The refusal stands above the menus with the reason and the control that asks again,
+    // so the line under the search says which of the two it is waiting on rather than claiming the first.
+    const catalogFailed = Boolean(this.state.errors.catalog || this.state.signIn.catalog);
     // Each menu and the field that narrows it sit in one cell as two sibling labels.
     // The field is never nested inside the menu's label,
     // because a label naming a menu is the name of that one control.
@@ -1378,6 +1442,35 @@ class App extends Component {
         </div>
         ${nsListed ? null : html`<p><small>${ns} is not listed</small></p>`}
         ${svcListed ? null : html`<p><small>${svc} is not listed</small></p>`}
+        <div class="search">
+          <label>
+            Search
+            <input type="search" value=${search} onInput=${this.onSearch} />
+          </label>
+          ${searching
+            ? html`
+                <div class="results">
+                  ${found.matches.map(
+                    (entry) => html`
+                      <button
+                        type="button"
+                        key=${entry.namespace + "/" + entry.name}
+                        onClick=${() => this.onSearchResult(entry.namespace, entry.name)}
+                      >
+                        ${entry.namespace}/${entry.name}
+                      </button>
+                    `,
+                  )}
+                </div>
+                <${SearchNote}
+                  loaded=${catalogLoaded}
+                  failed=${catalogFailed}
+                  shown=${found.matches.length}
+                  total=${found.total}
+                />
+              `
+            : null}
+        </div>
       </article>
     `;
   }

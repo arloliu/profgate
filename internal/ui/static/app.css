@@ -209,6 +209,99 @@ details.identity > footer {
   margin-top: 0.5rem;
 }
 
+/* The search reads across every namespace the realm admits, so it stands on the lines under
+   the two menus rather than in the row with them, and it is not a cell of .fields:
+   the flex sizing every cell of that row carries would pull it onto the menu line.
+   Its rows and its note exist only while a query does,
+   so the panel is the height of its menus until someone types
+   and then grows from its own last line, moving no control above it. */
+.search {
+  margin-top: 0.5rem;
+}
+
+/* The query field takes the share of a line a menu or a filter field takes and stops there,
+   for the reason the cells above it stop: a typed query reads no better across half the page. */
+.search > label {
+  max-width: 15rem;
+}
+
+.search > label > input {
+  margin-bottom: 0;
+  width: 100%;
+}
+
+/* The catalog arrives in namespace-then-name order and the rows are drawn in that order,
+   so they are rows of one width sharing a left edge rather than labels each of its own width:
+   a list that breaks its lines at the length of a name loses the order it was sorted into.
+   As many columns stand as the panel is wide, filled across and then down,
+   which is one result to a line at a phone's width and several across a full page.
+   The column floor is the smaller of 18rem and the panel,
+   because a track with a fixed floor is wider than a panel narrower than the floor
+   and would push a scrollbar across the page. */
+.search > .results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(18rem, 100%), 1fr));
+  gap: 0.25rem 0.5rem;
+  /* Fifty rows is the whole of what the page draws,
+     and fifty rows one to a line is over a hundred rem of panel,
+     which leaves the Profile panel below a page and a half of results.
+     The block holds about seven rows of them and scrolls the rest,
+     so the panel keeps a bounded height at every width;
+     someone who wants fewer rows types more. */
+  max-height: 16rem;
+  overflow-y: auto;
+  /* A focus ring is drawn outside the border of the row that has it,
+     and a scrolling box clips at its padding edge,
+     so without this much room the ring on the first and the last row is cut. */
+  padding: 0.15rem;
+}
+
+/* A query that matched nothing still draws this block, with the note under it saying so,
+   and without this rule the padding above stands as a band of empty panel over that sentence.
+   The rule asks whether the block holds a row rather than whether it is empty,
+   because whitespace between the tags is a child of the block like any other
+   and is enough to make an element holding no row at all fail an emptiness test. */
+.search > .results:not(:has(button)) {
+  display: none;
+}
+
+/* Pico gives every button the primary fill, which is Download's,
+   and fifty of those read as fifty things to do rather than a list to pick from.
+   An idle row is an outline, and the row under the pointer takes the secondary fill
+   Refresh and Keep wear, which is what says where a click would land.
+   The outline is the border the menus and the filter fields wear,
+   so a row reads as a control of the family it stands under,
+   and it stays visible against the panel in the light palette and in the dark one,
+   which the fainter border of a container does not. */
+.search > .results > button {
+  width: 100%;
+  margin: 0;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85em;
+  text-align: left;
+  background: transparent;
+  border-color: var(--pico-form-element-border-color, #cfd5e2);
+  color: inherit;
+  /* A namespace and a Service name joined by a slash have no space to break at,
+     and the row is as wide as its column and no wider. */
+  overflow-wrap: anywhere;
+}
+
+/* Pico states its hover, focus, and active fills as custom properties that the rule above
+   overrides with a value of its own, which would otherwise leave a row with no state to show. */
+.search > .results > button:is(:hover, :focus, :active) {
+  background: var(--pico-secondary-background);
+  border-color: var(--pico-secondary-border);
+  color: var(--pico-secondary-inverse);
+}
+
+/* The line saying why there are no more rows reads as its own line under them,
+   which an inline element and its inline margins do not give. */
+.search > .note {
+  display: block;
+  margin-top: 0.35rem;
+}
+
 /* A label whose control follows it on the next line does not need a line of gap as well. */
 .panels label {
   margin-bottom: 0.5rem;
