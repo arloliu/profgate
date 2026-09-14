@@ -247,7 +247,9 @@ OpenAPI ↔ route table ↔ code registry 由五個獨立比對加九種變異�
 
 ## 十三、建議優先序
 
-執行順序與進度以 [`docs/plans/roadmap.md`](../plans/roadmap.md) 為準。
+這份排序已全部執行，由 #19 到 #43 的 pull request 分別承載，尚未隨任何版本發布（見 `CHANGELOG.md` 的 Unreleased）；
+承載它的 roadmap 已離開樹，
+依 [`finished-documents-leave-the-tree.md`](../decisions/finished-documents-leave-the-tree.md) 以 `git` 取回。
 原則：先修 operator 第一次就會踩到的（安裝、`--help`、三個 gauge），再修已重現的穩定性缺陷，再補 runbook，最後是 spec 修訂帶動的 CLI 與 console 調整。
 
 1. 安裝路徑：kustomize base 的 Namespace、chart 記憶體防呆、auth 模式的 render-time 拒絕、NOTES 與 README 的連結、升級章節指向 CHANGELOG。
