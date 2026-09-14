@@ -390,82 +390,82 @@ which records what a past revision did and stays as written.
 
 **`docs/specs/ui.md`**
 
-- [ ] *Overview* and *Core decisions*: the endpoint count and the filtered-catalog sentence (`:8`, `:47-56`).
-- [ ] *Routes*: the table (`:146-147`) gains a `/v1/catalog` row — `GET`, authenticated, `filter`, always offered;
+- [x] *Overview* and *Core decisions*: the endpoint count and the filtered-catalog sentence (`:8`, `:47-56`).
+- [x] *Routes*: the table (`:146-147`) gains a `/v1/catalog` row — `GET`, authenticated, `filter`, always offered;
       and the section's own counts outside the table follow it (`:136`, `:153-156`).
-- [ ] *Request algorithm for the listing endpoints*: five routes, here and wherever the section counts them
+- [x] *Request algorithm for the listing endpoints*: five routes, here and wherever the section counts them
       (`:186-215`).
       Step 1 says the catalog's path captures nothing.
       Step 6 says the catalog is filtered rather than refused, for the reason the namespace list is (`:202-206`).
       Step 8 says it calls `Catalog` with the empty namespace, applies the realm filter,
       and answers `200` with the pairs in namespace-then-name order;
       an error from `Catalog` is `503 discovery_unavailable`, as it is for the other two.
-- [ ] *Response shapes*: the preamble's count and its ordering wording (`:278-287`),
+- [x] *Response shapes*: the preamble's count and its ordering wording (`:278-287`),
       and a subsection for the catalog carrying the flat pair array, its namespace-then-name order,
       and the sentence that over one cache read and one realm snapshot its names under a namespace
       are what the Service list derives and its distinct namespaces are what the namespace list derives.
-- [ ] *The realm filter*: the catalog is a third place the filter runs, over `filterCatalog` alone.
-- [ ] *Flow*: the diagram (`:474-478`) is rewritten —
+- [x] *The realm filter*: the catalog is a third place the filter runs, over `filterCatalog` alone.
+- [x] *Flow*: the diagram (`:474-478`) is rewritten —
       the load is `/v1/whoami`, `/v1/limits`, and `/v1/catalog`;
       both menus and the search come from the catalog;
       the page sends no namespace or Service listing.
-- [ ] *Controls*: **The page's one source** — `state.catalog` is stored, both menus are derived,
+- [x] *Controls*: **The page's one source** — `state.catalog` is stored, both menus are derived,
       and the two listing routes the page no longer calls remain for other clients.
-- [ ] *Controls*: the table gains the search field, the two filter fields, and the catalog's Refresh —
+- [x] *Controls*: the table gains the search field, the two filter fields, and the catalog's Refresh —
       what each offers, its default, that none of the four is sent anywhere, and what a change does.
       Beneath it, the rules of `catalogmodel.js`:
       `namespacesOf` and `servicesOf` deriving the menus in the catalog's order,
       `filterOptions` keeping an entry that matches **or** equals `keep` and never adding one the list lacks,
       `searchCatalog` matching `namespace/name` as one string,
       and the fifty-row rendered cap with its count line.
-- [ ] *Controls*: **The selection** — `selectPair(ns, svc)` as the only writer after the constructor,
+- [x] *Controls*: **The selection** — `selectPair(ns, svc)` as the only writer after the constructor,
       with the transition table Task 4 implements, case by case,
       naming every field cleared, every error key cleared with `clearError`, every generation raised,
       and the two fetches it starts.
-- [ ] *Controls*: the existing Refresh contract (`:719-739`) gains the catalog's Refresh.
+- [x] *Controls*: the existing Refresh contract (`:719-739`) gains the catalog's Refresh.
       It refetches the catalog and redraws both menus from the answer.
       It repeats no downstream fetch the selection has already had,
       and it does start a first targets or Collections fetch the selection is still owed —
       which is how a load whose catalog failed recovers.
-- [ ] *Errors* (`:1084-1090`, `:1095`) and *Failure scenarios* (`:1372-1375`, `:1423-1440`, `:1432`):
+- [x] *Errors* (`:1084-1090`, `:1095`) and *Failure scenarios* (`:1372-1375`, `:1423-1440`, `:1432`):
       one `catalog` error key in place of `namespaces` and `services`;
       where its error, sign-in, and retry controls render;
       what a failed load and a failed Refresh leave on screen;
       the retry lifecycle, its generation, and the coalesced invalidation;
       and the three `service_not_found` recoveries, the profile download included.
-- [ ] *Errors* **When the identity disclosure opens** (`:1118-1128`):
+- [x] *Errors* **When the identity disclosure opens** (`:1118-1128`):
       the Service listing's generation is gone with the listing,
       and what each remaining path discards before it records an answer is restated over the
       generations that remain.
-- [ ] *Layout and embedding*: the tree gains `catalogmodel.js`, and `app.js`'s import list gains it
+- [x] *Layout and embedding*: the tree gains `catalogmodel.js`, and `app.js`'s import list gains it
       and loses nothing else (`:1176-1201`).
-- [ ] *Unit* (`:1513-1520`, `:1652-1675`), *What is not proven* (`:1691`, `:1716`, `:1785-1786`),
+- [x] *Unit* (`:1513-1520`, `:1652-1675`), *What is not proven* (`:1691`, `:1716`, `:1785-1786`),
       *Dependencies* (`:1973`), and *Package layout* (`:2010-2014`):
       the fourth model module, the fifth listing route in the HTTP route, cache-error, disclosure,
       and endpoint inventories, and the metrics-value count.
-- [ ] *Audit and metrics*: the `endpoint` label gains `catalog`;
+- [x] *Audit and metrics*: the `endpoint` label gains `catalog`;
       the audit record carries `namespace` as the empty string,
       which is the shape the writer always emits and the shared test requires
       (`internal/httpapi/audit.go:57-66`, `internal/httpapi/listing_test.go:738-748`).
-- [ ] *End to end*: the browser cases Tasks 3 to 5 add, and the case that goes —
+- [x] *End to end*: the browser cases Tasks 3 to 5 add, and the case that goes —
       a Service listing answered for a namespace the page had left has no listing to answer.
-- [ ] *Changes to the accepted designs* and *Required by this revision and not yet made* (`:2123-2127`):
+- [x] *Changes to the accepted designs* and *Required by this revision and not yet made* (`:2123-2127`):
       the rows naming `gateway.md` gain the fifth route and the `catalog` label,
       and the pending table stays empty because Task 1 lands both specs together.
-- [ ] *Amendments*: one row naming the sections this revision edits.
+- [x] *Amendments*: one row naming the sections this revision edits.
 
 **`docs/specs/gateway.md`**
 
-- [ ] *HTTP API* (`:732-734`): five listing routes, `/v1/catalog` named among them.
-- [ ] *Request algorithm* (`:795-801`): the listing tail counts five,
+- [x] *HTTP API* (`:732-734`): five listing routes, `/v1/catalog` named among them.
+- [x] *Request algorithm* (`:795-801`): the listing tail counts five,
       and the realm check refuses the Service list alone while the namespace list and the catalog are filtered.
-- [ ] *Listing endpoints*: five response shapes, pointing at [`ui.md`](../specs/ui.md) *Response shapes*.
-- [ ] *Errors*: `503 discovery_unavailable` covers the catalog's cache read.
-- [ ] *Logging* (`:1508`): five listing routes, `namespace` set on the Service list alone.
-- [ ] *Metrics* (`:1575`): the `endpoint` vocabulary gains `catalog`.
-- [ ] The request-identifier and OpenAPI route inventories (`:1196`, `:1263`),
+- [x] *Listing endpoints*: five response shapes, pointing at [`ui.md`](../specs/ui.md) *Response shapes*.
+- [x] *Errors*: `503 discovery_unavailable` covers the catalog's cache read.
+- [x] *Logging* (`:1508`): five listing routes, `namespace` set on the Service list alone.
+- [x] *Metrics* (`:1575`): the `endpoint` vocabulary gains `catalog`.
+- [x] The request-identifier and OpenAPI route inventories (`:1196`, `:1263`),
       and the disabled-console row (`:2610`): five listing routes.
-- [ ] *Layers* and the console testing description (`:1992-1995`): the fourth model module.
+- [x] *Layers* and the console testing description (`:1992-1995`): the fourth model module.
 
 **Validation**
 
@@ -474,7 +474,7 @@ mise run lint && mise run test && mise run check && mise run prose
 git log --oneline -1 && git status --short
 ```
 
-- [ ] Commit: `docs(specs): put one catalog behind both menus`
+- [x] Commit: `docs(specs): put one catalog behind both menus`
 
 ---
 

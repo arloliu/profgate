@@ -729,8 +729,8 @@ and its response contains nothing a client could connect to.
 All paths are under `/v1` on the API listener,
 except the three `/auth/` routes that [`auth.md`](auth.md) adds when its browser flow is configured
 and the `/ui/` and `/` routes of [`ui.md`](ui.md) when `ui.enabled`.
-The four listing routes of [`ui.md`](ui.md) —
-`/v1/namespaces`, `/v1/namespaces/{namespace}/services`, `/v1/whoami`, and `/v1/limits` —
+The five listing routes of [`ui.md`](ui.md) —
+`/v1/namespaces`, `/v1/namespaces/{namespace}/services`, `/v1/catalog`, `/v1/whoami`, and `/v1/limits` —
 are `/v1` routes defined in that document.
 `GET /v1/openapi.json` describes every route to a machine (*The OpenAPI document*).
 `GET /v1/auth` reports the authentication mode to a caller with no credential,
@@ -792,10 +792,11 @@ Steps 8–12 differ by endpoint.
 Realm denial precedes discovery,
 so a caller denied a namespace receives the same `403` whether or not the Service exists.
 
-The four listing routes of [`ui.md`](ui.md) run the route, method, readiness, credential-placement,
+The five listing routes of [`ui.md`](ui.md) run the route, method, readiness, credential-placement,
 and authentication steps as written;
-the realm step refuses only the Service list, for a namespace the realm does not admit,
-while the namespace list is filtered and `whoami` and `limits` describe the caller;
+the realm step refuses the Service list alone, for a namespace the realm does not admit,
+because that route names a namespace in its path,
+while the namespace list and the catalog are filtered and `whoami` and `limits` describe the caller;
 the parameter step refuses any query parameter;
 then they read the Service cache, with no discovery, admission, confirmation, or proxy step
 ([`ui.md`](ui.md) *Request algorithm for the listing endpoints*).
@@ -932,8 +933,9 @@ and the counts are what its fifth observation records.
 
 #### Listing endpoints
 
-Four routes list what the caller's realm admits and describe the caller:
-`GET /v1/namespaces`, `GET /v1/namespaces/{namespace}/services`, `GET /v1/whoami`, and `GET /v1/limits`.
+Five routes list what the caller's realm admits and describe the caller:
+`GET /v1/namespaces`, `GET /v1/namespaces/{namespace}/services`, `GET /v1/catalog`,
+`GET /v1/whoami`, and `GET /v1/limits`.
 Their response shapes are defined in [`ui.md`](ui.md) *Response shapes*.
 
 ### 6.3 Fetch a profile
@@ -1193,7 +1195,7 @@ and the 128-byte bound caps what one request can reflect.
 The value is echoed into that one response header and written to that one audit record and nowhere else.
 
 The header is set on every response on both listeners:
-the three routes defined here, the four listing routes and the console routes of [`ui.md`](ui.md)
+the three routes defined here, the five listing routes and the console routes of [`ui.md`](ui.md)
 (their `304` and `405` answers included),
 the `/auth/` routes of [`auth.md`](auth.md) and the `302`s they write,
 every gateway error envelope,
@@ -1260,7 +1262,7 @@ and writing one is part of this change.
 
 **Every API-listener route consumes one declaration**, with no dispatch beside it:
 the two routes of *List targets* and *Fetch a profile*, this document route,
-the four listing routes and the `/ui/` and `/` routes of [`ui.md`](ui.md),
+the five listing routes and the `/ui/` and `/` routes of [`ui.md`](ui.md),
 the three `/auth/` routes of [`auth.md`](auth.md),
 and the seven PGO routes of [`pgo.md`](pgo.md).
 The console and `/auth/` routes are dispatched outside the `/v1` parser today,
@@ -1505,7 +1507,7 @@ requestId, principal, namespace, service, pod, profile, seconds, port, status, c
 with the values [`auth.md`](auth.md) lists;
 one of them, `internal`, marks an authenticator error the gateway could not classify, answered `503 auth_unavailable`.
 The `/auth/` routes write a line with no namespace or Service ([`auth.md`](auth.md)).
-The four listing routes of [`ui.md`](ui.md) write the record with `namespace` set on the Service list only
+The five listing routes of [`ui.md`](ui.md) write the record with `namespace` set on the Service list only
 and `service`, `pod`, `profile`, `port`, and `seconds` empty;
 requests under `/ui/` and to `/` write no record — they carry no principal and name nothing a realm bounds.
 `/v1/auth` writes no record for the same reason ([`cli.md`](cli.md) *Gateway discovery*),
@@ -1572,7 +1574,7 @@ and refuses to proxy (section 5.6), which is the correct behavior, not a reason 
 
 | Metric | Labels |
 |---|---|
-| `profgate_requests_total` (counter) | `endpoint` (`targets`/`profile`/`namespaces`/`services`/`whoami`/`limits`/`ui`/`openapi`/`auth`), `profile`, `code` |
+| `profgate_requests_total` (counter) | `endpoint` (`targets`/`profile`/`namespaces`/`services`/`catalog`/`whoami`/`limits`/`ui`/`openapi`/`auth`), `profile`, `code` |
 | `profgate_request_duration_seconds` (histogram) | `profile` |
 | `profgate_confirm_total` (counter) | `result` (`ok`/`changed`/`unavailable`/`client_gone`) |
 | `profgate_profiles_in_flight` (gauge) | — |
@@ -1652,7 +1654,7 @@ with upstream statuses bucketed as `upstream_<status>`.
 The fingerprint is the first eight hexadecimal digits of SHA-256 over a loaded key ([`auth.md`](auth.md)),
 so its values are not a closed set,
 and only the current key and the optional previous one carry a series.
-The `endpoint` values `namespaces`, `services`, `whoami`, `limits`, and `ui` belong to [`ui.md`](ui.md),
+The `endpoint` values `namespaces`, `services`, `catalog`, `whoami`, `limits`, and `ui` belong to [`ui.md`](ui.md),
 with `profile` fixed to `none`;
 `ui` covers `/ui/`, every path under it, and `/`,
 and its `code` is `ok` for a `200` or the `302`, `route_unknown`, `method_not_allowed`,
@@ -1989,9 +1991,10 @@ Because the overall request budget already includes confirmation, the drain boun
   every path under `/ui/` that is `404 route_unknown`, `index.html` and a traversal included;
   the manifest hashes, relative imports only,
   no inline script or style, and the source scan of *Rendering response values*.
-- `internal/ui` against the console's three model modules, per [`ui.md`](ui.md) *Unit*:
+- `internal/ui` against the console's four model modules, per [`ui.md`](ui.md) *Unit*:
   tables over the port control's menu and fields, the targets query, retry rule, and summary,
-  and the Collection controls' existence, request, armed state, and answers,
+  the Collection controls' existence, request, armed state, and answers,
+  and the catalog model's two derived menus, its option filter, and its search,
   each evaluated in the ECMAScript interpreter section 11.1 lists.
 - The listing routes in `internal/httpapi`, per [`ui.md`](ui.md) *Unit*:
   the request algorithm table, realm filtering over the four combinations,
@@ -2199,7 +2202,8 @@ Why kind rather than k3s for the old versions:
     `/ui/` serves the shell with its security headers to a caller with no cookie,
     a `fetch`-shaped `/v1/whoami` without a cookie is `401` and not `302`,
     the login walk returns to `/ui/?ns=x`,
-    the four listing routes answer `200` with the cookie and the Service list holds the test app's Service,
+    `/v1/whoami`, `/v1/limits`, `/v1/namespaces`, and the Service listing each answer `200` with the cookie,
+    and the Service list holds the test app's Service,
     and logout lands on `/` and then `/ui/` ([`ui.md`](ui.md) *End to end*).
 15. Inside the `basic` over TLS scenario, with `ui.enabled`:
     `/ui/` is `200` without a credential,
@@ -2531,7 +2535,7 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
 | `golang.org/x/crypto` | `bcrypt` (only in `internal/auth`) |
 | `golang.org/x/term` | reading a password without echo for `profgate auth hash` (only in `cmd/profgate`) |
 | `sigs.k8s.io/yaml` | tests only: golden ClusterRole and `versions.yaml` |
-| `github.com/dop251/goja` | tests only: evaluating the console's port-control, targets, and Collection-control models ([`ui.md`](ui.md) *What is not proven*) |
+| `github.com/dop251/goja` | tests only: evaluating the console's port-control, targets, Collection-control, and catalog models ([`ui.md`](ui.md) *What is not proven*) |
 | `github.com/chromedp/chromedp` | tests only: driving a headless Chromium through the console's page (only in `test/e2e`, behind the suite's build tag; [`ui.md`](ui.md) *End to end*) |
 
 Everything else is the standard library.
@@ -2607,7 +2611,7 @@ it is reachable only from `cmd/profgate` and imports no Kubernetes or NATS packa
 | Rolling update, both builds carrying the console asset | the asset answers `200` from either replica, its path being the same on both; a load that takes its shell from one build and a module from the other runs unless those two files changed incompatibly in that release ([`ui.md`](ui.md)) |
 | Rolling update of a release that adds or drops a console asset | the build without the file answers `404 route_unknown` for it, so a load reaching that build fails until the rollout converges, and a reload then recovers ([`ui.md`](ui.md)) |
 | Rolling update from hashed console asset paths to stable ones | neither build serves what the other's shell names, so a load reaching the other build fails until the rollout converges; a reload then recovers, and this is the one release with that property ([`ui.md`](ui.md)) |
-| `ui.enabled` false | `/ui/` and `/` are `404 route_unknown`; the four listing routes still answer |
+| `ui.enabled` false | `/ui/` and `/` are `404 route_unknown`; the five listing routes still answer |
 | Client sends no `X-Request-Id`, or one the grammar refuses | one is generated; the request is answered as it would have been, and the response and the audit record carry the generated value |
 | Client sends a usable `X-Request-Id` | it is echoed unchanged and written to the audit record; nothing else reads it |
 | `/v1/openapi.json` before the caches sync | `503 not_ready`, like every other `/v1` route; the document itself would have been correct, and the exception is not worth its cost |
@@ -2953,3 +2957,11 @@ Updated with the implementation:
 | File | Change |
 |---|---|
 | `.github/workflows/check.yml` | `pull_request` and `push` to `main` as the events; the `check` job loses its event gate; the `prose` job keeps its own, because it diffs against `github.base_ref`, which a push does not carry |
+
+One catalog behind both menus —
+`GET /v1/catalog`, which answers every Service the caller's realm admits as namespace-and-name pairs —
+amends the following text.
+
+| File | Section | Change |
+|---|---|---|
+| `docs/specs/gateway.md` | *HTTP API*, *Request algorithm*, *List targets*, *Request identifier*, *The OpenAPI document*, *Logging*, *Metrics*, *Layers*, *What end-to-end proves*, *Failure Scenarios* | `/v1/catalog` is the fifth listing route of [`ui.md`](ui.md), named in every route inventory; the realm step refuses the Service list alone, because that route names a namespace in its path, while the namespace list and the catalog are filtered; the `endpoint` label gains `catalog`; the console has a fourth model module; the browser-flow scenario names the listings it fetches instead of counting them |
