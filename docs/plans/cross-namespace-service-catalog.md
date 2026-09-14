@@ -566,14 +566,14 @@ git log --oneline -1 && git status --short
 No request changes in this task.
 It narrows two menus, whichever list is behind them, which is why it is correct before Task 4 and after it.
 
-- [ ] `internal/ui/static/catalogmodel.js`: `filterOptions(list, query, keep)`.
+- [x] `internal/ui/static/catalogmodel.js`: `filterOptions(list, query, keep)`.
       It trims and lowercases the query and keeps an entry when the entry's lowercase value holds it
       as a substring **or** the entry equals `keep`.
       It never adds an entry the list lacks, preserves the input order, does not mutate the input,
       and returns a new array holding every entry when the query is empty.
       The module imports nothing and ends with one export statement as its last statement,
       the shape `cutExport` requires (`internal/ui/portmodel_test.go:28-44`).
-- [ ] `internal/ui/scan_test.go`: `catalogmodel.js` in `consoleSources()` (`:15-17`);
+- [x] `internal/ui/scan_test.go`: `catalogmodel.js` in `consoleSources()` (`:15-17`);
       an import scan holding `app.js` to importing and calling `filterOptions`,
       as the three model modules have;
       and an export scan asserting the module's export statement names exactly what `app.js` imports —
@@ -581,8 +581,8 @@ It narrows two menus, whichever list is behind them, which is why it is correct 
       (`internal/ui/portmodel_test.go:30-55`, `:130-145`),
       so evaluating the model proves nothing about what the browser can import.
       Both scans name `filterOptions` alone here and grow in Tasks 4 and 5.
-- [ ] `internal/ui/vendor_test.go:306`: `catalogmodel.js` among the modules that import nothing.
-- [ ] `internal/ui/static/app.js`: state gains `nsFilter` and `svcFilter`;
+- [x] `internal/ui/vendor_test.go:306`: `catalogmodel.js` among the modules that import nothing.
+- [x] `internal/ui/static/app.js`: state gains `nsFilter` and `svcFilter`;
       `renderSelection` (`:1249-1278`) draws a labelled `<input type="search">` beside each menu,
       as a sibling `<label>` in a shared wrapper and never nested inside the menu's own `<label>`,
       so a `<label>` that holds a `<select>` still holds exactly one control
@@ -590,25 +590,25 @@ It narrows two menus, whichever list is behind them, which is why it is correct 
       Each menu's options come from `filterOptions` with that menu's current value as `keep`,
       and a line beside each says how many of how many are shown while the query is not empty.
       Choosing a namespace clears `svcFilter`.
-- [ ] `internal/ui/static/app.css`: the filter field and its menu inside one field cell.
-- [ ] `.agents/rules/500-validation-and-workflow.md:93-95`: four model modules.
+- [x] `internal/ui/static/app.css`: the filter field and its menu inside one field cell.
+- [x] `.agents/rules/500-validation-and-workflow.md:93-95`: four model modules.
 
 **Tests**
 
-- [ ] `internal/ui/catalogmodel_test.go`, table cases evaluated in the interpreter `portmodel_test.go` uses:
+- [x] `internal/ui/catalogmodel_test.go`, table cases evaluated in the interpreter `portmodel_test.go` uses:
       an empty query returns every entry; a query matches case-insensitively and mid-string;
       a query is trimmed; `keep` survives a query that excludes it;
       `keep` is not duplicated when it also matches;
       a `keep` the list lacks is **not** added; an empty list stays empty;
       the order is the input's; the input array is not mutated.
-- [ ] `test/e2e/scenarios_console_test.go`: typing in the namespace filter narrows its menu;
+- [x] `test/e2e/scenarios_console_test.go`: typing in the namespace filter narrows its menu;
       the chosen namespace stays selectable while the query excludes it;
       a bookmarked namespace outside the listing is still absent from the options
       and still draws its not-listed line;
       both menus filtered at once; the Service filter clears when the namespace changes;
       the page's query string is unchanged by any of it;
       and `select.value` is read from the DOM after each render rather than inferred.
-- [ ] The existing console scenarios run before the change and after it,
+- [x] The existing console scenarios run before the change and after it,
       which is what proves `chooseOption` survived the added labels.
 
 **Validation**
@@ -619,7 +619,7 @@ mise run test:e2e
 git log --oneline -1 && git status --short
 ```
 
-- [ ] Commit: `feat(ui): narrow the two Service menus`
+- [x] Commit: `feat(ui): narrow the two Service menus`
 
 ---
 

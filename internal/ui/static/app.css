@@ -142,6 +142,36 @@ details.identity > footer {
   min-width: 0;
 }
 
+/* A menu and the field that narrows it are one cell holding two controls, so
+   the cell takes a share of the line for each of them. They are siblings
+   rather than one inside the other, because a label that names a menu names
+   that one control; the grid is what puts them side by side. The line saying
+   how many options are drawn spans both columns under them. */
+.panels .fields > .menu {
+  flex-grow: 2;
+  flex-basis: 14.75rem;
+  max-width: 30.75rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 0.75rem;
+  align-items: end;
+  /* The line counting a menu's drawn options is a second row of this cell, so a
+     cell whose filter carries a query is taller than one whose filter is empty.
+     The row of controls is what has to line up across the two cells, not the
+     bottom edge the line moves, so these cells align to the top of the line
+     they share and let the count line hang below. */
+  align-self: start;
+}
+
+.fields .menu > label {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.fields .menu > .shown {
+  grid-column: 1 / -1;
+}
+
 /* Refresh repeats the targets fetch the two controls beside it are drawn from,
    so it stands in the row with them rather than under it. */
 .fields button {
