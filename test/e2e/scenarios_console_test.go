@@ -95,6 +95,10 @@ const (
 
 	// latecomerServiceName is the Service created after the page's catalog had already answered.
 	latecomerServiceName = "latecomer"
+	// vanishingServiceName is the Service deleted between the catalog answer the page holds and the click on it.
+	// It is created by the case that destroys it,
+	// so nothing a later scenario reads goes with it.
+	vanishingServiceName = "vanishing"
 )
 
 // consoleCatalogRoute is the one listing the console reads: the namespace and Service pairs the realm admits.
@@ -577,6 +581,111 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	s.chooseOption(t, "Service", testAppName)
 	s.waitFor(t, "the Pod control lists a Pod again", podListed)
 
+	// The search reads the whole catalog rather than either menu, and a row it draws chooses both halves of a pair.
+	// searchRow is the label the page draws for the test app: the two halves of its pair, joined by a slash.
+	// The cases run here because both menus are on that pair and both filter fields are empty,
+	// which is the state each of them puts back before it returns.
+	searchRow := ns + "/" + testAppName
+
+	t.Run("a search result chooses both halves of the pair", func(t *testing.T) {
+		var before string
+		s.eval(t, "read the profile URL", profileURLField, &before)
+		if before == "" {
+			t.Fatalf("the profile URL field is empty before the selection is cleared:\n%s", s.textOf(t, ".panels"))
+		}
+		// The page starts with no namespace chosen, which is the Service menu disabled and no pair selected,
+		// so what the click leaves is the click's own work and not what it found.
+		s.chooseOption(t, "Namespace", "")
+		s.waitFor(t, "the Service menu is disabled with no namespace chosen", menuDisabled("Service"))
+		s.waitFor(t, "the profile URL goes with the selection", `(`+profileURLField+`) === ""`)
+		// A query stands in the Service filter when the row is clicked,
+		// because clearing it is the one thing a result row does that the Service menu does not.
+		typeFilter(t, s, "Service filter", nobodyServiceName)
+		s.run(t, "let any fetch the cleared selection starts be recorded", chromedp.Sleep(consoleRecorded))
+		clickFrom := countRoutes(s, ns, testAppName)
+		typeSearch(t, s, testAppName)
+		awaitSearchRow(t, s, searchRow)
+		s.run(t, "choose the search result naming the test app",
+			chromedp.Click(control(searchRow), chromedp.BySearch))
+		s.waitFor(t, "the Pod control lists a Pod", podListed)
+		s.waitFor(t, "the Collections Refresh control is idle", refreshEnabled("Collections"))
+		// Both menus read the pair the row named, and the Service menu is enabled again,
+		// which no namespace chosen had left it not.
+		if got := readMenu(t, s, "Namespace"); got.Value != ns {
+			t.Fatalf("the namespace menu reads %q after the result was chosen, want %q, the row's own namespace",
+				got.Value, ns)
+		}
+		if got := readMenu(t, s, "Service"); got.Value != testAppName {
+			t.Fatalf("the Service menu reads %q after the result was chosen, want %q, the row's own name",
+				got.Value, testAppName)
+		}
+		var disabled bool
+		s.eval(t, "read the Service menu", menuDisabled("Service"), &disabled)
+		if disabled {
+			t.Fatalf("the Service menu stands disabled after the result was chosen;"+
+				" the row named a namespace, which is what enables it:\n%s", s.textOf(t, ".selection"))
+		}
+		assertPageQuery(t, s.location(t), ns, testAppName, "the result was chosen")
+		var built string
+		s.eval(t, "read the profile URL", profileURLField, &built)
+		if built != before {
+			t.Fatalf("the profile URL reads %q after the result was chosen, want %q, which the pair alone builds",
+				built, before)
+		}
+		// The one thing a result row does beyond what the Service menu does is empty the Service filter.
+		if got := readFilter(t, s, "Service filter"); got != "" {
+			t.Fatalf("the Service filter reads %q after a result was chosen, want empty:"+
+				" the row named another namespace's names than the ones the query was typed against", got)
+		}
+		assertSent(t, s, ns, testAppName, clickFrom, consoleCounts{Targets: 1, Collections: 1},
+			"a search result chosen")
+	})
+
+	t.Run("a result click and the two menus settle in the same state", func(t *testing.T) {
+		// Each path starts from the same place, which is no namespace chosen,
+		// and what it settles in is read once the targets and the Collections list have both landed.
+		menus := settleOnPair(t, s, "the two menus", func() {
+			s.chooseOption(t, "Namespace", ns)
+			s.waitFor(t, "the Service menu offers the namespace's Services", serviceOffered(testAppName))
+			s.chooseOption(t, "Service", testAppName)
+		})
+		clicked := settleOnPair(t, s, "the result click", func() {
+			typeSearch(t, s, testAppName)
+			awaitSearchRow(t, s, searchRow)
+			s.run(t, "choose the search result naming the test app",
+				chromedp.Click(control(searchRow), chromedp.BySearch))
+		})
+		if menus != clicked {
+			t.Fatalf("the two menus settled in %+v and the result click in %+v, want the same state:"+
+				" selectPair is the only writer of the selection and it has one case", menus, clicked)
+		}
+	})
+
+	t.Run("a search matching nothing draws no row and says so", func(t *testing.T) {
+		sentAt := routeCounts(s, filterRoutes)
+		here := s.location(t)
+		typeSearch(t, s, unmatched)
+		got := awaitSearchNote(t, s, "nothing matched")
+		if len(got.Rows) != 0 {
+			t.Fatalf("the search drew %q under a query no name holds, want no row", got.Rows)
+		}
+		if !got.Drawn {
+			t.Fatalf("the search drew no results list under a query that matched nothing;"+
+				" the line saying so stands under one:\n%s", s.textOf(t, ".selection"))
+		}
+		if got := s.location(t); got != here {
+			t.Fatalf("the page is at %q with a query typed into the search field, want %q:"+
+				" the search is no part of the selection", got, here)
+		}
+		assertNothingSent(t, s, filterRoutes, sentAt, "typing in the search field")
+	})
+
+	// The search field is emptied, so the cases below read the page as the selection left it.
+	typeSearch(t, s, "")
+	s.waitFor(t, "the search draws no results with nothing typed",
+		`document.querySelector("div.search div.results") === null`)
+	s.waitFor(t, "the Pod control lists a Pod again", podListed)
+
 	// The identity disclosure's opening rule, on the four cases an answer the page classifies decides.
 	// Each answer is written into a request the test paused, so the realm the gateway serves never changes.
 	// They run here because every press below needs a Service the page can build a live request for,
@@ -590,6 +699,11 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	isWhoamiGET := func(r sentRequest) bool { return r.method == http.MethodGet && r.url == whoamiRoute }
 	// closeIdentity puts the disclosure back to closed, which is where a person's click leaves it,
 	// so that the next denial's opening is a change and not a state the case found.
+	// It presses the control only while the disclosure stands open,
+	// because the press is a toggle:
+	// one made against a disclosure already closed opens it,
+	// which is the opposite of what every caller asks for,
+	// and only a denial is allowed to open it.
 	closeIdentity := func(what string) {
 		var open bool
 		s.eval(t, "read the identity disclosure before "+what,
@@ -1052,6 +1166,57 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	s.chooseOption(t, "Service", testAppName)
 	s.waitFor(t, "the Pod control lists a Pod again", podListed)
 
+	t.Run("a search result the catalog no longer names refetches the catalog", func(t *testing.T) {
+		// The Service is this case's own, because it is destroyed to make the case,
+		// and a fixture the scenarios below read would be destroyed with it.
+		unmatchedService(t, h, ns, vanishingServiceName)
+		awaitCatalogLists(t, client, bearer, gatewayOrigin+"/v1/catalog", ns, vanishingServiceName)
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		pressServiceRefresh(t, s)()
+		s.waitFor(t, "the Service menu offers the Service about to be deleted", serviceOffered(vanishingServiceName))
+		// It goes between that answer and the click,
+		// so the page's catalog names a pair the gateway no longer resolves and nothing on the page says so yet.
+		deleteService(t, h, ns, vanishingServiceName)
+		awaitCatalogDrops(t, client, bearer, gatewayOrigin+"/v1/catalog", ns, vanishingServiceName)
+		row := ns + "/" + vanishingServiceName
+		typeSearch(t, s, vanishingServiceName)
+		awaitSearchRow(t, s, row)
+		at := s.requestCount()
+		s.run(t, "choose the search result naming the Service that has gone",
+			chromedp.Click(control(row), chromedp.BySearch))
+		// The targets fetch the click starts is answered 404 service_not_found by the gateway itself,
+		// which is what asks for the catalog again.
+		s.awaitRequestSince(t, at, "the catalog refetch the answer asks for", isCatalogRequest)
+		s.waitFor(t, "the Profile panel shows the answer that says the Service has gone",
+			fmt.Sprintf(`(%s || { textContent: "" }).textContent.includes("service_not_found")`, profilePanel))
+		// The menus are redrawn from the refetched answer, which names every Service but this one.
+		s.waitFor(t, "the redrawn menus no longer offer the Service that has gone",
+			`!(`+serviceOffered(vanishingServiceName)+`)`)
+		s.waitFor(t, "the page says the selection is not listed",
+			fmt.Sprintf(`(document.querySelector(".panels") || { textContent: "" }).textContent.includes(%q)`,
+				vanishingServiceName+" is not listed"))
+		if got := readMenu(t, s, "Service"); got.Value != "" {
+			t.Fatalf("the Service menu reads %q once the refetched catalog dropped it, want none chosen", got.Value)
+		}
+		var built string
+		s.eval(t, "read the profile URL", profileURLField, &built)
+		if built != "" {
+			t.Fatalf("the profile URL reads %q for a selection the catalog no longer lists, want none built", built)
+		}
+		// The Collections fetch the click started is answered for the same Service,
+		// and an answer that says the Service has gone asks for the catalog again as well.
+		// The case returns only once the page holds no catalog request in flight,
+		// because one still unanswered here would be counted against the case below.
+		s.waitFor(t, "the Service Refresh control is idle", refreshEnabled("Service"))
+		s.run(t, "let a refetch a second answer asked for be recorded", chromedp.Sleep(consoleRecorded))
+		s.waitFor(t, "the Service Refresh control is idle after the second answer", refreshEnabled("Service"))
+		// The page goes back to the pair the cases below read, with nothing in the search field.
+		typeSearch(t, s, "")
+		s.chooseOption(t, "Service", testAppName)
+		s.waitFor(t, "the Pod control lists a Pod again", podListed)
+		s.waitFor(t, "the Collections Refresh control is idle again", refreshEnabled("Collections"))
+	})
+
 	t.Run("a bookmarked selection is drawn by the catalog answer", func(t *testing.T) {
 		loadFrom := countRoutes(s, ns, testAppName)
 		at := s.requestCount()
@@ -1083,6 +1248,30 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 			t.Fatalf("the Service menu reads %q once the catalog answered, want the bookmarked %q",
 				got.Value, testAppName)
 		}
+	})
+
+	t.Run("a search run before the catalog answers says it is loading", func(t *testing.T) {
+		release := loadWithHeldCatalog(t, s, "the load whose catalog is held past a search", ns, testAppName)
+		// The page is up and the one answer behind the search is not.
+		// The line names that rather than an empty result,
+		// because a page that said nothing matched would be answering a question it cannot yet read.
+		s.waitFor(t, "the Profile panel draws its menu", profileMenuDrawn)
+		typeSearch(t, s, testAppName)
+		held := awaitSearchNote(t, s, "the catalog is still loading")
+		if len(held.Rows) != 0 {
+			t.Fatalf("the search drew %q with the catalog held, want no row: there is nothing to search yet", held.Rows)
+		}
+		release()
+		// The answer is what draws the rows, with nothing typed in between,
+		// and it takes the line with it: every match is on the page.
+		got := awaitSearchRow(t, s, ns+"/"+testAppName)
+		if got.Note != "" {
+			t.Fatalf("the line under the results reads %q once the catalog answered,"+
+				" want none: the rows drawn are every row that matched", got.Note)
+		}
+		// The page is left as the cases below read it, with nothing in the search field.
+		typeSearch(t, s, "")
+		s.waitFor(t, "the Pod control lists a Pod", podListed)
 	})
 
 	t.Run("a catalog that failed on load recovers through Refresh", func(t *testing.T) {
@@ -1368,6 +1557,15 @@ func unmatchedService(t *testing.T, h *Harness, ns, name string) {
 	}
 	if _, err := h.Client.CoreV1().Services(ns).Create(t.Context(), svc, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create the Service %s/%s: %v", ns, name, err)
+	}
+}
+
+// deleteService removes a Service the scenario created,
+// which is what the gateway's catalog stops naming once its informer has seen it go.
+func deleteService(t *testing.T, h *Harness, ns, name string) {
+	t.Helper()
+	if err := h.Client.CoreV1().Services(ns).Delete(t.Context(), name, metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete the Service %s/%s: %v", ns, name, err)
 	}
 }
 
@@ -2130,6 +2328,158 @@ func readFilter(t *testing.T, s *session, label string) string {
 	return got.Value
 }
 
+// searchLabel names the search field.
+// typeFilter and readFilter reach it the way they reach a filter field,
+// because all three are a labelled search input carrying no menu,
+// and this is the only one of the three whose label reads Search.
+const searchLabel = "Search"
+
+// typeSearch replaces whatever stands in the search field with query.
+func typeSearch(t *testing.T, s *session, query string) {
+	t.Helper()
+	typeFilter(t, s, searchLabel, query)
+}
+
+// searchState is what the search is showing:
+// the label of each result row it drew, in the page's order,
+// the line under those rows, and whether it drew a results list at all.
+// The three are read together,
+// because a results list the page did not draw and one it drew empty both read as no row through the rows alone.
+type searchState struct {
+	Rows  []string `json:"rows"`
+	Note  string   `json:"note"`
+	Drawn bool     `json:"drawn"`
+}
+
+// readSearch reads what the search is showing, once.
+// The rows and the line are read from the search's own cell,
+// because the line beside a menu is a small element too.
+func readSearch(t *testing.T, s *session) searchState {
+	t.Helper()
+	var got searchState
+	s.eval(t, "read the search results", `(() => {
+  const results = document.querySelector("div.search div.results");
+  const note = document.querySelector("div.search small.note");
+  return {
+    rows: results ? [...results.querySelectorAll("button")].map((b) => b.textContent.trim()) : [],
+    note: note ? note.textContent.trim() : "",
+    drawn: Boolean(results),
+  };
+})()`, &got)
+
+	return got
+}
+
+// awaitSearchRow polls until the search has drawn the row the label names, and returns that read,
+// so every assertion after it reads one render rather than one render per fact.
+// The failure carries what the search did draw and the line under it,
+// because a row the page left out for the cap is a different failure from a search that matched nothing.
+func awaitSearchRow(t *testing.T, s *session, label string) searchState {
+	t.Helper()
+	var got searchState
+	err := poll(s.ctx, browserDeadline, func(context.Context) (bool, error) {
+		got = readSearch(t, s)
+
+		return slices.Contains(got.Rows, label), nil
+	})
+	if err != nil {
+		t.Fatalf("the search drew no row labelled %q: %v; it drew %d rows and the line under them reads %q\n%s",
+			label, err, len(got.Rows), got.Note, s.report())
+	}
+
+	return got
+}
+
+// awaitSearchNote polls until the line under the results reads want, and returns that read.
+func awaitSearchNote(t *testing.T, s *session, want string) searchState {
+	t.Helper()
+	var got searchState
+	err := poll(s.ctx, browserDeadline, func(context.Context) (bool, error) {
+		got = readSearch(t, s)
+
+		return got.Note == want, nil
+	})
+	if err != nil {
+		t.Fatalf("the line under the results reads %q, want %q: %v; the search drew %d rows\n%s",
+			got.Note, want, err, len(got.Rows), s.report())
+	}
+
+	return got
+}
+
+// settledState is what a transition to a pair settles in:
+// the page query, both menus of the Service panel, the Pod and version menus,
+// the Collections state, the write controls, and the errors the panels show.
+// Those are the fields a change of selection writes,
+// and a state read as one string per field is a state two paths can be compared in whole.
+type settledState struct {
+	Query         string `json:"query"`
+	Namespace     string `json:"namespace"`
+	Service       string `json:"service"`
+	Pod           string `json:"pod"`
+	Version       string `json:"version"`
+	Collections   string `json:"collections"`
+	Detail        string `json:"detail"`
+	WriteControls string `json:"writeControls"`
+	Errors        string `json:"errors"`
+}
+
+// settleOnPair leaves the selection, runs the transition, and reads what it settled in.
+// Every path starts from no namespace chosen, which is the one state neither path found the other in.
+// The read is taken once both fetches a selection starts have landed,
+// because a state read while either was in flight would be the race and not the transition.
+func settleOnPair(t *testing.T, s *session, what string, take func()) settledState {
+	t.Helper()
+	s.chooseOption(t, "Namespace", "")
+	s.waitFor(t, "the Service menu is disabled before "+what, menuDisabled("Service"))
+	take()
+	s.waitFor(t, "the Pod control lists a Pod after "+what, podListed)
+	s.waitFor(t, "the targets Refresh control is idle after "+what, refreshEnabled("Profile"))
+	s.waitFor(t, "the Collections Refresh control is idle after "+what, refreshEnabled("Collections"))
+	var got settledState
+	s.eval(t, "read what "+what+" settled in", `(() => {
+  const menu = (label) => {
+    const l = [...document.querySelectorAll("label")]
+      .find((l) => l.querySelector("select") && l.textContent.trim().startsWith(label));
+    if (!l) { return "no menu is labelled " + label; }
+    const sel = l.querySelector("select");
+    return (sel.disabled ? "disabled " : "") + sel.value + " of " + [...sel.options].map((o) => o.value).join(",");
+  };
+  const rows = [...document.querySelectorAll(".collections .table tbody tr")]
+    .map((r) => r.cells[0].textContent.trim() + " " + r.cells[2].textContent.trim());
+  const controls = [...document.querySelectorAll(".collections .actions button, .collections td.row-actions button")]
+    .map((b) => b.textContent.trim() + (b.disabled ? " disabled" : ""));
+  const detail = document.querySelector(".collections details summary");
+  return {
+    query: location.pathname + location.search,
+    namespace: menu("Namespace"),
+    service: menu("Service"),
+    pod: menu("Pod"),
+    version: menu("Version"),
+    collections: rows.join(";"),
+    detail: detail ? detail.textContent.trim() : "",
+    writeControls: controls.join(","),
+    errors: [...document.querySelectorAll(".panels .error")].map((e) => e.textContent.trim()).join(";"),
+  };
+})()`, &got)
+
+	return got
+}
+
+// assertPageQuery fails unless the page query carries the pair and nothing else.
+// It is read as a URL and not as text, because the order the two are written in is no part of the contract.
+func assertPageQuery(t *testing.T, rawURL, ns, svc, what string) {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("the browser is at %q: %v", rawURL, err)
+	}
+	q := u.Query()
+	if u.Path != uiPath || q.Get("ns") != ns || q.Get("svc") != svc || len(q) != 2 {
+		t.Fatalf("the page is at %s after %s, want %s carrying %s/%s alone", rawURL, what, uiPath, ns, svc)
+	}
+}
+
 // consoleRoute is one route a case watches, named for the failure it would report.
 type consoleRoute struct {
 	what, url string
@@ -2358,9 +2708,25 @@ type catalogResponse struct {
 
 // awaitCatalogLists polls the catalog route until the gateway names ns and svc as one pair,
 // which is the informer having delivered a Service the test created.
+func awaitCatalogLists(t *testing.T, c *http.Client, header http.Header, rawURL, ns, svc string) {
+	t.Helper()
+	awaitCatalogEntry(t, c, header, rawURL, ns, svc, true, "never listed")
+}
+
+// awaitCatalogDrops polls the catalog route until the gateway no longer names that pair,
+// which is the informer having seen a Service the test deleted go.
+func awaitCatalogDrops(t *testing.T, c *http.Client, header http.Header, rawURL, ns, svc string) {
+	t.Helper()
+	awaitCatalogEntry(t, c, header, rawURL, ns, svc, false, "still listed")
+}
+
+// awaitCatalogEntry polls the catalog route until the pair is listed or is not, whichever the caller waits for.
 // The request is the test's own, under the scenario's credential,
 // so the catalog the page holds is left as the answer it already applied.
-func awaitCatalogLists(t *testing.T, c *http.Client, header http.Header, rawURL, ns, svc string) {
+// The failure names what the gateway did instead, in the caller's words, and the answer it last gave.
+func awaitCatalogEntry(t *testing.T, c *http.Client, header http.Header, rawURL, ns, svc string,
+	want bool, instead string,
+) {
 	t.Helper()
 	var last response
 	err := poll(t.Context(), settleDeadline, func(ctx context.Context) (bool, error) {
@@ -2376,16 +2742,17 @@ func awaitCatalogLists(t *testing.T, c *http.Client, header http.Header, rawURL,
 		if err := json.Unmarshal(resp.Body, &catalog); err != nil {
 			return false, fmt.Errorf("decode the catalog answer: %w: %s", err, resp.Body)
 		}
+		listed := false
 		for _, entry := range catalog.Catalog {
 			if entry.Namespace == ns && entry.Name == svc {
-				return true, nil
+				listed = true
 			}
 		}
 
-		return false, nil
+		return listed == want, nil
 	})
 	if err != nil {
-		t.Fatalf("the gateway never listed %s/%s in its catalog: %v (last %d: %s)", ns, svc, err, last.Status, last.Body)
+		t.Fatalf("the gateway %s %s/%s in its catalog: %v (last %d: %s)", instead, ns, svc, err, last.Status, last.Body)
 	}
 }
 

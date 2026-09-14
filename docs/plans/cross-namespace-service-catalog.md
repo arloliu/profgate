@@ -870,34 +870,36 @@ and deploys the gateway before any scenario runs (`test/e2e/harness_test.go:171-
 
 ## 5. The search across namespaces
 
-- [ ] `internal/ui/static/catalogmodel.js`: `searchCatalog(catalog, query, limit)`,
+- [x] `internal/ui/static/catalogmodel.js`: `searchCatalog(catalog, query, limit)`,
       matching `namespace + "/" + name` under the rule `filterOptions` uses,
       returning the first `limit` matches in the catalog's order and the total number matched.
       An empty query matches nothing, so results appear only once a person has typed.
-- [ ] `internal/ui/static/app.js`: state gains `search`;
+- [x] `internal/ui/static/app.js`: state gains `search`;
       the results render as one `<button>` a match, labelled `namespace/name`, each calling `selectPair`
       with both values;
       a line says how many matched when more matched than were drawn,
       and says the catalog is still loading while it is.
-- [ ] `internal/ui/scan_test.go`: the import and export scans gain `searchCatalog`.
-- [ ] `internal/ui/static/app.css`: the search field and the result rows.
+- [x] `internal/ui/catalogmodel_test.go`: `catalogModelFunctions` gains `searchCatalog`, last,
+      which is what carries it into the import scan and the export scan;
+      `internal/ui/scan_test.go` needs no edit, because both scans range over that one variable.
+- [x] `internal/ui/static/app.css`: the search field and the result rows.
 
 **Tests**
 
-- [ ] `internal/ui/catalogmodel_test.go`: `searchCatalog` table cases —
+- [x] `internal/ui/catalogmodel_test.go`: `searchCatalog` table cases —
       an empty query matches nothing; a query matches the name alone; a query matches the namespace alone;
       a query holding the separator matches both parts;
       the cap bounds the matches while the total counts every match;
       the order is the catalog's; the input is not mutated.
-- [ ] `test/e2e/scenarios_console_test.go`: a search for the test app's name draws a result naming its namespace;
+- [x] `test/e2e/scenarios_console_test.go`: a search for the test app's name draws a result naming its namespace;
       clicking it selects both menus, enables the Service menu, builds the profile URL,
       and fetches targets exactly once from a boundary.
-- [ ] `test/e2e/scenarios_console_test.go`: the result click and the two-menu sequence settle in the same state —
+- [x] `test/e2e/scenarios_console_test.go`: the result click and the two-menu sequence settle in the same state —
       the query string, both menus, the Pod and version menus, the Collections state, the write controls,
       and the errors, which are the fields the transition touches.
-- [ ] `test/e2e/scenarios_console_test.go`: a search that matches nothing draws no row and says so;
+- [x] `test/e2e/scenarios_console_test.go`: a search that matches nothing draws no row and says so;
       a search run before the catalog answers says it is loading and draws its rows when the answer lands.
-- [ ] `test/e2e/scenarios_console_test.go`: a Service deleted between the catalog answer and the click —
+- [x] `test/e2e/scenarios_console_test.go`: a Service deleted between the catalog answer and the click —
       the targets fetch answers `404 service_not_found` (`internal/httpapi/server.go:656-663`),
       `loadTargets` clears the summary and `afterServiceError` refetches the catalog
       (`internal/ui/static/app.js:620-623`, `:901-907`),
@@ -911,7 +913,7 @@ mise run test:e2e
 git log --oneline -1 && git status --short
 ```
 
-- [ ] Commit: `feat(ui): search Services across namespaces`
+- [x] Commit: `feat(ui): search Services across namespaces`
 
 ---
 
