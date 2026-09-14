@@ -591,8 +591,13 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	// closeIdentity puts the disclosure back to closed, which is where a person's click leaves it,
 	// so that the next denial's opening is a change and not a state the case found.
 	closeIdentity := func(what string) {
-		s.run(t, "close the identity disclosure before "+what,
-			chromedp.Click("details.identity > summary", chromedp.ByQuery))
+		var open bool
+		s.eval(t, "read the identity disclosure before "+what,
+			`Boolean((document.querySelector("details.identity") || {}).open)`, &open)
+		if open {
+			s.run(t, "close the identity disclosure before "+what,
+				chromedp.Click("details.identity > summary", chromedp.ByQuery))
+		}
 		s.waitFor(t, "the identity disclosure is closed before "+what,
 			`(document.querySelector("details.identity") || {}).open === false`)
 	}
@@ -632,6 +637,17 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 	answerDownload()
 	s.awaitRequestSince(t, at, "the identity refetch the refused download asks for", isWhoamiGET)
 	assertIdentityOpen(t, s, "a profile download answered 403 realm_denied", true)
+	// A download that succeeds takes the error the case wrote with it,
+	// so the page is left as the case found it.
+	// Only a download that succeeds clears it:
+	// a selection change clears the targets and the Collections errors and never this one,
+	// so a refusal left standing here is one every case after it reads as its own.
+	// The download landing is the whole of the proof, and the panel's text is no part of it:
+	// the targets denial above stands in that same panel until the next selection change,
+	// so a panel read for a code here answers for that refusal whatever this one did.
+	s.waitFor(t, "the Download control is idle", downloadIdle)
+	s.run(t, "press Download", chromedp.Click(control("Download"), chromedp.BySearch))
+	s.awaitDownload(t, "the profile download that succeeds")
 
 	closeIdentity("the refused start")
 	s.run(t, "arm the start control", chromedp.Click(control("Start collection"), chromedp.BySearch))
