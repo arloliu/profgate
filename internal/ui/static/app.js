@@ -34,6 +34,7 @@ import {
   confirmAccepted,
   progressText,
   olderCollectionsNote,
+  shortTime,
 } from "./collectionmodel.js";
 import { namespacesOf, servicesOf, filterOptions, searchCatalog } from "./catalogmodel.js";
 
@@ -288,6 +289,18 @@ function FilterNote(props) {
   return html`<small class="shown"
     >${props.matched} of ${props.total} matched${kept ? "; the chosen value is shown too" : ""}</small
   >`;
+}
+
+// TimeCell is one of the table's three timestamp columns:
+// the day over the second, each on its own line and neither broken within itself,
+// with the value the gateway sent carried whole for whoever hovers it.
+function TimeCell(props) {
+  const parts = shortTime(props.value);
+  return html`
+    <td class="time" title=${text(props.value)}>
+      <span>${parts.date}</span>${parts.clock ? html`<span>${parts.clock}</span>` : null}
+    </td>
+  `;
 }
 
 // SearchNote is the line under the search results saying why there are no more of them.
@@ -1789,9 +1802,9 @@ class App extends Component {
                           <td>${text(c.state)}</td>
                           <td>${text(c.attempt)}</td>
                           <td>${text(c.resolvedVersion)}</td>
-                          <td class="time">${text(c.createdAt)}</td>
-                          <td class="time">${text(c.finishedAt)}</td>
-                          <td class="time">${text(c.expiresAt)}</td>
+                          <${TimeCell} value=${c.createdAt} />
+                          <${TimeCell} value=${c.finishedAt} />
+                          <${TimeCell} value=${c.expiresAt} />
                           <td class="row-actions">${this.renderCancel(c)}</td>
                         </tr>
                       `,

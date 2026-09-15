@@ -304,8 +304,11 @@ details.identity > footer {
   padding: 0.25rem 0.5rem;
   font-size: 0.85em;
   text-align: left;
-  background: transparent;
-  border-color: var(--pico-form-element-border-color, #cfd5e2);
+  /* A row wears a surface and no border. Carrying a form element's border over a transparent
+     fill made a list of rows read as a column of empty text fields,
+     which is the one thing on this panel they are not. */
+  background: var(--pico-code-background-color, #f3f4f7);
+  border-color: transparent;
   color: inherit;
   /* A namespace and a Service name joined by a slash have no space to break at,
      and the row is as wide as its column and no wider. */
@@ -431,9 +434,19 @@ input.url {
   overflow-wrap: anywhere;
 }
 
+/* The button stands on its own line under the message.
+   Pico draws a button inline, and an error carrying no hint put it in the flow of the message
+   itself, where it sat against the last word with nothing between them. */
 .error button {
-  margin-top: 0.5rem;
+  display: block;
+  margin-top: 0.75rem;
   width: auto;
+}
+
+/* The hint is the message's own last line, so the gap under it is the button's to set
+   and an error with a hint spaces its button as one without a hint does. */
+.error p {
+  margin-bottom: 0;
 }
 
 .table {
@@ -446,9 +459,13 @@ input.url {
   padding-inline: 0.75rem;
 }
 
-/* A 30-character RFC 3339 timestamp has no break opportunity and would otherwise hold the table past the container. */
-.table td.time {
-  overflow-wrap: anywhere;
+/* The day and the second are their own lines and neither breaks within itself,
+   so the column is as wide as a date and no wider and the table stops scrolling sideways.
+   The value the gateway sent has no space at all, which is why one cell of it
+   used to break at any character and take five ragged lines to say one time. */
+.table td.time span {
+  display: block;
+  white-space: nowrap;
 }
 
 button.link {
