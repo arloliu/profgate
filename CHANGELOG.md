@@ -5,7 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-09-15
+
+Adds a cross-namespace Service catalog the console searches, help on every command line, and six more chart alerts,
+alongside a soft memory limit a collecting process sets for itself,
+a derived container limit that rises to 1952 MiB where collection is enabled,
+and many corrections to what the command line writes and where, with sixteen breaking changes.
 
 ### Added
 
@@ -1036,7 +1041,7 @@ and PGO CPU-profile collection layered on top of it.
   frozen Kubernetes 1.23 and 1.24 images and the current Kubernetes release,
   matching the 1.23 compatibility baseline.
 
-[Unreleased]: https://github.com/arloliu/profgate/compare/v0.5.0...HEAD
+[0.6.0]: https://github.com/arloliu/profgate/releases/tag/v0.6.0
 [0.5.0]: https://github.com/arloliu/profgate/releases/tag/v0.5.0
 [0.4.0]: https://github.com/arloliu/profgate/releases/tag/v0.4.0
 [0.3.0]: https://github.com/arloliu/profgate/releases/tag/v0.3.0
