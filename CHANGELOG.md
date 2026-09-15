@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The field is labelled **Find a Service in any namespace**
   and carries the placeholder `namespace/service`,
   which separates it from the two filters beside it that narrow their own menu.
+- The console's Collections table draws each timestamp as the calendar day over the second.
+  The gateway answers RFC 3339 with nanoseconds and a zone, thirty characters holding no space,
+  which the cell broke at whatever character the column ended on:
+  every row was five ragged lines tall and no timestamp was readable.
+  The cell carries the whole value for whoever hovers it.
+- The console's search results read as rows rather than as empty text fields.
+  They carried a form element's border over a transparent fill,
+  which is what a disabled input looks like.
+- The console's error boxes put **Retry** on its own line.
+  An error carrying no hint drew the button in the flow of the message,
+  where it sat against the last word with nothing between them.
 - A line drawn under one console control no longer moves the controls beside it.
   A panel's row aligned by its bottom edge,
   so a filter's count or a duration's bound pushed its own control up

@@ -875,6 +875,14 @@ The other controls are per-load state and are never serialized.
 The Collections view, when offered, is a table of the list entries [`pgo.md`](pgo.md) *List Collections* returns,
 newest first as returned, with the columns
 `id`, `origin`, `state`, `attempt`, `resolvedVersion`, `createdAt`, `finishedAt`, and `expiresAt`.
+The three timestamps are drawn as the calendar day over the second, each line unbroken,
+and the cell carries the value the gateway sent for whoever hovers it.
+The gateway answers RFC 3339 with nanoseconds and a zone, which is thirty characters holding no space:
+a cell given it whole broke it at whatever character the column ended on
+and took five ragged lines to say one time,
+and a cell forbidden to break pushed the table sideways instead.
+Which two lines are drawn is a pure function in `collectionmodel.js` (*Unit*),
+because a date read off the wrong half of a string is wrong in a way the reader cannot see.
 Selecting a row fetches `GET /v1/collections/{id}` and shows the record's
 `state`, `reason`, `progress`, `createdBy`, `createdAt`, `startedAt`, `finishedAt`, `expiresAt`,
 and `artifact.bytes`, as labelled text.
@@ -1432,7 +1440,8 @@ internal/ui/static/
   portmodel.js               the port control's two pure functions, importing nothing so a test can evaluate them
   targetmodel.js             the targets query, the retry rule, and the target summary, importing nothing either
   collectionmodel.js         the Collection controls: when they exist, what the start request carries,
-                             and what each answer does; importing nothing either
+                             what each answer does, and the two lines a timestamp is drawn as;
+                             importing nothing either
   catalogmodel.js            the catalog's four pure functions: the two menus, the filter rule,
                              and the search; importing nothing either
   app.css                    the console's own rules on top of Pico
@@ -1897,6 +1906,11 @@ a value arriving through the raw block would bypass the structured value the cha
   including a `202` whose `id` is outside the identifier grammar, which selects nothing and builds no path.
   `Retry-After`: `"7"` is seven seconds, `"0"` is none, `"900"` clamps to 300,
   and absent, empty, negative, fractional, non-numeric, and an HTTP-date each read as five seconds.
+  The timestamps: a listing value splits into its day and its second,
+  with the fraction and the zone cut, and an offset zone cut with them;
+  a field the listing left out, and an empty string, draw no line at all;
+  and a value of another shape, one that only starts like a date included,
+  is shown whole as the first line and never split.
   The line under the table:
   a list body carrying a non-empty `nextCursor` yields it,
   naming `profgate collections` with the namespace and the Service handed in;
@@ -2512,6 +2526,7 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Layout and embedding*, *Dependencies* | the Pico file is `pico.classless.min.css`, the class-less build's published name, and its size is about 69 KiB |
 | *Request algorithm for the listing endpoints* | the readiness step is the readiness `internal/httpapi` composes for every `/v1` route — discovery synced and, under `oidc`, the issuer discovered — not `HasSynced()` alone |
 | *Controls*, *Layout and embedding*, *Unit*, *What is not proven* | the line beside a menu counts matches and not drawn rows, reading `N of M matched`, and says `; the chosen value is shown too` when the keep rule left a row the query did not match, because one number for both read as a match nobody made; `filterOptions` answers `{options, matched}` so the two stay separate facts in the model rather than being recovered in the page; the search field is labelled **Find a Service in any namespace** and carries the placeholder `namespace/service`, the panel holding two filters beside it and its rows appearing only after a query, and the label names what is found rather than only what is searched through; and a line of controls aligns by its top, with **Refresh** inset by a label's height, so a count or a bound drawn under one control hangs clear of it and moves none of the controls beside it, which aligning by the bottom did |
+| *Controls*, *Unit*, *Package layout* | the Collections table draws each timestamp as the calendar day over the second, neither line broken within itself, with the value the gateway sent carried on the cell; the split is a pure function of `collectionmodel.js`, because the gateway's thirty-character RFC 3339 value holds no space, so a cell broke it at whatever character the column ended on and took five ragged lines to say one time, while a cell forbidden to break pushed the table sideways instead |
 | *Unit* | the `internal/httpapi` fake holds no selectorless Service, because `ServiceRef` carries no selector; the selectorless cases live in the `internal/k8s` bullet, where selector presence is decided; the non-disclosure assertion says no list exposes a Pod-discovered or selected backend port and no listing response carries an IP address or `podIP`, since `/v1/limits` returns `allowedSelections` and the default by design |
 | *Audit and metrics*, *Unit* | the `ui` code set gains `internal_error` for any status the console wrote outside `2xx`, `3xx`, `404`, and `405`; the set stays closed |
 | *End to end* | the two proofs are registry entries of their own, each provisioning and cleaning up its gateway, issuer configuration, and test app |
