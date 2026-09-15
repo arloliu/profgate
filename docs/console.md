@@ -5,7 +5,7 @@ This guide covers it from a user's view: turning it on, what it shows, signing i
 downloading a profile or copying its URL,
 and the Collections view, from which a Collection can also be started and cancelled.
 The full design lives in [specs/ui.md](specs/ui.md);
-the four routes it calls are documented in [api.md](api.md#listing-endpoints).
+the listing routes it calls are documented in [api.md](api.md#listing-endpoints).
 
 ## Enabling it
 
@@ -41,11 +41,35 @@ each panel laying its controls across its row and wrapping them onto the next li
   (see [Signing in and out](#signing-in-and-out)).
   A `403 realm_denied` opens it, so the realm that refused is on screen with the message,
   and an error from the identity fetch that denial starts shows above the panels rather than inside the disclosure.
-- **Namespace and Service.** Two `<select>` controls, populated from what your realm admits;
-  picking one fetches the next.
-  A namespace or Service named in the page's URL that is not in the fetched list —
+- **Namespace and Service.** Two `<select>` controls, a filter field beside each, a search, and a **Refresh**.
+  The page fetches one catalog when it loads — every namespace-and-Service pair your realm admits, in one answer —
+  and draws both menus from it,
+  so picking a namespace fetches nothing:
+  the Service menu already holds that namespace's names.
+  A namespace or Service named in the page's URL that the catalog does not hold —
   the realm changed, the Service went away, the label was typed by hand —
   shows "`<value>` is not listed" and keeps the value until you pick another, so reloading retries it.
+  The **Search** field matches the namespace and the name joined by `/`, as one string,
+  so `payments/check` narrows by both halves;
+  the query is trimmed, case is ignored, and a substring anywhere in the pair matches.
+  An empty query matches nothing, so rows appear only once you have typed.
+  Each result is a button labelled `namespace/name` that sets both menus at once.
+  At most fifty rows are drawn, and a line under them says
+  `<n> matched; the first 50 are shown` when more matched, `nothing matched` when none did,
+  and `the catalog is still loading` or `the catalog could not be read` while there is no catalog to search.
+  The two filter fields narrow their own menu's options and send nothing:
+  a filter never removes the value its menu is showing and never offers one the catalog lacks,
+  and `<n> of <m> shown` stands beside a menu while its field is not empty.
+  A filter query changes none of what the page reads from the whole catalog:
+  whether a selection is listed, whether the profile URL is built, and whether the Collections view is offered.
+  Changing the namespace clears the Service filter.
+  **Refresh** on this panel fetches the catalog again and redraws both menus,
+  and it is the page's freshness for what exists:
+  nothing else fetches the catalog but an answer that says the Service has gone,
+  so the Service menu no longer refetches when you change the namespace,
+  and a Service created after the page loaded appears once you press **Refresh**.
+  A catalog that failed shows its reason above the two menus, with a **Retry** beside it;
+  a failed load leaves both menus empty, while a failed **Refresh** keeps the menus the page already had.
 - **Profile.** A profile `<select>` (filtered by your realm), a duration field for `cpu` and `trace` bounded by the operator's configured limit, a port control, and a Pod and version `<select>`
   once targets have loaded.
   The port control is a menu of the configured default and every entry `discovery.pprof.allowedSelections` lists,
@@ -179,6 +203,9 @@ The gateway pins no browser to one replica and shares no asset store between the
   The page keeps no state beyond the namespace and Service in its own URL;
   it holds no database, no cache, and no file,
   and a download holds the profile in memory until the save has begun and drops its references to it then.
+  What it holds while it runs is the load's own —
+  the catalog behind the two menus, and whatever each panel last drew —
+  and a reload fetches every one of them again.
 - **Edit a Service's PGO policy.**
   It starts and cancels Collections, and it writes nothing else:
   the stored override stays a `curl` operation with an `If-Match` precondition

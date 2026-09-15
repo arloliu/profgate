@@ -1,6 +1,7 @@
 # One Catalog Behind Both Menus, and a Search Across Them
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #45, which carried every task.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -919,10 +920,10 @@ git log --oneline -1 && git status --short
 
 ## 6. The guide, and the close
 
-- [ ] `docs/console.md`: the search field, what it matches, the result rows,
+- [x] `docs/console.md`: the search field, what it matches, the result rows,
       the Refresh that refetches the catalog, and the two filter fields.
-- [ ] `CHANGELOG.md`: one entry for the route and one for the console.
-- [ ] `Status:` becomes `Done` and line 4 gains `**Outcome:**` naming the pull request that carried the tasks.
+- [x] `CHANGELOG.md`: one entry for the route and one for the console.
+- [x] `Status:` becomes `Done` and line 4 gains `**Outcome:**` naming the pull request that carried the tasks.
 - [ ] The next change that touches this file deletes it, per
       [`900-design-and-review-loops.md`](../../.agents/rules/900-design-and-review-loops.md).
 
@@ -933,7 +934,7 @@ mise run lint && mise run test && mise run check && mise run prose
 git log --oneline -1 && git status --short
 ```
 
-- [ ] Commit: `docs: describe the catalog search`
+- [x] Commit: `docs: describe the catalog search`
 
 ---
 

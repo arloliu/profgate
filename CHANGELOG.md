@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The console searches Services across namespaces, and draws both menus from one catalog.**
+  The page fetched the namespace list and then a Service list for each namespace picked,
+  so finding a Service meant knowing its namespace first and opening the menus one namespace at a time.
+  It now fetches the catalog once on load and derives both menus and a search from that one answer:
+  the search matches `namespace` and `name` joined by `/` as one string, trimmed and case-insensitive,
+  and each result selects both menus at once;
+  a filter field beside each menu narrows its options,
+  and it never removes the value the menu is showing or offers one the catalog lacks;
+  and **Refresh** on the Service panel fetches the catalog again and redraws both menus.
+  The page sends `/v1/namespaces` and `/v1/namespaces/{namespace}/services` no longer,
+  and both routes stand unchanged for the client verbs and every other caller.
+  Freshness moves with it:
+  a change of namespace now sends no request at all,
+  and a Service created after the page loaded is absent from the menu until someone presses **Refresh**.
+- **`GET /v1/catalog` answers every namespace-and-Service pair a caller's realm admits, in one request.**
+  Discovering what a realm could reach took one request for the namespaces
+  and one more for each namespace's Services, with no way to ask for the whole of it.
+  The route answers a flat array of namespace-and-name pairs, ordered by namespace and then by name,
+  filtered by the same rule the namespace list applies and never refused:
+  a realm that admits nothing gets `200` and an empty array rather than `403 realm_denied`,
+  because the path names no namespace for a realm to deny.
+  It takes no query parameter, and any parameter is `400 invalid_parameter`.
+  It walks the whole Service cache, as `GET /v1/namespaces` already does,
+  and its response is proportional to what the realm admits, with no ceiling:
+  about 280 KiB at five thousand Services, uncompressed as every `/v1` response is,
+  and that figure is an estimate from the encoding rather than a measurement.
+  Naming namespaces in a realm bounds which namespaces are admitted, not how many Services they hold.
+  `profgate_requests_total` gains the `endpoint` value `catalog`.
 - **A collecting process sets its own soft memory limit.**
   The container is sized by what a decode retains, and the peak is higher:
   a parse allocates about half as much again on the way and a merge about twice,
