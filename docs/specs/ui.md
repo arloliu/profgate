@@ -685,6 +685,57 @@ so the request never depends on an upstream default that could exceed the config
 the input's `min` is `1` and its `max` is the profile's limit,
 and a value outside that range disables **Download** and names the bound next to the input.
 
+What the Profile panel offers, and what its request carries, are five pure functions in `profilemodel.js`,
+built and tested the way `portmodel.js` is (*Unit*):
+
+- `offeredProfiles(limits, whoami)` keeps `limits.profiles` to what `realm.profiles` admits,
+  by the wildcard or by the name.
+  It takes the whole `/v1/whoami` answer and reaches the realm itself, the way `pgoRealm` does,
+  because the menu is drawn before either answer has arrived
+  and a caller reaching through an absent one throws before the function's own guard can run.
+  That is the gateway's realm filter (*The realm filter*), and this is a second copy of it:
+  the page draws the menu before it sends anything, so it cannot ask the gateway which profiles to offer.
+  A copy that has drifted offers a profile the request is then refused for,
+  which is why the rule is a table here rather than a line inside the page.
+- `secondsLimit(limits, profile)` is that profile's configured bound,
+  and `0` for a profile carrying no duration, which is how the page knows to draw no duration input at all.
+- `defaultSeconds(limits, profile)` is the upstream default this section's table names,
+  or the bound when the bound is lower.
+  The page sends that value explicitly, so a request never rests on an upstream default
+  that a configured limit could sit below.
+- `secondsValid(limits, profile, seconds)` is whether the duration is decimal digits within `1` to the bound.
+  It is true for a profile with no bound, which has no duration to be wrong,
+  and it is what disables **Download** and names the bound beside the input.
+  Digits alone is the gateway's own rule, the grammar row of gateway *Fetch a profile*,
+  and this is the second copy of one:
+  a page testing only that the value reads as a whole number accepts `1e1`,
+  offers the download, and sends a `seconds` the gateway refuses,
+  because the field keeps the text that was typed rather than the number it read.
+  The console repairs that here rather than carrying it into the module.
+- `profileRequest(state, portParams, listed)` is the query the profile request carries,
+  or `null` when the selection is incomplete, is not listed, or holds a duration outside its bound —
+  the one rule behind the URL field, **Copy URL**, and **Download**,
+  so the three cannot disagree about what a press sends.
+  It returns the Pod, the version, the port selection the port control resolved,
+  and `seconds` for a profile that has a bound.
+  It returns query parameters alone and no path segment:
+  the namespace, the Service, and the profile are the path, and `app.js` hands those to `urls.js` itself,
+  so the answer is the query and nothing else.
+  A choice the request does not carry is an absent key rather than an empty one,
+  which is what makes the answer the query rather than a description of it.
+  It builds no URL:
+  `urls.js` is the only module that spells a `/v1` path (*Rendering response values*),
+  and `app.js` hands these parameters to it.
+  Membership arrives as `listed` rather than being computed here,
+  which keeps this module importing nothing
+  and leaves the rule that membership is read from the whole catalog, and never from a filtered menu,
+  with the source scan that holds it (*Unit*).
+
+Each takes the narrowest thing it reads, the way `portmodel.js` does:
+the four that decide what the panel offers are handed the answers they read,
+and the one that assembles a request is handed the page's state,
+which is the split `deriveControl` and `applyInput` already draw.
+
 The menus, the filters, and the search are four pure functions in `catalogmodel.js`,
 built and tested the way `portmodel.js` is (*Unit*):
 
@@ -1027,6 +1078,19 @@ The two flags are independent, so `collect` without `read` is a configuration an
 and it yields neither the table nor the control:
 a button whose every outcome is `403 realm_denied` — the list it refreshes, the record it selects —
 is a button that does nothing, and the page does not draw it.
+
+Both halves of that rule are functions of `collectionmodel.js`:
+`startOffered` for the control, and `tableOffered(limits, whoami)` for the table it sits above,
+which is `pgo.enabled` and `realm.pgo.read`.
+The table's half was stated here and held in the page,
+which left the module explaining a rule it did not carry and no test executing it:
+the rows reading "read alone" and "collect alone" call `startOffered` and say nothing about the table.
+`tableOffered` reads the realm through the guard `startOffered` already uses,
+so it answers for a `/v1/whoami` that is absent, carries no realm, or carries no `pgo` block,
+where the page reached through each of those,
+and it reads a flag that is not `true` as denial where the page read it for truth.
+The gateway writes both flags as booleans on every answer, so no valid answer changes;
+what changes is that a malformed one offers nothing instead of throwing or being believed.
 
 **Cancel** sits on a Collection row whose `state` is `pending` or `running`, under the same `pgo.collect` rule.
 It is on the row rather than in the detail record, so there is one place to press and one armed state to hold.
@@ -1434,7 +1498,7 @@ a response body is never shown as HTML.
 internal/ui/static/
   index.html                 the shell: <link> to the stylesheet, <script type="module"> to app.js, one <main>
   app.js                     the console; an ES module importing ./urls.js, ./portmodel.js, ./targetmodel.js,
-                             ./collectionmodel.js, ./catalogmodel.js,
+                             ./collectionmodel.js, ./catalogmodel.js, ./profilemodel.js,
                              ./vendor/preact/preact.module.js, and ./vendor/htm/htm.module.js
   urls.js                    the URL builders of Rendering response values; the only module that spells a /v1 path
   portmodel.js               the port control's two pure functions, importing nothing so a test can evaluate them
@@ -1444,6 +1508,8 @@ internal/ui/static/
                              importing nothing either
   catalogmodel.js            the catalog's four pure functions: the two menus, the filter rule,
                              and the search; importing nothing either
+  profilemodel.js            the Profile panel: which profiles are offered, the duration bound and its
+                             default, and what the profile request carries; importing nothing either
   app.css                    the console's own rules on top of Pico
   vendor/
     MANIFEST                 one line per file: name, version, license, source URL, SHA-256
@@ -1777,11 +1843,12 @@ a value arriving through the raw block would bypass the structured value the cha
 - every vendored file's SHA-256 equals its `MANIFEST` line, and every file in `vendor/` has a line;
 - no vendored module, `app.js`, or `urls.js` contains an `import` or dynamic `import(`
   whose specifier does not start with `./` or `../`,
-  and `portmodel.js`, `targetmodel.js`, `collectionmodel.js`, and `catalogmodel.js` contain neither at all;
+  and `portmodel.js`, `targetmodel.js`, `collectionmodel.js`, `catalogmodel.js`, and `profilemodel.js` contain neither at all;
 - the shell and every `.js` file contain no `<script>` with a body, no `<style>`, no `style=`, no `on[a-z]+=`,
   no `eval(`, and no `new Function(`;
 - the source scan of *Rendering response values*:
-  `app.js`, `urls.js`, `portmodel.js`, `targetmodel.js`, `collectionmodel.js`, and `catalogmodel.js` contain none of
+  `app.js`, `urls.js`, `portmodel.js`, `targetmodel.js`, `collectionmodel.js`, `catalogmodel.js`,
+  and `profilemodel.js` contain none of
   `innerHTML`, `outerHTML`, `dangerouslySetInnerHTML`, `insertAdjacentHTML`, `document.write`, or `DOMParser`;
   `app.js` contains no string literal beginning with `/v1`, `/ui`, or `/auth`;
   `app.js` contains none of `confirm(`, `alert(`, or `prompt(`,
@@ -1876,6 +1943,8 @@ a value arriving through the raw block would bypass the structured value the cha
   Whether each control exists:
   the start control needs `pgo.enabled`, `realm.pgo.collect`, and a chosen Service,
   and each one missing hides it;
+  the table needs `pgo.enabled` and `realm.pgo.read`, and reads an absent `/v1/whoami`,
+  one carrying no realm, and one whose realm carries no `pgo` block as offering nothing;
   `realm.pgo.read` alone yields the table and no start control,
   and `realm.pgo.collect` alone yields neither;
   the cancel control is offered for `pending` and `running` and for nothing else —
@@ -1930,6 +1999,11 @@ a value arriving through the raw block would bypass the structured value the cha
 - a scan reads `selectionListed()` in `app.js`
   and holds it to the stored catalog, naming none of the filtered option lists the menus were drawn from,
   which is the membership rule of *Controls* and a claim no browser can check (*What is not proven*).
+  The same scan holds the `listed` argument of `profileRequest` to that function's result and to nothing else,
+  which is the obligation taking membership as a parameter creates:
+  a test handing the parameter both values proves the function, never the caller.
+  This scan is specified here and is not implemented;
+  writing it is part of the work that adds `profilemodel.js`, because that work is what leans on it.
 - a table-driven test drives all four functions in the same interpreter.
   `namespacesOf`, over an empty catalog, one namespace, several namespaces each holding several Services,
   and a catalog whose order it must preserve.
@@ -1950,6 +2024,45 @@ a value arriving through the raw block would bypass the structured value the cha
   the cap bounds the matches returned while the total counts every match;
   the order is the catalog's.
   None of the four mutates its input.
+
+`internal/ui`, against the Profile-panel model:
+
+- `profilemodel.js` satisfies the shape assertion `portmodel.js` does
+  and is evaluated the same way, its one trailing `export` cut off and its functions read as globals.
+- the two source scans `catalogmodel.js` carries, for the same reason:
+  one holds `app.js` to importing every function it uses from `profilemodel.js` and to calling each of them,
+  and one asserts that the trailing export statement names exactly what `app.js` imports and nothing else.
+- a scan reads `profilemodel.js` for `/v1` and for `profileURL`, and finds neither,
+  which is what keeps the URL a caller builds and this module's answer parameters (*Controls*).
+- a table-driven test drives all five functions in the same interpreter.
+  `offeredProfiles`, over a realm naming the wildcard, one naming some of what `/v1/limits` offers,
+  one naming a profile the gateway does not offer, and one naming none;
+  over `/v1/limits` and `/v1/whoami` each absent, since the menu is drawn before both have answered;
+  and over a `profiles` of another shape, which offers nothing rather than throwing.
+  The order is `/v1/limits`'s, so the menu does not reorder what the gateway offers.
+  Each profile is its own case rather than one standing for the other,
+  since `cpu` and `trace` carry different bounds and different defaults.
+  `secondsLimit`, for `cpu` and `trace` at their configured bounds,
+  for a profile with no bound, for an absent `/v1/limits`,
+  and for a bound the body carries as a string or as a value that reads as no number.
+  `defaultSeconds`, where the upstream default is below the bound, equal to it, and above it —
+  the last being the case the explicit parameter exists for —
+  and where there is no bound, which has no default to send.
+  `secondsValid`, over the bound itself, `1`, `0`, a negative, a fraction,
+  a value above the bound, an empty string, and a non-numeric string;
+  over `1e1` and the other spellings that read as a whole number but are not decimal digits,
+  each refused, which is the rule the gateway applies to the value this field sends;
+  and over a profile with no bound, where every value is valid because none is sent.
+  `profileRequest`:
+  a complete listed selection yields the Pod, the version, and the port selection handed in,
+  with `seconds` present for a profile that has a bound and absent for one that does not;
+  a numeric port, a named port, and the default each yield their own answer, the last carrying neither key;
+  a Pod chosen with the version left at `any`, and the reverse, each send one key and not the other;
+  `any` is the empty state value the menu's first option carries and never the text,
+  so a Pod actually named `any` is an ordinary choice and is sent;
+  and `listed` false, an empty profile, and a duration outside the bound each yield `null`,
+  which is the one rule the URL field, **Copy URL**, and **Download** all read.
+  None of the five mutates its input.
 
 `internal/httpapi`, against the fake `Discovery` extended with a namespace and Service catalog:
 
@@ -2028,7 +2141,7 @@ a value arriving through the raw block would bypass the structured value the cha
 `app.js` is executed by a headless Chromium in the end-to-end suite (*End to end*) and by nothing else.
 No unit test runs it, and `mise run test` starts no browser.
 
-The four model modules are executed by unit tests as well,
+The five model modules are executed by unit tests as well,
 in a pure-Go ECMAScript interpreter, which is why each is a module of its own.
 Each is a decision table rather than a rendering:
 pure, DOM-free, and wrong in ways a reader does not see —
@@ -2074,7 +2187,7 @@ the branches of *Errors* no scenario can provoke — a truncated body, an Ingres
 a rejected `fetch`;
 a rolling update, which would need two builds in one cluster
 and which this design leaves out of scope rather than proves (*Layout and embedding*);
-the port control and the target summary as `app.js` wires them,
+the port control, the target summary, and the Profile panel's offer and request as `app.js` wires them,
 each proven apart from the widget and apart from the network;
 the download as `app.js` performs it — the fetch, the `Blob`, the object URL,
 the `Content-Disposition` filename read out of the header's quoted or bare parameters,
@@ -2105,8 +2218,12 @@ because the link is offered only from a record that reads `completed` with an ar
 and the profile download is the control an operator reaches by reflex.
 The source scan proves the page contains no interface that could render markup and no hand-built `/v1` path;
 the `internal/httpapi` tests prove the JSON the page receives carries hostile strings intact.
-What is left is closed by review, on every change to `app.js` and the four models,
-which is why all five stay small and why the four besides `app.js` are separate files.
+What is left is closed by review, on every change to `app.js` and the five models,
+which is why the five besides `app.js` are separate files,
+and why a rule meeting the criterion above — pure, DOM-free, and wrong in ways a reader does not see —
+is moved into one of them rather than left in the page.
+Not every predicate does: one with a single case, or one whose risk is ordering across an `await`,
+is proven by neither a table nor a separate file.
 
 ### 11.3 End to end
 
@@ -2341,7 +2458,7 @@ No Go module is added to the gateway binary.
 
 Two modules are added to the tests and to nothing else:
 the pure-Go ECMAScript interpreter that evaluates
-`portmodel.js`, `targetmodel.js`, `collectionmodel.js`, and `catalogmodel.js`,
+`portmodel.js`, `targetmodel.js`, `collectionmodel.js`, `catalogmodel.js`, and `profilemodel.js`,
 and `github.com/chromedp/chromedp` with the DevTools Protocol and WebSocket modules it brings,
 which only `test/e2e` imports and only behind the suite's build tag.
 Both are listed in gateway *Dependencies* and argued for in *What is not proven*.
@@ -2379,7 +2496,7 @@ Every vendored file is the upstream's published build, unmodified, which is what
 ```text
 internal/ui/           the console: embedded static tree, per-file entity tags, the shell, asset handler, headers
 internal/ui/static/    index.html, app.js, urls.js, portmodel.js, targetmodel.js, collectionmodel.js,
-                       catalogmodel.js, app.css, vendor/
+                       catalogmodel.js, profilemodel.js, app.css, vendor/
 internal/httpapi/      gains the five listing routes, the /ui/ and / dispatch, and the endpoint labels
 internal/k8s/          gains Catalog on the Discovery interface, reading the Service lister
 internal/config/       gains the ui block
@@ -2527,6 +2644,7 @@ Edits made to this document after it was accepted, each in the change that made 
 | *Request algorithm for the listing endpoints* | the readiness step is the readiness `internal/httpapi` composes for every `/v1` route — discovery synced and, under `oidc`, the issuer discovered — not `HasSynced()` alone |
 | *Controls*, *Layout and embedding*, *Unit*, *What is not proven* | the line beside a menu counts matches and not drawn rows, reading `N of M matched`, and says `; the chosen value is shown too` when the keep rule left a row the query did not match, because one number for both read as a match nobody made; `filterOptions` answers `{options, matched}` so the two stay separate facts in the model rather than being recovered in the page; the search field is labelled **Find a Service in any namespace** and carries the placeholder `namespace/service`, the panel holding two filters beside it and its rows appearing only after a query, and the label names what is found rather than only what is searched through; and a line of controls aligns by its top, with **Refresh** inset by a label's height, so a count or a bound drawn under one control hangs clear of it and moves none of the controls beside it, which aligning by the bottom did |
 | *Controls*, *Unit*, *Package layout* | the Collections table draws each timestamp as the calendar day over the second, neither line broken within itself, with the value the gateway sent carried on the cell; the split is a pure function of `collectionmodel.js`, because the gateway's thirty-character RFC 3339 value holds no space, so a cell broke it at whatever character the column ended on and took five ragged lines to say one time, while a cell forbidden to break pushed the table sideways instead |
+| *Controls*, *Starting and cancelling a Collection*, *Layout and embedding*, *Unit*, *What is not proven*, *Dependencies*, *Package layout* | which profiles are offered, the duration bound, its default, whether a typed duration is valid, and what the profile request carries are five pure functions in a fifth model module, `profilemodel.js`, held to the module rules the other four follow: it imports nothing, it spells no `/v1` path, and it answers parameters rather than a URL, so `urls.js` stays the only module that builds one; membership reaches it as a parameter, which leaves the rule that it is read from the whole catalog with the source scan that holds it; `offeredProfiles` is named as the console's own copy of the gateway's realm filter, drawn before the page can ask, and takes the whole `/v1/whoami` answer so a caller cannot reach through an absent one; `secondsValid` becomes digits alone, the gateway's own rule, because a page testing only that the value reads as a whole number offers a download for `1e1` and sends a `seconds` the gateway refuses; `profileRequest` answers query parameters alone, an unsent choice being an absent key; the scan that holds membership to the whole catalog gains the `listed` argument and is recorded as specified and not implemented; and the Collections table's half of the `pgo` rule becomes `tableOffered` in `collectionmodel.js`, which stated that half, held it in the page, and had no test executing it, so valid answers keep their behavior while a malformed one offers nothing instead of throwing or being believed |
 | *Unit* | the `internal/httpapi` fake holds no selectorless Service, because `ServiceRef` carries no selector; the selectorless cases live in the `internal/k8s` bullet, where selector presence is decided; the non-disclosure assertion says no list exposes a Pod-discovered or selected backend port and no listing response carries an IP address or `podIP`, since `/v1/limits` returns `allowedSelections` and the default by design |
 | *Audit and metrics*, *Unit* | the `ui` code set gains `internal_error` for any status the console wrote outside `2xx`, `3xx`, `404`, and `405`; the set stays closed |
 | *End to end* | the two proofs are registry entries of their own, each provisioning and cleaning up its gateway, issuer configuration, and test app |
