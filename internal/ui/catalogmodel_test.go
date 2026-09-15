@@ -152,71 +152,72 @@ func TestCatalogModelServicesOf(t *testing.T) {
 // and without ever offering one the list does not hold.
 func TestCatalogModelFilterOptions(t *testing.T) {
 	cases := []struct {
-		name  string
-		list  []string
-		query string
-		keep  string
-		want  []string
+		name        string
+		list        []string
+		query       string
+		keep        string
+		want        []string
+		wantMatched int
 	}{
 		{
 			"an empty query returns every entry",
 			[]string{"payments", "checkout"}, "", "",
-			[]string{"payments", "checkout"},
+			[]string{"payments", "checkout"}, 2,
 		},
 		{
 			"a query matches case-insensitively",
 			[]string{"Payments", "checkout"}, "PAY", "",
-			[]string{"Payments"},
+			[]string{"Payments"}, 1,
 		},
 		{
 			"a query matches mid-string",
 			[]string{"payments", "checkout"}, "eck", "",
-			[]string{"checkout"},
+			[]string{"checkout"}, 1,
 		},
 		{
 			"a query is trimmed",
 			[]string{"payments", "checkout"}, "  eck  ", "",
-			[]string{"checkout"},
+			[]string{"checkout"}, 1,
 		},
 		{
 			"a query of whitespace alone returns every entry",
 			[]string{"payments", "checkout"}, "   ", "",
-			[]string{"payments", "checkout"},
+			[]string{"payments", "checkout"}, 2,
 		},
 		{
 			"keep survives a query that excludes it",
 			[]string{"payments", "checkout"}, "pay", "checkout",
-			[]string{"payments", "checkout"},
+			[]string{"payments", "checkout"}, 1,
 		},
 		{
 			"keep is not duplicated when it also matches",
 			[]string{"payments", "checkout"}, "pay", "payments",
-			[]string{"payments"},
+			[]string{"payments"}, 1,
 		},
 		{
 			"a keep the list lacks is not added",
 			[]string{"payments", "checkout"}, "pay", "billing",
-			[]string{"payments"},
+			[]string{"payments"}, 1,
 		},
 		{
 			"a keep the empty list lacks is not added",
 			[]string{}, "pay", "payments",
-			[]string{},
+			[]string{}, 0,
 		},
 		{
 			"an empty list stays empty",
 			[]string{}, "pay", "",
-			[]string{},
+			[]string{}, 0,
 		},
 		{
 			"the order is the input's, keep included",
 			[]string{"zeta", "alpha", "beta"}, "et", "alpha",
-			[]string{"zeta", "alpha", "beta"},
+			[]string{"zeta", "alpha", "beta"}, 2,
 		},
 		{
 			"the input array is not mutated",
 			[]string{"payments", "checkout", "billing"}, "bill", "payments",
-			[]string{"payments", "billing"},
+			[]string{"payments", "billing"}, 1,
 		},
 	}
 	for _, tc := range cases {
@@ -226,8 +227,9 @@ func TestCatalogModelFilterOptions(t *testing.T) {
 			if !got.Unchanged {
 				t.Errorf("filterOptions mutated an argument")
 			}
-			if !sameJSON(t, got.Result, tc.want) {
-				t.Errorf("filterOptions(%v, %q, %q) = %s, want %v", tc.list, tc.query, tc.keep, got.Result, tc.want)
+			want := map[string]any{"options": tc.want, "matched": tc.wantMatched}
+			if !sameJSON(t, got.Result, want) {
+				t.Errorf("filterOptions(%v, %q, %q) = %s, want %v", tc.list, tc.query, tc.keep, got.Result, want)
 			}
 		})
 	}
@@ -248,7 +250,7 @@ func TestCatalogModelFilterOptionsReturnsANewArray(t *testing.T) {
 	vm := loadCatalogModel(t)
 	v, err := vm.RunString(`(function () {
 		const list = ["payments", "checkout"];
-		const out = filterOptions(list, "", "");
+		const out = filterOptions(list, "", "").options;
 		out.push("billing");
 		return JSON.stringify({ same: out === list, list: list });
 	})()`)

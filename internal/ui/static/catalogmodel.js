@@ -49,20 +49,33 @@ function servicesOf(catalog, ns) {
   return out;
 }
 
-// filterOptions narrows a menu's options to the entries the query matches,
-// keeping keep, the value the menu is currently showing, whatever the query is.
+// filterOptions is {options, matched}: what a menu draws under its filter's query,
+// and how many entries of the list that query found.
+// options narrows to the entries the query matches, keeping keep, the value the menu is showing,
+// whatever the query is; matched counts only entries the query actually found,
+// so a kept value the query missed is drawn without being counted
+// and the line over the two numbers never reports a match nobody made.
 // The query is trimmed and matched case-insensitively as a substring,
 // so a query of whitespace alone leaves every entry standing.
 // It adds no entry the list lacks, holds the list's order, and changes neither argument;
-// the result is a new array in every case, so a caller that writes into it writes into nothing else.
+// options is a new array in every case, so a caller that writes into it writes into nothing else.
 function filterOptions(list, query, keep) {
   const entries = Array.isArray(list) ? list : [];
   const q = normalizeQuery(query);
   if (q === "") {
-    return entries.slice();
+    return { options: entries.slice(), matched: entries.length };
   }
+  const matches = entries.filter((entry) => String(entry).toLowerCase().includes(q));
+  // The value the menu is showing is offered whether or not it matched,
+  // because a menu that dropped its own value would show a selection its options do not hold.
+  // It is counted as a match only when it is one,
+  // so the count says how many entries the query found and never how many rows were drawn.
+  const keptOnly = keep !== undefined && keep !== null && keep !== "" && entries.includes(keep) && !matches.includes(keep);
 
-  return entries.filter((entry) => String(entry).toLowerCase().includes(q) || entry === keep);
+  return {
+    options: keptOnly ? entries.filter((entry) => matches.includes(entry) || entry === keep) : matches,
+    matched: matches.length,
+  };
 }
 
 // normalizeQuery is a query as both matching functions test for it:
