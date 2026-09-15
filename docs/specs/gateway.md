@@ -1991,10 +1991,12 @@ Because the overall request budget already includes confirmation, the drain boun
   every path under `/ui/` that is `404 route_unknown`, `index.html` and a traversal included;
   the manifest hashes, relative imports only,
   no inline script or style, and the source scan of *Rendering response values*.
-- `internal/ui` against the console's four model modules, per [`ui.md`](ui.md) *Unit*:
+- `internal/ui` against the console's five model modules, per [`ui.md`](ui.md) *Unit*:
   tables over the port control's menu and fields, the targets query, retry rule, and summary,
   the Collection controls' existence, request, armed state, and answers,
-  and the catalog model's two derived menus, its option filter, and its search,
+  the catalog model's two derived menus, its option filter, and its search,
+  and the Profile-panel model's offered profiles, duration bound, duration default, duration rule,
+  and the query its request carries,
   each evaluated in the ECMAScript interpreter section 11.1 lists.
 - The listing routes in `internal/httpapi`, per [`ui.md`](ui.md) *Unit*:
   the request algorithm table, realm filtering over the four combinations,
@@ -2535,7 +2537,7 @@ The end-to-end delay after a Secret is updated is dominated by the kubelet's own
 | `golang.org/x/crypto` | `bcrypt` (only in `internal/auth`) |
 | `golang.org/x/term` | reading a password without echo for `profgate auth hash` (only in `cmd/profgate`) |
 | `sigs.k8s.io/yaml` | tests only: golden ClusterRole and `versions.yaml` |
-| `github.com/dop251/goja` | tests only: evaluating the console's port-control, targets, Collection-control, and catalog models ([`ui.md`](ui.md) *What is not proven*) |
+| `github.com/dop251/goja` | tests only: evaluating the console's port-control, targets, Collection-control, catalog, and Profile-panel models ([`ui.md`](ui.md) *What is not proven*) |
 | `github.com/chromedp/chromedp` | tests only: driving a headless Chromium through the console's page (only in `test/e2e`, behind the suite's build tag; [`ui.md`](ui.md) *End to end*) |
 
 Everything else is the standard library.
@@ -2965,3 +2967,4 @@ amends the following text.
 | File | Section | Change |
 |---|---|---|
 | `docs/specs/gateway.md` | *HTTP API*, *Request algorithm*, *List targets*, *Request identifier*, *The OpenAPI document*, *Logging*, *Metrics*, *Layers*, *What end-to-end proves*, *Failure Scenarios* | `/v1/catalog` is the fifth listing route of [`ui.md`](ui.md), named in every route inventory; the realm step refuses the Service list alone, because that route names a namespace in its path, while the namespace list and the catalog are filtered; the `endpoint` label gains `catalog`; the console has a fourth model module; the browser-flow scenario names the listings it fetches instead of counting them |
+| `docs/specs/gateway.md` | *Dependencies*, *What end-to-end proves* | the console has a fifth model module, `profilemodel.js`, holding the Profile panel's offered profiles, duration bound, duration default, duration rule, and the query its request carries; the interpreter that evaluates the models evaluates it too |
