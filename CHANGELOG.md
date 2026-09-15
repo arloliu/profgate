@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The console's filter count line counts matches rather than the rows drawn.
+  A menu always offers the value it is showing, so a query that missed that value still drew it,
+  and the line counted it.
+  A namespace filter reading `billing` against a chosen `kube-system` said `2 of 6 shown`,
+  where one namespace matched.
+  It now reads `1 of 6 matched`, and says `; the chosen value is shown too` when that row is standing.
+- The console's Service panel names what its search finds.
+  The field is labelled **Find a Service in any namespace**
+  and carries the placeholder `namespace/service`,
+  which separates it from the two filters beside it that narrow their own menu.
+- A line drawn under one console control no longer moves the controls beside it.
+  A panel's row aligned by its bottom edge,
+  so a filter's count or a duration's bound pushed its own control up
+  and every control in the row down.
+  That measured 29px for a filter's count and 60px for a duration's,
+  and the duration's message was drawn across the input's lower border.
+  A row now aligns by its top and a line beneath a control hangs clear of it.
+
 ## [0.6.0] - 2026-09-15
 
 Adds a cross-namespace Service catalog the console searches, help on every command line, and six more chart alerts,

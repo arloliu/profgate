@@ -667,7 +667,17 @@ a sibling `<label>` of the menu's own inside a shared wrapper and never nested w
 so a `<label>` that holds a `<select>` holds exactly one control
 and the menu a label names stays the one control that label names.
 The search is a labelled `<input type="search">` of its own,
-and each result row is a `<button>` labelled `namespace/name` that calls `selectPair` with both values.
+labelled **Find a Service in any namespace** and carrying the placeholder `namespace/service`.
+The label names what the field finds and where it looks,
+because the panel holds three text fields and the other two are filters
+that narrow the menu beside them:
+a field labelled only **Search** is read as a third filter,
+and its rows appear only once a query has been typed, so nothing on the page corrects that first.
+Naming the scope alone is not enough either —
+a label reading **Search all namespaces** says what is searched through and not what is found,
+and the field finds Services.
+The placeholder is the shape a row is drawn in, which is what the field matches against.
+Each result row is a `<button>` labelled `namespace/name` that calls `selectPair` with both values.
 Each is one of the native controls *Non-goals* names.
 
 `seconds` is always sent explicitly for `cpu` and `trace`,
@@ -682,8 +692,13 @@ built and tested the way `portmodel.js` is (*Unit*):
   That order is already namespace-then-name (*Catalog*), so the function compacts and sorts nothing.
 - `servicesOf(catalog, ns)` is the names under `ns` in the catalog's order,
   and an empty list for a namespace the catalog does not hold.
-- `filterOptions(list, query, keep)` keeps an entry when the entry matches the query
+- `filterOptions(list, query, keep)` is `{options, matched}`:
+  what the menu draws, and how many entries of the list the query found.
+  `options` keeps an entry when the entry matches the query
   **or** when it equals `keep`, the value the menu is currently showing.
+  `matched` counts only entries the query matched,
+  so a kept value the query missed is drawn without being counted,
+  and the two numbers stay separate facts.
   It adds no entry the list lacks, preserves the list's order, mutates nothing,
   and returns every entry when the query is empty.
   A filter therefore never removes the value its menu shows and never invents one:
@@ -696,7 +711,15 @@ built and tested the way `portmodel.js` is (*Unit*):
 
 The two matching functions share one rule — trim the query, lowercase both sides, test for a substring —
 because a person who learned the search field would otherwise guess wrong at the filter field.
-A line beside each menu says how many of how many options are shown, while that filter's query is not empty.
+A line beside each menu says how many of the whole list that filter's query matched,
+while the query is not empty, and says so as `N of M matched`.
+It counts matches and never the rows drawn.
+The two differ by exactly the case the keep rule exists for:
+a query that misses the value the menu is showing still leaves that value on the menu,
+and a line counting rows would report one match more than the query made,
+which reads as a second entry carrying the query's text.
+When that row is standing the line says `; the chosen value is shown too`,
+so the extra option is explained rather than counted.
 The page draws at most fifty result rows and says how many matched when more did.
 That is a cap on what is rendered and not on what is known:
 the page holds the whole catalog, and someone who wants fewer rows types more.
@@ -948,6 +971,13 @@ and stops growing at a width past which a menu of Pod names reads no better;
 each **Refresh** takes the width of its own label;
 and below the width a line needs, its controls wrap onto the next line in the same order,
 so nothing is hidden and nothing is reordered at any width.
+A line aligns its controls by their tops and never by their bottoms,
+and **Refresh**, which carries no label, is inset by a label's height to stand on the row with them.
+A control can grow a line beneath it — a filter's count, a duration's bound —
+and that line hangs below its own control and moves nothing:
+aligned by the bottom, it pushed its own control up and every control beside it down,
+so typing in one field moved the four nobody had touched.
+A line beneath a control is drawn clear of it and never across its lower edge.
 The empty state stands where the Pod and version controls were and takes the whole row,
 because it is a sentence and a table rather than a control.
 A panel of four controls in a row is shorter than the same four stacked,
@@ -1890,13 +1920,15 @@ a value arriving through the raw block would bypass the structured value the cha
   `namespacesOf`, over an empty catalog, one namespace, several namespaces each holding several Services,
   and a catalog whose order it must preserve.
   `servicesOf`, for a namespace holding none, one, and several, and for a namespace the catalog lacks.
-  `filterOptions`:
-  an empty query returns every entry;
+  `filterOptions`, over `options` and `matched` together, because the pair is the answer:
+  an empty query returns every entry and counts every entry;
   a query matches case-insensitively and mid-string;
   a query is trimmed;
-  `keep` survives a query that excludes it and is not duplicated when it also matches;
+  `keep` survives a query that excludes it and is counted as no match, so `options` holds one more than
+  `matched` names, which is the case the line beside the menu speaks to;
+  `keep` is not duplicated when it also matches, and counts once;
   a `keep` the list lacks is **not** added;
-  an empty list stays empty;
+  an empty list stays empty and counts nothing;
   the order is the input's.
   `searchCatalog`:
   an empty query matches nothing;
@@ -2035,9 +2067,12 @@ the `Content-Disposition` filename read out of the header's quoted or bare param
 the reading of every status but `200` as an error whatever its body,
 and the disabling of the control — beyond what the browser scenario asserts of it;
 the three **Refresh** controls' wiring, the same way;
-the arrangement of *Controls*: the browser scenarios load the stylesheet,
-but none of them asserts panel placement or control wrapping,
-the search panel and the two filter fields included;
+the arrangement of *Controls* beyond one claim: the browser scenarios load the stylesheet,
+and one of them reads every control's top before and after a filter is typed into
+and holds every control outside the filter's own cell to the position it already had,
+which is the rule that a line beneath a control moves nothing;
+panel placement, control wrapping, and the width a control stops growing at are asserted nowhere,
+the search panel included;
 that membership is read from the whole catalog and never from a filtered menu,
 which no browser can tell apart, because a menu that keeps the value it is showing answers the same either way,
 and which the source scan of *Unit* holds instead;
@@ -2476,6 +2511,7 @@ Edits made to this document after it was accepted, each in the change that made 
 |---|---|
 | *Layout and embedding*, *Dependencies* | the Pico file is `pico.classless.min.css`, the class-less build's published name, and its size is about 69 KiB |
 | *Request algorithm for the listing endpoints* | the readiness step is the readiness `internal/httpapi` composes for every `/v1` route — discovery synced and, under `oidc`, the issuer discovered — not `HasSynced()` alone |
+| *Controls*, *Layout and embedding*, *Unit*, *What is not proven* | the line beside a menu counts matches and not drawn rows, reading `N of M matched`, and says `; the chosen value is shown too` when the keep rule left a row the query did not match, because one number for both read as a match nobody made; `filterOptions` answers `{options, matched}` so the two stay separate facts in the model rather than being recovered in the page; the search field is labelled **Find a Service in any namespace** and carries the placeholder `namespace/service`, the panel holding two filters beside it and its rows appearing only after a query, and the label names what is found rather than only what is searched through; and a line of controls aligns by its top, with **Refresh** inset by a label's height, so a count or a bound drawn under one control hangs clear of it and moves none of the controls beside it, which aligning by the bottom did |
 | *Unit* | the `internal/httpapi` fake holds no selectorless Service, because `ServiceRef` carries no selector; the selectorless cases live in the `internal/k8s` bullet, where selector presence is decided; the non-disclosure assertion says no list exposes a Pod-discovered or selected backend port and no listing response carries an IP address or `podIP`, since `/v1/limits` returns `allowedSelections` and the default by design |
 | *Audit and metrics*, *Unit* | the `ui` code set gains `internal_error` for any status the console wrote outside `2xx`, `3xx`, `404`, and `405`; the set stays closed |
 | *End to end* | the two proofs are registry entries of their own, each provisioning and cleaning up its gateway, issuer configuration, and test app |

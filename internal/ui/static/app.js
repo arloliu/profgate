@@ -271,7 +271,11 @@ function text(value) {
   return String(value);
 }
 
-// FilterNote is the line beside a menu saying how many of its options are drawn.
+// FilterNote is the line beside a menu saying how much of its list the filter's query found.
+// It counts matches and never drawn rows:
+// a menu always offers the value it is showing, so a query that missed that value still draws it,
+// and a line counting rows would report one more match than the query made.
+// When that is the case the line says so, rather than leaving the extra row unexplained.
 // It stands only while the filter's query is not empty,
 // because a query of whitespace alone leaves every option standing
 // and a line saying so is a line that never changes.
@@ -279,7 +283,11 @@ function FilterNote(props) {
   if (props.query.trim() === "") {
     return null;
   }
-  return html`<small class="shown">${props.shown} of ${props.total} shown</small>`;
+  const kept = props.shown > props.matched;
+
+  return html`<small class="shown"
+    >${props.matched} of ${props.total} matched${kept ? "; the chosen value is shown too" : ""}</small
+  >`;
 }
 
 // SearchNote is the line under the search results saying why there are no more of them.
@@ -1386,8 +1394,10 @@ class App extends Component {
     // Whether a value is listed, and the placeholder each menu carries,
     // are read from the whole catalog instead,
     // so a query that matches nothing narrows a menu without unlisting anything.
-    const nsOptions = filterOptions(namespaces, nsFilter, ns);
-    const svcOptions = filterOptions(services, svcFilter, svc);
+    const nsFiltered = filterOptions(namespaces, nsFilter, ns);
+    const svcFiltered = filterOptions(services, svcFilter, svc);
+    const nsOptions = nsFiltered.options;
+    const svcOptions = svcFiltered.options;
     // The search reads the whole catalog rather than either menu,
     // so a row it draws can name a namespace the namespace filter is hiding.
     // Its rows stand only once someone has typed,
@@ -1418,7 +1428,12 @@ class App extends Component {
               Namespace filter
               <input type="search" value=${nsFilter} onInput=${this.onNsFilter} />
             </label>
-            <${FilterNote} query=${nsFilter} shown=${nsOptions.length} total=${namespaces.length} />
+            <${FilterNote}
+              query=${nsFilter}
+              shown=${nsOptions.length}
+              matched=${nsFiltered.matched}
+              total=${namespaces.length}
+            />
           </div>
           <div class="menu">
             <label>
@@ -1432,7 +1447,12 @@ class App extends Component {
               Service filter
               <input type="search" value=${svcFilter} onInput=${this.onSvcFilter} />
             </label>
-            <${FilterNote} query=${svcFilter} shown=${svcOptions.length} total=${services.length} />
+            <${FilterNote}
+              query=${svcFilter}
+              shown=${svcOptions.length}
+              matched=${svcFiltered.matched}
+              total=${services.length}
+            />
           </div>
           <div class="actions">
             <button type="button" class="secondary" disabled=${catalogLoading} onClick=${this.onRefreshCatalog}>
@@ -1444,8 +1464,13 @@ class App extends Component {
         ${svcListed ? null : html`<p><small>${svc} is not listed</small></p>`}
         <div class="search">
           <label>
-            Search
-            <input type="search" value=${search} onInput=${this.onSearch} />
+            Find a Service in any namespace
+            <input
+              type="search"
+              placeholder="namespace/service"
+              value=${search}
+              onInput=${this.onSearch}
+            />
           </label>
           ${searching
             ? html`

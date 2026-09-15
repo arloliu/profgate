@@ -278,7 +278,9 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		t.Fatalf("the namespace menu reads %q, want none chosen while the bookmarked namespace is outside the listing",
 			bookmarked.Value)
 	}
-	if want := fmt.Sprintf("%d of %d shown", len(bookmarked.Options), nsTotal); bookmarked.Note != want {
+	// Nothing is chosen here, so the menu keeps no value and every option it draws is a match:
+	// the line carries the two numbers and no clause about a value shown beside them.
+	if want := fmt.Sprintf("%d of %d matched", len(bookmarked.Options), nsTotal); bookmarked.Note != want {
 		t.Fatalf("the line beside the namespace menu reads %q, want %q, which counts the whole listing",
 			bookmarked.Note, want)
 	}
@@ -514,6 +516,8 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 		t.Run(tc.name, func(t *testing.T) {
 			sentAt := routeCounts(s, filterRoutes)
 			here := s.location(t)
+			var toppedBefore map[string]int
+			s.eval(t, "read every control's top before a query", controlTops, &toppedBefore)
 			typeFilter(t, s, "Namespace filter", tc.nsQuery)
 			typeFilter(t, s, "Service filter", tc.svcQuery)
 			gotNs := awaitMenu(t, s, "Namespace", tc.wantNs)
@@ -543,6 +547,11 @@ func scenarioConsoleOIDC(t *testing.T, h *Harness) {
 					s.textOf(t, ".panels"))
 			}
 			assertNothingSent(t, s, filterRoutes, sentAt, "typing in the filter fields")
+			// A query draws a line under the menu it filters, which makes that cell taller.
+			// Every control keeps the place it had in its own row all the same.
+			var toppedAfter map[string]int
+			s.eval(t, "read every control's top after a query", controlTops, &toppedAfter)
+			assertRowsHeldTheirLine(t, toppedBefore, toppedAfter, "typing in the filter fields")
 		})
 	}
 
@@ -2252,14 +2261,78 @@ func awaitMenu(t *testing.T, s *session, label string, want []string) menuState 
 	return got
 }
 
-// assertNote fails when the count line beside a menu is not what that many options of that many draw.
+// controlTops is every control the panels draw, placed by the top of its own box.
+// The control box is read and never the cell around it,
+// because a cell grows downward with the line under it while the control is what a reader lines up.
+// A control is named by where it sits and never by the text around it:
+// a filter rewrites the options inside its menu, so a name carrying that text names a different
+// control after every keystroke and a moved control would read as a missing one.
+// The number kept is the control's top measured from the highest control in its own row,
+// and never its position on the page:
+// a panel that grew taller moves every panel under it, which is the page getting longer
+// and not a row falling out of line.
+// What must not change is where a control sits relative to the controls beside it.
+const controlTops = `(() => {
+  const out = {};
+  document.querySelectorAll(".fields").forEach((row, i) => {
+    const tops = [];
+    [...row.children].forEach((cell, j) => {
+      cell.querySelectorAll("input, select, button").forEach((ctl, k) => {
+        tops.push({key: i + ":" + j + ":" + k, top: ctl.getBoundingClientRect().top});
+      });
+    });
+    if (!tops.length) { return; }
+    const first = Math.min(...tops.map((t) => t.top));
+    tops.forEach((t) => { out[t.key] = Math.round(t.top - first); });
+  });
+  return out;
+})()`
+
+// assertRowsHeldTheirLine fails when typing moved a control relative to the controls beside it.
+// A filter's query draws a line under its own menu,
+// and a panel that aligned its row by the bottom let that line push every control beside it down
+// and its own control up,
+// so a field nobody touched moved because a field beside it was typed into.
+// The cell that grew is allowed to grow downward; what it may not do is move its neighbours.
+func assertRowsHeldTheirLine(t *testing.T, before, after map[string]int, what string) {
+	t.Helper()
+	if len(before) == 0 {
+		t.Fatalf("no control was measured before %s; the reader found none to hold", what)
+	}
+	for key, was := range before {
+		now, still := after[key]
+		if !still {
+			t.Fatalf("the control at %s is gone after %s; a query draws no control and removes none", key, what)
+		}
+		if now != was {
+			t.Fatalf("the control at %s sits %dpx below the top of its row after %s and %dpx before it: "+
+				"a line drawn under one control moved another", key, now, what, was)
+		}
+	}
+}
+
+// assertNote fails when the count line beside a menu is not what that query found of that many.
 // The line stands only while a query stands, and the total it names is the whole listing:
 // a total counted from what the query left is a line that always reads the same number twice.
+// The count is matches and never drawn options.
+// A menu always offers the value it is showing, so a query that missed that value still draws it,
+// and the line says so rather than counting it as a match nobody made.
+// The match is recomputed here from the query rather than read from the page,
+// because a line checked against the number the page drew agrees with any number the page draws.
 func assertNote(t *testing.T, what string, got menuState, query string, total int) {
 	t.Helper()
 	want := ""
 	if query != "" {
-		want = fmt.Sprintf("%d of %d shown", len(got.Options), total)
+		matched := 0
+		for _, opt := range got.Options {
+			if strings.Contains(strings.ToLower(opt), strings.ToLower(strings.TrimSpace(query))) {
+				matched++
+			}
+		}
+		want = fmt.Sprintf("%d of %d matched", matched, total)
+		if len(got.Options) > matched {
+			want += "; the chosen value is shown too"
+		}
 	}
 	if got.Note != want {
 		t.Fatalf("the line beside the %s menu reads %q, want %q", what, got.Note, want)
@@ -2332,7 +2405,7 @@ func readFilter(t *testing.T, s *session, label string) string {
 // typeFilter and readFilter reach it the way they reach a filter field,
 // because all three are a labelled search input carrying no menu,
 // and this is the only one of the three whose label reads Search.
-const searchLabel = "Search"
+const searchLabel = "Find a Service in any namespace"
 
 // typeSearch replaces whatever stands in the search field with query.
 func typeSearch(t *testing.T, s *session, query string) {
