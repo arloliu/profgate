@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The console's filter count line counts matches rather than the rows drawn.
+  A menu always offers the value it is showing, so a query that missed that value still drew it,
+  and the line counted it.
+  A namespace filter reading `billing` against a chosen `kube-system` said `2 of 6 shown`,
+  where one namespace matched.
+  It now reads `1 of 6 matched`, and says `; the chosen value is shown too` when that row is standing.
+- The console's Service panel names what its search finds.
+  The field is labelled **Find a Service in any namespace**
+  and carries the placeholder `namespace/service`,
+  which separates it from the two filters beside it that narrow their own menu.
+- The console's Collections table draws each timestamp as the calendar day over the second.
+  The gateway answers RFC 3339 with nanoseconds and a zone, thirty characters holding no space,
+  which the cell broke at whatever character the column ended on:
+  every row was five ragged lines tall and no timestamp was readable.
+  The cell carries the whole value for whoever hovers it.
+- The console's search results read as rows rather than as empty text fields.
+  They carried a form element's border over a transparent fill,
+  which is what a disabled input looks like.
+- The console's error boxes put **Retry** on its own line.
+  An error carrying no hint drew the button in the flow of the message,
+  where it sat against the last word with nothing between them.
+- A line drawn under one console control no longer moves the controls beside it.
+  A panel's row aligned by its bottom edge,
+  so a filter's count or a duration's bound pushed its own control up
+  and every control in the row down.
+  That measured 29px for a filter's count and 60px for a duration's,
+  and the duration's message was drawn across the input's lower border.
+  A row now aligns by its top and a line beneath a control hangs clear of it.
+
 ## [0.6.0] - 2026-09-15
 
 Adds a cross-namespace Service catalog the console searches, help on every command line, and six more chart alerts,

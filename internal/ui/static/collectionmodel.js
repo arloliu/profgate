@@ -390,6 +390,25 @@ function progressText(progress) {
   return `round ${count(p.round) + 1} of ${rounds}, samples ok ${count(p.samplesOK)}, failed ${count(p.samplesFailed)}`;
 }
 
+// shortTime is a timestamp as the table shows it, split into the two lines it draws:
+// {date, clock}, the calendar day over the second.
+// The gateway answers RFC 3339 with nanoseconds and a zone,
+// which is thirty characters with no space to break at,
+// so a column of them broke at any character and took five ragged lines to say one time.
+// The split is made here rather than left to the cell:
+// a cell narrow enough to need two lines breaks a date at its own hyphens,
+// and a date carrying half of itself on each line reads as neither.
+// The second is where a Collection's timing is read,
+// and the row carries the whole value for whoever needs the zone and the fraction.
+// A value that is not a timestamp of that shape is answered whole as its first line,
+// because a listing that changed shape is better shown than hidden.
+function shortTime(value) {
+  const v = text(value);
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(v);
+
+  return m === null ? { date: v, clock: "" } : { date: m[1], clock: m[2] };
+}
+
 // olderCollectionsNote is the line under the Collections table when the listing carries a nextCursor:
 // older Collections exist beyond the page, and the command line lists them all.
 // The token is never shown, because the page offers no paging control and sends it nowhere.
@@ -401,4 +420,4 @@ function olderCollectionsNote(body, namespace, service) {
   return `Older Collections exist beyond this page; profgate collections ${text(namespace)}/${text(service)} lists them all`;
 }
 
-export { startOffered, cancelOffered, uuidFromBytes, startRequest, cancelRequest, startOutcome, cancelOutcome, retryAfterSeconds, startNext, confirmAccepted, progressText, olderCollectionsNote };
+export { startOffered, cancelOffered, shortTime, uuidFromBytes, startRequest, cancelRequest, startOutcome, cancelOutcome, retryAfterSeconds, startNext, confirmAccepted, progressText, olderCollectionsNote };

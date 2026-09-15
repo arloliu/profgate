@@ -17,6 +17,7 @@ const collectionModelName = "collectionmodel.js"
 var collectionModelFunctions = []string{
 	"startOffered",
 	"cancelOffered",
+	"shortTime",
 	"uuidFromBytes",
 	"startRequest",
 	"cancelRequest",
@@ -551,6 +552,57 @@ func TestCollectionModelRetryAfterSeconds(t *testing.T) {
 // which is the way the command line prints the same record.
 // The record stores the running round as a zero-based index,
 // so a completed three-round Collection carries two and has to read three of three.
+// TestCollectionModelShortTime drives the timestamp the Collections table shows.
+// The gateway answers RFC 3339 with nanoseconds and a zone;
+// the table shows the date and the second, and the row carries the whole value.
+func TestCollectionModelShortTime(t *testing.T) {
+	cases := []struct {
+		name      string
+		value     any
+		wantDate  string
+		wantClock string
+	}{
+		{
+			"a listing timestamp splits into its day and its second",
+			"2026-09-15T14:41:46.012137107Z", "2026-09-15", "14:41:46",
+		},
+		{
+			"a timestamp carrying no fraction splits the same",
+			"2026-09-15T14:41:46Z", "2026-09-15", "14:41:46",
+		},
+		{
+			"an offset zone is cut with the rest of the tail",
+			"2026-09-15T14:41:46+08:00", "2026-09-15", "14:41:46",
+		},
+		{
+			"a field the listing left out draws no line at all",
+			nil, "", "",
+		},
+		{"an empty string draws no line at all", "", "", ""},
+		{
+			"a value of another shape is shown whole as the first line",
+			"soon", "soon", "",
+		},
+		{
+			"a value that only starts like a date is shown whole and never split",
+			"2026-09-15", "2026-09-15", "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := loadCollectionModel(t)
+			got := callModel(t, vm, "shortTime", tc.value)
+			if !got.Unchanged {
+				t.Errorf("shortTime mutated an argument")
+			}
+			want := map[string]any{"date": tc.wantDate, "clock": tc.wantClock}
+			if !sameJSON(t, got.Result, want) {
+				t.Errorf("shortTime(%v) = %s, want %v", tc.value, got.Result, want)
+			}
+		})
+	}
+}
+
 func TestCollectionModelProgressText(t *testing.T) {
 	cases := []struct {
 		name     string

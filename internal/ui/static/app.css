@@ -63,11 +63,15 @@ details.identity > footer {
 /* Pico gives every block control a full line and a bottom margin of its own,
    which is a column of one control per row in a panel wide enough for four.
    The request's inputs are laid out across instead, and each keeps its own label. */
+/* The line aligns by its top and never by its bottom. A control can grow a line
+   under it — a filter's count, a duration's bound — and aligning by the bottom
+   made that line push its own control up and every control beside it down, so
+   typing into one field moved the four that had not been touched. */
 .fields {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem 0.75rem;
-  align-items: flex-end;
+  align-items: start;
 }
 
 /* Each control takes an equal share of the line and gives way at a narrow width;
@@ -83,6 +87,15 @@ details.identity > footer {
 
 .panels .fields > .actions {
   flex: 0 0 auto;
+}
+
+/* Refresh carries no label, and the controls beside it each sit one label below
+   the top of the line, so the button is inset by a label's height to stand on the
+   row with them. The inset is padding on the cell and not a blank line inside it:
+   the cell lays its button out with flex, where a generated line becomes another
+   item in the row rather than one above it. */
+.panels .fields > .actions {
+  padding-top: calc(1.5em + var(--pico-spacing, 1rem) * 0.375);
 }
 
 /* A fieldset whose menu has opened a field holds two controls on the line, and
@@ -172,6 +185,13 @@ details.identity > footer {
   grid-column: 1 / -1;
 }
 
+/* Pico pulls the line under a control up into the margin that control carries,
+   and the rule above takes that margin away, which left the line drawn across
+   the control's own bottom border. Inside a panel it hangs below instead. */
+.panels .fields label > small {
+  margin-top: 0.25rem;
+}
+
 /* Refresh repeats the targets fetch the two controls beside it are drawn from,
    so it stands in the row with them rather than under it. */
 .fields button {
@@ -220,14 +240,19 @@ details.identity > footer {
 }
 
 /* The query field takes the share of a line a menu or a filter field takes and stops there,
-   for the reason the cells above it stop: a typed query reads no better across half the page. */
-.search > label {
-  max-width: 15rem;
-}
-
+   for the reason the cells above it stop: a typed query reads no better across half the page.
+   The width is held on the field and not on the label around it:
+   the label names what the field finds and where it looks, which is a longer phrase than a
+   menu's one word, and a cap on the label broke that phrase across two lines
+   while the row it sits in still had the width to hold it.
+   Pico draws a control inline, and a menu's label is narrow enough that its own text fills
+   the line and pushes the control under it. This label is not, so the field is made a block
+   to stand under its label the way every other control in the panel does. */
 .search > label > input {
+  display: block;
   margin-bottom: 0;
   width: 100%;
+  max-width: 15rem;
 }
 
 /* The catalog arrives in namespace-then-name order and the rows are drawn in that order,
@@ -279,8 +304,11 @@ details.identity > footer {
   padding: 0.25rem 0.5rem;
   font-size: 0.85em;
   text-align: left;
-  background: transparent;
-  border-color: var(--pico-form-element-border-color, #cfd5e2);
+  /* A row wears a surface and no border. Carrying a form element's border over a transparent
+     fill made a list of rows read as a column of empty text fields,
+     which is the one thing on this panel they are not. */
+  background: var(--pico-code-background-color, #f3f4f7);
+  border-color: transparent;
   color: inherit;
   /* A namespace and a Service name joined by a slash have no space to break at,
      and the row is as wide as its column and no wider. */
@@ -406,9 +434,19 @@ input.url {
   overflow-wrap: anywhere;
 }
 
+/* The button stands on its own line under the message.
+   Pico draws a button inline, and an error carrying no hint put it in the flow of the message
+   itself, where it sat against the last word with nothing between them. */
 .error button {
-  margin-top: 0.5rem;
+  display: block;
+  margin-top: 0.75rem;
   width: auto;
+}
+
+/* The hint is the message's own last line, so the gap under it is the button's to set
+   and an error with a hint spaces its button as one without a hint does. */
+.error p {
+  margin-bottom: 0;
 }
 
 .table {
@@ -421,9 +459,13 @@ input.url {
   padding-inline: 0.75rem;
 }
 
-/* A 30-character RFC 3339 timestamp has no break opportunity and would otherwise hold the table past the container. */
-.table td.time {
-  overflow-wrap: anywhere;
+/* The day and the second are their own lines and neither breaks within itself,
+   so the column is as wide as a date and no wider and the table stops scrolling sideways.
+   The value the gateway sent has no space at all, which is why one cell of it
+   used to break at any character and take five ragged lines to say one time. */
+.table td.time span {
+  display: block;
+  white-space: nowrap;
 }
 
 button.link {
