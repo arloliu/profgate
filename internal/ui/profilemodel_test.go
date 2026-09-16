@@ -11,7 +11,7 @@ import (
 const profileModelName = "profilemodel.js"
 
 // profileModelFunctions is what the module exports, in the order of its export statement.
-var profileModelFunctions = []string{"offeredProfiles", "secondsLimit", "defaultSeconds", "secondsValid"}
+var profileModelFunctions = []string{"offeredProfiles", "secondsLimit", "defaultSeconds", "secondsValid", "profileRequest"}
 
 // loadProfileModel evaluates the Profile-panel model with its functions reachable as globals.
 func loadProfileModel(tb testing.TB) *goja.Runtime {
@@ -199,6 +199,146 @@ func TestProfileModelSecondsValid(t *testing.T) {
 			}
 			if !sameJSON(t, got.Result, tc.want) {
 				t.Errorf("secondsValid(%q, %q) = %s, want %v", tc.profile, tc.seconds, got.Result, tc.want)
+			}
+		})
+	}
+}
+
+// profileState is the page's state as profileRequest reads it:
+// a listed selection of cpu at a bound of 60, trace at 5, and heap with no bound,
+// with the Pod, the version, and the duration given.
+// The namespace and the Service are present so a case can see they never reach the query.
+func profileState(profile, pod, version, seconds string) map[string]any {
+	return map[string]any{
+		"ns":      "shop",
+		"svc":     "checkout",
+		"limits":  profileLimits([]string{"cpu", "heap", "trace"}, 60, 5),
+		"profile": profile,
+		"pod":     pod,
+		"version": version,
+		"seconds": seconds,
+	}
+}
+
+// TestProfileModelProfileRequest drives what the profile request carries,
+// which is the one answer the URL field, Copy URL, and Download all read:
+// null empties the field, hides Copy URL, and disables Download,
+// so the three cannot disagree about what a press sends.
+// A choice the request does not carry is an absent key, never an empty one,
+// and the answer is the query alone, never a path segment.
+func TestProfileModelProfileRequest(t *testing.T) {
+	named := map[string]any{"portName": "debug"}
+	numeric := map[string]any{"port": "6061"}
+	none := map[string]any{}
+	cases := []struct {
+		name   string
+		state  any
+		port   any
+		listed bool
+		want   any
+	}{
+		{
+			"a complete listed selection with a bound carries the Pod, the version, the port, and seconds",
+			profileState("cpu", "checkout-0", "v1.2.0", "30"), numeric, true,
+			map[string]any{"pod": "checkout-0", "version": "v1.2.0", "port": "6061", "seconds": "30"},
+		},
+		{
+			"a profile with no bound carries no seconds",
+			profileState("heap", "checkout-0", "v1.2.0", "30"), numeric, true,
+			map[string]any{"pod": "checkout-0", "version": "v1.2.0", "port": "6061"},
+		},
+		{
+			"trace carries its own bounded seconds",
+			profileState("trace", "", "", "5"), none, true,
+			map[string]any{"seconds": "5"},
+		},
+		{
+			"a named port carries portName and no port",
+			profileState("heap", "", "", ""), named, true,
+			map[string]any{"portName": "debug"},
+		},
+		{
+			"the default port carries neither port nor portName",
+			profileState("heap", "checkout-0", "v1.2.0", ""), none, true,
+			map[string]any{"pod": "checkout-0", "version": "v1.2.0"},
+		},
+		{
+			"a Pod with the version left at any sends the Pod alone",
+			profileState("heap", "checkout-0", "", ""), none, true,
+			map[string]any{"pod": "checkout-0"},
+		},
+		{
+			"a version with the Pod left at any sends the version alone",
+			profileState("heap", "", "v1.2.0", ""), none, true,
+			map[string]any{"version": "v1.2.0"},
+		},
+		{
+			"any for both sends neither, and each key is absent rather than empty",
+			profileState("heap", "", "", ""), none, true,
+			map[string]any{},
+		},
+		{
+			"a Pod named any is an ordinary choice and is sent",
+			profileState("heap", "any", "", ""), none, true,
+			map[string]any{"pod": "any"},
+		},
+		{
+			"an unlisted selection sends nothing",
+			profileState("cpu", "checkout-0", "v1.2.0", "30"), numeric, false,
+			nil,
+		},
+		{
+			"an empty profile sends nothing",
+			profileState("", "checkout-0", "v1.2.0", "30"), numeric, true,
+			nil,
+		},
+		{
+			"a duration of zero sends nothing",
+			profileState("cpu", "", "", "0"), none, true,
+			nil,
+		},
+		{
+			"a duration of the bound plus one sends nothing, which is what the three controls all read",
+			profileState("cpu", "checkout-0", "v1.2.0", "61"), numeric, true,
+			nil,
+		},
+		{
+			"a fractional duration sends nothing",
+			profileState("cpu", "", "", "1.5"), none, true,
+			nil,
+		},
+		{
+			"an exponent duration the gateway refuses sends nothing",
+			profileState("cpu", "", "", "1e1"), none, true,
+			nil,
+		},
+		{
+			"a non-numeric duration sends nothing",
+			profileState("cpu", "", "", "abc"), none, true,
+			nil,
+		},
+		{
+			"a duration outside the bound on a profile with no bound still sends, because none is sent",
+			profileState("heap", "", "", "61"), none, true,
+			map[string]any{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := loadProfileModel(t)
+			got := callModel(t, vm, "profileRequest", tc.state, tc.port, tc.listed)
+			if !got.Unchanged {
+				t.Errorf("profileRequest mutated an argument")
+			}
+			if !sameJSON(t, got.Result, tc.want) {
+				t.Errorf("profileRequest = %s, want %v", got.Result, tc.want)
+			}
+			if q, ok := decode(t, got.Result).(map[string]any); ok {
+				for _, key := range []string{"ns", "svc", "profile"} {
+					if _, present := q[key]; present {
+						t.Errorf("profileRequest answers %q, which is the path and app.js's to hand urls.js", key)
+					}
+				}
 			}
 		})
 	}

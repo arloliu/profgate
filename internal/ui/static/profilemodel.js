@@ -74,4 +74,44 @@ function secondsValid(limits, profile, seconds) {
   return n >= 1 && n <= limit;
 }
 
-export { offeredProfiles, secondsLimit, defaultSeconds, secondsValid };
+// sent is whether a value goes into the query, which is the rule urls.js applies to what it is handed.
+function sent(value) {
+  return value !== undefined && value !== null && value !== "";
+}
+
+// profileRequest is the query the profile request carries,
+// or null when the selection is not listed, names no profile, or holds a duration outside its bound;
+// it is the one answer the URL field, Copy URL, and Download all read.
+// listed is the page's answer to whether the catalog holds the selection,
+// handed in so this module imports nothing.
+// A choice the request does not carry is an absent key and never an empty one,
+// and "any" in the Pod and version menus is the empty value, so a Pod named any is sent.
+// It copies port or portName out of portParams rather than returning that object.
+// It builds no URL and answers no path segment:
+// urls.js is the only module that spells a /v1 path, and app.js hands it these parameters.
+function profileRequest(state, portParams, listed) {
+  const s = state || {};
+  if (!listed || !s.profile || !secondsValid(s.limits, s.profile, s.seconds)) {
+    return null;
+  }
+  const port = portParams || {};
+  const query = {};
+  if (sent(s.pod)) {
+    query.pod = s.pod;
+  }
+  if (sent(s.version)) {
+    query.version = s.version;
+  }
+  if (sent(port.port)) {
+    query.port = port.port;
+  }
+  if (sent(port.portName)) {
+    query.portName = port.portName;
+  }
+  if (secondsLimit(s.limits, s.profile)) {
+    query.seconds = s.seconds;
+  }
+  return query;
+}
+
+export { offeredProfiles, secondsLimit, defaultSeconds, secondsValid, profileRequest };
