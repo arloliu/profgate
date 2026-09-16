@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   That measured 29px for a filter's count and 60px for a duration's,
   and the duration's message was drawn across the input's lower border.
   A row now aligns by its top and a line beneath a control hangs clear of it.
+- The console's duration field accepts decimal digits alone, which is what the gateway accepts for `seconds`.
+  A value that read as a whole number without being digits, such as `1e1`, `0x10`, or `+10`,
+  enabled **Download**, and the gateway answered `400 invalid_parameter`.
+  Such a value now disables **Download** and names the bound beside the field.
 
 ## [0.6.0] - 2026-09-15
 
