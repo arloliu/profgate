@@ -13,7 +13,7 @@ import (
 // consoleSources returns the console's own modules, the files the source scan
 // of Rendering response values runs against.
 func consoleSources() []string {
-	return []string{"app.js", "urls.js", "portmodel.js", "targetmodel.js", "collectionmodel.js", "catalogmodel.js"}
+	return []string{"app.js", "urls.js", "portmodel.js", "targetmodel.js", "collectionmodel.js", "catalogmodel.js", "profilemodel.js"}
 }
 
 // htmlInterfaceRe matches every interface that turns a string into markup.
@@ -236,6 +236,29 @@ func TestScanPageUsesCatalogModel(t *testing.T) {
 	}
 }
 
+// profileModelImportRe matches app.js's import of the Profile-panel model and captures the names it binds.
+var profileModelImportRe = regexp.MustCompile(`import\s*\{([^}]*)\}\s*from\s*["']\./profilemodel\.js["']`)
+
+// TestScanPageUsesProfileModel holds the page to the Profile-panel model:
+// app.js imports the module's functions from ./profilemodel.js and calls each at least once,
+// so a page that decides by hand which profiles the menu offers,
+// what the duration's bound and starting value are, or whether a typed duration is sent turns the suite red.
+func TestScanPageUsesProfileModel(t *testing.T) {
+	src := readSource(t, "app.js")
+	m := profileModelImportRe.FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("app.js: no import from ./profilemodel.js")
+	}
+	for _, fn := range profileModelFunctions {
+		if !regexp.MustCompile(`\b` + fn + `\b`).MatchString(m[1]) {
+			t.Errorf("app.js: the import from ./profilemodel.js does not name %s: %q", fn, m[1])
+		}
+		if !strings.Contains(src, fn+"(") {
+			t.Errorf("app.js: never calls %s(", fn)
+		}
+	}
+}
+
 // exportNamesRe matches the trailing export statement cutExport removes,
 // and captures what stands between its braces.
 var exportNamesRe = regexp.MustCompile(`(?m)^export \{([^}]*)\};\s*$`)
@@ -285,6 +308,51 @@ func TestScanCatalogModelExportsWhatThePageImports(t *testing.T) {
 	sort.Strings(imported)
 	if strings.Join(exported, ", ") != strings.Join(imported, ", ") {
 		t.Errorf("%s exports %v and app.js imports %v", catalogModelName, exported, imported)
+	}
+}
+
+// TestScanProfileModelExportsWhatThePageImports holds the Profile-panel model's export statement
+// and app.js's import of the module to each other,
+// for the reason TestScanCatalogModelExportsWhatThePageImports gives:
+// the interpreter reads the functions as globals, so it proves nothing about what a browser can import.
+func TestScanProfileModelExportsWhatThePageImports(t *testing.T) {
+	src := readSource(t, profileModelName)
+	if n := len(exportAnyRe.FindAllString(src, -1)); n != 1 {
+		t.Errorf("%s: %d export statements, want one", profileModelName, n)
+	}
+	if rest := cutExport(t, profileModelName, src); exportAnyRe.MatchString(rest) {
+		t.Errorf("%s: an export remains after the trailing statement is cut", profileModelName)
+	}
+	m := exportNamesRe.FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("%s: declares no export statement the scan recognises", profileModelName)
+	}
+	exported := braceNames(m[1])
+	if got, want := strings.Join(exported, ", "), strings.Join(profileModelFunctions, ", "); got != want {
+		t.Errorf("%s: the export statement names %q, want %q", profileModelName, got, want)
+	}
+	im := profileModelImportRe.FindStringSubmatch(readSource(t, "app.js"))
+	if im == nil {
+		t.Fatalf("app.js: no import from ./%s", profileModelName)
+	}
+	imported := braceNames(im[1])
+	sort.Strings(exported)
+	sort.Strings(imported)
+	if strings.Join(exported, ", ") != strings.Join(imported, ", ") {
+		t.Errorf("%s exports %v and app.js imports %v", profileModelName, exported, imported)
+	}
+}
+
+// TestScanProfileModelBuildsNoURL holds the Profile-panel model to answering values and never a URL.
+// urls.js is the only module that spells a /v1 path, and app.js hands it what this module answers,
+// so a path literal here, or a call of profileURL, is the URL leaving the caller.
+func TestScanProfileModelBuildsNoURL(t *testing.T) {
+	src := readSource(t, profileModelName)
+	if bad := pathLiteralFindings(src); len(bad) > 0 {
+		t.Errorf("%s: path literals belong in urls.js: %v", profileModelName, bad)
+	}
+	if strings.Contains(src, "profileURL") {
+		t.Errorf("%s: names profileURL, which is app.js's to call", profileModelName)
 	}
 }
 

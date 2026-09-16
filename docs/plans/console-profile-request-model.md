@@ -349,7 +349,7 @@ so this is the first commit in which the rule can be shown red and then green.
 Write `internal/ui/profilemodel_test.go` first and run it red — the module does not exist yet,
 so `loadModel` fails on the read before it evaluates anything.
 
-- [ ] `internal/ui/static/profilemodel.js`, new, with the module comment `portmodel.js` and `catalogmodel.js`
+- [x] `internal/ui/static/profilemodel.js`, new, with the module comment `portmodel.js` and `catalogmodel.js`
       carry (`internal/ui/static/portmodel.js:1-3`, `internal/ui/static/catalogmodel.js:1-6`):
       it imports nothing and declares plain functions, and a Go test evaluates it with the trailing export cut off.
       - `offeredProfiles(limits, whoami)` keeps `limits.profiles` to what `realm.profiles` admits,
@@ -378,7 +378,7 @@ so `loadModel` fails on the read before it evaluates anything.
         This is the one function that does not answer what it answers today;
         its comment says the page copies the gateway's grammar
         because the field sends the text that was typed and not the number it reads as.
-- [ ] `internal/ui/static/app.js`: import the four from `./profilemodel.js`,
+- [x] `internal/ui/static/app.js`: import the four from `./profilemodel.js`,
       beside the four model imports already there (`:23-37`);
       delete `upstreamSeconds` and its comment (`:42-44`), `listAllows` and its comment (`:254-257`),
       and the four methods (`:1213-1220`, `:1222-1235`, `:1237-1244`, `:1246-1254`).
@@ -391,40 +391,40 @@ so `loadModel` fails on the read before it evaluates anything.
 | `secondsLimit` | `:1287` (`currentProfileURL`) and `:1543` (render) | `secondsLimit(limits, profile)` |
 | `secondsValid` | `:1282` (`currentProfileURL`) and `:1544` (render) | `secondsValid(limits, profile, seconds)` |
 
-- [ ] The `loadLimits` callback (`:623-626`) reads `limits` and `whoami` off `this.state` inside the callback,
+- [x] The `loadLimits` callback (`:623-626`) reads `limits` and `whoami` off `this.state` inside the callback,
       where the new `limits` is already applied,
       and computes `offeredProfiles` once into a local rather than calling it twice.
-- [ ] The call site hands `whoami` whole and reaches into nothing.
+- [x] The call site hands `whoami` whole and reaches into nothing.
       The guard `:1215-1217` runs today disappears into the module,
       which is why the signature takes the answer rather than the realm:
       a call site reaching through an absent `/v1/whoami` throws before the function's own guard can run,
       and that is the case *Unit* asks for when the menu is drawn before the answer has arrived.
-- [ ] `internal/ui/scan_test.go:15-17`: `profilemodel.js` joins `consoleSources()`,
+- [x] `internal/ui/scan_test.go:15-17`: `profilemodel.js` joins `consoleSources()`,
       which carries it into the HTML-interface, relative-import, inline-form, top-level-state,
       and file-inventory scans in one edit (`:77-85`, `:122-130`, `:459-467`, `:469-499`, `:501-509`).
       Its position in that literal does not matter:
       `TestScanCoversEveryJSFile` sorts both sides before it compares them (`:493-497`).
-- [ ] `internal/ui/scan_test.go`: `profileModelImportRe` and `TestScanPageUsesProfileModel`,
+- [x] `internal/ui/scan_test.go`: `profileModelImportRe` and `TestScanPageUsesProfileModel`,
       the shape `TestScanPageUsesCatalogModel` has (`:217-237`) —
       `app.js` imports every name in `profileModelFunctions` from `./profilemodel.js` and calls each at least once.
       It is written in this task and not the next,
       because the invariant that the page imports and calls what it uses is one this plan holds at every commit,
       and the scan counts no names: it iterates the list, so it is correct at four and again at five.
-- [ ] `internal/ui/scan_test.go`: `TestScanProfileModelExportsWhatThePageImports`,
+- [x] `internal/ui/scan_test.go`: `TestScanProfileModelExportsWhatThePageImports`,
       the shape `TestScanCatalogModelExportsWhatThePageImports` has (`:256-289`):
       one export statement, none remaining after `cutExport`,
       the statement naming exactly `profileModelFunctions`,
       and the same set as `app.js`'s import list, compared sorted.
-- [ ] `internal/ui/scan_test.go`: `TestScanProfileModelBuildsNoURL` —
+- [x] `internal/ui/scan_test.go`: `TestScanProfileModelBuildsNoURL` —
       `profilemodel.js` holds no `/v1` literal, which is `pathLiteralFindings` (`:44-48`),
       and no occurrence of `profileURL`.
       This is what keeps the URL the caller's and this module's answer parameters,
       and it is written here because the module exists here.
       It could fail: a module that spelled the path itself would trip the first half,
       and one that returned a built URL would trip the second.
-- [ ] `internal/ui/vendor_test.go:306`: `profilemodel.js` among the modules that import nothing at all.
-- [ ] `.agents/rules/500-validation-and-workflow.md:93`: five model modules, `profilemodel.js` named.
-- [ ] `CHANGELOG.md`: a `## [Unreleased]` heading above `## [0.6.0]`, with a `### Fixed` entry
+- [x] `internal/ui/vendor_test.go:306`: `profilemodel.js` among the modules that import nothing at all.
+- [x] `.agents/rules/500-validation-and-workflow.md:93`: five model modules, `profilemodel.js` named.
+- [x] `CHANGELOG.md`: a `## [Unreleased]` heading above `## [0.6.0]`, with a `### Fixed` entry
       for the duration the console now refuses.
       It names what an operator sees: a `seconds` of `1e1` disables **Download** and says the bound,
       where the page used to enable it and the gateway answered `400 invalid_parameter`.
@@ -433,14 +433,14 @@ so `loadModel` fails on the read before it evaluates anything.
 
 **Tests**
 
-- [ ] `internal/ui/profilemodel_test.go`, `profileModelName` and `profileModelFunctions` beside a
+- [x] `internal/ui/profilemodel_test.go`, `profileModelName` and `profileModelFunctions` beside a
       `loadProfileModel` helper, the shape `catalogmodel_test.go:10-27` uses.
       `profileModelFunctions` lists what the module exports, in the order of the export statement:
       four names here, and five once Task 2 adds `profileRequest` to the module and to this list.
-- [ ] `TestProfileModelShape`: no static import, no dynamic import, exactly one export statement,
+- [x] `TestProfileModelShape`: no static import, no dynamic import, exactly one export statement,
       none remaining after `cutExport`, and the export statement naming exactly the module's functions —
       the assertion `TestPortModelShape` makes (`internal/ui/portmodel_test.go:130-147`).
-- [ ] `TestProfileModelOfferedProfiles`, table cases over one interpreter:
+- [x] `TestProfileModelOfferedProfiles`, table cases over one interpreter:
       a realm naming the wildcard offers everything `/v1/limits` offers, in the limits' order;
       a realm naming some of them offers those;
       a realm naming a profile the gateway does not offer adds nothing;
@@ -449,26 +449,26 @@ so `loadModel` fails on the read before it evaluates anything.
       each offer nothing, since the menu is drawn before both have answered;
       and a `profiles` that is a string, an object, or `null` offers nothing rather than throwing.
       One case uses a limits `profiles` that is not alphabetical, so the order assertion can fail.
-- [ ] `TestProfileModelSecondsLimit`: `cpu` at its configured bound and `trace` at its own,
+- [x] `TestProfileModelSecondsLimit`: `cpu` at its configured bound and `trace` at its own,
       each its own case rather than one standing for the other, since the two carry different bounds;
       a profile with no bound, `heap` among them; an absent `/v1/limits`;
       a bound the body carries as the string `"45"`; and one it carries as `"soon"`, `null`, and `true`.
-- [ ] `TestProfileModelDefaultSeconds`: the upstream default below the bound (`cpu` at a bound of `60`),
+- [x] `TestProfileModelDefaultSeconds`: the upstream default below the bound (`cpu` at a bound of `60`),
       equal to it (`cpu` at `30`), and above it (`cpu` at `5`, which is the case the explicit parameter exists for);
       `trace` at each of the same three, its own cases because its default is `1` and not `30`;
       and a profile with no bound, which is `""`.
-- [ ] `TestProfileModelSecondsValid`: the bound itself, `1`, `0`, `-1`, `1.5`, the bound plus one,
+- [x] `TestProfileModelSecondsValid`: the bound itself, `1`, `0`, `-1`, `1.5`, the bound plus one,
       `""`, and `"abc"`, each over a profile that has a bound;
       and every one of those over a profile with no bound, where each is valid because none is sent.
-- [ ] `TestProfileModelSecondsValid` also drives the spellings that read as a whole number and are not digits,
+- [x] `TestProfileModelSecondsValid` also drives the spellings that read as a whole number and are not digits,
       each refused over a profile that has a bound:
       `1e1`, `0x10`, `" 10 "`, `"+10"`, and `"10."`.
       `1e1` is the case the repair exists for:
       it passes `Number.isInteger(Number(seconds))` today, and the gateway answers `400 invalid_parameter` for it.
       Run this case against the old rule before writing the new one, and record that it passed;
       a digits test that never saw the old rule green proves nothing about what changed.
-- [ ] Each case asserts `Unchanged`, so none of the four mutates its input.
-- [ ] Each of these could have failed before this task, because none of the four rules had a test at all:
+- [x] Each case asserts `Unchanged`, so none of the four mutates its input.
+- [x] Each of these could have failed before this task, because none of the four rules had a test at all:
       `app.js` is not evaluated by any Go test,
       and no browser scenario types a duration, so none reaches a bound, a fraction, or `1e1`.
 
@@ -480,7 +480,7 @@ go vet -tags e2e ./test/e2e/...
 git log --oneline -1 && git status --short
 ```
 
-- [ ] Commit: `fix(ui): refuse a duration the gateway refuses`.
+- [x] Commit: `fix(ui): refuse a duration the gateway refuses`.
       The body names both halves: the four rules move into a module a test executes,
       and `secondsValid` comes to read decimal digits, so the page stops offering a download for `1e1`.
       It is a `fix` and not a `refactor` because the refusal is what an operator sees.

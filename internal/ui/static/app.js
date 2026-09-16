@@ -37,12 +37,9 @@ import {
   shortTime,
 } from "./collectionmodel.js";
 import { namespacesOf, servicesOf, filterOptions, searchCatalog } from "./catalogmodel.js";
+import { offeredProfiles, secondsLimit, defaultSeconds, secondsValid } from "./profilemodel.js";
 
 const html = htm.bind(h);
-
-// The upstream defaults for the two duration-bearing profiles; the page sends
-// min(default, limit) explicitly so the request never relies on the upstream.
-const upstreamSeconds = { cpu: 30, trace: 1 };
 
 // notReadyDelay is how often a not_ready answer is retried.
 const notReadyDelay = 2000;
@@ -250,11 +247,6 @@ function saveBlob(blob, name) {
   a.click();
   a.remove();
   URL.revokeObjectURL(href);
-}
-
-// listAllows mirrors the gateway's realm filter: the wildcard or the name.
-function listAllows(list, value) {
-  return Array.isArray(list) && (list.includes("*") || list.includes(value));
 }
 
 // asList returns value when it is an array and [] otherwise, so a body of
@@ -642,8 +634,10 @@ class App extends Component {
       return;
     }
     this.setState({ limits: body }, () => {
-      const profile = this.offeredProfiles().includes("cpu") ? "cpu" : this.offeredProfiles()[0] || "";
-      this.setState({ profile: profile, seconds: this.defaultSeconds(profile) });
+      const { limits, whoami } = this.state;
+      const offered = offeredProfiles(limits, whoami);
+      const profile = offered.includes("cpu") ? "cpu" : offered[0] || "";
+      this.setState({ profile: profile, seconds: defaultSeconds(limits, profile) });
       this.maybeLoadCollections();
     });
   };
@@ -1119,7 +1113,7 @@ class App extends Component {
 
   onProfile = (e) => {
     const profile = e.target.value;
-    this.setState({ profile: profile, seconds: this.defaultSeconds(profile), copied: false });
+    this.setState({ profile: profile, seconds: defaultSeconds(this.state.limits, profile), copied: false });
   };
 
   onSeconds = (e) => {
@@ -1231,49 +1225,6 @@ class App extends Component {
     this.loadCollection(id);
   };
 
-  // offeredProfiles is limits.profiles filtered by realm.profiles.
-  offeredProfiles() {
-    const { limits, whoami } = this.state;
-    if (!limits || !whoami) {
-      return [];
-    }
-    return asList(limits.profiles).filter((p) => listAllows(whoami.realm.profiles, p));
-  }
-
-  // secondsLimit is the profile's bound, or 0 for a profile with no duration.
-  secondsLimit(profile) {
-    const limits = this.state.limits;
-    if (!limits) {
-      return 0;
-    }
-    if (profile === "cpu") {
-      return Number(limits.cpuSeconds) || 0;
-    }
-    if (profile === "trace") {
-      return Number(limits.traceSeconds) || 0;
-    }
-    return 0;
-  }
-
-  // defaultSeconds is the upstream default or the limit when it is lower.
-  defaultSeconds(profile) {
-    const limit = this.secondsLimit(profile);
-    if (!limit) {
-      return "";
-    }
-    return String(Math.min(upstreamSeconds[profile], limit));
-  }
-
-  // secondsValid reports whether the duration is an integer in 1..limit.
-  secondsValid() {
-    const limit = this.secondsLimit(this.state.profile);
-    if (!limit) {
-      return true;
-    }
-    const n = Number(this.state.seconds);
-    return Number.isInteger(n) && n >= 1 && n <= limit;
-  }
-
   // portChoice is what the port control sends: {port}, {portName}, or {}
   // for default, as applyInput reads the current state with no edit.
   portChoice() {
@@ -1300,12 +1251,12 @@ class App extends Component {
   // selection is incomplete or unlisted or the duration is out of range.
   currentProfileURL() {
     const { ns, svc, profile, pod, version } = this.state;
-    if (!this.selectionListed() || !profile || !this.secondsValid()) {
+    if (!this.selectionListed() || !profile || !secondsValid(this.state.limits, profile, this.state.seconds)) {
       return null;
     }
     const port = this.portChoice();
     const params = { pod: pod, version: version, port: port.port, portName: port.portName };
-    if (this.secondsLimit(profile)) {
+    if (secondsLimit(this.state.limits, profile)) {
       params.seconds = this.state.seconds;
     }
     return profileURL(ns, svc, profile, params);
@@ -1576,10 +1527,10 @@ class App extends Component {
       copied,
       downloading,
     } = this.state;
-    const profiles = this.offeredProfiles();
+    const profiles = offeredProfiles(limits, whoami);
     const svcListed = this.selectionListed();
-    const limit = this.secondsLimit(profile);
-    const valid = this.secondsValid();
+    const limit = secondsLimit(limits, profile);
+    const valid = secondsValid(limits, profile, seconds);
     const url = this.currentProfileURL();
     const pods = summary ? summary.pods : [];
     const versions = summary ? summary.versions : [];
