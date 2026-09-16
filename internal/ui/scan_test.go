@@ -356,6 +356,53 @@ func TestScanProfileModelBuildsNoURL(t *testing.T) {
 	}
 }
 
+// selectionListedBodyRe matches the body of the method that decides whether the catalog holds the selection,
+// anchored on its own opening line and on a closing brace at the method's indentation,
+// the shape refetchBodyRe reads the refetch method by.
+var selectionListedBodyRe = regexp.MustCompile(`(?s)\n  selectionListed\(\) \{(.*?)\n  \}`)
+
+// profileRequestCallRe matches a call of the Profile-panel model's request function.
+var profileRequestCallRe = regexp.MustCompile(`\bprofileRequest\(`)
+
+// profileRequestCall is the one call app.js makes of profileRequest,
+// handing it the membership the page computed.
+const profileRequestCall = "profileRequest(this.state, this.portChoice(), this.selectionListed())"
+
+// TestScanMembershipReadsTheWholeCatalog holds membership to the stored catalog and the model to that answer.
+// selectionListed gates the Collections view, the profile URL, and the start control,
+// so it reads the whole catalog through servicesOf and names none of the filtered lists the menus are drawn from:
+// a selection must not turn listed or unlisted on what someone typed into a filter field.
+// profileRequest is handed that answer as a parameter rather than computing it,
+// and a table handing the parameter both values proves the function and never the caller,
+// so the scan also holds app.js to one call of profileRequest, handed selectionListed's result and nothing else.
+// It reads app.js as text and runs none of it.
+// A body the scan cannot cut is a failure and never a pass:
+// a scan that matched nothing would pass a page that no longer checked membership at all.
+func TestScanMembershipReadsTheWholeCatalog(t *testing.T) {
+	src := readSource(t, "app.js")
+	m := selectionListedBodyRe.FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("app.js: declares no selectionListed method the scan recognises")
+	}
+	body := m[1]
+	for _, name := range []string{"catalog", "servicesOf"} {
+		if !strings.Contains(body, name) {
+			t.Errorf("app.js: selectionListed does not name %s, so it does not read the whole catalog", name)
+		}
+	}
+	for _, name := range []string{"filterOptions", "nsOptions", "svcOptions", "nsFilter", "svcFilter"} {
+		if strings.Contains(body, name) {
+			t.Errorf("app.js: selectionListed names %s, which is a filtered menu and not the catalog", name)
+		}
+	}
+	if got := len(profileRequestCallRe.FindAllString(src, -1)); got != 1 {
+		t.Errorf("app.js: calls profileRequest %d times, want once", got)
+	}
+	if !strings.Contains(src, profileRequestCall) {
+		t.Errorf("app.js: no call %s, so the membership profileRequest is handed is not the page's", profileRequestCall)
+	}
+}
+
 // hintCodes is the vocabulary of the hints table of Errors:
 // the seventeen codes its fifteen rows name,
 // plus too_many_auth and auth_unavailable, which every /v1 route answers.

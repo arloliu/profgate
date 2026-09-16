@@ -37,7 +37,7 @@ import {
   shortTime,
 } from "./collectionmodel.js";
 import { namespacesOf, servicesOf, filterOptions, searchCatalog } from "./catalogmodel.js";
-import { offeredProfiles, secondsLimit, defaultSeconds, secondsValid } from "./profilemodel.js";
+import { offeredProfiles, secondsLimit, defaultSeconds, secondsValid, profileRequest } from "./profilemodel.js";
 
 const html = htm.bind(h);
 
@@ -1250,15 +1250,11 @@ class App extends Component {
   // currentProfileURL is the download URL for the selection, or null when the
   // selection is incomplete or unlisted or the duration is out of range.
   currentProfileURL() {
-    const { ns, svc, profile, pod, version } = this.state;
-    if (!this.selectionListed() || !profile || !secondsValid(this.state.limits, profile, this.state.seconds)) {
+    const params = profileRequest(this.state, this.portChoice(), this.selectionListed());
+    if (!params) {
       return null;
     }
-    const port = this.portChoice();
-    const params = { pod: pod, version: version, port: port.port, portName: port.portName };
-    if (secondsLimit(this.state.limits, profile)) {
-      params.seconds = this.state.seconds;
-    }
+    const { ns, svc, profile } = this.state;
     return profileURL(ns, svc, profile, params);
   }
 

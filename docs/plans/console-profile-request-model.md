@@ -494,7 +494,7 @@ Those three read one predicate today and must go on reading one.
 The scan *Unit* has always specified and nobody wrote is written here too,
 because membership reaching the module as a parameter is what leans on it.
 
-- [ ] `internal/ui/static/profilemodel.js`: `profileRequest(state, portParams, listed)`.
+- [x] `internal/ui/static/profilemodel.js`: `profileRequest(state, portParams, listed)`.
       It returns `null` when `listed` is false, when `state.profile` is empty,
       or when `secondsValid(state.limits, state.profile, state.seconds)` is false.
       Otherwise it returns the query: `pod` and `version` from `state` when each is non-empty,
@@ -510,23 +510,23 @@ because membership reaching the module as a parameter is what leans on it.
       and it copies out of `portParams` rather than returning it, so no caller's object is shared or changed.
       Its comment says why it builds no URL:
       `urls.js` is the only module that spells a `/v1` path, and `app.js` hands these parameters to it.
-- [ ] `internal/ui/static/app.js`: import `profileRequest` from `./profilemodel.js`.
+- [x] `internal/ui/static/app.js`: import `profileRequest` from `./profilemodel.js`.
       `currentProfileURL` (`:1278-1291`) becomes the call and the build:
       `profileRequest(this.state, this.portChoice(), this.selectionListed())`,
       `null` when that is `null`, and `profileURL(ns, svc, profile, params)` otherwise.
       `portChoice()` (`:1256-1260`), `selectionListed()` (`:1262-1271`), and `downloadAllowed()` (`:1171-1178`)
       stay as they are, and every caller of `currentProfileURL` (`:1161`, `:1177`, `:1190`, `:1545`) is untouched.
-- [ ] `secondsValid` keeps a call site in `app.js` after this task — `:1544`, the render —
+- [x] `secondsValid` keeps a call site in `app.js` after this task — `:1544`, the render —
       and `secondsLimit` keeps `:1543`, so the import scan stays green.
       Both lose their `currentProfileURL` use to `profileRequest`, which is the point of the move.
-- [ ] `internal/ui/profilemodel_test.go`: `profileModelFunctions` gains `profileRequest`,
+- [x] `internal/ui/profilemodel_test.go`: `profileModelFunctions` gains `profileRequest`,
       in the position the module's export statement puts it.
       That one edit carries the name into the shape assertion, the import scan, and the export scan,
       each of which iterates the list rather than counting it,
       so the three written in the first task need no change here.
       `TestScanProfileModelBuildsNoURL` gains nothing and is what holds this task's new function
       to answering parameters rather than a URL.
-- [ ] `internal/ui/scan_test.go`: `TestScanMembershipReadsTheWholeCatalog`, which *Unit* specifies
+- [x] `internal/ui/scan_test.go`: `TestScanMembershipReadsTheWholeCatalog`, which *Unit* specifies
       and which does not exist — `selectionListed` appears in `app.js` and in no test or script.
       It cuts the method's body out of `app.js` the way `refetchBodyRe` cuts the refetch method's (`:428-431`),
       failing rather than passing when it cannot cut one,
@@ -541,7 +541,7 @@ because membership reaching the module as a parameter is what leans on it.
 
 **Tests**
 
-- [ ] `internal/ui/profilemodel_test.go`, `TestProfileModelProfileRequest`, table cases over one interpreter,
+- [x] `internal/ui/profilemodel_test.go`, `TestProfileModelProfileRequest`, table cases over one interpreter,
       with a state fixture helper the way `limitsWith` and `whoamiWith` serve the Collection model
       (`internal/ui/collectionmodel_test.go:94-101`):
       - a complete listed selection with a bound profile yields the Pod, the version, the port selection
@@ -558,15 +558,15 @@ because membership reaching the module as a parameter is what leans on it.
         each yield `null`, since `profileRequest` reads `secondsValid`;
       - a duration outside the bound on a profile with no bound yields a request, because none is sent;
       - no answer carries a namespace, a Service, or a profile.
-- [ ] Each case asserts `Unchanged`, so neither `state` nor `portParams` is written to.
-- [ ] One case states the invariant this task exists for:
+- [x] Each case asserts `Unchanged`, so neither `state` nor `portParams` is written to.
+- [x] One case states the invariant this task exists for:
       the three controls read one predicate.
       Over a state whose duration is out of bounds, `profileRequest` is `null`,
       which is what empties the URL field, hides **Copy URL**, and disables **Download** —
       three renderings of one answer.
-- [ ] These could have failed: the browser scenario reads the URL field (`test/e2e/scenarios_console_test.go:467`)
+- [x] These could have failed: the browser scenario reads the URL field (`test/e2e/scenarios_console_test.go:467`)
       but drives no out-of-bound duration, no absent Pod with a present version, and no unbounded profile.
-- [ ] The membership scan could have failed and would have, on the day it was specified:
+- [x] The membership scan could have failed and would have, on the day it was specified:
       show it red by pointing its caller assertion at a `profileRequest` call
       that passes `true` instead of `this.selectionListed()`, then restore the call.
 
@@ -578,7 +578,7 @@ go vet -tags e2e ./test/e2e/...
 git log --oneline -1 && git status --short
 ```
 
-- [ ] Commit: `refactor(ui): model the profile request's query`.
+- [x] Commit: `refactor(ui): model the profile request's query`.
       The body says the three controls come to read one answer,
       and that the scan holding membership to the whole catalog is written for the first time.
 
