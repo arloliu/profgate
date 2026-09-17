@@ -363,6 +363,13 @@ func TestScanProfileModelBuildsNoURL(t *testing.T) {
 // the shape refetchBodyRe reads the refetch method by.
 var selectionListedBodyRe = regexp.MustCompile(`(?s)\n  selectionListed\(\) \{(.*?)\n  \}`)
 
+// selectionListedCatalogRe matches a destructuring that takes catalog from this.state.
+var selectionListedCatalogRe = regexp.MustCompile(`const\s*\{[^}]*\bcatalog\b[^}]*\}\s*=\s*this\.state\b`)
+
+// selectionListedMembershipRe matches the membership test itself:
+// the Services of the whole catalog in the chosen namespace, asked whether they include the chosen Service.
+var selectionListedMembershipRe = regexp.MustCompile(`\bservicesOf\(\s*catalog\s*,\s*ns\s*\)\s*\.includes\(\s*svc\s*\)`)
+
 // profileRequestCallRe matches a call of the Profile-panel model's request function.
 var profileRequestCallRe = regexp.MustCompile(`\bprofileRequest\(`)
 
@@ -372,8 +379,11 @@ const profileRequestCall = "profileRequest(this.state, this.portChoice(), this.s
 
 // TestScanMembershipReadsTheWholeCatalog holds membership to the stored catalog and the model to that answer.
 // selectionListed gates the Collections view, the profile URL, and the start control,
-// so it reads the whole catalog through servicesOf and names none of the filtered lists the menus are drawn from:
+// so it names none of the filtered lists the menus are drawn from:
 // a selection must not turn listed or unlisted on what someone typed into a filter field.
+// The scan holds the membership expression whole, spaces aside:
+// catalog is taken from this.state, and servicesOf(catalog, ns).includes(svc) is present,
+// so a catalog cut before servicesOf reads it, or a test that the namespace holds any Service at all, fails it.
 // profileRequest is handed that answer as a parameter rather than computing it,
 // and a table handing the parameter both values proves the function and never the caller,
 // so the scan also holds app.js to one call of profileRequest, handed selectionListed's result and nothing else.
@@ -387,10 +397,12 @@ func TestScanMembershipReadsTheWholeCatalog(t *testing.T) {
 		t.Fatalf("app.js: declares no selectionListed method the scan recognises")
 	}
 	body := m[1]
-	for _, name := range []string{"catalog", "servicesOf"} {
-		if !strings.Contains(body, name) {
-			t.Errorf("app.js: selectionListed does not name %s, so it does not read the whole catalog", name)
-		}
+	if !selectionListedCatalogRe.MatchString(body) {
+		t.Errorf("app.js: selectionListed does not take catalog from this.state, so it may not read the stored catalog")
+	}
+	if !selectionListedMembershipRe.MatchString(body) {
+		t.Errorf("app.js: selectionListed does not test servicesOf(catalog, ns).includes(svc), " +
+			"so it may read part of the catalog or admit a Service the catalog does not list")
 	}
 	for _, name := range []string{"filterOptions", "nsOptions", "svcOptions", "nsFilter", "svcFilter"} {
 		if strings.Contains(body, name) {
