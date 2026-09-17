@@ -1570,7 +1570,7 @@ class App extends Component {
                         aria-invalid=${valid ? undefined : "true"}
                         onInput=${this.onSeconds}
                       />
-                      ${valid ? null : html`<small>seconds must be an integer from 1 to ${limit}</small>`}
+                      ${valid ? null : html`<small>seconds must be a decimal integer from 1 to ${limit}</small>`}
                     </label>
                   `
                 : null}
