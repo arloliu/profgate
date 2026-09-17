@@ -72,6 +72,8 @@ each panel laying its controls across its row and wrapping them onto the next li
   a failed load leaves both menus empty, while a failed **Refresh** keeps the menus the page already had.
 - **Profile.** A profile `<select>` (filtered by your realm), a duration field for `cpu` and `trace` bounded by the operator's configured limit, a port control, and a Pod and version `<select>`
   once targets have loaded.
+  The duration field takes a decimal integer — digits alone — from 1 to the bound,
+  which is what the gateway accepts for `seconds`.
   The port control is a menu of the configured default and every entry `discovery.pprof.allowedSelections` lists,
   read from `/v1/limits`.
   A free-form field appears beside the menu only for the kind whose wildcard is configured:

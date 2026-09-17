@@ -1,6 +1,7 @@
 # The Profile Panel's Offer and Its Request
 
-**Status:** Approved
+**Status:** Done
+**Outcome:** pull request #48 carries the four tasks and the duration repair among them.
 
 > **For the implementer:** implement this plan one task at a time, in order;
 > each task ends with its own validation block and one commit.
@@ -649,9 +650,9 @@ git log --oneline -1 && git status --short
 
 ## 4. The guide, and the close
 
-- [ ] `docs/console.md:73`: the duration field takes whole numbers,
+- [x] `docs/console.md:73`: the duration field takes whole numbers,
       which is what the gateway accepts for `seconds`.
-- [ ] `Status:` becomes `Done` and line 4 gains `**Outcome:**` naming the pull request that carried the tasks,
+- [x] `Status:` becomes `Done` and line 4 gains `**Outcome:**` naming the pull request that carried the tasks,
       in the same change that lands the last of them
       ([`900-design-and-review-loops.md`](../../.agents/rules/900-design-and-review-loops.md)).
       It names the pull request and never a commit, because the merge rebases the branch
@@ -665,7 +666,7 @@ mise run check && mise run prose
 git log --oneline -1 && git status --short
 ```
 
-- [ ] Commit: `docs: close the Profile panel's model module`
+- [x] Commit: `docs: close the Profile panel's model module`
 
 ---
 
