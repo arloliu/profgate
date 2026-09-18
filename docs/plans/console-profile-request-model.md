@@ -589,7 +589,7 @@ git log --oneline -1 && git status --short
 The spec states the rule and the module explains it; the page holds it and nothing executes it.
 This task moves it, which also makes the two halves read the realm the same way.
 
-- [ ] `internal/ui/static/collectionmodel.js`: `tableOffered(limits, whoami)`,
+- [x] `internal/ui/static/collectionmodel.js`: `tableOffered(limits, whoami)`,
       declared beside `startOffered` (`:70-79`) and above it,
       since the table is what the start control sits on.
       It is `pgo.enabled === true && pgoRealm(whoami).read === true`,
@@ -597,9 +597,9 @@ This task moves it, which also makes the two halves read the realm the same way.
       Its comment says an absent `/v1/whoami`, one carrying no realm,
       and one whose realm carries no `pgo` block each admit nothing,
       and that a flag arriving as anything but `true` is denial.
-- [ ] `internal/ui/static/collectionmodel.js:404`: the export statement gains `tableOffered`
+- [x] `internal/ui/static/collectionmodel.js:404`: the export statement gains `tableOffered`
       in the position it is declared in.
-- [ ] `internal/ui/static/app.js`: import `tableOffered`;
+- [x] `internal/ui/static/app.js`: import `tableOffered`;
       `collectionsOffered()` (`:1273-1276`) becomes `return tableOffered(this.state.limits, this.state.whoami);`
       and keeps its three call sites (`:741`, `:751`, `:1315`), which is the Collections fetch and the table.
       Name the contract in the body of the commit message, not in a comment:
@@ -607,30 +607,30 @@ This task moves it, which also makes the two halves read the realm the same way.
       (`internal/httpapi/listing.go:46-53`, `:55-59`);
       what changes is that a malformed answer offers nothing
       instead of throwing on an absent `realm` or believing a flag that is not `true`.
-- [ ] `internal/ui/collectionmodel_test.go:17-29`: `collectionModelFunctions` gains `tableOffered`
+- [x] `internal/ui/collectionmodel_test.go:17-29`: `collectionModelFunctions` gains `tableOffered`
       in the same position as the export statement, which `TestCollectionModelShape` compares exactly (`:57-76`).
-- [ ] `internal/ui/scan_test.go:194-206`: the function list of `TestScanPageUsesCollectionModel` gains
-      `tableOffered`, and the doc comment above it (`:181-187`) counts twelve imported functions
-      and names `retryAfterSeconds` as the thirteenth export the page does not import.
+- [x] `internal/ui/scan_test.go:194-206`: the function list of `TestScanPageUsesCollectionModel` gains
+      `tableOffered` and `shortTime`, and the doc comment above it (`:181-187`) counts thirteen
+      imported functions and names `retryAfterSeconds` as the fourteenth export the page does not import.
 
 **Tests**
 
-- [ ] `internal/ui/collectionmodel_test.go`, `TestCollectionModelTableOffered`, table cases beside
+- [x] `internal/ui/collectionmodel_test.go`, `TestCollectionModelTableOffered`, table cases beside
       `TestCollectionModelStartOffered` (`:103-135`) and reusing `limitsWith` and `whoamiWith` (`:94-101`):
       both hold; `pgo.enabled` false; `read` false; an absent `/v1/limits`; an absent `/v1/whoami`;
       a limits body with no `pgo` block; a whoami body with no `realm` block;
       and a realm with no `pgo` block.
       Each asserts `Unchanged`.
-- [ ] A `read` that is not a boolean — `"false"`, `1`, and `"true"` — offers nothing,
+- [x] A `read` that is not a boolean — `"false"`, `1`, and `"true"` — offers nothing,
       which is the reading the page did not make.
-- [ ] Two cases state the pair the spec names:
+- [x] Two cases state the pair the spec names:
       `read` alone yields the table and no start control,
       and `collect` alone yields neither — asserted by calling both functions over one whoami,
       which is what makes the pair a property of the module rather than of two separate tables.
       The existing rows of those names call `startOffered` and assert only its answer
       (`internal/ui/collectionmodel_test.go:112-135`),
       so these two cases are new work and inherit nothing.
-- [ ] Every case here could have failed, because nothing executed this rule before:
+- [x] Every case here could have failed, because nothing executed this rule before:
       `tableOffered` has no predecessor in the module,
       and the page's chain at `:1273-1276` is run by no Go test.
       The whoami-with-no-realm case is the sharpest of them: that chain throws on that body.
@@ -643,7 +643,7 @@ go vet -tags e2e ./test/e2e/...
 git log --oneline -1 && git status --short
 ```
 
-- [ ] Commit: `refactor(ui): model whether the Collections table shows`
+- [x] Commit: `refactor(ui): model the Collections table rule`
 
 ---
 

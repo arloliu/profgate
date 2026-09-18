@@ -15,6 +15,7 @@ const collectionModelName = "collectionmodel.js"
 
 // collectionModelFunctions is what the module exports, in the order of its export statement.
 var collectionModelFunctions = []string{
+	"tableOffered",
 	"startOffered",
 	"cancelOffered",
 	"shortTime",
@@ -53,6 +54,11 @@ func loadCollectionModel(tb testing.TB) *goja.Runtime {
 // str returns a pointer to s, which is how an expected non-null string is written.
 func str(s string) *string {
 	return &s
+}
+
+// boolp returns a pointer to b, which is how a case opts into asserting a second function's answer.
+func boolp(b bool) *bool {
+	return &b
 }
 
 func TestCollectionModelShape(t *testing.T) {
@@ -99,6 +105,59 @@ func limitsWith(enabled bool) map[string]any {
 // whoamiWith is a /v1/whoami body carrying only the two PGO realm flags.
 func whoamiWith(read, collect bool) map[string]any {
 	return map[string]any{"realm": map[string]any{"pgo": map[string]any{"read": read, "collect": collect}}}
+}
+
+// TestCollectionModelTableOffered proves the Collections table's half of the pgo rule:
+// pgo.enabled from /v1/limits and realm.pgo.read from /v1/whoami, both read the way startOffered reads them.
+// A malformed answer offers nothing rather than throwing on an absent realm or believing a flag that is not true.
+// The last two cases are the pair the spec names, read alone and collect alone,
+// each calling both startOffered and tableOffered over the one whoami body,
+// so the pair is a property of the module rather than of two separately-checked tables.
+func TestCollectionModelTableOffered(t *testing.T) {
+	cases := []struct {
+		name      string
+		limits    any
+		whoami    any
+		wantTable bool
+		wantStart *bool
+	}{
+		{"both hold", limitsWith(true), whoamiWith(true, true), true, nil},
+		{"pgo disabled", limitsWith(false), whoamiWith(true, true), false, nil},
+		{"read false", limitsWith(true), whoamiWith(false, true), false, nil},
+		{"no limits body", nil, whoamiWith(true, true), false, nil},
+		{"no whoami body", limitsWith(true), nil, false, nil},
+		{"limits with no pgo block", map[string]any{}, whoamiWith(true, true), false, nil},
+		{"whoami with no realm block", limitsWith(true), map[string]any{}, false, nil},
+		{"realm with no pgo block", limitsWith(true), map[string]any{"realm": map[string]any{}}, false, nil},
+		{"read arrives as the string false", limitsWith(true),
+			map[string]any{"realm": map[string]any{"pgo": map[string]any{"read": "false", "collect": true}}}, false, nil},
+		{"read arrives as one", limitsWith(true),
+			map[string]any{"realm": map[string]any{"pgo": map[string]any{"read": 1, "collect": true}}}, false, nil},
+		{"read arrives as the string true", limitsWith(true),
+			map[string]any{"realm": map[string]any{"pgo": map[string]any{"read": "true", "collect": true}}}, false, nil},
+		{"read alone yields the table and no start control",
+			limitsWith(true), whoamiWith(true, false), true, boolp(false)},
+		{"collect alone yields neither",
+			limitsWith(true), whoamiWith(false, true), false, boolp(false)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := loadCollectionModel(t)
+			got := callModel(t, vm, "tableOffered", tc.limits, tc.whoami)
+			if !got.Unchanged {
+				t.Errorf("tableOffered mutated an argument")
+			}
+			if !sameJSON(t, got.Result, tc.wantTable) {
+				t.Errorf("tableOffered = %s, want %v", got.Result, tc.wantTable)
+			}
+			if tc.wantStart != nil {
+				start := callModel(t, vm, "startOffered", tc.limits, tc.whoami, "payment-api")
+				if !sameJSON(t, start.Result, *tc.wantStart) {
+					t.Errorf("startOffered = %s, want %v", start.Result, *tc.wantStart)
+				}
+			}
+		})
+	}
 }
 
 func TestCollectionModelStartOffered(t *testing.T) {

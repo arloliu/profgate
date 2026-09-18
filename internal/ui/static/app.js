@@ -23,6 +23,7 @@ import {
 import { deriveControl, applyInput } from "./portmodel.js";
 import { targetsQuery, retryWithoutExplain, targetSummary, downloadNote } from "./targetmodel.js";
 import {
+  tableOffered,
   startOffered,
   cancelOffered,
   uuidFromBytes,
@@ -1244,7 +1245,7 @@ class App extends Component {
 
   collectionsOffered() {
     const { limits, whoami } = this.state;
-    return Boolean(limits && limits.pgo && limits.pgo.enabled && whoami && whoami.realm.pgo && whoami.realm.pgo.read);
+    return tableOffered(limits, whoami);
   }
 
   // currentProfileURL is the download URL for the selection, or null when the
