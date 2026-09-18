@@ -67,6 +67,17 @@ function pgoRealm(whoami) {
   return (whoami && whoami.realm && whoami.realm.pgo) || {};
 }
 
+// tableOffered reports whether the Collections table is shown:
+// PGO enabled in /v1/limits and the read realm flag in /v1/whoami.
+// It reads whoami through the guard startOffered already uses,
+// so an absent /v1/whoami, one carrying no realm, and one with no pgo block on its realm admit nothing.
+// A flag arriving as anything but true is denial, the same reading startOffered gives collect.
+function tableOffered(limits, whoami) {
+  const pgo = (limits && limits.pgo) || {};
+  const realm = pgoRealm(whoami);
+  return pgo.enabled === true && realm.read === true;
+}
+
 // startOffered reports whether the start control exists.
 // All four hold or it does not: PGO enabled in /v1/limits,
 // both pgo realm flags in /v1/whoami, and a chosen Service.
@@ -420,4 +431,4 @@ function olderCollectionsNote(body, namespace, service) {
   return `Older Collections exist beyond this page; profgate collections ${text(namespace)}/${text(service)} lists them all`;
 }
 
-export { startOffered, cancelOffered, shortTime, uuidFromBytes, startRequest, cancelRequest, startOutcome, cancelOutcome, retryAfterSeconds, startNext, confirmAccepted, progressText, olderCollectionsNote };
+export { tableOffered, startOffered, cancelOffered, shortTime, uuidFromBytes, startRequest, cancelRequest, startOutcome, cancelOutcome, retryAfterSeconds, startNext, confirmAccepted, progressText, olderCollectionsNote };

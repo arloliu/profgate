@@ -179,11 +179,11 @@ func TestScanPageUsesTargetModel(t *testing.T) {
 var collectionModelImportRe = regexp.MustCompile(`import\s*\{([^}]*)\}\s*from\s*["']\./collectionmodel\.js["']`)
 
 // TestScanPageUsesCollectionModel holds the page to the Collection-control model:
-// app.js imports the eleven functions it calls from ./collectionmodel.js and calls each at least once,
-// so a page that decides whether a control exists, what a request carries, what an answer does,
-// what the armed state holds, whether a second press counts, how a round is counted,
-// or whether older Collections exist by hand turns the suite red.
-// The twelfth export, retryAfterSeconds, is not named here:
+// app.js imports the thirteen functions it calls from ./collectionmodel.js and calls each at least once,
+// so a page that decides whether a control exists, whether the table is shown, what a request carries,
+// what an answer does, what the armed state holds, whether a second press counts, how a round is counted,
+// how a timestamp splits into its two lines, or whether older Collections exist by hand turns the suite red.
+// The fourteenth export, retryAfterSeconds, is not named here:
 // startOutcome is what reads Retry-After, and the page hands it the header rather than the delay.
 func TestScanPageUsesCollectionModel(t *testing.T) {
 	src := readSource(t, "app.js")
@@ -192,8 +192,10 @@ func TestScanPageUsesCollectionModel(t *testing.T) {
 		t.Fatalf("app.js: no import from ./collectionmodel.js")
 	}
 	fns := []string{
+		"tableOffered",
 		"startOffered",
 		"cancelOffered",
+		"shortTime",
 		"uuidFromBytes",
 		"startRequest",
 		"cancelRequest",
